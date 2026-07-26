@@ -31,9 +31,77 @@ UAM_TEST(GeminiPromptClassifierStripsAnsiAndDetectsPrompt)
 	UAM_ASSERT(!uam::GeminiCliRecentOutputIndicatesInputPrompt("tool output is still streaming\nno prompt yet"));
 }
 
+UAM_TEST(CliInitialPromptCanSettleImmediately)
+{
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	uam::MarkCliTerminalTurnBusy(terminal, false);
+	terminal.last_busy_time_s = 100.0;
+	terminal.current_turn_output_bytes = "\xE2\x80\xBA Send message";
+
+	UAM_ASSERT(uam::CliTerminalPromptConfirmsTurnIdle(
+	    terminal,
+	    uam::CodexCliRecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes),
+	    true,
+	    100.05));
+}
+
+UAM_TEST(CliStalePromptCannotPoisonLaterTurnOutput)
+{
+	const std::string old_prompt = "\xE2\x80\xBA Send message";
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.recent_output_bytes = old_prompt;
+	terminal.current_turn_output_bytes = old_prompt;
+
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.last_busy_time_s = 100.0;
+
+	terminal.current_turn_output_bytes.append(old_prompt);
+	UAM_ASSERT(!uam::CliTerminalPromptConfirmsTurnIdle(
+	    terminal,
+	    uam::CodexCliRecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes),
+	    true,
+	    100.05));
+	UAM_ASSERT(terminal.current_turn_output_bytes.empty());
+
+	terminal.current_turn_output_bytes.append("\nWorking on the next turn");
+	UAM_ASSERT(!uam::CliTerminalPromptConfirmsTurnIdle(
+	    terminal,
+	    uam::CodexCliRecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes),
+	    true,
+	    100.5));
+
+	terminal.current_turn_output_bytes.append("\n\xE2\x80\xBA Send message");
+	UAM_ASSERT(uam::CliTerminalPromptConfirmsTurnIdle(
+	    terminal,
+	    uam::CodexCliRecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes),
+	    true,
+	    100.6));
+	UAM_ASSERT_EQ(terminal.recent_output_bytes, old_prompt);
+}
+
+UAM_TEST(CliFastPromptSettlesWithoutAdditionalOutput)
+{
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.last_busy_time_s = 100.0;
+	terminal.current_turn_output_bytes = "\xE2\x80\xBA Send message";
+
+	UAM_ASSERT(!uam::CliTerminalPromptConfirmsTurnIdle(
+	    terminal,
+	    uam::CodexCliRecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes),
+	    true,
+	    100.05));
+	UAM_ASSERT(terminal.current_turn_output_bytes.empty());
+	UAM_ASSERT(uam::CliTerminalPromptConfirmsTurnIdle(terminal, false, false, 100.3));
+}
+
 UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 {
 	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 60;
 	uam::CliTerminalState terminal;
 	terminal.running = true;
 	terminal.frontend_chat_id = "chat-1";
@@ -42,7 +110,6 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 
 	uam::MarkCliTerminalTurnBusy(terminal);
 	UAM_ASSERT_EQ(uam::kCliTerminalProcessingLifecycleStates.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(uam::kCliTerminalDefaultIdleShutdownTimeoutSeconds, 60.0);
 	UAM_ASSERT_EQ(uam::kCliTerminalQuitCommand, std::string_view("/quit\r\n"));
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultRows, 24);
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultCols, 80);
@@ -72,6 +139,9 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	UAM_ASSERT(!terminal.generation_in_progress);
 	terminal.last_idle_confirmed_time_s = 59.0;
 	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	app.settings.cli_idle_timeout_seconds = 120;
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	app.settings.cli_idle_timeout_seconds = 60;
 	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, std::string_view("xxchat-2yy").substr(2, 6), 120.0));
 	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-1", 120.0));
 	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "native-1", 120.0));
@@ -100,6 +170,38 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	app.chats_with_unseen_updates.insert("chat-1");
 	uam::ClearCliReadyForChat(app, std::string_view("xx chat-1 yy").substr(2, 8));
 	UAM_ASSERT(app.chats_with_unseen_updates.empty());
+}
+
+UAM_TEST(CliWriteTransportFailureCannotRemainRunning)
+{
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.should_launch = true;
+	uam::MarkCliTerminalTurnBusy(terminal);
+
+	constexpr char input = 'x';
+	UAM_ASSERT(!uam::WriteToCliTerminal(terminal, &input, 1));
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT(!terminal.should_launch);
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Stopped);
+	UAM_ASSERT(!terminal.last_error.empty());
+}
+
+UAM_TEST(CliMissingOutputTransportCannotRemainRunning)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.should_launch = true;
+	uam::MarkCliTerminalTurnBusy(terminal);
+
+	UAM_ASSERT(uam::PollCliTerminal(nullptr, app, terminal, false));
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT(!terminal.should_launch);
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Stopped);
+	UAM_ASSERT(!terminal.last_error.empty());
 }
 
 UAM_TEST(CliTerminalSteeringInputIsBracketedAndDropsUnsafeControls)

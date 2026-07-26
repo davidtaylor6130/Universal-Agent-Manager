@@ -105,6 +105,7 @@ describe('AppShell', () => {
     expect(host.querySelector('.uam-titlebar')).toBeNull()
     expect(host.querySelector('[aria-label="Main navigation"]')).toBeTruthy()
     expect(host.querySelector('[aria-label="Tool windows"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="chat-selector-panel"]')?.classList.contains('uam-shell-panel--left')).toBe(true)
     expect(host.querySelector('.uam-window')).toBeNull()
     expect(host.querySelector('.uam-window-controls')).toBeNull()
     expect(host.querySelector('.uam-window-dot')).toBeNull()
@@ -181,7 +182,7 @@ describe('AppShell', () => {
     act(() => alerts.click())
     const panel = host.querySelector('[data-testid="notifications-panel"]')
     expect(panel).toBeTruthy()
-    expect(panel?.classList.contains('absolute')).toBe(false)
+    expect(panel?.classList.contains('uam-shell-panel--right')).toBe(true)
     expect(panel?.textContent).toContain('Workspace folder missing: Deleted project')
     expect(panel?.textContent).toContain('/tmp/deleted project')
     const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Relink')
@@ -224,21 +225,23 @@ describe('AppShell', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => root.render(<AppShell />))
+    expect((host.querySelector('.uam-app') as HTMLElement).dataset.rightPanelOpen).toBe('false')
 
     act(() => (host.querySelector('button[aria-label="No new alerts"]') as HTMLButtonElement).click())
     expect(host.querySelector('[data-testid="notifications-panel"]')).toBeTruthy()
     expect(host.textContent).toContain('You’re all caught up')
+    expect((host.querySelector('.uam-app') as HTMLElement).dataset.rightPanelOpen).toBe('true')
 
     act(() => (host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click())
     expect(host.querySelector('[data-testid="notifications-panel"]')).toBeNull()
-    expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="updates-panel"]')?.classList.contains('uam-shell-panel--right')).toBe(true)
 
     await act(async () => {
       ;(host.querySelector('button[aria-label="Open Git/SVN commit panel"]') as HTMLButtonElement).click()
       await Promise.resolve()
     })
     expect(host.querySelector('[data-testid="updates-panel"]')).toBeNull()
-    expect(host.querySelector('[data-testid="commit-panel"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="commit-panel"]')?.classList.contains('uam-shell-panel--right')).toBe(true)
 
     act(() => root.unmount())
     host.remove()
@@ -520,6 +523,65 @@ describe('AppShell', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('does not apply a generated message after switching chats', async () => {
+    let finishGeneration: (value: { title: string; description: string }) => void = () => {}
+    const generateVcsCommitMessage = vi.fn(() => new Promise<{ title: string; description: string }>((resolve) => {
+      finishGeneration = resolve
+    }))
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', name: 'Chat 1', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/one', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'chat-2', name: 'Chat 2', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/two', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      activeSessionId: 'chat-1',
+      commitPanelOpen: true,
+      getVcsCommitStatus: vi.fn(async (chatId: string) => ({
+        available: true,
+        vcsTypes: ['git' as const],
+        activeVcsType: 'git' as const,
+        workspaceDirectory: chatId === 'chat-1' ? '/tmp/one' : '/tmp/two',
+        branchOrRevision: 'main',
+        changedFiles: [{
+          path: chatId === 'chat-1' ? 'one.ts' : 'two.ts',
+          status: ' M',
+          staged: false,
+          additions: 1,
+          deletions: 0,
+          binary: false,
+        }],
+        lineStatsReady: true,
+        warning: '',
+        error: '',
+      })),
+      generateVcsCommitMessage,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<AppShell />); await Promise.resolve() })
+
+    act(() => (host.querySelector('button[aria-label="Select one.ts"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Generate commit message"]') as HTMLButtonElement).click())
+    await act(async () => {
+      useAppStore.setState({ activeSessionId: 'chat-2' })
+      await Promise.resolve()
+    })
+    const summary = host.querySelector('input[placeholder="Summary"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(summary, 'Second chat draft')
+      summary.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      finishGeneration({ title: 'First chat suggestion', description: 'Only for chat 1' })
+      await Promise.resolve()
+    })
+
+    expect(summary.value).toBe('Second chat draft')
+
+    act(() => root.unmount())
     host.remove()
   })
 })

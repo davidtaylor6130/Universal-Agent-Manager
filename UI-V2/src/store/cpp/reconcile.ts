@@ -144,6 +144,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.commandSafetyTier ?? 'medium') === (next.commandSafetyTier ?? 'medium') &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
     (previous.memoryLevel ?? ((previous.memoryEnabled ?? true) ? 'strict' : 'off')) === next.memoryLevel &&
+    (previous.smallModelMode ?? false) === (next.smallModelMode ?? false) &&
     (previous.memoryLastProcessedMessageCount ?? 0) === next.memoryLastProcessedMessageCount &&
     (previous.memoryLastProcessedAt ?? '') === next.memoryLastProcessedAt &&
     (previous.workspaceDirectory ?? '') === (next.workspaceDirectory ?? '') &&
@@ -187,6 +188,7 @@ export function sessionFromCppChat(
     commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
+    smallModelMode: chat.smallModelMode ?? false,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',
     workspaceDirectory: chat.workspaceDirectory ?? '',
@@ -356,6 +358,9 @@ function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next
     existing.kind === next.kind &&
     existing.status === next.status &&
     existing.content === next.content &&
+    existing.safetyRisk === next.safetyRisk &&
+    existing.safetyTier === next.safetyTier &&
+    existing.safetyRequiresApproval === next.safetyRequiresApproval &&
     existing.options.length === next.options.length &&
     existing.options.every((option, index) => {
       const other = next.options[index]
@@ -567,6 +572,21 @@ export function rememberPendingRequest(key: string, requestId: string) {
   pendingRequestIdsByKey.set(key, requestId)
 }
 
+let optimisticFieldRevision = 0
+const optimisticFieldRevisions = new Map<string, number>()
+
+export function rememberOptimisticFields(fields: readonly string[]) {
+  const revision = ++optimisticFieldRevision
+  fields.forEach((field) => optimisticFieldRevisions.set(field, revision))
+  return revision
+}
+
+export function latestOptimisticRollback<T extends object>(previous: T, revision: number): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(previous).filter(([field]) => optimisticFieldRevisions.get(field) === revision)
+  ) as Partial<T>
+}
+
 export function isLatestPendingRequest(key: string, requestId?: string) {
   return typeof requestId === 'string' && pendingRequestIdsByKey.get(key) === requestId
 }
@@ -626,6 +646,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     toolCallsEquivalent(existing.toolCalls ?? [], next.toolCalls ?? []) &&
     messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
+    (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
 }
@@ -644,6 +665,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     toolCalls: message.toolCalls ?? [],
     blocks: message.blocks ?? [],
     attachments: messageAttachments(message),
+    processingTimeMs: message.processingTimeMs ?? 0,
     createdAt: new Date(createdAtMillis),
   }
 }
@@ -744,6 +766,7 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
     return prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&
+      Boolean(prompt.prioritySteer) === Boolean(other.prioritySteer) &&
       sameArrayEntries(prompt.markdownStoreFiles, other.markdownStoreFiles) &&
       attachmentsEquivalent(prompt.attachments, other.attachments)
   })

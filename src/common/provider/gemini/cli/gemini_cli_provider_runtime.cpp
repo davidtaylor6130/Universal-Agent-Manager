@@ -1,6 +1,7 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
 
 #include "common/config/approval_modes.h"
+#include "common/chat/chat_ids.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
@@ -176,7 +177,7 @@ std::filesystem::path GeminiCliProviderRuntime::GetNativeSessionDirectory(const 
 
 bool GeminiCliProviderRuntime::RebuildNativeSessionFile(const ProviderProfile&, const ChatSession& chat, const std::filesystem::path& workspace_path) const
 {
-	if (chat.native_session_id.empty() || workspace_path.empty())
+	if (!uam::chat_ids::IsSafeStorageChatId(chat.native_session_id) || workspace_path.empty())
 	{
 		return false;
 	}

@@ -1,6 +1,6 @@
-import { memo, useEffect, useId, useRef, useState, useMemo } from 'react'
+import { memo, useEffect, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -26,6 +26,38 @@ interface FolderTreeProps {
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
+type FolderDropEdge = 'before' | 'after'
+
+function moveId(ids: string[], sourceId: string, targetId: string, edge: FolderDropEdge) {
+  const reordered = ids.filter((id) => id !== sourceId)
+  const targetIndex = reordered.indexOf(targetId)
+  if (targetIndex < 0 || reordered.length === ids.length) return ids
+  reordered.splice(targetIndex + (edge === 'after' ? 1 : 0), 0, sourceId)
+  return reordered
+}
+
+function reorderCollectionFolderReferences(
+  collection: ResourceCollection,
+  sourceFolderId: string,
+  targetFolderId: string,
+  edge: FolderDropEdge,
+) {
+  const folderReferences = collection.references.filter((reference) => reference.type === 'workspace-folder')
+  const sourceReference = folderReferences.find((reference) => reference.target === sourceFolderId)
+  const targetReference = folderReferences.find((reference) => reference.target === targetFolderId)
+  if (!sourceReference || !targetReference) return null
+
+  const reorderedFolderIds = moveId(
+    folderReferences.map((reference) => reference.id),
+    sourceReference.id,
+    targetReference.id,
+    edge,
+  )
+  let folderIndex = 0
+  return collection.references.map((reference) =>
+    reference.type === 'workspace-folder' ? reorderedFolderIds[folderIndex++] : reference.id
+  )
+}
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders = useAppStore(useShallow((s) => s.folders))
@@ -37,10 +69,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
   const deleteFolder        = useAppStore((s) => s.deleteFolder)
+  const rescanFolderChats    = useAppStore((s) => s.rescanFolderChats)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
   const reorderFolders = useAppStore((s) => s.reorderFolders)
+  const reorderResourceReferences = useAppStore((s) => s.reorderResourceReferences)
   const createResourceCollection = useAppStore((s) => s.createResourceCollection)
 
   const [addingFolder, setAddingFolder] = useState(false)
@@ -54,7 +88,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
-  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
+  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
   const addControlsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
@@ -66,6 +100,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }, [addingCollection, addingFolder])
 
   const paneColorsForFolders = (folderIds: Set<string>) => {
+    if (gridLayout.paneCount === 1) return []
     const folderSessionIds = new Set(sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
     return gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => folderSessionIds.has(id) ? [chatPaneColors[index]] : [])
   }
@@ -178,17 +213,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     }
   }
 
-  const commitFolderDrop = (targetId: string, edge: 'before' | 'after') => {
-    if (!draggedFolderId || draggedFolderId === targetId) return
-    const ids = folders.map((folder) => folder.id).filter((id) => id !== draggedFolderId)
-    const targetIndex = ids.indexOf(targetId)
-    if (targetIndex < 0) return
-    ids.splice(targetIndex + (edge === 'after' ? 1 : 0), 0, draggedFolderId)
-    void reorderFolders(ids)
-  }
-
   const folderRowsById = new Map(searchModel.folderRows.map((row) => [row.folder.id, row]))
   const groupedFolderIds = new Set<string>()
+  const folderCollectionIds = new Map<string, string>()
   const collectionGroups = resourceCollections.map((collection) => ({
     collection,
     folderRows: collection.references.flatMap((reference) => {
@@ -196,10 +223,38 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       const row = folderRowsById.get(reference.target)
       if (!row) return []
       groupedFolderIds.add(reference.target)
+      folderCollectionIds.set(reference.target, collection.id)
       return [row]
     }),
   }))
   const ungroupedFolderRows = searchModel.folderRows.filter(({ folder }) => !groupedFolderIds.has(folder.id))
+
+  const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
+    if (sourceId === targetId) return
+    const sourceCollectionId = folderCollectionIds.get(sourceId)
+    const targetCollectionId = folderCollectionIds.get(targetId)
+    if (sourceCollectionId && sourceCollectionId === targetCollectionId) {
+      const collection = resourceCollections.find((item) => item.id === sourceCollectionId)
+      const referenceIds = collection
+        ? reorderCollectionFolderReferences(collection, sourceId, targetId, edge)
+        : null
+      if (referenceIds) void reorderResourceReferences(sourceCollectionId, referenceIds)
+      return
+    }
+    if (!sourceCollectionId && !targetCollectionId) {
+      void reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
+    }
+  }
+
+  const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
+    const collectionId = folderCollectionIds.get(sourceId)
+    const rows = collectionId
+      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
+      : ungroupedFolderRows
+    const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
+    const target = rows[sourceIndex + direction]
+    if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+  }
 
   const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => (
     <FolderRow
@@ -215,6 +270,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onToggle={() => toggleFolder(folder.id)}
       onStartRename={() => startRenameFolder(folder)}
       onDelete={() => setPendingDeleteFolderId(folder.id)}
+      onRescan={() => void rescanFolderChats(folder.id)}
       onEditNameChange={setEditFolderName}
       onEditDirectoryChange={setEditFolderDirectory}
       onCommitRename={() => commitRenameFolder(folder.id)}
@@ -228,8 +284,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onDragStart={() => setDraggedFolderId(folder.id)}
       onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
       onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onMove={(direction) => moveFolderWithKeyboard(folder.id, direction)}
       onDrop={(edge) => {
-        commitFolderDrop(folder.id, edge)
+        if (draggedFolderId) commitFolderMove(draggedFolderId, folder.id, edge)
         setDraggedFolderId(null)
         setFolderDropTarget(null)
       }}
@@ -239,20 +296,20 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   return (
     <div className="select-none">
       {searchModel.pinnedSessionIds.length > 0 && (
-        <div className="mb-2">
-          <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
+        <div className="mb-0.5">
+          <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Pinned chats
             </span>
           </div>
           {searchModel.pinnedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} forceShowPin={true} />
+            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
           ))}
         </div>
       )}
 
       {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0) && (
-        <div className="px-3 pb-1 pt-1" style={{ color: 'var(--text-3)' }}>
+        <div className="px-2.5 py-0" style={{ color: 'var(--text-3)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10, whiteSpace: 'nowrap' }}>
               All chats
@@ -281,8 +338,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
       {/* Unfoldered sessions */}
       {searchModel.unfolderedSessionIds.length > 0 && (
-        <div className="mt-1">
-          <div className="px-3 py-1" style={{ color: 'var(--text-3)' }}>
+        <div className="mt-0.5">
+          <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Unsorted
             </span>
@@ -302,7 +359,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
 
       {/* Add folder */}
-      <div ref={addControlsRef} className="mt-2 px-3">
+      <div ref={addControlsRef} className="mt-1 px-2.5">
         {addingFolder ? (
           <div
             className="rounded-md p-2 space-y-2"
@@ -498,7 +555,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
 
   return (
     <div
-      className="mb-2"
+      className="mb-0"
       data-testid={`folder-collection-${collection.id}`}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
@@ -516,8 +573,9 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
       }}
     >
       <div
-        className="group relative mx-1 flex items-center gap-2 rounded-md px-3 py-1.5 transition-colors duration-150"
-        style={{ color: 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : 'color-mix(in srgb, var(--surface-up) 70%, transparent)', border: '1px solid var(--border)', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+        data-testid={`collection-header-${collection.id}`}
+        className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
+        style={{ color: 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -583,12 +641,10 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
         <div className="min-h-0 overflow-hidden">
           <div
             data-testid={`collection-children-${collection.id}`}
-            className="ml-6 mr-1 mt-1 rounded-r-md border-l-2 py-1 pl-2 transition-transform duration-200 ease-out motion-reduce:transition-none"
+            className="ml-3 mr-1 mt-0 py-0 pl-1"
             style={{
-              background: 'color-mix(in srgb, var(--surface-up) 55%, transparent)',
-              borderColor: 'color-mix(in srgb, var(--accent) 72%, var(--border))',
-              boxShadow: 'inset 0 1px color-mix(in srgb, var(--border) 55%, transparent), inset 0 -1px color-mix(in srgb, var(--border) 55%, transparent)',
-              transform: collection.collapsed ? 'translateY(-6px)' : 'translateY(0)',
+              background: 'transparent',
+              boxShadow: 'none',
             }}
           >
             {children}
@@ -610,29 +666,34 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
 }
 
 function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: string[]; testId: string }) {
-  const gradientId = useId().replace(/:/g, '')
+  const paneNumbers = colors.flatMap((color) => {
+    const index = chatPaneColors.findIndex((paneColor) => paneColor === color)
+    return index < 0 ? [] : [index + 1]
+  })
+  const paneLabel = paneNumbers.length === 1
+    ? `Shown in pane ${paneNumbers[0]}`
+    : `Shown in panes ${paneNumbers.slice(0, -1).join(', ')} and ${paneNumbers[paneNumbers.length - 1]}`
   return (
-    <>
-      {colors.length > 1 && (
-        <svg data-testid={`${testId}-gradient`} width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
-              {colors.flatMap((color, index) => [
-                <stop key={`${index}-start`} offset={`${index / colors.length * 100}%`} stopColor={color} />,
-                <stop key={`${index}-end`} offset={`${(index + 1) / colors.length * 100}%`} stopColor={color} />,
-              ])}
-            </linearGradient>
-          </defs>
-        </svg>
-      )}
+    <span
+      {...(colors.length > 0 ? { role: 'img', 'aria-label': paneLabel } : {})}
+      className="inline-flex shrink-0 items-center gap-1"
+    >
       <Icon
         data-testid={testId}
         size={14}
-        stroke={colors.length > 1 ? `url(#${gradientId})` : 'currentColor'}
-        style={{ flexShrink: 0, color: colors[0] || 'var(--text-3)', filter: colors.length ? `drop-shadow(0 0 3px ${colors[0]})` : 'none', opacity: colors.length ? 1 : 0.85, transition: 'color 140ms ease, filter 140ms ease, opacity 140ms ease' }}
+        style={{ flexShrink: 0, color: 'var(--text-3)', filter: 'none', opacity: 0.85 }}
         aria-hidden
       />
-    </>
+      {colors.map((color, index) => (
+        <span
+          key={`${color}-${index}`}
+          data-testid={`${testId}-marker`}
+          className="h-1.5 w-1.5 rounded-full"
+          style={{ background: color }}
+          aria-hidden
+        />
+      ))}
+    </span>
   )
 }
 
@@ -775,6 +836,7 @@ interface FolderRowProps {
   onToggle: () => void
   onStartRename: () => void
   onDelete: () => void
+  onRescan: () => void
   onEditNameChange: (v: string) => void
   onEditDirectoryChange: (v: string) => void
   onCommitRename: () => void
@@ -784,11 +846,12 @@ interface FolderRowProps {
   onOpenMemory: () => void
   sessionsById: Map<string, Session>
   draggable: boolean
-  dropEdge: 'before' | 'after' | null
+  dropEdge: FolderDropEdge | null
   onDragStart: () => void
-  onDragOver: (edge: 'before' | 'after') => void
+  onDragOver: (edge: FolderDropEdge) => void
   onDragEnd: () => void
-  onDrop: (edge: 'before' | 'after') => void
+  onMove: (direction: -1 | 1) => void
+  onDrop: (edge: FolderDropEdge) => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -803,6 +866,7 @@ const FolderRow = memo(function FolderRow({
   onToggle,
   onStartRename,
   onDelete,
+  onRescan,
   onEditNameChange,
   onEditDirectoryChange,
   onCommitRename,
@@ -816,6 +880,7 @@ const FolderRow = memo(function FolderRow({
   onDragStart,
   onDragOver,
   onDragEnd,
+  onMove,
   onDrop,
 }: FolderRowProps) {
   const [showAllSessions, setShowAllSessions] = useState(false)
@@ -851,7 +916,7 @@ const FolderRow = memo(function FolderRow({
 
   return (
     <div
-      className="mb-1"
+      className="mb-0"
       data-testid={`folder-row-${folder.id}`}
       draggable={draggable}
       onDragStart={(event) => {
@@ -873,18 +938,30 @@ const FolderRow = memo(function FolderRow({
       }}
       onDragEnd={onDragEnd}
       style={{
-        borderTop: dropEdge === 'before' ? '2px solid var(--accent)' : '2px solid transparent',
-        borderBottom: dropEdge === 'after' ? '2px solid var(--accent)' : '2px solid transparent',
+        boxShadow:
+          dropEdge === 'before'
+            ? 'inset 0 2px var(--accent)'
+            : dropEdge === 'after'
+              ? 'inset 0 -2px var(--accent)'
+              : 'none',
       }}
     >
       {/* Folder header */}
       <div
-        className="relative flex items-center gap-2 px-3 py-1.5 cursor-pointer group rounded-md mx-1"
+        data-testid={`folder-header-${folder.id}`}
+        tabIndex={draggable ? 0 : -1}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
         style={{
           background: 'transparent',
           color: 'var(--text-2)',
         }}
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.currentTarget !== event.target || !draggable || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+          event.preventDefault()
+          onMove(event.key === 'ArrowUp' ? -1 : 1)
+        }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -957,6 +1034,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
+          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </ViewportMenu>
@@ -1034,9 +1112,9 @@ const FolderRow = memo(function FolderRow({
 
       {/* Sessions */}
       {shouldShowSessions && (
-        <div>
+        <div className="pl-3.5">
           {sessionIds.length === 0 ? (
-            <div className="px-6 py-1 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
+            <div className="px-4 py-0.5 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
               Empty
             </div>
           ) : (
@@ -1048,54 +1126,22 @@ const FolderRow = memo(function FolderRow({
             <button
               type="button"
               onClick={() => setShowAllSessions((value) => !value)}
-              className="mx-5 mt-1 flex w-[calc(100%-2.5rem)] items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs transition-colors duration-100"
+              className="mx-3 mt-0.5 inline-flex items-center px-2 py-0.5 text-xs transition-colors duration-100"
               style={{
                 background: 'transparent',
                 color: 'var(--text-3)',
-                border: '1px solid var(--border)',
+                border: 'none',
                 cursor: 'pointer',
                 fontFamily: 'inherit',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.color = 'var(--text-2)'
-                e.currentTarget.style.borderColor = 'var(--border-bright)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.color = 'var(--text-3)'
-                e.currentTarget.style.borderColor = 'var(--border)'
               }}
             >
-              <span>{showAllSessions ? 'Show less' : 'See more'}</span>
-              {!showAllSessions && (
-                <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
-                  +{hiddenSessionCount}
-                </span>
-              )}
-            </button>
-          )}
-          {folder.isExpanded && (
-            <button
-              type="button"
-              onClick={onCreateChat}
-              className="mx-5 mt-1 flex w-[calc(100%-2.5rem)] items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors duration-100"
-              style={{
-                background: 'var(--surface-up)',
-                color: 'var(--text-3)',
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--text-2)'
-                e.currentTarget.style.borderColor = 'var(--border-bright)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--text-3)'
-                e.currentTarget.style.borderColor = 'var(--border)'
-              }}
-            >
-              <Plus size={14} aria-hidden />
-              <span>New chat</span>
+              {showAllSessions ? 'Show less' : `Show ${hiddenSessionCount} more`}
             </button>
           )}
         </div>

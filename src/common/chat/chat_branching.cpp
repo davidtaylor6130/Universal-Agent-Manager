@@ -126,6 +126,27 @@ void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 
 	for (std::size_t i = 0; i < chats.size(); ++i)
 	{
+		std::size_t cursor = i;
+		std::unordered_set<std::string> seen;
+		while (cursor < chats.size() && !chats[cursor].parent_chat_id.empty())
+		{
+			seen.insert(chats[cursor].id);
+			const auto parent = index_by_id.find(chats[cursor].parent_chat_id);
+			if (parent == index_by_id.end())
+			{
+				break;
+			}
+			if (seen.contains(chats[parent->second].id))
+			{
+				chats[cursor].parent_chat_id.clear();
+				break;
+			}
+			cursor = parent->second;
+		}
+	}
+
+	for (std::size_t i = 0; i < chats.size(); ++i)
+	{
 		ChatSession& chat = chats[i];
 
 		if (chat.id.empty())

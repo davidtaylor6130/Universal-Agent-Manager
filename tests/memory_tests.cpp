@@ -52,6 +52,51 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
 }
 
+UAM_TEST(MemoryServiceRecallTruncatesUtf8AtCodePointBoundary)
+{
+	TempDir temp("uam-memory-utf8-preview");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_recall_budget_bytes = 2048;
+
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.workspace_directory = (temp.root / "workspace").string();
+	fs::create_directories(chat.workspace_directory);
+
+	const fs::path category = MemoryService::CategoryPath(
+	    MemoryService::GlobalMemoryRoot(app.data_root),
+	    "Lessons/User_Lessons");
+	fs::create_directories(category);
+	const std::string memory = "## Memory\n" + std::string(319, 'a') + "\xE2\x80\x9C" + "tail";
+	UAM_ASSERT(uam::io::WriteTextFile(category / "utf8-boundary.md", memory));
+
+	const std::string recall = MemoryService::BuildRecallPreface(app, chat, "Continue");
+	UAM_ASSERT(!nlohmann::json(recall).dump().empty());
+}
+
+UAM_TEST(MemoryServiceSmallModelRecallRanksPromptRelevantMemoryFirst)
+{
+	TempDir temp("uam-memory-small-model-ranking");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_recall_budget_bytes = 512;
+	ChatSession chat;
+	chat.id = "chat-small-memory";
+	chat.memory_enabled = true;
+	chat.memory_level = "strict";
+	chat.small_model_mode = true;
+
+	const fs::path root = MemoryService::GlobalMemoryRoot(app.data_root);
+	UAM_ASSERT(MemoryService::EnsureMemoryLayout(root));
+	const fs::path category = MemoryService::CategoryPath(root, "Lessons/User_Lessons");
+	UAM_ASSERT(uam::io::WriteTextFile(category / "unrelated.md", "## Memory\nAlways use the preferred visual theme for interface work. " + std::string(230, 'x')));
+	UAM_ASSERT(uam::io::WriteTextFile(category / "database.md", "## Memory\nDatabase migrations must use the project transaction wrapper. " + std::string(230, 'y')));
+
+	const std::string recall = MemoryService::BuildRecallPreface(app, chat, "Implement the database migration.");
+	UAM_ASSERT(recall.find("Database migrations") != std::string::npos);
+	UAM_ASSERT(recall.find("preferred visual theme") == std::string::npos);
+}
+
 UAM_TEST(MemoryServiceParsesNoisyCodexTranscriptMemoryPayload)
 {
 	TempDir temp("uam-memory-noisy-codex");
@@ -747,6 +792,22 @@ UAM_TEST(MemoryLibraryServiceAllScopeAggregatesKnownRootsAndDedupes)
 	UAM_ASSERT_EQ(all_entries.front().folder_id, std::string("folder-1"));
 	UAM_ASSERT_EQ(all_entries.front().scope_label, std::string("Workspace"));
 	UAM_ASSERT(all_entries.front().root_path.string().find(".UAM") != std::string::npos);
+}
+
+UAM_TEST(MemoryLibraryServiceAllScopeSkipsChatsWithoutWorkspaces)
+{
+	TempDir temp("uam-memory-library-empty-workspace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-without-workspace";
+	app.chats.push_back(chat);
+
+	MemoryLibraryService::Scope all_scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", all_scope, &error));
+	UAM_ASSERT_EQ(all_scope.roots.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(all_scope.roots.front().root_path, MemoryService::GlobalMemoryRoot(app.data_root));
 }
 
 UAM_TEST(MemoryLibraryServiceOrdersEqualTitlesByFilename)

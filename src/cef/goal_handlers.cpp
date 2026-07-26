@@ -6,6 +6,7 @@
 #include "app/provider_resolution_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -140,6 +141,30 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	if (!updated)
 	{
 		cb->Failure(404, "Failed to set active goal. Goal may not exist or is not in this chat.");
+		return;
+	}
+
+	if (ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id); chat != nullptr)
+	{
+		(void)ChatRepository::SaveChat(m_app.data_root, *chat);
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string goal_id = payload.value("goalId", "");
+	std::string error;
+	if (chat_id.empty() || goal_id.empty())
+	{
+		cb->Failure(400, "Missing chat or goal id.");
+		return;
+	}
+	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error))
+	{
+		cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to resume goal."));
 		return;
 	}
 

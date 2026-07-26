@@ -12,6 +12,8 @@ import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
   clearPendingRequest,
   isLatestPendingRequest,
+  latestOptimisticRollback,
+  rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
@@ -19,8 +21,8 @@ import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 export function readDocumentTheme(): StoredTheme {
   const stored = readStoredTheme()
   if (stored) return stored
-  if (typeof document === 'undefined') return 'dark'
-  return normalizeStoredTheme(document.documentElement.getAttribute('data-theme')) ?? 'dark'
+  if (typeof document === 'undefined') return 'focus'
+  return normalizeStoredTheme(document.documentElement.getAttribute('data-theme')) ?? 'focus'
 }
 
 export function persistTheme(theme: StoredTheme, customThemes: CustomTheme[] = []): void {
@@ -35,6 +37,7 @@ const defaultAppShellLayout = {
   commitPanelOpen: false,
   sidebarWidthPx: 320,
   commitPanelWidthPx: 420,
+  workingDisplayMode: 'compact' as const,
 }
 
 function clampSidebarWidthPx(width: number): number {
@@ -63,6 +66,7 @@ function readStoredAppShellLayout() {
         commitPanelOpen: Boolean(parsed.commitPanelOpen),
         sidebarWidthPx: clampSidebarWidthPx(Number(parsed.sidebarWidthPx) || defaultAppShellLayout.sidebarWidthPx),
         commitPanelWidthPx: clampCommitPanelWidthPx(Number(parsed.commitPanelWidthPx) || defaultAppShellLayout.commitPanelWidthPx),
+        workingDisplayMode: parsed.workingDisplayMode === 'verbose' ? 'verbose' as const : 'compact' as const,
       }
     }
 
@@ -73,6 +77,7 @@ function readStoredAppShellLayout() {
       commitPanelOpen: Boolean(parsed.commitPanelOpen),
       sidebarWidthPx: defaultAppShellLayout.sidebarWidthPx,
       commitPanelWidthPx: legacyCommitPanelPercentToPx(parsed.commitPanelWidth),
+      workingDisplayMode: defaultAppShellLayout.workingDisplayMode,
     }
   } catch {
     return defaultAppShellLayout
@@ -84,6 +89,7 @@ function writeStoredAppShellLayout(layout: {
   commitPanelOpen: boolean
   sidebarWidthPx: number
   commitPanelWidthPx: number
+  workingDisplayMode: 'compact' | 'verbose'
 }) {
   if (typeof window === 'undefined') return
   try {
@@ -92,6 +98,7 @@ function writeStoredAppShellLayout(layout: {
       commitPanelOpen: layout.commitPanelOpen,
       sidebarWidthPx: clampSidebarWidthPx(layout.sidebarWidthPx),
       commitPanelWidthPx: clampCommitPanelWidthPx(layout.commitPanelWidthPx),
+      workingDisplayMode: layout.workingDisplayMode,
     }))
   } catch {
     // Ignore storage failures; the in-memory store still tracks the layout.
@@ -119,6 +126,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
   return {
     theme: readDocumentTheme(),
     customThemes: [] as CustomTheme[],
+    workingDisplayMode: storedShellLayout.workingDisplayMode,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
     isNewChatModalOpen: false,
@@ -191,7 +199,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       const response = await sendToCEF({ action: 'deleteTheme', payload: { id } })
       if (!response.ok) return false
       const customThemes = get().customThemes.filter((candidate) => candidate.id !== id)
-      const nextTheme = get().theme === id ? 'dark' : get().theme
+      const nextTheme = get().theme === id ? 'focus' : get().theme
       set({ customThemes, theme: nextTheme })
       persistTheme(nextTheme, customThemes)
       return true
@@ -202,10 +210,11 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         showProviderIconsInSidebar: get().showProviderIconsInSidebar,
         showWorktreePathInSidebar: get().showWorktreePathInSidebar,
       }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
       set(settings)
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setSidebarSettings', payload: settings, requestId: createRequestId('setSidebarSettings') })
-      if (!response.ok) set(previous)
+      if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
     },
 
@@ -214,12 +223,17 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       newChatFolderId: open ? (folderId ?? null) : null,
     }),
     setSettingsOpen: (open: boolean) => set({ isSettingsOpen: open }),
+    setWorkingDisplayMode: (workingDisplayMode: 'compact' | 'verbose') => set((state: AppState) => {
+      writeStoredAppShellLayout({ ...state, workingDisplayMode })
+      return { workingDisplayMode }
+    }),
     setSidebarCollapsed: (collapsed: boolean) => set((state: AppState) => {
       const next = {
         sidebarCollapsed: collapsed,
         commitPanelOpen: state.commitPanelOpen,
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
+        workingDisplayMode: state.workingDisplayMode,
       }
       writeStoredAppShellLayout(next)
       return { sidebarCollapsed: collapsed }
@@ -230,6 +244,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         commitPanelOpen: open,
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
+        workingDisplayMode: state.workingDisplayMode,
       }
       writeStoredAppShellLayout(next)
       return { commitPanelOpen: open }
@@ -244,6 +259,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         commitPanelOpen: state.commitPanelOpen,
         sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
+        workingDisplayMode: state.workingDisplayMode,
       }
       writeStoredAppShellLayout(next)
       return { sidebarWidthPx }
@@ -258,6 +274,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         commitPanelOpen: state.commitPanelOpen,
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx,
+        workingDisplayMode: state.workingDisplayMode,
       }
       writeStoredAppShellLayout(next)
       return { commitPanelWidthPx }

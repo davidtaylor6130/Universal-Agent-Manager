@@ -39,6 +39,7 @@ export interface CppMessage {
   blocks?: MessageBlock[]
   markdownStoreFiles?: string[]
   attachments?: Attachment[]
+  processingTimeMs?: number
   createdAt: string
 }
 
@@ -70,6 +71,7 @@ export interface CppChat {
   commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
+  smallModelMode?: boolean
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   workspaceDirectory?: string
@@ -154,6 +156,7 @@ export interface AcpToolCall {
   kind: string
   status: string
   content: string
+  contentDeferred?: boolean
   isSubAgent?: boolean
   subAgentId?: string
   subAgentTitle?: string
@@ -243,6 +246,7 @@ export interface AcpQueuedPrompt {
   attachments: Attachment[]
   goalMode: boolean
   goalId: string
+  prioritySteer?: boolean
 }
 
 export interface AcpDiagnosticEntry {
@@ -352,6 +356,7 @@ export interface ProviderChatDefaults {
   autoApproveCommands: boolean
   memoryEnabled: boolean
   memoryLevel?: MemoryLevel
+  smallModelMode?: boolean
   reasoningEffort: string
   serviceTier: string
 }
@@ -388,6 +393,8 @@ export interface CliVersionProviderState {
   status: 'unknown' | 'checking' | 'installing' | 'supported' | 'unsupported'
   message: string
   running: boolean
+  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask'
+  lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
 }

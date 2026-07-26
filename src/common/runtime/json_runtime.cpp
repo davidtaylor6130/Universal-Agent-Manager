@@ -4,6 +4,7 @@
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <optional>
@@ -357,21 +358,39 @@ class JsonParser
 				case 't':
 					out.push_back('\t');
 					break;
-				case 'u':
-
-					if (pos_ + 4 <= input_.size())
+					case 'u':
 					{
-						// Keep unicode escape literal if we can't decode it safely here.
-						out += "\\u";
-						out.append(input_.substr(pos_, 4));
-						pos_ += 4;
-					}
-					else
-					{
-						error_ = true;
-					}
+						uint32_t code_point = 0;
+						if (!ParseHexCodeUnit(code_point))
+						{
+							error_ = true;
+							break;
+						}
+						if (code_point >= 0xD800 && code_point <= 0xDBFF)
+						{
+							if (pos_ + 2 > input_.size() || input_[pos_] != '\\' || input_[pos_ + 1] != 'u')
+							{
+								error_ = true;
+								break;
+							}
+							pos_ += 2;
+							uint32_t low_surrogate = 0;
+							if (!ParseHexCodeUnit(low_surrogate) || low_surrogate < 0xDC00 || low_surrogate > 0xDFFF)
+							{
+								error_ = true;
+								break;
+							}
+							code_point = 0x10000 + ((code_point - 0xD800) << 10) + (low_surrogate - 0xDC00);
+						}
+						else if (code_point >= 0xDC00 && code_point <= 0xDFFF)
+						{
+							error_ = true;
+							break;
+						}
+						AppendUtf8(out, code_point);
 
-					break;
+						break;
+					}
 				default:
 					error_ = true;
 					break;
@@ -382,20 +401,77 @@ class JsonParser
 					return {};
 				}
 			}
-			else
-			{
-				if (static_cast<unsigned char>(ch) < 0x20)
+				else
 				{
-					error_ = true;
-					return {};
+					if (static_cast<unsigned char>(ch) < 0x20)
+					{
+						error_ = true;
+						return {};
+					}
+					out.push_back(ch);
 				}
-				out.push_back(ch);
 			}
+
+			error_ = true;
+			return {};
 		}
 
-		error_ = true;
-		return {};
-	}
+		bool ParseHexCodeUnit(uint32_t& value)
+		{
+			if (pos_ + 4 > input_.size())
+			{
+				return false;
+			}
+			value = 0;
+			for (int i = 0; i < 4; ++i)
+			{
+				const char ch = input_[pos_++];
+				value <<= 4;
+				if (ch >= '0' && ch <= '9')
+				{
+					value += static_cast<uint32_t>(ch - '0');
+				}
+				else if (ch >= 'a' && ch <= 'f')
+				{
+					value += static_cast<uint32_t>(ch - 'a' + 10);
+				}
+				else if (ch >= 'A' && ch <= 'F')
+				{
+					value += static_cast<uint32_t>(ch - 'A' + 10);
+				}
+				else
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		static void AppendUtf8(std::string& output, uint32_t code_point)
+		{
+			if (code_point <= 0x7F)
+			{
+				output.push_back(static_cast<char>(code_point));
+			}
+			else if (code_point <= 0x7FF)
+			{
+				output.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+				output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+			}
+			else if (code_point <= 0xFFFF)
+			{
+				output.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+				output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+				output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+			}
+			else
+			{
+				output.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+				output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+				output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+				output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+			}
+		}
 
 	bool Consume(const char expected)
 	{

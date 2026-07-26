@@ -356,6 +356,18 @@ std::filesystem::path AppPaths::UamChatFilePath(const std::filesystem::path& dat
 	return UamChatsRootPath(data_root) / filename;
 }
 
+std::filesystem::path AppPaths::UamChatSummariesRootPath(const std::filesystem::path& data_root)
+{
+	return data_root / "chat-summaries";
+}
+
+std::filesystem::path AppPaths::UamChatSummaryFilePath(const std::filesystem::path& data_root, std::string_view chat_id)
+{
+	std::string filename(chat_id);
+	filename += ".json";
+	return UamChatSummariesRootPath(data_root) / filename;
+}
+
 bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
 {
 	return PathsEquivalent(NormalizePathForCompare(lhs), NormalizePathForCompare(rhs));

@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
-import { buildCodexReasoningOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -33,9 +33,11 @@ export function NewChatModal() {
   const [providerId, setProviderId] = useState(initialProviderId)
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
   const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [creatingChat, setCreatingChat] = useState(false)
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
+  const creatingChatRef = useRef(false)
   const discoveryRequestedRef = useRef(new Set<string>())
 
   useEffect(() => {
@@ -84,13 +86,19 @@ export function NewChatModal() {
     return () => window.removeEventListener('keydown', handler)
   }, [setNewChatModalOpen])
 
-  const handleCreate = () => {
-    if (folderId === null || !folders.some((folder) => folder.id === folderId)) {
+  const handleCreate = async () => {
+    if (creatingChatRef.current || folderId === null || !folders.some((folder) => folder.id === folderId)) {
       return
     }
 
+    creatingChatRef.current = true
+    setCreatingChat(true)
     const n = name.trim() || 'New chat'
-	addSession(n, folderId, providerId, modelId, reasoningEffortForModel(cachedAcp, modelId, reasoningEffort))
+	const created = await addSession(n, folderId, providerId, selectedModelId, reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort))
+    if (!created) {
+      creatingChatRef.current = false
+      setCreatingChat(false)
+    }
   }
 
   const selectedFolder =
@@ -100,10 +108,11 @@ export function NewChatModal() {
 	const discoverySession = providerSessions[0]
 	const cachedAcp = providerSessions.map((session) => acpBindingBySessionId[session.id]).find((binding) => (binding?.availableModels.length ?? 0) > 0)
 	  ?? (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined)
-	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId)
-	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
+	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)
+	const selectedModelId = modelOptionFor(modelOptions, modelId).id
+	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
 	const reasoningOptions = providerCapabilities(providerId, selectedProvider ?? undefined).hasReasoningEffort || runtimeSupportsReasoning
-	  ? buildCodexReasoningOptions(cachedAcp, modelId, reasoningEffort)
+	  ? buildCodexReasoningOptions(cachedAcp, selectedModelId, reasoningEffort)
 	  : []
   useEffect(() => {
     if (!discoverySession || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(providerId)) return
@@ -125,7 +134,7 @@ export function NewChatModal() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(0,0,0,0.48)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget) setNewChatModalOpen(false)
       }}
@@ -135,15 +144,17 @@ export function NewChatModal() {
         aria-modal="true"
         aria-label="New chat"
         tabIndex={-1}
-        className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
+        className="flex max-h-[calc(100vh-32px)] w-full max-w-lg flex-col overflow-hidden mx-4 animate-slide-in"
         style={{
           background: 'var(--surface)',
+          borderRadius: 10,
           border: '1px solid var(--border-bright)',
+          boxShadow: 'var(--elev-3)',
         }}
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between px-5 py-4"
+          className="flex shrink-0 items-center justify-between px-5 py-4"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
@@ -152,7 +163,7 @@ export function NewChatModal() {
           <IconButton icon={<X size={16} />} label="Close new chat" onClick={() => setNewChatModalOpen(false)} />
         </div>
 
-        <div className="p-5 space-y-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-5">
           {/* Name */}
           <div>
             <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
@@ -163,7 +174,9 @@ export function NewChatModal() {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleCreate()
+              }}
               placeholder="e.g. API Design Review"
               className="w-full rounded-md px-3 py-2 text-sm outline-none transition-all duration-150"
               style={{
@@ -235,7 +248,7 @@ export function NewChatModal() {
             <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
             <MenuSelect
               label="Model"
-              value={modelId}
+              value={selectedModelId}
               options={modelOptions.map((option) => ({
                 value: option.id,
                 label: option.label,
@@ -252,7 +265,7 @@ export function NewChatModal() {
 			  <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
 			  <MenuSelect
 				label="Reasoning effort"
-				value={reasoningEffortForModel(cachedAcp, modelId, reasoningEffort)}
+				value={reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort)}
 				options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
 				onChange={setReasoningEffort}
 			  />
@@ -262,7 +275,7 @@ export function NewChatModal() {
 
         {/* Footer */}
         <div
-          className="flex items-center justify-end gap-2 px-5 py-4"
+          className="flex shrink-0 items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
           <Button
@@ -275,8 +288,9 @@ export function NewChatModal() {
           <Button
             variant="primary"
             size="md"
-            onClick={handleCreate}
+            onClick={() => void handleCreate()}
             disabled={!canCreate}
+            loading={creatingChat}
           >
             Create chat
           </Button>

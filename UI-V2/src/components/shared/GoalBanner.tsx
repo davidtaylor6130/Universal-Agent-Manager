@@ -9,6 +9,7 @@ interface GoalBannerProps {
   onComplete: () => void
   onPause?: () => void
   onResume?: () => void
+  resumePending?: boolean
   onRemove: () => void
 }
 
@@ -30,13 +31,14 @@ function statusLabel(status: Goal['status']): string {
   }
 }
 
-function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+function MenuItem({ icon, label, onClick, danger, disabled }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean; disabled?: boolean }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100"
-      style={{ background: 'transparent', color: danger ? 'var(--error)' : 'var(--text-2)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
+      style={{ background: 'transparent', color: danger ? 'var(--error)' : 'var(--text-2)', border: 'none', cursor: disabled ? 'default' : 'pointer', fontFamily: 'inherit', opacity: disabled ? 0.6 : 1 }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
       onClick={onClick}
     >
@@ -46,7 +48,7 @@ function MenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: st
   )
 }
 
-export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: GoalBannerProps) {
+export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending = false, onRemove }: GoalBannerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -74,7 +76,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
 
   return (
     <div
-      className="flex items-center gap-2.5 px-4 py-2 text-sm"
+      className="uam-goal-banner flex items-center gap-2.5 px-4 py-2 text-sm"
       style={{ background: 'var(--surface)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
     >
       <Target size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
@@ -87,7 +89,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
         <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
         {statusLabel(goal.status)}
       </span>
-	  <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+	  <span className="uam-goal-banner__secondary text-[11px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
 		{goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}
 	  </span>
 
@@ -102,7 +104,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
           </div>
         )}
         {(goal.currentStep || totalItems > 0) && (
-          <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-3)' }}>
+          <div className="uam-goal-banner__secondary mt-1 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-3)' }}>
             {totalItems > 0 && (
               <progress
                 aria-label="Goal progress"
@@ -119,7 +121,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
 
       {budgetDisplay && (
         <Tooltip label="Tokens used / budget">
-          <span className="text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{budgetDisplay}</span>
+          <span className="uam-goal-banner__secondary text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{budgetDisplay}</span>
         </Tooltip>
       )}
 
@@ -152,7 +154,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRemove }: Go
               <MenuItem icon={<Pause size={14} aria-hidden />} label="Pause goal" onClick={() => { setMenuOpen(false); onPause() }} />
             )}
             {goal.status !== 'active' && onResume && (
-              <MenuItem icon={<Play size={14} aria-hidden />} label="Resume goal" onClick={() => { setMenuOpen(false); onResume() }} />
+              <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label={resumePending ? 'Resuming…' : 'Resume goal'} onClick={() => { setMenuOpen(false); onResume() }} />
             )}
             <MenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
           </ViewportMenu>

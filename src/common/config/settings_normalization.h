@@ -11,6 +11,8 @@
 
 namespace uam::settings
 {
+	inline constexpr const char* kFocusThemeId = "focus";
+	inline constexpr const char* kLegacyMonoThemeId = "mono";
 	inline constexpr const char* kDarkThemeId = "dark";
 	inline constexpr const char* kLightThemeId = "light";
 	inline constexpr const char* kSystemThemeId = "system";
@@ -20,6 +22,7 @@ namespace uam::settings
 	inline constexpr const char* kAuroraThemeId = "aurora";
 	inline constexpr const char* kContrastThemeId = "contrast";
 	inline constexpr auto kThemeIds = std::to_array<std::string_view>({
+	    kFocusThemeId,
 	    kDarkThemeId,
 	    kLightThemeId,
 	    kSystemThemeId,
@@ -65,7 +68,11 @@ namespace uam::settings
 	inline std::string NormalizeThemeId(std::string_view value)
 	{
 		const std::string normalized = uam::strings::TrimAndLowerAscii(value);
-		return IsThemeId(normalized) || IsCustomThemeId(normalized) ? normalized : std::string(kDarkThemeId);
+		if (normalized == kLegacyMonoThemeId)
+		{
+			return kFocusThemeId;
+		}
+		return IsThemeId(normalized) || IsCustomThemeId(normalized) ? normalized : std::string(kFocusThemeId);
 	}
 
 	inline void ClampWindowSettings(AppSettings& settings)

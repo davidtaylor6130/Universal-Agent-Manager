@@ -106,13 +106,56 @@ describe('SessionItem status icons', () => {
     const { host, root } = renderSessionItem()
 
     expect(formatSidebarWorktreePath('C:\\Users\\david\\project\\chat-abc123')).toBe('.../project/chat-abc123')
-    expect(host.querySelector('img.uam-provider-logo--codex')?.parentElement?.style.width).toBe('14px')
+    expect(host.querySelector('img.uam-provider-logo--codex')?.parentElement?.style.width).toBe('16px')
+    expect(host.querySelector('[role="img"][aria-label="Provider: Codex"]')).toBeTruthy()
     expect(host.textContent).toContain('.../.uam-worktrees/chat-abc123')
     expect(host.querySelector('[title="/Users/david/project/.uam-worktrees/chat-abc123"]')).toBeTruthy()
 
     act(() => useAppStore.setState({ showProviderIconsInSidebar: false, showWorktreePathInSidebar: false }))
     expect(host.querySelector('img.uam-provider-logo--codex')).toBeNull()
     expect(host.textContent).not.toContain('.uam-worktrees')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not reserve pin space and keeps row actions keyboard discoverable', () => {
+    const { host, root } = renderSessionItem()
+
+    const row = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')
+    const actions = host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')
+    const pin = actions?.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
+    const more = actions?.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')
+
+    expect(row?.className).toContain('gap-1.5')
+    expect(row?.className).toContain('px-2.5')
+    expect(row?.className).toContain('py-1')
+    expect(row?.className).toContain('min-h-[26px]')
+    expect(Array.from(row?.querySelectorAll('span') ?? []).find((span) => span.textContent === 'Chat 1')?.className).toContain('text-[13px]')
+    expect(actions?.className).toContain('absolute')
+    expect(actions?.className).toContain('opacity-0')
+    expect(actions?.className).toContain('group-hover:opacity-100')
+    expect(actions?.className).toContain('group-focus-within:opacity-100')
+    expect(pin).toBeTruthy()
+    expect(more).toBeTruthy()
+    expect(pin?.tabIndex).toBe(0)
+    expect(more?.tabIndex).toBe(0)
+    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps pinned state visible while its unpin action stays with row actions', () => {
+    act(() => useAppStore.setState({ sessions: [{ ...makeSession(), isPinned: true }] }))
+    const { host, root } = renderSessionItem()
+
+    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeTruthy()
+    const actions = host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')
+    expect(actions?.querySelector('button[aria-label="Unpin chat"]')).toBeTruthy()
+    expect(actions?.className).toContain('opacity-0')
+    expect(actions?.className).toContain('group-hover:opacity-100')
+    expect(actions?.className).toContain('group-focus-within:opacity-100')
 
     act(() => root.unmount())
     host.remove()
@@ -193,9 +236,9 @@ describe('SessionItem status icons', () => {
     useAppStore.setState({ activeSessionId: 'chat-1' })
     const { host, root } = renderSessionItem()
 
-    expect(host.querySelector('[aria-label^="Chat shown in pane"]')).toBeNull()
+    expect(host.querySelector('[role="img"][aria-label="Shown in pane 1"]')).toBeTruthy()
     const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
-    expect(sessionRow.style.borderLeft).toContain('rgb(249, 115, 22)')
+    expect((sessionRow.querySelector('[data-testid="pane-indicator"]') as HTMLElement).style.background).toContain('rgb(249, 115, 22)')
     act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
     const paneTwo = document.body.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
     expect(paneTwo).toBeTruthy()
@@ -205,7 +248,8 @@ describe('SessionItem status icons', () => {
     expect(readChatGridLayout().activePane).toBe(1)
     expect(readChatGridLayout().sessionIds).toEqual(['chat-2', 'chat-1'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
-    expect(sessionRow.style.borderLeft).toContain('rgb(236, 72, 153)')
+    expect(host.querySelector('[role="img"][aria-label="Shown in pane 2"]')).toBeTruthy()
+    expect((sessionRow.querySelector('[data-testid="pane-indicator"]') as HTMLElement).style.background).toContain('rgb(236, 72, 153)')
 
     act(() => root.unmount())
     host.remove()
@@ -219,6 +263,7 @@ describe('SessionItem status icons', () => {
     const menu = document.body.querySelector('[data-viewport-menu]') as HTMLElement
     expect(menu.textContent).not.toContain('Show in pane')
     expect(menu.querySelector('button[aria-label^="Show Chat 1 in pane"]')).toBeNull()
+    expect(host.querySelector('[aria-label^="Shown in pane"]')).toBeNull()
     expect(menu.textContent).toContain('Rename')
 
     act(() => root.unmount())

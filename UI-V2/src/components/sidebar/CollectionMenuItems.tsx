@@ -8,14 +8,22 @@ export async function moveResourceToCollection(collectionId: string | null, type
   const { resourceCollections, addResourceReference, removeResourceReference } = useAppStore.getState()
   const memberships = resourceCollections.flatMap((collection) => collection.references
     .filter((reference) => reference.type === type && reference.target === target)
-    .map((reference) => ({ collectionId: collection.id, referenceId: reference.id })))
+    .map((reference) => ({ collectionId: collection.id, referenceId: reference.id, label: reference.label })))
   const alreadyInTarget = memberships.some((membership) => membership.collectionId === collectionId)
+  const removed = []
 
-  if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) return false
-  const results = await Promise.all(memberships
-    .filter((membership) => membership.collectionId !== collectionId)
-    .map((membership) => removeResourceReference(membership.collectionId, membership.referenceId)))
-  return results.every(Boolean)
+  for (const membership of memberships.filter((item) => item.collectionId !== collectionId)) {
+    if (!await removeResourceReference(membership.collectionId, membership.referenceId)) {
+      await Promise.all(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
+      return false
+    }
+    removed.push(membership)
+  }
+  if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) {
+    await Promise.all(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
+    return false
+  }
+  return true
 }
 
 export const moveFolderToCollection = (collectionId: string | null, target: string, label: string) =>

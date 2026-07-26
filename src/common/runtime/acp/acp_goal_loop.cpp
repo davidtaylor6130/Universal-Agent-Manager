@@ -7,6 +7,47 @@
 namespace uam::acp_detail
 {
 
+bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out)
+{
+	ChatSession* chat = GoalService::FindChatForGoal(app, goal_id);
+	Goal* goal = GoalService::FindGoalById(app, chat_id, goal_id);
+	AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+	if (chat == nullptr || chat->id != chat_id || goal == nullptr)
+	{
+		if (error_out != nullptr) *error_out = "Goal not found.";
+		return false;
+	}
+	if (goal->status == GoalStatus::Complete)
+	{
+		if (error_out != nullptr) *error_out = "Completed goals cannot be resumed.";
+		return false;
+	}
+	if (session == nullptr || !CanQueueGoalInternalPrompt(*session))
+	{
+		if (error_out != nullptr) *error_out = "The provider is not ready to resume this goal.";
+		return false;
+	}
+
+	std::string prompt = GoalService::IsProviderManaged(*goal)
+	                         ? uam::strings::Trim(goal->provider_command + " " + goal->objective)
+	                         : uam::strings::Trim(goal->last_next_prompt);
+	if (prompt.empty())
+	{
+		prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
+	}
+	if (!QueueGoalInternalPrompt(*session, *chat, prompt, false))
+	{
+		if (error_out != nullptr) *error_out = "Failed to queue the goal continuation.";
+		return false;
+	}
+
+	ClearGoalReviewState(*session);
+	session->goal_auto_resume_attempts = 0;
+	session->crash_restart_attempts = 0;
+	session->goal_resume_suppressed = false;
+	return GoalService::SetActiveGoal(app, chat_id, goal_id);
+}
+
 bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
 {
 	if (!session.goal_review_turn)
@@ -18,13 +59,38 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	const std::string review_user_prompt = session.goal_review_user_prompt;
 	const std::string review_assistant_text = session.goal_review_assistant_text;
 	const std::string review_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
+	const int review_repair_attempts = session.goal_review_repair_attempts;
 	ClearGoalReviewState(session);
 
 	const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
 	if (!parsed.has_value())
 	{
-		AppendGoalLoopDiagnostic(session, "review_json_invalid_default_complete", goal_id, review_text);
-		(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Complete);
+		Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
+		if (review_repair_attempts == 0 && active_goal != nullptr && active_goal->id == goal_id)
+		{
+			session.goal_review_scheduled = true;
+			session.goal_review_goal_id = goal_id;
+			session.goal_review_user_prompt = review_user_prompt;
+			session.goal_review_assistant_text = review_assistant_text;
+			session.goal_review_repair_attempts = 1;
+			std::string repair_prompt = "Your previous goal review could not be parsed. This is the only repair attempt. Output exactly one valid JSON object and nothing else.\n\n";
+			repair_prompt += GoalService::BuildReviewPrompt(*active_goal, review_user_prompt, review_assistant_text,
+			                                               active_goal->same_assistant_text_count, chat.small_model_mode);
+			AppendGoalLoopDiagnostic(session, "review_json_invalid_retry", goal_id, review_text);
+			if (QueueGoalInternalPrompt(session, chat, repair_prompt, true))
+			{
+				return true;
+			}
+			ClearGoalReviewState(session);
+		}
+
+		if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+		{
+			goal->last_diagnostic = "goal_blocked_invalid_review";
+			GoalService::RecordBlocker(app, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.");
+			(void)GoalService::UpdateGoalStatus(app, goal_id, GoalStatus::Blocked);
+		}
+		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id, review_text);
 		SaveChatQuietly(app, chat);
 		if (browser)
 		{
@@ -62,7 +128,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		SaveChatQuietly(app, chat);
 		if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && active_goal->id == goal_id && !GoalBlockerStopsImmediately(decision.blocker_kind) && session.queued_user_prompts.empty())
 		{
-			(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+			(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget, chat.small_model_mode, active_goal->current_step), false);
 		}
 		if (browser)
 		{
@@ -118,7 +184,10 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	SaveChatQuietly(app, chat);
 	if (session.queued_user_prompts.empty())
 	{
-		(void)QueueGoalInternalPrompt(session, chat, follow_up, false);
+		const std::string worker_prompt = chat.small_model_mode
+		                                  ? GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget, true, follow_up)
+		                                  : follow_up;
+		(void)QueueGoalInternalPrompt(session, chat, worker_prompt, false);
 	}
 	if (browser)
 	{
@@ -139,13 +208,16 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "skip_schedule_after_review_turn", session.goal_review_goal_id);
 		return;
 	}
-	if (session.turn_user_message_index < 0 || session.turn_assistant_message_index < 0)
+	if (session.turn_assistant_message_index < 0 ||
+	    (session.turn_user_message_index < 0 && session.goal_turn_kind != kGoalTurnKindWorkerContinuation))
 	{
 		AppendGoalLoopDiagnostic(session, "skip_schedule_missing_turn_indexes", session.goal_review_goal_id);
 		return;
 	}
 
-	const std::string recent_user_prompt = MessageTextForGoalReview(chat, session.turn_user_message_index);
+	const std::string recent_user_prompt = session.turn_user_message_index >= 0
+	                                       ? MessageTextForGoalReview(chat, session.turn_user_message_index)
+	                                       : session.goal_review_user_prompt;
 	const std::string recent_assistant_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
 	if (uam::strings::Trim(recent_user_prompt).empty() || uam::strings::Trim(recent_assistant_text).empty())
 	{
@@ -204,7 +276,8 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	session.goal_review_goal_id = active_goal->id;
 	session.goal_review_user_prompt = recent_user_prompt;
 	session.goal_review_assistant_text = recent_assistant_text;
-	const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text, active_goal->same_assistant_text_count);
+	session.goal_review_repair_attempts = 0;
+	const std::string review_prompt = GoalService::BuildReviewPrompt(*active_goal, session.goal_review_user_prompt, session.goal_review_assistant_text, active_goal->same_assistant_text_count, chat.small_model_mode);
 	AppendGoalLoopDiagnostic(session, "schedule_review", active_goal->id, recent_assistant_text);
 	if (!QueueGoalInternalPrompt(session, chat, review_prompt, true))
 	{
@@ -262,7 +335,7 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	session.goal_turn_kind.clear();
 	ClearGoalReviewState(session);
 	AppendGoalLoopDiagnostic(session, "auto_resume_stalled_goal_loop", active_goal->id);
-	(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget), false);
+	(void)QueueGoalInternalPrompt(session, chat, GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget, chat.small_model_mode, active_goal->current_step), false);
 	if (browser)
 	{
 		uam::PushStateUpdateIfChanged(browser, app);
@@ -270,14 +343,33 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	return true;
 }
 
-void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser)
+void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser, bool continue_goal_loop)
 {
 	const std::string completed_goal_turn_kind = session.goal_turn_kind;
 	const bool completed_review_turn = completed_goal_turn_kind == kGoalTurnKindReview || session.goal_review_turn;
 	const std::string goal_id = session.goal_review_goal_id;
+	const int assistant_index = session.current_assistant_message_index >= 0
+	                                ? session.current_assistant_message_index
+	                                : session.turn_assistant_message_index;
+	if (session.turn_started_time_s > 0.0 && assistant_index >= 0 && assistant_index < static_cast<int>(chat.messages.size()))
+	{
+		const double elapsed_ms = (GetAppTimeSeconds() - session.turn_started_time_s) * 1000.0;
+		chat.messages[assistant_index].processing_time_ms = static_cast<int>(std::max(0.0, std::min(elapsed_ms, 2147483647.0)));
+	}
+	session.turn_started_time_s = 0.0;
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
 	session.goal_auto_resume_attempts = 0;
+	if (!continue_goal_loop)
+	{
+		ClearGoalReviewState(session);
+		session.goal_turn_kind.clear();
+		if (!session.queued_user_prompts.empty())
+		{
+			(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+		}
+		return;
+	}
 	if (Goal* active_goal = GoalService::FindActiveGoal(app, chat.id); active_goal != nullptr && GoalService::IsProviderManaged(*active_goal))
 	{
 		const std::string provider_goal_id = active_goal->id;
@@ -313,7 +405,7 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 			}
 			ClearGoalReviewState(session);
 		}
-		if (session.goal_turn_kind == completed_goal_turn_kind)
+		if (!session.processing && session.goal_turn_kind == completed_goal_turn_kind)
 		{
 			session.goal_turn_kind.clear();
 		}
@@ -326,7 +418,7 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 
 	if (!session.queued_user_prompts.empty())
 	{
-		if (session.goal_turn_kind == completed_goal_turn_kind)
+		if (!session.processing && session.goal_turn_kind == completed_goal_turn_kind)
 		{
 			session.goal_turn_kind.clear();
 		}
@@ -335,7 +427,7 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	}
 
 	ScheduleGoalReviewAfterSuccessfulTurn(app, session, chat, browser);
-	if (session.goal_turn_kind == completed_goal_turn_kind)
+	if (!session.processing && session.goal_turn_kind == completed_goal_turn_kind)
 	{
 		session.goal_turn_kind.clear();
 	}

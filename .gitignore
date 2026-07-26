@@ -46,6 +46,7 @@ compile_commands.json
 
 # Sample chats belong in the data-root, not the repo
 /chats/
+/chat-summaries/
 
 # OCR data and stray preview images
 *.traineddata

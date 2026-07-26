@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -69,6 +70,9 @@ namespace uam
 		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
 		CliTerminalLifecycleState lifecycle_state = CliTerminalLifecycleState::Stopped;
 		std::string recent_output_bytes;
+		std::string current_turn_output_bytes;
+		bool prompt_settle_required = false;
+		double prompt_settle_candidate_time_s = 0.0;
 		std::string last_native_history_snapshot_digest;
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;
@@ -226,12 +230,15 @@ namespace uam
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
 		int startup_model_request_id = 0;
+		int mode_change_request_id = 0;
+		int model_change_request_id = 0;
 		int prompt_request_id = 0;
 		int cancel_request_id = 0;
 		int current_assistant_message_index = -1;
 		int turn_user_message_index = -1;
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
+		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		// Counts automatic relaunches after the process died before the queued
@@ -255,6 +262,7 @@ namespace uam
 		std::string goal_review_goal_id;
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
+		int goal_review_repair_attempts = 0;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
 		bool gemini_resume_fallback_attempted = false;
@@ -282,9 +290,16 @@ namespace uam
 		std::string codex_last_reasoning_section;
 		std::vector<AcpModeState> available_modes;
 		std::string current_mode_id;
+		std::string mode_change_previous_id;
+		std::optional<std::string> mode_change_previous_chat_id;
+		std::optional<std::string> mode_change_previous_command_safety_tier;
+		std::string mode_change_requested_id;
 		std::vector<AcpModelState> available_models;
 		std::string current_model_id;
 		std::string pending_startup_model_id;
+		std::string model_change_previous_id;
+		std::optional<std::string> model_change_previous_chat_id;
+		std::string model_change_requested_id;
 		std::vector<AcpTurnEventState> turn_events;
 		AcpPendingPermissionState pending_permission;
 		AcpPendingUserInputState pending_user_input;
@@ -375,6 +390,9 @@ namespace uam
 		bool supported = false;
 		std::string installed_version;
 		std::string selected_version;
+		std::string install_method = "npm";
+		std::string install_command;
+		std::string last_install_status = "none";
 		std::string raw_output;
 		std::string message;
 		std::string install_output;
@@ -434,6 +452,7 @@ namespace uam
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+		std::unordered_set<std::string> worktree_operation_chat_ids;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 	};

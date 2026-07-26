@@ -1,5 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
+#include "common/config/approval_modes.h"
+
 namespace uam::acp_detail
 {
 
@@ -36,6 +38,43 @@ void ClearAcpStartupModelRequest(AcpSessionState& session)
 {
 	session.startup_model_request_id = 0;
 	session.pending_startup_model_id.clear();
+}
+
+void ClearAcpModeChangeRequest(AcpSessionState& session)
+{
+	session.mode_change_request_id = 0;
+	session.mode_change_previous_id.clear();
+	session.mode_change_previous_chat_id.reset();
+	session.mode_change_previous_command_safety_tier.reset();
+	session.mode_change_requested_id.clear();
+}
+
+bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat)
+{
+	const bool persisted_request_is_current =
+	    uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier) == session.mode_change_requested_id;
+	bool chat_changed = false;
+	if (persisted_request_is_current && session.mode_change_previous_chat_id.has_value())
+	{
+		chat.approval_mode = *session.mode_change_previous_chat_id;
+		chat_changed = true;
+	}
+	if (persisted_request_is_current && session.mode_change_previous_command_safety_tier.has_value())
+	{
+		chat.command_safety_tier = *session.mode_change_previous_command_safety_tier;
+		chat_changed = true;
+	}
+	session.current_mode_id = session.mode_change_previous_id;
+	ClearAcpModeChangeRequest(session);
+	return chat_changed;
+}
+
+void ClearAcpModelChangeRequest(AcpSessionState& session)
+{
+	session.model_change_request_id = 0;
+	session.model_change_previous_id.clear();
+	session.model_change_previous_chat_id.reset();
+	session.model_change_requested_id.clear();
 }
 
 void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state)

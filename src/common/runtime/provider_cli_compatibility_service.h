@@ -32,7 +32,9 @@ class ProviderCliCompatibilityService
 
 std::string BuildCliProviderVersionProbeCommandForTests(std::string_view provider_id);
 std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id, std::string_view version);
+std::string BuildCliProviderInstallCommandForMethodForTests(std::string_view provider_id, std::string_view version, std::string_view install_method);
 std::string ExtractCliProviderSemverVersionForTests(std::string_view output);
+std::string ExtractCliProviderInstallMethodForTests(std::string_view output);
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);
 
 /// <summary>Returns the npm package name for a CLI provider id, or empty if unknown.</summary>

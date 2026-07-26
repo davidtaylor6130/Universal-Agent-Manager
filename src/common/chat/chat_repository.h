@@ -3,6 +3,7 @@
 #include "common/models/app_models.h"
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -31,6 +32,8 @@ class ChatRepository
 	static std::vector<ChatSession> LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
 	/// <summary>Loads locally persisted chat sessions without hydrating message bodies.</summary>
 	static std::vector<ChatSession> LoadLocalChatSummaries(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
+	/// <summary>Loads one locally persisted chat without scanning sibling files.</summary>
+	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>

@@ -82,6 +82,9 @@ void UamCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 	if (m_router != nullptr)
 	{
 		m_router->OnBeforeClose(browser);
+		m_router->RemoveHandler(m_queryHandler.get());
+		m_queryHandler.reset();
+		m_router = nullptr;
 	}
 	m_browser = nullptr;
 	CefQuitMessageLoop();

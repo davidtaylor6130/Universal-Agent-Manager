@@ -8,11 +8,12 @@ import { applyDocumentTheme } from './utils/themeStorage'
 
 export default function App() {
   const theme = useAppStore((s) => s.theme)
+  const customThemes = useAppStore((s) => s.customThemes)
 
   // Sync data-theme attribute when theme changes.
   useEffect(() => {
-    applyDocumentTheme(theme)
-  }, [theme])
+    applyDocumentTheme(theme, customThemes)
+  }, [customThemes, theme])
 
   useEffect(() => installCopySelectionFallback(), [])
 

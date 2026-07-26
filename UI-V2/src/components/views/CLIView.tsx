@@ -84,9 +84,21 @@ export function CLIView({ session }: CLIViewProps) {
   const [steerDraft, setSteerDraft] = useState('')
   const [steerSubmitting, setSteerSubmitting] = useState(false)
   const pendingSteerWasSeenRef = useRef(false)
+  const steerInFlightRef = useRef(false)
+  const currentSessionIdRef = useRef(session.id)
   const currentProviderId = session.providerId?.trim() || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
+  const effectiveTerminalId = cliBinding?.terminalId || cliTranscript?.terminalId || ''
+  const steerPending = Boolean(cliBinding?.pendingSteer)
+  const steerWaiting = steerSubmitting || (steerPending && !cliBinding?.lastError)
+  const steerActionLabel = steerWaiting ? 'Steering…' : steerPending ? 'Retry steer' : 'Steer now'
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
+
+  useEffect(() => {
+    currentSessionIdRef.current = session.id
+    steerInFlightRef.current = false
+    setSteerSubmitting(false)
+  }, [session.id])
 
   useEffect(() => {
     if (cliBinding?.pendingSteer) pendingSteerWasSeenRef.current = true
@@ -98,26 +110,34 @@ export function CLIView({ session }: CLIViewProps) {
 
   const steerTerminal = async () => {
     const text = steerDraft.trim()
-    if (!text || steerSubmitting || !isCefContext()) return
+    if (!text || steerInFlightRef.current || !isCefContext()) return
+    const sourceSessionId = session.id
+    steerInFlightRef.current = true
     setSteerSubmitting(true)
-    const response = await sendToCEF<StartCliTerminalResponse>({
-      action: 'steerCliTerminal',
-      payload: {
-        chatId: cliBinding?.boundChatId ?? session.id,
-        terminalId: cliBinding?.terminalId ?? '',
-        text,
-        retry: Boolean(cliBinding?.pendingSteer),
-      },
-    })
-    if (!response.ok) {
-      setSteerSubmitting(false)
-      return
-    }
-    const pendingSteer = Boolean(response.data?.pendingSteer)
-    setCliBinding(session.id, { pendingSteer, lastError: response.data?.lastError ?? '' })
-    setSteerSubmitting(false)
-    if (!pendingSteer) {
-      setSteerDraft('')
+    try {
+      const response = await sendToCEF<StartCliTerminalResponse>({
+        action: 'steerCliTerminal',
+        payload: {
+          chatId: cliBinding?.boundChatId ?? sourceSessionId,
+          terminalId: cliBinding?.terminalId ?? '',
+          text,
+          retry: Boolean(cliBinding?.pendingSteer),
+        },
+      })
+      if (!response.ok) {
+        setCliBinding(sourceSessionId, { lastError: response.error ?? 'Failed to steer terminal.' })
+        return
+      }
+      const pendingSteer = Boolean(response.data?.pendingSteer)
+      setCliBinding(sourceSessionId, { pendingSteer, lastError: response.data?.lastError ?? '' })
+      if (!pendingSteer && currentSessionIdRef.current === sourceSessionId) {
+        setSteerDraft('')
+      }
+    } finally {
+      if (currentSessionIdRef.current === sourceSessionId) {
+        steerInFlightRef.current = false
+        setSteerSubmitting(false)
+      }
     }
   }
 
@@ -176,7 +196,7 @@ export function CLIView({ session }: CLIViewProps) {
       if (isCefContext()) {
         let cancelled = false
         let resizeAnimationFrame: number | null = null
-        let bestKnownTerminalId = cliBinding?.terminalId ?? cliTranscript?.terminalId ?? ''
+        let bestKnownTerminalId = effectiveTerminalId
         let bestKnownBoundChatId = session.id
 
         const detachTerminal = (terminalId = bestKnownTerminalId, chatId = bestKnownBoundChatId) => {
@@ -191,17 +211,18 @@ export function CLIView({ session }: CLIViewProps) {
 
         // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
         const onCliOutput = (e: Event) => {
-          const { sessionId, terminalId, data } = (e as CustomEvent<{
+          const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
             sessionId?: string
-          sourceChatId?: string
-          terminalId?: string
-          data: string
-        }>).detail
-        const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+            sourceChatId?: string
+            terminalId?: string
+            data: string
+          }>).detail
+          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
           const sessionMatch = sessionId === session.id
+          const sourceChatMatch = sourceChatId === session.id
           const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
 
-          if (!cancelled && (sessionMatch || terminalMatch) && data) {
+          if (!cancelled && (sessionMatch || sourceChatMatch || terminalMatch) && data) {
             term.write(binaryStringToUint8Array(data))
           }
         }
@@ -212,7 +233,7 @@ export function CLIView({ session }: CLIViewProps) {
         action: 'startCliTerminal',
         payload: {
           chatId: session.id,
-          terminalId: cliBinding?.terminalId ?? cliTranscript?.terminalId ?? '',
+          terminalId: effectiveTerminalId,
           rows: term.rows,
           cols: term.cols,
           },
@@ -386,7 +407,7 @@ export function CLIView({ session }: CLIViewProps) {
       resizeObserver.disconnect()
       term.dispose()
     }
-  }, [cliBinding?.terminalId, cliTranscript?.terminalId, providerSupported, session.id]) // Re-init per session/terminal identity and provider support
+  }, [effectiveTerminalId, providerSupported, session.id]) // Re-init per session/terminal identity and provider support
 
   // Refit on theme change
   useEffect(() => {
@@ -429,12 +450,21 @@ export function CLIView({ session }: CLIViewProps) {
       {/* Terminal area */}
       <div
         className="flex-1 overflow-hidden"
-        style={{ background: 'var(--term-bg)', padding: '8px 4px 4px' }}
+        style={{ background: 'var(--term-bg)', padding: '12px 18px 18px' }}
       >
         <div ref={terminalRef} className="h-full" />
       </div>
       {(cliBinding?.processing || cliBinding?.pendingSteer) && (
-        <div className="flex flex-shrink-0 items-center gap-2 px-3 py-2" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <div
+          className="flex flex-shrink-0 items-center gap-2 px-3 py-2"
+          style={{
+            border: '1px solid var(--border-bright)',
+            borderRadius: 10,
+            margin: '0 24px 20px',
+            background: 'var(--surface)',
+            width: 'calc(100% - 48px)',
+          }}
+        >
           <input
             aria-label="Terminal steering prompt"
             value={steerDraft}
@@ -447,15 +477,15 @@ export function CLIView({ session }: CLIViewProps) {
           <button
             type="button"
             title="Interrupt the terminal turn and send this prompt next"
-            aria-label={steerSubmitting || (cliBinding?.pendingSteer && !cliBinding.lastError) ? 'Steering terminal prompt' : 'Steer terminal now'}
-            aria-busy={steerSubmitting || (cliBinding?.pendingSteer && !cliBinding.lastError)}
-            disabled={!steerDraft.trim() || steerSubmitting || Boolean(cliBinding?.pendingSteer && !cliBinding.lastError)}
+            aria-label={steerWaiting ? 'Steering terminal prompt' : steerPending ? 'Retry terminal steer' : 'Steer terminal now'}
+            aria-busy={steerWaiting}
+            disabled={!steerDraft.trim() || steerWaiting}
             onClick={() => void steerTerminal()}
             className="uam-composer-action h-[30px] px-3 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
             style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--yellow) 48%, var(--border-bright))', background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))', color: 'var(--yellow)' }}
           >
             <Zap size={13} className={steerSubmitting ? 'animate-pulse' : undefined} aria-hidden />
-            {cliBinding?.pendingSteer ? 'Retry steer' : 'Steer now'}
+            {steerActionLabel}
           </button>
         </div>
       )}

@@ -48,10 +48,41 @@ describe('useUpdateMonitor', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1) })
     expect(fetch).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(fetch).toHaveBeenCalledTimes(6)
+    expect(fetch).toHaveBeenCalledTimes(11)
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS) })
-    expect(fetch).toHaveBeenCalledTimes(12)
+    expect(fetch).toHaveBeenCalledTimes(22)
 
+    act(() => root.unmount())
+  })
+
+  it('starts only one update check before the checking state rerenders', async () => {
+    let monitor: ReturnType<typeof useUpdateMonitor> | null = null
+    function MonitorProbe() {
+      monitor = useUpdateMonitor()
+      return null
+    }
+    const finishFetches: Array<(response: { ok: boolean; json: () => Promise<{ version: string }> }) => void> = []
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => finishFetches.push(resolve))))
+    useAppStore.setState({
+      providers: [],
+      cliVersionManager: { providers: [] },
+      updateChecksEnabled: false,
+      dismissedUpdateVersions: {},
+    })
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    act(() => root.render(<MonitorProbe />))
+
+    const checks: Array<Promise<void>> = []
+    act(() => {
+      if (monitor) {
+        checks.push(monitor.checkNow(), monitor.checkNow())
+      }
+    })
+
+    expect(fetch).toHaveBeenCalledTimes(11)
+    finishFetches.forEach((finish) => finish({ ok: true, json: async () => ({ version: '1.0.0' }) }))
+    await act(async () => { await Promise.all(checks) })
     act(() => root.unmount())
   })
 })

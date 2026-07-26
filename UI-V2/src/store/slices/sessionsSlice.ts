@@ -55,8 +55,10 @@ import {
   clearPendingRequest,
   cliLifecycleIsProcessing,
   isLatestPendingRequest,
+  latestOptimisticRollback,
   normalizeCliLifecycleState,
   reconcileCppMessages,
+  rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
 import { pendingCodexOptionsByChatId, pendingRequestIdsByKey } from '../push/pushBuffers'
@@ -141,6 +143,8 @@ function clearPendingProviderChatDefaults(requestId?: string) {
 }
 
 export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
+  let intentionalSelectionRevision = 0
+
   const requestChatMessagesFromCef = (chatId: string) => {
     if (!isCefContext() || !chatId) return
     const current = get()
@@ -208,7 +212,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.4.0',
+    appVersion: 'V4.5.0',
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
@@ -232,6 +236,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     } as VoiceInputCapabilities,
 
     setActiveSession: (id: string) => {
+      intentionalSelectionRevision += 1
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
         const requestKey = 'selectSession'
@@ -282,14 +287,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
-    addSession: (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string) => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
         : null
       if (!selectedFolderId) {
         console.error('[UAM] createSession requires a workspace folder')
-        return
+        return false
       }
       const normalizedProviderId = normalizeCliProviderIdAlias(providerId)
       const normalizedDefaultProviderId = normalizeCliProviderIdAlias(current.defaultNewChatProviderId)
@@ -303,18 +308,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
 
       if (isCefContext()) {
-        sendToCEF({
+        const resp = await sendToCEF({
           action: 'createSession',
           payload: { title: name, folderId: selectedFolderId, providerId: requestedProviderId, defaults },
-        }).then((resp) => {
-          if (!resp.ok) {
-            console.error('[CEF] createSession failed:', resp.error)
-            return
-          }
-
-          set({ isNewChatModalOpen: false, newChatFolderId: null })
         })
-        return
+        if (!resp.ok) {
+          console.error('[CEF] createSession failed:', resp.error)
+          return false
+        }
+
+        set({ isNewChatModalOpen: false, newChatFolderId: null })
+        return true
       }
 
       // Dev/mock path
@@ -335,6 +339,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         autoApproveCommands: defaults.autoApproveCommands,
         memoryLevel: defaults.memoryLevel,
         memoryEnabled: defaults.memoryEnabled,
+        smallModelMode: defaults.smallModelMode,
         createdAt: now,
         updatedAt: now,
         lastOpenedAt: now,
@@ -346,6 +351,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         isNewChatModalOpen: false,
         newChatFolderId: null,
       }))
+      return true
     },
 
     branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
@@ -700,10 +706,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         const requestKey = `renameSession:${id}`
         const requestId = createRequestId('renameSession')
+        const optimisticUpdatedAt = new Date()
         rememberPendingRequest(requestKey, requestId)
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, name, updatedAt: new Date() } : s
+            s.id === id ? { ...s, name, updatedAt: optimisticUpdatedAt } : s
           ),
         }))
         sendToCEF({ action: 'renameSession', payload: { chatId: id, title: name }, requestId }).then(
@@ -718,7 +725,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             }
 
             set((state) => ({
-              sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+              sessions: state.sessions.map((s) => (s.id === id ? {
+                ...s,
+                name: previousSession.name,
+                updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+              } : s)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
           }
@@ -769,7 +780,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) =>
+              s.id === id ? { ...s, isPinned: previousSession.isPinned } : s
+            ),
           }))
           pendingRequestIdsByKey.delete(requestKey)
         }
@@ -803,6 +816,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return false
       }
       const defaults = sanitizeProviderChatDefaults(current.providerChatDefaults[requestedProviderId] ?? null)
+      const optimisticUpdatedAt = new Date()
 
       const applyProvider = () => {
         set((state) => ({
@@ -811,14 +825,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               ...s,
               providerId: requestedProviderId,
               modelId: defaults.modelId,
-              reasoningEffort: providerCapabilities(requestedProviderId).hasReasoningEffort ? defaults.reasoningEffort : '',
+              reasoningEffort: defaults.reasoningEffort,
               serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
               approvalMode: defaults.approvalMode === 'acceptEdits' ? 'default' : defaults.approvalMode,
-              commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : 'medium',
+              commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : s.commandSafetyTier,
               autoApproveCommands: defaults.autoApproveCommands,
               memoryLevel: defaults.memoryLevel,
               memoryEnabled: defaults.memoryEnabled,
-              updatedAt: new Date(),
+              smallModelMode: defaults.smallModelMode,
+              updatedAt: optimisticUpdatedAt,
             } : s
           ),
         }))
@@ -842,7 +857,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => s.id === id ? {
+              ...s,
+              providerId: previousSession.providerId,
+              modelId: previousSession.modelId,
+              reasoningEffort: previousSession.reasoningEffort,
+              serviceTier: previousSession.serviceTier,
+              approvalMode: previousSession.approvalMode,
+              commandSafetyTier: previousSession.commandSafetyTier,
+              autoApproveCommands: previousSession.autoApproveCommands,
+              memoryLevel: previousSession.memoryLevel,
+              memoryEnabled: previousSession.memoryEnabled,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+            } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
         }
@@ -864,14 +891,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!previousSession) {
         return false
       }
-	  if ((previousSession.modelId ?? '') === requestedModelId) {
+      if ((previousSession.modelId ?? '') === requestedModelId) {
         return true
       }
+      const optimisticUpdatedAt = new Date()
 
       const applyModel = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-			s.id === id ? { ...s, modelId: requestedModelId, updatedAt: new Date() } : s
+			s.id === id ? { ...s, modelId: requestedModelId, updatedAt: optimisticUpdatedAt } : s
           ),
         }))
       }
@@ -894,7 +922,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => s.id === id ? {
+              ...s,
+              modelId: previousSession.modelId,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+            } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
         }
@@ -957,7 +989,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              reasoningEffort: previousSession.reasoningEffort,
+              serviceTier: previousSession.serviceTier,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
           clearPendingCodexOptions(id, response.requestId)
@@ -1022,11 +1058,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
-            acpBindingBySessionId: previousBinding
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              approvalMode: previousSession.approvalMode,
+            } : s)),
+            acpBindingBySessionId: previousBinding && state.acpBindingBySessionId[id]
               ? {
                   ...state.acpBindingBySessionId,
-                  [id]: previousBinding,
+                  [id]: {
+                    ...state.acpBindingBySessionId[id],
+                    currentModeId: previousBinding.currentModeId,
+                  },
                 }
               : state.acpBindingBySessionId,
           }))
@@ -1075,7 +1117,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              autoApproveCommands: previousSession.autoApproveCommands,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
         }
@@ -1112,7 +1157,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		return true
 	  }
 	  if (isLatestPendingRequest(requestKey, response.requestId)) {
-		set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? previousSession : session) }))
+		set((state) => ({
+		  sessions: state.sessions.map((session) => session.id === id ? {
+		    ...session,
+		    commandSafetyTier: previousSession.commandSafetyTier,
+		  } : session),
+		}))
 		pendingRequestIdsByKey.delete(requestKey)
 	  }
       return false
@@ -1120,6 +1170,47 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
       return get().setSessionMemoryLevel(id, enabled ? 'strict' : 'off')
+    },
+
+    setSessionSmallModelMode: async (id: string, enabled: boolean): Promise<boolean> => {
+      const previousSession = get().sessions.find((s) => s.id === id)
+      if (!previousSession || (previousSession.smallModelMode ?? false) === enabled) {
+        return Boolean(previousSession)
+      }
+
+      const applyMode = () => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: new Date() } : s
+          ),
+        }))
+      }
+
+      if (isCefContext()) {
+        const requestKey = `setSessionSmallModelMode:${id}`
+        const requestId = createRequestId('setSessionSmallModelMode')
+        rememberPendingRequest(requestKey, requestId)
+        applyMode()
+        const response = await sendToCEF({
+          action: 'setChatSmallModelMode',
+          payload: { chatId: id, enabled },
+          requestId,
+        })
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+        return false
+      }
+
+      applyMode()
+      return true
     },
 
     setSessionMemoryLevel: async (id: string, level: MemoryLevel): Promise<boolean> => {
@@ -1159,7 +1250,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              memoryLevel: previousSession.memoryLevel,
+              memoryEnabled: previousSession.memoryEnabled,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
         }
@@ -1189,6 +1284,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(settings.goalMaxLoopIterations, previous.goalMaxLoopIterations))),
         memoryWorkerBindings: settings.memoryWorkerBindings ?? previous.memoryWorkerBindings,
       }
+      const ownedFields = Object.keys(settings)
+      if (settings.memoryEnabledDefault !== undefined || settings.memoryLevelDefault !== undefined) {
+        ownedFields.push('memoryEnabledDefault', 'memoryLevelDefault')
+      }
+      const optimisticRevision = rememberOptimisticFields(ownedFields)
       const applySettings = () => set(next)
 
       if (isCefContext()) {
@@ -1207,7 +1307,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           requestId,
         })
         if (!response.ok) {
-          set(previous)
+          set(latestOptimisticRollback(previous, optimisticRevision))
           return false
         }
         return true
@@ -1225,6 +1325,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         voiceInputServerModel: get().voiceInputServerModel,
         voiceInputApiKeyEnv: get().voiceInputApiKeyEnv,
       }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
       set(settings)
       if (!isCefContext()) return true
       const response = await sendToCEF({
@@ -1238,7 +1339,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
       })
       if (response.ok) return true
-      set(previous)
+      set(latestOptimisticRollback(previous, optimisticRevision))
       return false
     },
 
@@ -1253,6 +1354,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         updateLastCheckedAt: settings.updateLastCheckedAt ?? previous.updateLastCheckedAt,
         dismissedUpdateVersions: settings.dismissedUpdateVersions ?? previous.dismissedUpdateVersions,
       }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
       set(next)
       if (!isCefContext()) return true
 
@@ -1265,7 +1367,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
         requestId: createRequestId('setUpdateSettings'),
       })
-      if (!response.ok) set(previous)
+      if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
     },
 
@@ -1278,6 +1380,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
         editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
       }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
       const applySettings = () => set(next)
 
       if (isCefContext()) {
@@ -1292,7 +1395,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           requestId,
         })
         if (!response.ok) {
-          set(previous)
+          set(latestOptimisticRollback(previous, optimisticRevision))
           return false
         }
         return true
@@ -1330,6 +1433,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         defaultNewChatProviderId: requestedDefaultProviderId,
         providerChatDefaults: nextDefaults,
       }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
       const applySettings = () => set(next)
 
       if (isCefContext()) {
@@ -1350,7 +1454,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
         if (!response.ok) {
           clearPendingProviderChatDefaults(response.requestId)
-          set(previous)
+          set(latestOptimisticRollback(previous, optimisticRevision))
           return false
         }
         clearPendingProviderChatDefaults(response.requestId)
@@ -1454,6 +1558,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
           }
         })
+        const optimisticActiveSessionId = get().activeSessionId
+        const optimisticSelectionRevision = intentionalSelectionRevision
 
         sendToCEF({ action: 'deleteSession', payload: { chatId: id }, requestId }).then((resp) => {
           if (resp.ok) {
@@ -1478,18 +1584,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               sessions,
               messages: {
                 ...state.messages,
-                [id]: deletedMessages,
+                ...(!Object.prototype.hasOwnProperty.call(state.messages, id) ? { [id]: deletedMessages } : {}),
               },
-              cliBindingBySessionId: deletedBinding
+              cliBindingBySessionId: deletedBinding && !Object.prototype.hasOwnProperty.call(state.cliBindingBySessionId, id)
                 ? { ...state.cliBindingBySessionId, [id]: deletedBinding }
                 : state.cliBindingBySessionId,
-              acpBindingBySessionId: deletedAcpBinding
+              acpBindingBySessionId: deletedAcpBinding && !Object.prototype.hasOwnProperty.call(state.acpBindingBySessionId, id)
                 ? { ...state.acpBindingBySessionId, [id]: deletedAcpBinding }
                 : state.acpBindingBySessionId,
-              cliTranscriptBySessionId: deletedTranscript
+              cliTranscriptBySessionId: deletedTranscript && !Object.prototype.hasOwnProperty.call(state.cliTranscriptBySessionId, id)
                 ? { ...state.cliTranscriptBySessionId, [id]: deletedTranscript }
                 : state.cliTranscriptBySessionId,
-              activeSessionId: previousActiveSessionId,
+              activeSessionId:
+                state.activeSessionId === optimisticActiveSessionId &&
+                intentionalSelectionRevision === optimisticSelectionRevision
+                  ? previousActiveSessionId
+                  : state.activeSessionId,
             }
           })
           pendingRequestIdsByKey.delete(requestKey)

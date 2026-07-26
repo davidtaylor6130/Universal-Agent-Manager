@@ -23,6 +23,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error);
+		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error, previous_model_id);
 		if (!live_updated)
 		{
 			chat->model_id = previous_model_id;
@@ -412,7 +413,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error, previous_mode_id))
 		{
 			chat->approval_mode = previous_mode_id;
 			chat->updated_at = previous_updated_at;
@@ -504,7 +505,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	    previous_effective_mode != requested_effective_mode && session->current_mode_id != requested_effective_mode)
 	{
 		std::string acp_error;
-		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error))
+		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error, std::nullopt, previous))
 		{
 			chat->command_safety_tier = previous;
 			chat->updated_at = previous_updated_at;
@@ -548,6 +549,43 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 		chat->memory_level = previous_level;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat memory setting."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
+	if (!enabled)
+	{
+		cb->Failure(400, "Small-model mode must be a boolean.");
+		return;
+	}
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
+	{
+		return;
+	}
+	if (chat->small_model_mode == *enabled)
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	const bool previous = chat->small_model_mode;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->small_model_mode = *enabled;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save."))
+	{
+		chat->small_model_mode = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist small-model workflow."));
 		return;
 	}
 

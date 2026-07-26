@@ -95,6 +95,8 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
 	ClearAcpStartupModelRequest(session);
+	ClearAcpModeChangeRequest(session);
+	ClearAcpModelChangeRequest(session);
 	session.prompt_request_id = 0;
 	session.cancel_request_id = 0;
 	session.current_assistant_message_index = -1;
@@ -108,12 +110,14 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.goal_review_goal_id.clear();
 	session.goal_review_user_prompt.clear();
 	session.goal_review_assistant_text.clear();
+	session.goal_review_repair_attempts = 0;
 	session.ignore_session_updates_until_ready = false;
 	session.codex_resume_fallback_attempted = false;
 	session.gemini_resume_fallback_attempted = false;
 	session.stdout_buffer.clear();
 	session.stderr_buffer.clear();
 	session.recent_stderr.clear();
+	session.last_runtime_activity_time_s = 0.0;
 	session.last_error.clear();
 	session.has_last_exit_code = false;
 	session.last_exit_code = 0;
@@ -197,6 +201,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	session.reconnect_attempts = 0;
 	session.reconnect_not_before_time_s = 0.0;
 	session.last_process_id = AcpProcessHandleLabel(session);
+	session.last_runtime_activity_time_s = GetAppTimeSeconds();
 	AppendAcpDiagnostic(session, "process_launch", "started", "", "", false, 0, "", launch_detail);
 	if (!SendInitialize(session, error_out))
 	{
@@ -246,6 +251,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		session.session_id = resolved_resume_id;
 		session.current_mode_id = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
 		return true;
 	}
 
@@ -307,7 +313,7 @@ bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& sessi
 
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
-	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.session_id.empty())
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.model_change_request_id != 0 || session.session_id.empty())
 	{
 		return false;
 	}
@@ -322,10 +328,15 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	const int id = NextAcpRequestId(session, uam::acp_methods::kSessionSetModel);
 	session.startup_model_request_id = id;
 	session.pending_startup_model_id = model_id;
+	session.model_change_request_id = id;
+	session.model_change_previous_id = session.current_model_id;
+	session.model_change_previous_chat_id = session.current_model_id;
+	session.model_change_requested_id = model_id;
 	if (!WriteAcpMessage(session, BuildSetModelRequest(id, session.session_id, model_id)))
 	{
 		session.pending_request_methods.erase(id);
 		ClearAcpStartupModelRequest(session);
+		ClearAcpModelChangeRequest(session);
 		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to set OpenCode ACP model."));
 		return false;
 	}
@@ -336,7 +347,7 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 {
-	if (session.startup_model_request_id != 0)
+	if (session.startup_model_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0)
 	{
 		return false;
 	}
@@ -390,11 +401,7 @@ void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_secon
 {
 	const double now = GetAppTimeSeconds();
 	const double due_at = now + delay_seconds;
-	const auto it = app.pending_chat_save_at_by_chat_id.find(chat.id);
-	if (it == app.pending_chat_save_at_by_chat_id.end() || it->second > due_at)
-	{
-		app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
-	}
+	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
 }
 
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id)
@@ -476,6 +483,10 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	session.queued_prompt = prompt;
 	session.goal_turn_kind = review_turn ? std::string(kGoalTurnKindReview) : std::string(kGoalTurnKindWorkerContinuation);
 	session.goal_review_turn = review_turn;
+	if (!review_turn)
+	{
+		session.goal_review_user_prompt = prompt;
+	}
 	AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 	session.processing = true;
 	session.cancel_requested = false;
@@ -486,7 +497,8 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	session.turn_serial += 1;
 	ResetAcpTurnStreamState(session);
 	ResetAcpPendingInteractionState(session);
-	session.last_runtime_activity_time_s = GetAppTimeSeconds();
+	session.turn_started_time_s = GetAppTimeSeconds();
+	session.last_runtime_activity_time_s = session.turn_started_time_s;
 	session.last_error.clear();
 	session.lifecycle_state = kAcpLifecycleProcessing;
 	// Queued is success; if the session cannot send yet, the poll loop

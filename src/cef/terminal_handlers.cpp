@@ -206,7 +206,14 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 			// and append \r, breaking all interactive CLI communication).
 			const bool wrote = uam::WriteToCliTerminal(*term, data.c_str(), data.size());
 			uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", wrote ? "pty_write_ok" : "pty_write_failed", term, "", static_cast<long long>(data.size()));
-			if (wrote && CliInputLooksLikeTurnSubmit(data))
+			if (!wrote)
+			{
+				m_app.status_line = term->last_error;
+				uam::PushStateUpdateIfChanged(browser, m_app);
+				cb->Failure(500, term->last_error);
+				return;
+			}
+			if (CliInputLooksLikeTurnSubmit(data))
 			{
 				uam::MarkCliTerminalTurnBusy(*term);
 				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_marked_busy_from_submit", term);

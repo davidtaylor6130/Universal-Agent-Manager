@@ -596,6 +596,8 @@ inline bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* 
 	}
 }
 
+inline void SignalTerminalProcessGroup(pid_t child_pid, int signal_number);
+
 inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& command, int timeout_ms, std::stop_token stop_token)
 {
 	ProcessExecutionResult result;
@@ -618,6 +620,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 
 	if (pid == 0)
 	{
+		(void)setpgid(0, 0);
 		dup2(pipe_fds[1], STDOUT_FILENO);
 		dup2(pipe_fds[1], STDERR_FILENO);
 		ClosePipeFds(pipe_fds);
@@ -625,6 +628,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 		_exit(127);
 	}
 
+	(void)setpgid(pid, pid);
 	CloseFdIfOpen(pipe_fds[1]);
 	const int read_fd = pipe_fds[0];
 	const int original_flags = fcntl(read_fd, F_GETFL, 0);
@@ -647,7 +651,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 		{
 			result.canceled = true;
 			result.error = "Command canceled.";
-			kill(pid, SIGTERM);
+			SignalTerminalProcessGroup(pid, SIGTERM);
 			(void)waitpid(pid, &raw_status, 0);
 			finished = true;
 			break;
@@ -661,7 +665,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 			{
 				result.timed_out = true;
 				result.error = "Command timed out.";
-				kill(pid, SIGTERM);
+				SignalTerminalProcessGroup(pid, SIGTERM);
 				(void)waitpid(pid, &raw_status, 0);
 				finished = true;
 				break;
@@ -679,7 +683,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 		if (wait_result < 0)
 		{
 			result.error = "waitpid failed.";
-			kill(pid, SIGTERM);
+			SignalTerminalProcessGroup(pid, SIGTERM);
 			(void)waitpid(pid, &raw_status, 0);
 			finished = true;
 			break;
@@ -876,6 +880,7 @@ inline bool WriteAllToFd(int fd, const char* bytes, std::size_t len, std::string
 		return true;
 	}
 
+	(void)fcntl(fd, F_SETNOSIGPIPE, 1);
 	std::size_t offset = 0;
 	while (offset < len)
 	{

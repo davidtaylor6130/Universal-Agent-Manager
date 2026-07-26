@@ -14,6 +14,7 @@ import {
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
+import { providerShortName } from '../../utils/providerMetadata'
 import { CollectionMenuItems } from './CollectionMenuItems'
 
 function formatSidebarTime(date: Date | null): string {
@@ -61,7 +62,6 @@ export function formatSidebarWorktreePath(path: string): string {
 interface SessionItemProps {
   sessionId: string
   session?: Session
-  forceShowPin?: boolean
 }
 
 type SidebarStatus =
@@ -95,7 +95,7 @@ function sidebarStatusIcon(kind: AcpAttentionKind) {
   }
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, forceShowPin }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -152,6 +152,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
   const paneIndexes = gridLayout.sessionIds
     .slice(0, gridLayout.paneCount)
     .flatMap((id, index) => familySessionIds.includes(id) ? [index] : [])
+  const paneNumbers = paneIndexes.map((index) => index + 1)
+  const paneLabel = paneNumbers.length === 1
+    ? `Shown in pane ${paneNumbers[0]}`
+    : `Shown in panes ${paneNumbers.slice(0, -1).join(', ')} and ${paneNumbers[paneNumbers.length - 1]}`
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -198,10 +202,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
-        className="flex items-center gap-2 px-3 py-1 rounded-md mx-1.5 cursor-pointer transition-all duration-100"
+        data-testid={`session-row-${sessionId}`}
+        className="relative flex min-h-[26px] items-center gap-1.5 px-2.5 py-1 rounded-md mx-1 cursor-pointer transition-all duration-100"
         style={{
           background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
-          borderLeft: paneIndexes.length > 0 ? `3px solid ${chatPaneColors[paneIndexes[0]]}` : '3px solid transparent',
         }}
         onClick={() => !editing && !isActive && setActiveSession(sessionId)}
         onDoubleClick={() => {
@@ -219,33 +223,27 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
-        {!editing && showProviderIcon && sessionSummary.providerId && <ProviderLogo providerId={sessionSummary.providerId} size={14} />}
-        {!editing && (
-          <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
-            <button
-              type="button"
-              aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
-              className={`flex flex-shrink-0 items-center justify-center rounded transition-opacity transition-colors duration-100 ${
-                (forceShowPin || isPinned) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-              }`}
-              style={{
-                width: 18,
-                height: 18,
-                background: 'transparent',
-                color: isPinned ? 'var(--accent)' : 'var(--text-3)',
-                border: 'none',
-                cursor: 'pointer',
-                padding: 0,
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                void setSessionPinned(sessionId, !isPinned)
-              }}
-              onDoubleClick={(e) => e.stopPropagation()}
-            >
-              <Pin size={12} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
-            </button>
-          </Tooltip>
+        {gridLayout.paneCount > 1 && paneIndexes.length > 0 && (
+          <span role="img" aria-label={paneLabel} className="inline-flex shrink-0 items-center gap-0.5">
+            {paneIndexes.map((paneIndex) => (
+              <span
+                key={paneIndex}
+                data-testid="pane-indicator"
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ background: chatPaneColors[paneIndex] }}
+              />
+            ))}
+          </span>
+        )}
+        {!editing && showProviderIcon && sessionSummary.providerId && (
+          <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
+            <ProviderLogo providerId={sessionSummary.providerId} size={16} />
+          </span>
+        )}
+        {!editing && isPinned && (
+          <span role="img" aria-label="Pinned" title="Pinned" className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
+            <Pin size={12} fill="currentColor" aria-hidden />
+          </span>
         )}
 
         {/* Name or edit input */}
@@ -272,7 +270,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           />
         ) : (
           <div className="min-w-0 flex-1">
-            <span className="block truncate text-xs" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
             {showWorktreePath && sessionSummary.worktreeDirectory && (
               <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
                 {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
@@ -281,60 +279,97 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, force
           </div>
         )}
 
-        {/* Context menu trigger — visible on hover */}
         {!editing && (
-          <div className="ml-auto flex items-center gap-1">
-            {lastOpenedLabel && (
-              <span
-                className="max-w-[58px] truncate text-[10px] tabular-nums transition-opacity duration-100 group-hover:opacity-0"
-                title={lastOpenedTitle}
-                style={{
-                  color: isActive ? 'var(--text-2)' : 'var(--text-3)',
-                  lineHeight: 1,
-                }}
-              >
-                {lastOpenedLabel}
-              </span>
-            )}
-            {lifecycleStatus?.type === 'processing' && (
-              <span className="session-status session-status--processing" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
-                <span />
-              </span>
-            )}
-            {lifecycleStatus?.type === 'attention' && (
-              <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
-                {sidebarStatusIcon(lifecycleStatus.kind)}
-              </span>
-            )}
-            {lifecycleStatus?.type === 'idle' && (
-              <span className="session-status session-status--idle" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
-                <span />
-              </span>
-            )}
-            <Tooltip label="More actions" side="top">
-              <button
-                type="button"
-                aria-label="More actions"
-                className="opacity-0 group-hover:opacity-100 flex-shrink-0 flex items-center justify-center rounded transition-opacity duration-100"
-                style={{
-                  width: 18,
-                  height: 18,
-                  background: 'transparent',
-                  color: 'var(--text-3)',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (menuPos) { setMenuPos(null); return }
-                  const r = e.currentTarget.getBoundingClientRect()
-                  setMenuPos({ x: r.right, y: r.bottom + 4 })
-                }}
-              >
-                <MoreHorizontal size={14} aria-hidden />
-              </button>
-            </Tooltip>
-          </div>
+          <>
+            <div className="ml-auto flex items-center gap-1 transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0">
+              {lastOpenedLabel && (
+                <span
+                  className="max-w-[58px] truncate text-[10px] tabular-nums"
+                  title={lastOpenedTitle}
+                  style={{
+                    color: isActive ? 'var(--text-2)' : 'var(--text-3)',
+                    lineHeight: 1,
+                  }}
+                >
+                  {lastOpenedLabel}
+                </span>
+              )}
+              {lifecycleStatus?.type === 'processing' && (
+                <span className="session-status session-status--processing" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                  <span />
+                </span>
+              )}
+              {lifecycleStatus?.type === 'attention' && (
+                <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                  {sidebarStatusIcon(lifecycleStatus.kind)}
+                </span>
+              )}
+              {lifecycleStatus?.type === 'idle' && (
+                <span className="session-status session-status--idle" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                  <span />
+                </span>
+              )}
+            </div>
+            <div
+              data-testid={`session-actions-${sessionId}`}
+              className={`absolute right-2.5 flex items-center gap-0.5 transition-opacity duration-100 ${
+                menuPos
+                  ? 'opacity-100 pointer-events-auto'
+                  : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
+              }`}
+            >
+              <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
+                <button
+                  type="button"
+                  aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
+                  className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+                  style={{
+                    width: 20,
+                    height: 20,
+                    background: 'var(--sidebar-item-hover)',
+                    color: isPinned ? 'var(--accent)' : 'var(--text-3)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 0,
+                    outlineColor: 'var(--accent)',
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void setSessionPinned(sessionId, !isPinned)
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                >
+                  <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
+                </button>
+              </Tooltip>
+              <Tooltip label="More actions" side="top">
+                <button
+                  type="button"
+                  aria-label="More actions"
+                  aria-haspopup="menu"
+                  aria-expanded={showMenu}
+                  className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+                  style={{
+                    width: 20,
+                    height: 20,
+                    background: 'var(--sidebar-item-hover)',
+                    color: 'var(--text-3)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    outlineColor: 'var(--accent)',
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (menuPos) { setMenuPos(null); return }
+                    const r = e.currentTarget.getBoundingClientRect()
+                    setMenuPos({ x: r.right, y: r.bottom + 4 })
+                  }}
+                >
+                  <MoreHorizontal size={14} aria-hidden />
+                </button>
+              </Tooltip>
+            </div>
+          </>
         )}
       </div>
 

@@ -29,6 +29,10 @@ class AppPaths
 	static std::filesystem::path UamChatsRootPath(const std::filesystem::path& data_root);
 	/// <summary>Returns the UAM chat JSON file path for a specific chat id.</summary>
 	static std::filesystem::path UamChatFilePath(const std::filesystem::path& data_root, std::string_view chat_id);
+	/// <summary>Returns the lightweight chat-summary cache directory.</summary>
+	static std::filesystem::path UamChatSummariesRootPath(const std::filesystem::path& data_root);
+	/// <summary>Returns the lightweight summary cache path for a specific chat id.</summary>
+	static std::filesystem::path UamChatSummaryFilePath(const std::filesystem::path& data_root, std::string_view chat_id);
 };
 
 bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesystem::path& rhs);

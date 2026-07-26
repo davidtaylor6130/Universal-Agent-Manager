@@ -129,9 +129,9 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
       if (!goalId) return false
       if (isCefContext()) {
         const response = await sendToCEF({
-          action: 'setActiveGoal',
+          action: 'resumeGoal',
           payload: { chatId, goalId },
-          requestId: createRequestId('setActiveGoal'),
+          requestId: createRequestId('resumeGoal'),
         })
         return response.ok
       }

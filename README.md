@@ -40,8 +40,8 @@ Removed or intentionally unsupported surfaces include RAG engines, local model e
 
 ## Tech Stack
 
-- **Backend:** C++20, CMake 3.20+, CEF (Chromium Embedded Framework), `nlohmann/json`
-- **Frontend:** React 18, Vite 5, TypeScript 5, Zustand, Tailwind CSS, xterm.js
+- **Backend:** C++20, CMake 3.20+, CEF 146.0.10 (Chromium 146.0.7680.179), `nlohmann/json`
+- **Frontend:** React 18, Vite 6, TypeScript 5, Zustand, Tailwind CSS, xterm.js
 - **Platform services:** native PTY (openpty on macOS, ConPTY on Windows) for the CLI terminal path
 - **Tooling:** Vitest for the frontend, CTest for native tests
 
@@ -286,7 +286,7 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the current development and release line is `v4.4.0`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the current development and release line is `v4.5.0`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.

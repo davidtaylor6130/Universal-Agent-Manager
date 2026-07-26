@@ -99,4 +99,28 @@ describe('ShellActionsSettings', () => {
     act(() => root.unmount())
     host.remove()
   })
+
+  it('applies shell actions only once before the applying state rerenders', async () => {
+    const finishes: Array<(ok: boolean) => void> = []
+    const save = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
+    useAppStore.setState({ setShellActions: save })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<ShellActionsSettings />) })
+    const apply = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Apply') as HTMLButtonElement
+
+    act(() => {
+      apply.click()
+      apply.click()
+    })
+
+    expect(save).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      finishes.forEach((finish) => finish(false))
+      await Promise.resolve()
+    })
+    act(() => root.unmount())
+    host.remove()
+  })
 })

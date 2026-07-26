@@ -1,6 +1,6 @@
 import { ArrowUpCircle, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
-import { IconButton } from '../ui'
+import { Button, IconButton } from '../ui'
 
 export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onClose: () => void }) {
   const checked = monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt) : null
@@ -12,7 +12,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
     <aside
       aria-label="Updates"
       data-testid="updates-panel"
-      className="uam-side-panel-in flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
+      className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
       <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -32,6 +32,38 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </div>
         )}
 
+        {monitor.providerUpdateResults.length > 0 && (
+          <div className="mb-3 grid gap-2">
+            {monitor.providerUpdateResults.map((result) => (
+              <div
+                key={result.providerId}
+                role={result.status === 'failed' ? 'alert' : 'status'}
+                className="rounded-lg p-3 text-xs"
+                style={{
+                  color: result.status === 'failed' ? 'var(--red)' : 'var(--green)',
+                  border: `1px solid ${result.status === 'failed' ? 'var(--red)' : 'var(--green)'}`,
+                  background: 'var(--surface-up)',
+                }}
+              >
+                <div className="font-semibold">
+                  {result.name} update {result.status === 'failed' ? 'failed' : 'completed'}
+                </div>
+                <div className="mt-1" style={{ color: 'var(--text-2)' }}>
+                  {result.message || (result.status === 'failed' ? 'The installer returned an error.' : `Installed ${result.installedVersion}.`)}
+                </div>
+                {result.output && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer">Installer output</summary>
+                    <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded p-2 font-mono text-[10px]" style={{ color: 'var(--text-2)', background: 'var(--bg)' }}>
+                      {result.output}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {monitor.updates.length === 0 ? (
           <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
             <ArrowUpCircle size={24} />
@@ -40,39 +72,100 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </div>
         ) : (
           <div className="grid gap-3">
-            {monitor.updates.map((update) => (
-              <article key={update.id} className="grid gap-3 rounded-xl p-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{update.name}</div>
-                    <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
-                      {update.currentVersion} <span aria-hidden>→</span> <strong style={{ color: 'var(--green)' }}>{update.latestVersion}</strong>
+            <div
+              className="flex items-center gap-3 rounded-lg px-3 py-2.5"
+              style={{ background: 'var(--accent-dim)', border: '1px solid var(--border)' }}
+            >
+              <ArrowUpCircle size={18} aria-hidden style={{ color: 'var(--accent)' }} />
+              <div>
+                <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+                  {monitor.updates.length} update{monitor.updates.length === 1 ? '' : 's'} available
+                </div>
+                <div className="text-[11px]" style={{ color: 'var(--text-2)' }}>
+                  Review and install each update when convenient.
+                </div>
+              </div>
+            </div>
+            {monitor.updates.map((update) => {
+              const providerState = monitor.providerStates.find((state) => state.providerId === update.providerId)
+              const providerRunning = Boolean(providerState?.running)
+              return (
+                <article
+                  key={update.id}
+                  data-update-available="true"
+                  className="grid gap-3 rounded-lg p-3"
+                  style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{update.name}</div>
+                      <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+                        <span style={{ color: 'var(--text-3)' }}>Current <span className="font-mono">{update.currentVersion}</span></span>
+                        <span aria-hidden style={{ color: 'var(--text-3)' }}>→</span>
+                        <strong style={{ color: 'var(--text)' }}>Available <span className="font-mono">{update.latestVersion}</span></strong>
+                      </div>
                     </div>
+                    <IconButton
+                      icon={<X size={14} />}
+                      label={`Dismiss ${update.name} ${update.latestVersion}`}
+                      onClick={() => monitor.dismiss(update.id, update.latestVersion)}
+                    />
                   </div>
-                  <IconButton
-                    icon={<X size={14} />}
-                    label={`Dismiss ${update.name} ${update.latestVersion}`}
-                    onClick={() => monitor.dismiss(update.id, update.latestVersion)}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {update.providerId && update.installable ? (
-                    <IconButton size="sm" variant="solid" icon={<Download size={14} />} label={`Update ${update.name} to ${update.latestVersion}`} disabled={monitor.providerChecksRunning} onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }} />
-                  ) : (
-                    <IconButton size="sm" variant="solid" icon={<ExternalLink size={14} />} label={`View ${update.name} ${update.latestVersion} release`} onClick={() => window.open(update.url, '_blank', 'noopener')} />
-                  )}
-                  {update.providerId && (
-                    <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Open ${update.name} update instructions`} onClick={() => window.open(update.url, '_blank', 'noopener')} />
-                  )}
-                </div>
-              </article>
-            ))}
+                  <div className="flex flex-wrap gap-2">
+                    {update.providerId && update.installable ? (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        leadingIcon={<Download size={14} aria-hidden />}
+                        aria-label={`Update ${update.name} to ${update.latestVersion}`}
+                        loading={providerRunning}
+                        disabled={monitor.providerTaskRunning && !providerRunning}
+                        onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }}
+                      >
+                        {providerState?.status === 'checking' ? 'Verifying…' : providerRunning ? 'Updating…' : 'Install update'}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        leadingIcon={<ExternalLink size={14} aria-hidden />}
+                        aria-label={`View ${update.name} ${update.latestVersion} release`}
+                        onClick={() => window.open(update.url, '_blank', 'noopener')}
+                      >
+                        View release
+                      </Button>
+                    )}
+                    {update.providerId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        leadingIcon={<ExternalLink size={14} aria-hidden />}
+                        aria-label={`Open ${update.name} update instructions`}
+                        onClick={() => window.open(update.url, '_blank', 'noopener')}
+                      >
+                        Release notes
+                      </Button>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
           </div>
         )}
       </div>
 
       <footer className="flex items-center justify-between gap-2 p-3" style={{ borderTop: '1px solid var(--border)' }}>
-        <IconButton size="sm" icon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} />} label={monitor.checking ? 'Checking for updates' : 'Check for updates'} aria-busy={monitor.checking} disabled={monitor.checking} onClick={() => { void monitor.checkNow() }} />
+        <Button
+          size="sm"
+          variant="ghost"
+          leadingIcon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} aria-hidden />}
+          aria-label={monitor.checking ? 'Checking for updates' : 'Check for updates'}
+          aria-busy={monitor.checking}
+          disabled={monitor.checking}
+          onClick={() => { void monitor.checkNow() }}
+        >
+          {monitor.checking ? 'Checking…' : 'Check again'}
+        </Button>
         {monitor.updates.length > 0 && <IconButton size="sm" icon={<X size={14} />} label="Dismiss all updates" onClick={monitor.dismissAll} />}
       </footer>
     </aside>

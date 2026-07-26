@@ -164,7 +164,7 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
     <aside
       aria-label="Notifications"
       data-testid="notifications-panel"
-      className="uam-side-panel-in flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
+      className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
       <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -354,6 +354,7 @@ export function AppShell() {
   return (
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
+      data-right-panel-open={commitPanelOpen || alertsOpen || updatesOpen ? 'true' : 'false'}
       style={{ color: 'var(--text)' }}
     >
       <LeftActivityRail />
@@ -361,7 +362,7 @@ export function AppShell() {
       {!sidebarCollapsed && (
         <>
           <aside
-            className="uam-side-panel-in flex h-full flex-col overflow-hidden"
+            className="uam-side-panel-in uam-shell-panel uam-shell-panel--left flex h-full flex-col overflow-hidden"
             data-testid="chat-selector-panel"
             style={{ width: sidebarWidthPx, flex: `0 0 ${sidebarWidthPx}px`, background: 'var(--sidebar-bg)' }}
           >
@@ -391,7 +392,7 @@ export function AppShell() {
             onMouseDown={(event) => startResize('commit', event)}
           />
           <aside
-            className="flex h-full flex-col overflow-hidden"
+            className="uam-shell-panel uam-shell-panel--right flex h-full flex-col overflow-hidden"
             data-testid="commit-panel"
             style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)' }}
           >

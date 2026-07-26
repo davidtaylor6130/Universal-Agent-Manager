@@ -70,7 +70,8 @@ export function buildModelOptions(
   acp: AcpBinding | undefined,
   selectedModelId: string,
   provider: Provider | undefined,
-  providerId: string
+  providerId: string,
+  includeDefault = false
 ): ModelOption[] {
   const providerName = providerShortName(provider, providerId)
   const caps = providerCapabilities(providerId, provider)
@@ -92,8 +93,15 @@ export function buildModelOptions(
   const baseOptions = runtimeOptions.length > 0
     ? runtimeOptions
     : fallbackOptions
-  const options: ModelOption[] = []
-  const seen = new Set<string>()
+  const options: ModelOption[] = includeDefault
+    ? [{
+        id: '',
+        label: 'Default',
+        shortLabel: 'Default',
+        detail: `Use ${providerName}'s default model`,
+      }]
+    : []
+  const seen = new Set(options.map((option) => option.id))
 
   for (const option of baseOptions) {
     if (seen.has(option.id)) continue
@@ -147,7 +155,8 @@ export function reasoningEffortForModel(acp: AcpBinding | undefined, modelId: st
 	const supported = model.supportedReasoningEfforts ?? []
 	if (supported.length === 0) return ''
 	if (supported.includes(currentEffort)) return currentEffort
-	return supported[supported.length - 1]
+	const defaultEffort = model.defaultReasoningEffort ?? ''
+	return supported.includes(defaultEffort) ? defaultEffort : supported[0]
 }
 
 export function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {

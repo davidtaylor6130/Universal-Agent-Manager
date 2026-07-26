@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BookOpen, Check, ChevronRight, File, Files, Folder, FolderOpen, MousePointerClick, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
@@ -32,6 +32,7 @@ export function ShellActionsSettings() {
   const applyShellActions = useAppStore((s) => s.applyShellActions)
   const [actions, setActions] = useState(savedActions)
   const [applying, setApplying] = useState(false)
+  const applyingRef = useRef(false)
   const [error, setError] = useState('')
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({})
 
@@ -43,16 +44,22 @@ export function ShellActionsSettings() {
   }
 
   const apply = async () => {
+    if (applyingRef.current) return
     const invalid = actions.find((action) => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
     if (invalid) {
       setError('Each action needs a label and input type; enabled skill actions also need a skill.')
       return
     }
     setError('')
+    applyingRef.current = true
     setApplying(true)
-    const saved = await setShellActions(actions)
-    if (saved) await applyShellActions()
-    setApplying(false)
+    try {
+      const saved = await setShellActions(actions)
+      if (saved) await applyShellActions()
+    } finally {
+      applyingRef.current = false
+      setApplying(false)
+    }
   }
 
   return (

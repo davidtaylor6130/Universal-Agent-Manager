@@ -18,6 +18,13 @@ void CloseCliTerminalHandles(CliTerminalState& terminal)
 	PlatformServicesFactory::Instance().terminal_runtime.CloseCliTerminalHandles(terminal);
 }
 
+void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view message)
+{
+	StopCliTerminal(terminal);
+	terminal.should_launch = false;
+	terminal.last_error.assign(message);
+}
+
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len)
 {
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
@@ -26,6 +33,10 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 		const double now = GetAppTimeSeconds();
 		terminal.last_activity_time_s = now;
 		terminal.last_user_input_time_s = now;
+	}
+	else if (!wrote && terminal.running)
+	{
+		FailCliTerminalTransport(terminal, "Provider terminal input connection is unavailable.");
 	}
 	return wrote;
 }
@@ -146,9 +157,59 @@ bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
 	return terminal.running && terminal.lifecycle_state == CliTerminalLifecycleState::Idle;
 }
 
-void MarkCliTerminalTurnBusy(CliTerminalState& terminal)
+bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds)
+{
+	if (!terminal.running || terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
+	{
+		return false;
+	}
+
+	if (!terminal.prompt_settle_required)
+	{
+		return prompt_detected && received_output;
+	}
+
+	if (terminal.prompt_settle_candidate_time_s > 0.0)
+	{
+		if (received_output)
+		{
+			if (prompt_detected)
+			{
+				terminal.current_turn_output_bytes.clear();
+				terminal.prompt_settle_candidate_time_s = now_seconds;
+				return false;
+			}
+
+			terminal.prompt_settle_required = false;
+			terminal.prompt_settle_candidate_time_s = 0.0;
+			return false;
+		}
+
+		return now_seconds - terminal.prompt_settle_candidate_time_s >= kCliTerminalPromptSettleSeconds;
+	}
+
+	if (!received_output)
+	{
+		return false;
+	}
+
+	if (!prompt_detected)
+	{
+		terminal.prompt_settle_required = false;
+		return false;
+	}
+
+	terminal.current_turn_output_bytes.clear();
+	terminal.prompt_settle_candidate_time_s = now_seconds;
+	return false;
+}
+
+void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt)
 {
 	const double now = GetAppTimeSeconds();
+	terminal.current_turn_output_bytes.clear();
+	terminal.prompt_settle_required = settle_first_prompt;
+	terminal.prompt_settle_candidate_time_s = 0.0;
 	terminal.lifecycle_state = CliTerminalLifecycleState::Busy;
 	terminal.turn_state = CliTerminalTurnState::Busy;
 	terminal.generation_in_progress = true;
@@ -159,6 +220,8 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal)
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
 	const double now = GetAppTimeSeconds();
+	terminal.prompt_settle_required = false;
+	terminal.prompt_settle_candidate_time_s = 0.0;
 	terminal.lifecycle_state = terminal.running ? CliTerminalLifecycleState::Idle : CliTerminalLifecycleState::Stopped;
 	terminal.turn_state = CliTerminalTurnState::Idle;
 	terminal.generation_in_progress = false;
@@ -175,6 +238,8 @@ bool IsCliTerminalTurnBusy(const CliTerminalState& terminal)
 void MarkCliTerminalShuttingDown(CliTerminalState& terminal)
 {
 	const double now = GetAppTimeSeconds();
+	terminal.prompt_settle_required = false;
+	terminal.prompt_settle_candidate_time_s = 0.0;
 	terminal.lifecycle_state = CliTerminalLifecycleState::ShuttingDown;
 	terminal.turn_state = CliTerminalTurnState::Busy;
 	terminal.generation_in_progress = false;
@@ -183,6 +248,9 @@ void MarkCliTerminalShuttingDown(CliTerminalState& terminal)
 
 void MarkCliTerminalStopped(CliTerminalState& terminal)
 {
+	terminal.current_turn_output_bytes.clear();
+	terminal.prompt_settle_required = false;
+	terminal.prompt_settle_candidate_time_s = 0.0;
 	terminal.lifecycle_state = CliTerminalLifecycleState::Stopped;
 	terminal.turn_state = CliTerminalTurnState::Idle;
 	terminal.generation_in_progress = false;
@@ -221,7 +289,10 @@ void RequestCliTerminalQuit(CliTerminalState& terminal)
 void BeginCliTerminalIdleShutdown(CliTerminalState& terminal)
 {
 	RequestCliTerminalQuit(terminal);
-	MarkCliTerminalShuttingDown(terminal);
+	if (terminal.running)
+	{
+		MarkCliTerminalShuttingDown(terminal);
+	}
 }
 
 bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view identity)
@@ -252,8 +323,7 @@ bool CliTerminalHasPendingCall(const AppState& app, const CliTerminalState& term
 bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
                                                     const CliTerminalState& terminal,
                                                     std::string_view selected_chat_id,
-                                                    double now,
-                                                    double idle_timeout_seconds)
+                                                    double now)
 {
 	if (!terminal.running || terminal.ui_attached || terminal.lifecycle_state != CliTerminalLifecycleState::Idle)
 	{
@@ -275,7 +345,8 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 		return false;
 	}
 
-	return terminal.last_idle_confirmed_time_s > 0.0 && (now - terminal.last_idle_confirmed_time_s) >= idle_timeout_seconds;
+	return terminal.last_idle_confirmed_time_s > 0.0 &&
+	       (now - terminal.last_idle_confirmed_time_s) >= static_cast<double>(app.settings.cli_idle_timeout_seconds);
 }
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)

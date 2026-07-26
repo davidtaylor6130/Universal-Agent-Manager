@@ -19,6 +19,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -112,6 +113,40 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, c
 	cb->Success(result.dump());
 }
 
+void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string tool_call_id = payload.value("toolCallId", "");
+	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr || tool_call_id.empty())
+	{
+		if (chat != nullptr)
+		{
+			cb->Failure(400, "A tool call id is required.");
+		}
+		return;
+	}
+
+	std::string hydrate_warning;
+	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
+	{
+		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
+		return;
+	}
+
+	for (const Message& message : chat->messages)
+	{
+		const auto tool = std::ranges::find_if(message.tool_calls, [&](const ToolCall& candidate) { return candidate.id == tool_call_id; });
+		if (tool != message.tool_calls.end())
+		{
+			cb->Success(nlohmann::json{{"content", uam::StateSerializer::ToolCallContentForFrontend(*tool)}}.dump());
+			return;
+		}
+	}
+
+	cb->Failure(404, "Tool call not found: " + tool_call_id);
+}
+
 void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string title = payload.value("title", "New Chat");
@@ -186,23 +221,19 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 	                                                      ? std::optional<std::string>(payload.value("content", ""))
 	                                                      : std::nullopt;
 
-	if (!ChatDomainService().CreateBranchFromMessage(m_app, chat_id, *message_index, replacement_content))
+	std::string branch_id;
+	std::string branch_error;
+	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error))
 	{
-		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to create message branch."));
-		return;
-	}
-
-	const ChatSession* branch = ChatDomainService().SelectedChat(m_app);
-	if (branch == nullptr)
-	{
-		cb->Failure(500, "Branch was created but could not be selected.");
-		return;
-	}
-	const std::string branch_id = branch->id;
-	std::string retry_error;
-	if (!uam::RetryLastAcpPrompt(m_app, branch_id, &retry_error))
-	{
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(retry_error, "Branch created but regeneration could not start."));
+		const bool branch_was_created = !branch_id.empty();
+		if (branch_was_created && ChatDomainService().FindChatById(m_app, branch_id) != nullptr)
+		{
+			uam::PushStateUpdateIfChanged(browser, m_app);
+		}
+		cb->Failure(branch_was_created ? 500 : 409,
+		            uam::query_handler_internal::FailureDetailOrFallback(
+		                branch_error,
+		                branch_was_created ? "Branch regeneration could not start." : "Failed to create message branch."));
 		return;
 	}
 

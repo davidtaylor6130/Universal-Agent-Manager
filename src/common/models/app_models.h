@@ -170,6 +170,7 @@ struct ChatSession
 	std::vector<Goal> goals;
 	std::string active_goal_id;
 	std::string memory_level = "strict";
+	bool small_model_mode = false;
 };
 
 struct MemoryWorkerBinding
@@ -195,6 +196,7 @@ struct ProviderChatDefaults
 	std::string reasoning_effort;
 	std::string service_tier;
 	std::string memory_level = "strict";
+	bool small_model_mode = false;
 };
 
 /// <summary>
@@ -250,7 +252,7 @@ struct AppSettings
 	// Legacy keys retained for backward-compatible load paths.
 	bool gemini_yolo_mode = false;
 	std::string gemini_extra_flags;
-	std::string ui_theme = "dark";
+	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
 	bool confirm_delete_chat = true;

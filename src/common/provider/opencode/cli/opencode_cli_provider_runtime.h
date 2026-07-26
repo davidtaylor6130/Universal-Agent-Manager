@@ -16,6 +16,7 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	const char* GetAcpDisplayName() const override { return "OpenCode ACP"; }
 	bool IsGenericAcpSession() const override { return true; }
 	std::string OnAcpValidateResumeId(const ChatSession& chat) const override;
+	std::string OnAcpMapApprovalModeId(const std::string& mode_id) const override;
 };
 
 const IProviderRuntime& GetOpenCodeCliProviderRuntime();

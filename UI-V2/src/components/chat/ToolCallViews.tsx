@@ -3,7 +3,7 @@
 
 import { ReactNode, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { User, Code, ChevronDown, Pencil, RotateCcw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench } from 'lucide-react'
 import type {
   AcpPendingPermission,
   AcpPendingUserInput,
@@ -13,6 +13,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { IconButton, Tooltip } from '../ui'
+import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
   roleAccent,
@@ -21,6 +22,13 @@ import {
   toolDisplayKind,
   toolDisplayTitle,
 } from './StatusHelpers'
+
+function cleanToolOutput(value: string) {
+  return value
+    .replace(/\\u001b\[[0-?]*[ -/]*[@-~]/gi, '')
+    .replace(new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g'), '')
+    .replace(/\\n/g, '\n')
+}
 
 export function SubAgentRunningPanel({
   tool,
@@ -126,7 +134,6 @@ export function ToolCallInlineRows({
           )
         }
 
-        const displayKind = toolDisplayKind(tool)
         const displayTitle = toolDisplayTitle(tool)
         const normalizedStatus = tool.status.trim().toLowerCase()
         const active = normalizedStatus === 'running' || normalizedStatus === 'in_progress' || normalizedStatus === 'inprogress'
@@ -138,28 +145,11 @@ export function ToolCallInlineRows({
               data-active={active}
               onClick={() => onSelectTool(tool.id)}
               className="w-full grid text-left uam-tool-row"
-              style={{
-                gridTemplateColumns: '22px 86px minmax(0, 1fr) auto 18px',
-              }}
             >
-              <span
-                className="inline-flex items-center justify-center"
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: 5,
-                  color: 'var(--text-2)',
-                }}
-                aria-hidden="true"
-              >
-                <Code size={13} aria-hidden />
-              </span>
-              <span className="text-[11px] font-medium" style={{ color: 'var(--teal)' }}>{displayKind}:</span>
+              <Wrench className="uam-tool-row__icon" size={13} aria-hidden />
+              <span className="uam-tool-row__kind">Tool</span>
               <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
               <ToolStatusIcon status={tool.status} />
-              <span style={{ color: 'var(--text-3)' }} aria-hidden="true">
-                <ChevronDown size={14} aria-hidden />
-              </span>
             </button>
           </div>
         )
@@ -535,15 +525,25 @@ export function UserInputInlineCard({
 
 export function ToolCallModal({
   tool,
+  chatId,
   onClose,
   onOpenSubAgent,
   accentColor,
 }: {
   tool: AcpToolCall
+  chatId?: string
   onClose: () => void
   onOpenSubAgent?: () => void
   accentColor?: string
 }) {
+  const [deferredContent, setDeferredContent] = useState<string | null>(null)
+  const [contentError, setContentError] = useState('')
+  const shouldLoadContent = Boolean(tool.contentDeferred && chatId && isCefContext())
+  const output = cleanToolOutput(
+    shouldLoadContent && deferredContent === null
+      ? contentError || 'Loading tool output…'
+      : deferredContent ?? (tool.content || 'No tool output yet.')
+  )
   const toolCopyText = [
     toolDisplayTitle(tool) || tool.id || 'Tool call',
     `id: ${tool.id || 'unknown'}`,
@@ -551,12 +551,45 @@ export function ToolCallModal({
     `status: ${tool.status || 'unknown'}`,
     ...(tool.isSubAgent ? [`subAgentId: ${tool.subAgentId || 'unknown'}`, `subAgentTitle: ${tool.subAgentTitle || 'unknown'}`] : []),
     '',
-    tool.content || 'No tool output yet.',
+    output,
   ].join('\n')
+
+  useEffect(() => {
+    if (!shouldLoadContent || !chatId)
+    {
+      setDeferredContent(null)
+      setContentError('')
+      return
+    }
+
+    let canceled = false
+    setDeferredContent(null)
+    setContentError('')
+    void sendToCEF<{ content?: string }>({
+      action: 'getToolCallContent',
+      payload: { chatId, toolCallId: tool.id },
+    }).then((response) => {
+      if (canceled) return
+      if (!response.ok) {
+        setContentError(response.error || 'Failed to load tool output.')
+        return
+      }
+      setDeferredContent(response.data?.content ?? '')
+    })
+    return () => { canceled = true }
+  }, [chatId, shouldLoadContent, tool.id])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
 
   return createPortal(
     <div
-      className="fixed inset-0 flex items-center justify-center"
+      className="fixed inset-0 flex items-center justify-center uam-tool-modal-backdrop"
       style={{
         zIndex: 1000,
         background: 'rgba(0, 0, 0, 0.48)',
@@ -573,7 +606,7 @@ export function ToolCallModal({
         aria-modal="true"
         aria-label="Tool details"
         tabIndex={-1}
-        className="w-full"
+        className="w-full uam-tool-modal"
         style={{
           maxWidth: 680,
           maxHeight: 'min(720px, 88vh)',
@@ -585,13 +618,7 @@ export function ToolCallModal({
         }}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div
-          className="flex items-center gap-3 px-4"
-          style={{
-            minHeight: 44,
-            borderBottom: '1px solid var(--border)',
-          }}
-        >
+        <div className="uam-tool-modal__header">
           <ToolStatusIcon status={tool.status} />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
@@ -638,28 +665,20 @@ export function ToolCallModal({
             </button>
           </Tooltip>
         </div>
-        <div className="p-4 overflow-auto" style={{ maxHeight: 'calc(min(720px, 88vh) - 44px)' }}>
-          <div className="grid gap-2 text-xs mb-4" style={{ color: 'var(--text-2)' }}>
-            <div><span style={{ color: 'var(--text-3)' }}>id:</span> {tool.id || 'unknown'}</div>
+        <div className="uam-tool-modal__body">
+          <div className="uam-tool-modal__meta">
+            <span>{tool.kind || 'tool'}</span>
+            <span>{tool.status || 'unknown'}</span>
+            <span title={tool.id || 'unknown'}>{tool.id || 'unknown'}</span>
             {tool.isSubAgent && (
-              <div><span style={{ color: 'var(--text-3)' }}>sub-agent:</span> {tool.subAgentId || tool.subAgentTitle || 'tracked from provider event'}</div>
+              <span>{tool.subAgentId || tool.subAgentTitle || 'provider sub-agent'}</span>
             )}
-            <div><span style={{ color: 'var(--text-3)' }}>kind:</span> {tool.kind || 'unknown'}</div>
-            <div className="flex items-center"><ToolStatusIcon status={tool.status} /></div>
           </div>
+          <div className="uam-tool-modal__output-label">Output</div>
           <pre
-            className="whitespace-pre-wrap text-xs"
-            style={{
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              padding: 12,
-              overflowWrap: 'anywhere',
-              fontFamily: 'inherit',
-            }}
+            className="whitespace-pre-wrap text-xs uam-tool-modal__output"
           >
-            {tool.content || 'No tool output yet.'}
+            {output}
           </pre>
         </div>
       </section>
@@ -674,6 +693,7 @@ export function MessageFrame({
   assistantLabel,
   copyText = '',
   branchLabel,
+  branchNavigation,
   onEdit,
   onRevert,
   actionsDisabled = false,
@@ -685,6 +705,12 @@ export function MessageFrame({
   assistantLabel: string
   copyText?: string
   branchLabel?: string
+  branchNavigation?: {
+    current: number
+    total: number
+    onPrevious: () => void
+    onNext: () => void
+  }
   onEdit?: () => void
   onRevert?: () => void
   actionsDisabled?: boolean
@@ -700,23 +726,20 @@ export function MessageFrame({
       <article
         className={`min-w-0 uam-message-frame${streaming ? ' is-streaming' : ''}${goalReview ? ' uam-message-frame--goal-review' : ''}`}
         data-message-kind={goalReview ? 'goal-review' : role}
+        aria-label={goalReview ? 'Goal Reviewer' : roleLabel(role, assistantLabel)}
         style={{
-          maxWidth: '100%',
-          border: '1px solid transparent',
           borderLeft: role !== 'user' ? `2px solid ${accent}` : undefined,
-          borderRight: role === 'user' ? `2px solid ${accent}` : undefined,
           borderRadius: goalReview ? 8 : 0,
-          padding: role === 'user' ? '2px 12px 2px 0' : goalReview ? '8px 10px 10px 12px' : '2px 0 2px 12px',
+          padding: role === 'user' ? undefined : goalReview ? '8px 10px 10px 12px' : '2px 12px 2px 12px',
           background: role === 'user'
-            ? 'transparent'
+            ? undefined
             : goalReview
               ? 'color-mix(in srgb, var(--purple) 5%, var(--message-assistant-bg))'
               : 'var(--message-assistant-bg)',
           color: 'var(--text)',
         }}
       >
-        <div className="flex items-center gap-1.5 text-[11px] mb-1" style={{ color: accent }}>
-          <span style={{ fontSize: 8 }}>●</span>
+        <div className="uam-message-frame__header flex items-center gap-1.5 text-[11px] mb-1" style={{ color: accent }}>
           <span>{goalReview ? 'Goal Reviewer' : roleLabel(role, assistantLabel)}</span>
           {branchLabel && (
             <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
@@ -748,6 +771,31 @@ export function MessageFrame({
           )}
         </div>
         {children}
+        {branchNavigation && (
+          <div
+            className="uam-message-frame__actions uam-message-frame__branch-navigation"
+            role="group"
+            aria-label="Message branches"
+          >
+            <IconButton
+              icon={<ChevronLeft size={13} aria-hidden />}
+              label="Previous message branch"
+              size="sm"
+              disabled={branchNavigation.current <= 1}
+              onClick={branchNavigation.onPrevious}
+            />
+            <span className="min-w-[36px] text-center text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>
+              {branchNavigation.current} / {branchNavigation.total}
+            </span>
+            <IconButton
+              icon={<ChevronRight size={13} aria-hidden />}
+              label="Next message branch"
+              size="sm"
+              disabled={branchNavigation.current >= branchNavigation.total}
+              onClick={branchNavigation.onNext}
+            />
+          </div>
+        )}
       </article>
     </div>
   )

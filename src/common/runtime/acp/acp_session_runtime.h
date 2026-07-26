@@ -24,8 +24,13 @@ bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* 
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool StopAcpSession(AppState& app, const std::string& chat_id);
-bool SetAcpSessionMode(AppState& app, const std::string& chat_id, const std::string& mode_id, std::string* error_out = nullptr);
-bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr);
+bool SetAcpSessionMode(AppState& app,
+                       const std::string& chat_id,
+                       const std::string& mode_id,
+                       std::string* error_out = nullptr,
+                       std::optional<std::string> previous_chat_mode_id = std::nullopt,
+                       std::optional<std::string> previous_command_safety_tier = std::nullopt);
+bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr, std::optional<std::string> previous_chat_model_id = std::nullopt);
 bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool ResolveAcpPermission(AppState& app,
                           const std::string& chat_id,

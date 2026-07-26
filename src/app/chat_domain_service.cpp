@@ -671,11 +671,13 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.model_id = source.model_id;
 	branch.reasoning_effort = source.reasoning_effort;
 	branch.service_tier = source.service_tier;
+	branch.extra_flags = source.extra_flags;
 	branch.approval_mode = source.approval_mode;
 	branch.auto_approve_commands = source.auto_approve_commands;
 	branch.command_safety_tier = source.command_safety_tier;
 	branch.memory_level = source.memory_level;
 	branch.memory_enabled = source.memory_enabled;
+	branch.small_model_mode = source.small_model_mode;
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::ResolveWorkspaceRootPath(app, source).string();
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);

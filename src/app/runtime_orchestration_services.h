@@ -20,6 +20,7 @@ class ChatHistorySyncService
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	void RefreshChatHistory(uam::AppState& app) const;
 	bool SaveChatWithStatus(uam::AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) const;
 	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const;

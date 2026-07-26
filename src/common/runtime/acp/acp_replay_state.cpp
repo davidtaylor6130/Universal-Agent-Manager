@@ -127,7 +127,7 @@ std::string AssistantDeltaForIncomingText(const AcpSessionState& session, const 
 	{
 		if (candidate == current_assistant_text)
 		{
-			return "";
+			return candidate;
 		}
 
 		if (uam::strings::StartsWith(candidate, current_assistant_text))
@@ -135,11 +135,6 @@ std::string AssistantDeltaForIncomingText(const AcpSessionState& session, const 
 			return candidate.substr(current_assistant_text.size());
 		}
 
-		if (candidate.size() <= current_assistant_text.size() &&
-		    current_assistant_text.compare(current_assistant_text.size() - candidate.size(), candidate.size(), candidate) == 0)
-		{
-			return "";
-		}
 	}
 
 	return candidate;

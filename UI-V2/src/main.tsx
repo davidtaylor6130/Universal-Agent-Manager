@@ -5,7 +5,7 @@ import { isCefContext } from './ipc/cefBridge'
 import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
 
 // Apply persisted theme before first render to prevent flash
-applyDocumentTheme(readStoredTheme() ?? 'dark')
+applyDocumentTheme(readStoredTheme() ?? 'focus')
 
 const root = createRoot(document.getElementById('root')!)
 

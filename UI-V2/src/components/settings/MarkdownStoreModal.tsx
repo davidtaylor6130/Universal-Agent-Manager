@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import { Button, IconButton } from '../ui'
@@ -34,11 +34,14 @@ export function MarkdownStoreModal() {
   const [draft, setDraft] = useState<MarkdownStoreDraft>(EMPTY_DRAFT)
   const [showEditorPreview, setShowEditorPreview] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [imports, setImports] = useState<MarkdownStoreImportCandidate[]>([])
   const [selectedImports, setSelectedImports] = useState<Set<string>>(new Set())
   const [conflicts, setConflicts] = useState<Record<string, MarkdownStoreConflictAction>>({})
   const [importResults, setImportResults] = useState<MarkdownStoreImportResult[]>([])
   const [importing, setImporting] = useState(false)
+  const importingRef = useRef(false)
+  const importPreviewRequestRef = useRef(0)
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
@@ -71,11 +74,17 @@ export function MarkdownStoreModal() {
   }
   const cancelEdit = () => { setEditing(null); setDraft(EMPTY_DRAFT); setShowEditorPreview(false) }
   const saveDraft = async () => {
-    if (!draft.title.trim() || !draft.body.trim()) return
+    if (submittingRef.current || !draft.title.trim() || !draft.body.trim()) return
+    submittingRef.current = true
     setSubmitting(true)
     const clean = { title: draft.title.trim(), maker: draft.maker.trim(), review: draft.review.trim(), body: draft.body.trim() }
-    const ok = editing === 'existing' && selected ? await updateEntry(selected, clean) : await createEntry(clean)
-    setSubmitting(false)
+    let ok = false
+    try {
+      ok = editing === 'existing' && selected ? await updateEntry(selected, clean) : await createEntry(clean)
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
     if (ok) cancelEdit()
   }
   const attach = (entry: MarkdownStoreEntry) => {
@@ -88,7 +97,9 @@ export function MarkdownStoreModal() {
     if (chosen && await setDirectory(chosen)) await refresh()
   }
   const loadImports = async (options: { includeProviders?: boolean; paths?: string[] }) => {
+    const requestId = ++importPreviewRequestRef.current
     const candidates = await previewImports(options)
+    if (requestId !== importPreviewRequestRef.current) return
     setImports(candidates)
     setSelectedImports(new Set(candidates.filter((candidate) => candidate.supported).map((candidate) => candidate.id)))
     setConflicts(Object.fromEntries(candidates.filter((candidate) => candidate.collisionPath).map((candidate) => [candidate.id, 'skip'])))
@@ -99,14 +110,21 @@ export function MarkdownStoreModal() {
     if (path) await loadImports({ paths: [path] })
   }
   const runImport = async () => {
+    if (importingRef.current) return
     const selectedCandidates = imports.filter((candidate) => candidate.supported && selectedImports.has(candidate.id))
+    importingRef.current = true
     setImporting(true)
-    const results = await importEntries(selectedCandidates.map((candidate) => ({
-      sourceProvider: candidate.sourceProvider,
-      sourcePath: candidate.sourcePath,
-      conflictAction: conflicts[candidate.id] ?? 'skip',
-    })))
-    setImporting(false)
+    let results: MarkdownStoreImportResult[] = []
+    try {
+      results = await importEntries(selectedCandidates.map((candidate) => ({
+        sourceProvider: candidate.sourceProvider,
+        sourcePath: candidate.sourcePath,
+        conflictAction: conflicts[candidate.id] ?? 'skip',
+      })))
+    } finally {
+      importingRef.current = false
+      setImporting(false)
+    }
     setImportResults(results)
     if (results.some((result) => result.status === 'imported')) setImports([])
   }

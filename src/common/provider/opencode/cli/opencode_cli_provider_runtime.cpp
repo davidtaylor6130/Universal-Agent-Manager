@@ -78,6 +78,11 @@ std::string OpenCodeCliProviderRuntime::OnAcpValidateResumeId(const ChatSession&
 	return uam::acp_detail::ValidGenericAcpResumeId(chat);
 }
 
+std::string OpenCodeCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
+{
+	return mode_id == "default" ? "build" : mode_id;
+}
+
 const IProviderRuntime& GetOpenCodeCliProviderRuntime()
 {
 	static const OpenCodeCliProviderRuntime runtime;
