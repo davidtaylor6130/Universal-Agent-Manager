@@ -198,6 +198,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
   const steerTurnSerialRef = useRef(0)
   const steeringTimeoutRef = useRef<number | null>(null)
+  const appModalOpen = useAppStore((s) =>
+    s.isNewChatModalOpen ||
+    s.isSettingsOpen ||
+    s.memoryLibraryScope !== null ||
+    s.isMemoryScanModalOpen ||
+    s.isMarkdownStoreOpen
+  )
 
   useEffect(() => {
     return () => {
@@ -1195,7 +1202,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
       : []
-  const slashOpen = slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined)
+  const slashOpen = !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined)
   const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || commandSafetyQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
@@ -1215,7 +1222,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setPermissionMenuOpen(false)
     command.run()
   }
-  const activeSlashGroup = slashCommands.find((command) => command.id === `md-group:${slashGroup}`)
+  const activeSlashGroup = slashOpen ? slashCommands.find((command) => command.id === `md-group:${slashGroup}`) : undefined
   const activeSlashGroupAnchor = { current: slashGroupButtonRefs.current[slashGroup] }
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

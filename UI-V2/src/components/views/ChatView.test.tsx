@@ -1188,6 +1188,38 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('hides the slash palette and submenu while an app modal is open', async () => {
+    useAppStore.setState({
+      markdownStoreEntries: [
+        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-create-pr-eb8349e5', filePath: '/tmp/two.uam' },
+      ],
+      refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/github')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    const group = document.body.querySelector('[aria-label="Slash commands"] [role="option"]') as HTMLElement
+    vi.spyOn(group.querySelector('[data-slash-group-anchor]') as HTMLSpanElement, 'getBoundingClientRect').mockReturnValue({ left: 180, right: 194, top: 40, bottom: 54, width: 14, height: 14, x: 180, y: 40, toJSON: () => ({}) })
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+    expect(document.body.querySelector('[aria-label="github skills"]')).toBeTruthy()
+
+    act(() => useAppStore.setState({ isSettingsOpen: true }))
+    expect(document.body.querySelector('[aria-label="Slash commands"]')).toBeNull()
+    expect(document.body.querySelector('[aria-label="github skills"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ isSettingsOpen: false })
+  })
+
   it('keeps Codex reasoning and speed in the + menu and always shows the reasoning effort', async () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
