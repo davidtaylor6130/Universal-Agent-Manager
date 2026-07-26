@@ -3647,6 +3647,7 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source\n"));
 }
 
+#if !defined(_WIN32)
 UAM_TEST(VcsCommitServicePreservesUntrackedFileNamesContainingRenameSeparator)
 {
 	if (!GitAvailableForTests())
@@ -3669,6 +3670,7 @@ UAM_TEST(VcsCommitServicePreservesUntrackedFileNamesContainingRenameSeparator)
 	UAM_ASSERT_EQ(status.changed_files.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(status.changed_files.front().path, std::string("a -> b.txt"));
 }
+#endif
 
 UAM_TEST(VcsCommitServiceDecodesQuotedGitFileNames)
 {
@@ -3681,8 +3683,9 @@ UAM_TEST(VcsCommitServiceDecodesQuotedGitFileNames)
 	const fs::path repo = temp.root / "repo";
 	fs::create_directories(repo);
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
-	const std::string file_name = "tab\tname.txt";
-	UAM_ASSERT(uam::io::WriteTextFile(repo / file_name, "content\n"));
+	UAM_ASSERT(RunGitForTest(repo, "config core.quotePath true"));
+	const std::string file_name = "caf\xc3\xa9.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(repo / uam::paths::PathFromUtf8(file_name), "content\n"));
 
 	uam::AppState app;
 	ChatSession chat;

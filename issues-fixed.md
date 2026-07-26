@@ -16,6 +16,23 @@ radius, and kept here with its validation evidence.
 - All 34 previously failing frontend regressions and all 23 previously failing native
   regressions now pass.
 
+## #186 — Make VCS filename regression tests portable on Windows
+
+- Status: Fixed and locally validated
+- Found from: PR #185 Windows CTest
+- Symptom:
+  - The Windows build succeeded, but two VCS regression tests failed while creating their
+    fixture files and never reached the status-parser assertions.
+- Root cause:
+  - One filename contained `>`, and another contained a tab. Both are invalid on Windows.
+- Fix:
+  - Keep the literal ` -> ` filename regression on platforms that can create it.
+  - Use a UTF-8 filename for the quoted-path regression; Git quotes this name in regular
+    porcelain output, while `--porcelain=v1 -z` returns it raw on every supported platform.
+- Validation:
+  - Native Debug rebuild passed.
+  - Local CTest passed 3/3 targets.
+
 ## #178 — Hide slash-command menus while an app modal is open
 
 - Status: Fixed and verified in the release bundle
