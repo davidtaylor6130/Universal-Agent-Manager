@@ -31,6 +31,16 @@ UAM-managed goal and follows this controller sequence:
 The existing token budget, maximum-loop limit, repeated-output detection, stalled-loop
 watchdog, pause/resume behavior, and persisted goal state remain in force.
 
+## GitHub Tracking
+
+- #184 — opt-in small-model workflow
+- #179 — malformed reviewer output cannot imply completion
+- #56 — internally queued worker turns receive their reviewer
+- #180 — small-model prompts remain atomic and FIFO
+- #181 — worker continuations receive durable progress
+- #182 — memory recall is ranked against the current prompt
+- #183 — Vitest sources remain outside the production TypeScript build
+
 ## Features Added
 
 - Provider defaults and per-chat overrides for `smallModelMode`.

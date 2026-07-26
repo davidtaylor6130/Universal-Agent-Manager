@@ -9,16 +9,35 @@ radius, and kept here with its validation evidence.
 
 ## Current validation
 
-- Full frontend suite: 373/373 tests passed across 32/32 files.
+- Full frontend suite: 375/375 tests passed across 32/32 files.
 - Native CTest suite: 3/3 targets passed.
 - Frontend production TypeScript/Vite build passed.
 - Native Release build passed; the 4.5.0 macOS bundle is signed and verifies successfully.
 - All 34 previously failing frontend regressions and all 23 previously failing native
   regressions now pass.
 
+## #178 — Hide slash-command menus while an app modal is open
+
+- Status: Fixed and verified in the release bundle
+- Found from: Final Computer Use release testing
+- Symptom:
+  - Opening Settings while `/github` and its grouped skill submenu were active left both
+    slash-command surfaces drawn over the modal.
+- Root cause:
+  - The chat popover remained active while a full application modal was open.
+- Fix:
+  - Suppress the slash palette and active submenu while New Chat, Settings, Memory,
+    Memory Scan, or Skills is open, without discarding the user's draft.
+- Validation:
+  - Focused ChatView regression passed.
+  - Full frontend suite: 375/375 tests passed across 32/32 files.
+  - Computer Use verified the exact signed v4.5.0 release bundle: `/github` opens a clean
+    submenu to the right, and both menu layers disappear when Settings opens.
+
 ## BUG-015 — Persist custom workspace order inside collections
 
 - Status: Implemented locally and verified
+- GitHub issue: #175
 - Found from: User-reported workspace sidebar drag failure
 - Symptom:
   - Dragging ungrouped workspaces changed and persisted their order, but dragging workspaces
@@ -1249,6 +1268,7 @@ radius, and kept here with its validation evidence.
 ## BUG-035 — Large histories and worktree actions could freeze the app window
 
 - Status: Fixed locally and validated
+- GitHub issue: #176
 - Found from: User report of intermittent hangs while opening and closing worktrees
 - Data flow and two-hop blast radius reviewed:
   `worktree UI action → CEF handler → Git/filesystem operation → chat persistence → state
@@ -1304,6 +1324,7 @@ radius, and kept here with its validation evidence.
 ## BUG-036 — Updating one runtime animated every provider and used the wrong installer
 
 - Status: Fixed locally and validated
+- GitHub issue: #177
 - Found from: User report and the failed OpenCode updater log
 - Symptom:
   - Starting one provider update put every provider row into its loading animation.
