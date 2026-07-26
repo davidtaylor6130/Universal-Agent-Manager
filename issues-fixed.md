@@ -9,12 +9,36 @@ radius, and kept here with its validation evidence.
 
 ## Current validation
 
-- Full frontend suite: 369/369 tests passed across 32/32 files.
+- Full frontend suite: 373/373 tests passed across 32/32 files.
 - Native CTest suite: 3/3 targets passed.
 - Frontend production TypeScript/Vite build passed.
-- Native Release build passed; the 4.4.2 macOS bundle is signed and verifies successfully.
+- Native Release build passed; the 4.5.0 macOS bundle is signed and verifies successfully.
 - All 34 previously failing frontend regressions and all 23 previously failing native
   regressions now pass.
+
+## BUG-015 — Persist custom workspace order inside collections
+
+- Status: Implemented locally and verified
+- Found from: User-reported workspace sidebar drag failure
+- Symptom:
+  - Dragging ungrouped workspaces changed and persisted their order, but dragging workspaces
+    inside a collection appeared to do nothing and the visible order snapped back.
+- Root cause:
+  - Collection children render from the collection's ordered resource references, while the
+    folder drop handler always updated the separate global folder order.
+- Fix:
+  - Route same-collection folder drops through the existing persisted resource-reference
+    reorder action.
+  - Preserve non-workspace reference positions when workspace references move.
+  - Keep the whole workspace row draggable and support Arrow Up/Down keyboard reordering
+    without a permanent drag icon.
+- Validation:
+  - `FolderTree.test.tsx`: 20/20 tests passed, including drag and keyboard collection reorder.
+  - Full frontend suite: 373/373 tests passed across 32/32 files.
+  - Frontend production TypeScript/Vite build passed.
+  - Native CTest: 3/3 targets passed.
+  - Native Release build and signed macOS bundle passed
+    (`4.5.0-Darwin-20260726T123958Z`).
 
 ## BUG-014 — Prevent queued steering controls from getting stuck in a "Starting" UI lock
 
@@ -1197,24 +1221,30 @@ radius, and kept here with its validation evidence.
 
 ## UX-005 — Chat/CLI composer spacing polish pass
 
-- Status: Implemented locally and ready for visual confirmation
+- Status: Fixed and regression-tested locally
 - Found from: User-provided layout feedback with annotated chat screenshots
 - Symptom:
-  - Assistant/user message regions still had too little side breathing room in 4x4/multi-pane and
-    terminal steering mode, with visible inconsistency between message start positions and composer
-    controls.
+  - The shared `.uam-chat-content` wrapper capped both the transcript and composer at 960px and
+    applied horizontal padding, leaving excessive empty space beside messages in fullscreen.
   - Terminal steering controls lacked a dedicated bordered composer shell in the currently used Codex CLI
     mode.
 - Changes:
-  - Increased side padding for `.uam-chat-content` to keep message/chatter content off the edge in default
-    layout.
-  - Increased message max-width clamp so content does not stretch to the absolute container edge (default and
-    compact modes).
-  - Increased multi-pane chat-content inline padding to remove “near-edge” start/end crowding.
+  - Removed the shared transcript/composer max-width and horizontal inset from `.uam-chat-content`.
+  - Scoped the 960px centered width constraint to `.uam-composer-region`, preserving the intended composer
+    breathing room without narrowing the transcript.
+  - Added transcript-only gutters of 6px in a full chat and 5px in multi-chat—exactly half of the previous
+    12px/10px values—so messages do not touch the pane edge without recreating the oversized outer border.
+  - Capped both assistant and user message bubbles at 75% of the transcript width: assistant messages remain
+    left-aligned, while user messages remain right-aligned.
   - Reintroduced a bordered, inset steering composer surface in `CLIView` and increased terminal/steering
     inset padding to separate the active steer box from panel edges.
 - Validation:
-  - Visual review pending from the latest annotated screenshot reference.
+  - Added a regression assertion covering transcript width, composer-only constraints, multi-pane transcript
+    padding, and the 75% message-bubble caps in full and multi-chat layouts.
+  - Red-first checks each failed 1 of 5 assertions before the wrapper-scope correction and refined half-size
+    gutters, then passed all 5 after their respective CSS changes.
+  - Computer Use verification of the rebuilt 4.5.0 app confirmed the 6px fullscreen gutter, independently
+    inset composer, and left/right-aligned 75%-maximum assistant/user bubbles.
 
 ## BUG-035 — Large histories and worktree actions could freeze the app window
 
@@ -1270,3 +1300,44 @@ radius, and kept here with its validation evidence.
     startup repair it remained at ~99% CPU and timed out; after the repair it rendered the
     2×2 chat UI, switched workspace groups and chats without hanging, and settled at 0.0–0.1%
     CPU with ~1.0% memory.
+
+## BUG-036 — Updating one runtime animated every provider and used the wrong installer
+
+- Status: Fixed locally and validated
+- Found from: User report and the failed OpenCode updater log
+- Symptom:
+  - Starting one provider update put every provider row into its loading animation.
+  - The animation eventually stopped without confirming success or showing the installer
+    failure.
+  - Updating Homebrew-managed OpenCode ran npm and failed with `EEXIST` against Homebrew's
+    `/opt/homebrew/bin/opencode` symlink.
+- Data flow and two-hop blast radius reviewed:
+  `provider update row → shared update monitor → CEF install request → CLI compatibility
+  service → package-manager process → native provider state → update result UI`
+- Root causes:
+  - The Updates panel used one global `some(provider.running)` flag as every row's loading
+    state.
+  - The native updater always built an npm global-install command, regardless of where the
+    active executable was installed.
+  - Completed install output was available only in Settings and disappeared from the
+    Updates panel when the update row changed.
+- Fix:
+  - Bind loading animation and `aria-busy` to the matching provider only; keep sibling
+    update actions safely disabled without animating them.
+  - Detect npm, Homebrew formula, or Homebrew cask ownership from the resolved executable
+    path and use the matching installer.
+  - Compare Homebrew-managed providers against the Homebrew release channel.
+  - Preserve and display provider-specific success or failure status and installer output
+    after the task completes.
+- Validation:
+  - Added red-first UI regressions for targeted row animation and persistent failure output.
+  - Added catalog coverage for Homebrew-managed OpenCode.
+  - Added native regressions for npm, Homebrew formula, Homebrew cask, and install-method
+    detection.
+  - Focused updater regressions: 11/11 passed.
+  - Full frontend suite: 372/372 tests passed across 32/32 files.
+  - Native CTest: 3/3 targets passed.
+  - Frontend production build and signed 4.5.0 macOS bundle build passed.
+  - Computer Use launched the exact rebuilt bundle and confirmed that the live Updates panel
+    opens without a runtime error and resolves Homebrew-managed OpenCode to Homebrew 1.18.0
+    instead of npm 1.18.5.

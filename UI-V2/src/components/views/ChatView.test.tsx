@@ -1149,12 +1149,12 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('groups favorite Markdown Store skills in a submenu', async () => {
+  it('condenses prefixed skills into a keyboard-accessible submenu', async () => {
     const attachMarkdownStoreEntry = vi.fn()
     useAppStore.setState({
       markdownStoreEntries: [
-        { id: 'one', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'review', group: 'Workflows', filePath: '/tmp/one.uam' },
-        { id: 'two', title: 'Release', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'release', group: 'Workflows', filePath: '/tmp/two.uam' },
+        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-create-pr-eb8349e5', filePath: '/tmp/two.uam' },
       ],
       refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
       attachMarkdownStoreEntry,
@@ -1165,20 +1165,25 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/')
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/github')
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
       await Promise.resolve()
     })
-    const group = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/workflows')) as HTMLElement
-    expect(group.textContent).toContain('/workflows')
-    expect(group.textContent).not.toContain('/review')
-    act(() => group.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    const submenu = document.body.querySelector('[aria-label="Workflows skills"]') as HTMLElement
-    expect(submenu.textContent).toContain('/review')
-    expect(submenu.textContent).toContain('/release')
-    const review = Array.from(submenu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes('/review')) as HTMLElement
-    act(() => review.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'one' }))
+    const group = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/github')) as HTMLElement
+    expect(group.textContent).toContain('/github')
+    expect(group.textContent).not.toContain('/fix-issue')
+    vi.spyOn(group.querySelector('[data-slash-group-anchor]') as HTMLSpanElement, 'getBoundingClientRect').mockReturnValue({ left: 180, right: 194, top: 40, bottom: 54, width: 14, height: 14, x: 180, y: 40, toJSON: () => ({}) })
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+    const submenu = document.body.querySelector('[aria-label="github skills"]') as HTMLElement
+    expect(document.body.querySelector('[aria-label="Slash commands"]')).toBeTruthy()
+    expect(submenu.style.left).toBe('198px')
+    expect(submenu.textContent).toContain('/fix-issue')
+    expect(submenu.textContent).toContain('/create-pr')
+    expect(submenu.textContent).not.toContain('3aa611dd')
+    expect(submenu.textContent).not.toContain('eb8349e5')
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'two' }))
     act(() => root.unmount())
     host.remove()
   })

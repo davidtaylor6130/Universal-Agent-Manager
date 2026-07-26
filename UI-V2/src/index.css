@@ -235,8 +235,14 @@
 
 .uam-chat-content {
   width: 100%;
+}
+
+.uam-chat-transcript .uam-chat-content {
+  padding-inline: 6px;
+}
+
+.uam-composer-region {
   max-width: 960px;
-  padding-inline: 12px;
   margin-inline: auto;
 }
 
@@ -458,7 +464,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
   .uam-chat-pane[data-multi-pane="true"] .uam-chat-transcript .uam-chat-content {
     padding-block: 6px;
-    padding-inline: 10px;
+    padding-inline: 5px;
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-message-list > :not([hidden]) ~ :not([hidden]) {
@@ -470,12 +476,12 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-message-frame[data-message-kind="assistant"] {
-    max-width: calc(100% - 28px) !important;
+    max-width: 75% !important;
     padding-left: 8px !important;
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-message-frame[data-message-kind="user"] {
-    max-width: calc(100% - 28px);
+    max-width: 75%;
     padding: 6px 8px !important;
   }
 
@@ -884,12 +890,12 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-message-frame[data-message-kind="assistant"] {
-  max-width: calc(100% - 20px) !important;
+  max-width: 75% !important;
 }
 
 .uam-message-frame[data-message-kind="user"] {
   width: fit-content;
-  max-width: calc(100% - 20px);
+  max-width: 75%;
   border: 1px solid var(--border) !important;
   border-radius: 10px !important;
   background: var(--message-user-bg);

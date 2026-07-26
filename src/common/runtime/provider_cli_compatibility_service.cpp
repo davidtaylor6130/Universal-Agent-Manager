@@ -32,6 +32,7 @@ namespace
 	constexpr const char* kProviderCliTimedOutSuffix = "\n\n[Provider CLI command timed out]";
 	constexpr const char* kProviderCliCanceledSuffix = "\n\n[Provider CLI command canceled]";
 	constexpr const char* kProviderCliExitCodeMarker = "[Provider CLI exited with code ";
+	constexpr std::string_view kProviderCliPathMarker = "[UAM CLI PATH] ";
 	constexpr auto kSafeVersionTokenPunctuation = std::to_array<char>({
 	    '.',
 	    '_',
@@ -50,7 +51,10 @@ namespace
 		std::string_view provider_id;
 		std::string_view npm_package;
 		std::string_view fallback_title;
+		std::string_view executable_name;
 		std::string_view version_probe_command;
+		std::string_view homebrew_package;
+		bool homebrew_cask = false;
 		const char* preferred_version = nullptr;
 		const char* fallback_version = nullptr;
 		CliVersionPolicy version_policy = CliVersionPolicy::AnySafeToken;
@@ -73,14 +77,19 @@ namespace
 	        .provider_id = uam::provider_ids::kGeminiCli,
 	        .npm_package = "@google/gemini-cli",
 	        .fallback_title = "Gemini CLI",
+	        .executable_name = "gemini",
 	        .version_probe_command = "gemini --version",
+	        .homebrew_package = "gemini-cli",
 	        .version_policy = CliVersionPolicy::GeminiCurated,
 	    },
 	    ProviderCliPolicy{
 	        .provider_id = uam::provider_ids::kCodexCli,
 	        .npm_package = "@openai/codex",
 	        .fallback_title = "Codex CLI",
+	        .executable_name = "codex",
 	        .version_probe_command = "codex --version",
+	        .homebrew_package = "codex",
+	        .homebrew_cask = true,
 	        .preferred_version = kCodexPreferredVersion,
 	        .fallback_version = kCodexFallbackVersion,
 	        .version_policy = CliVersionPolicy::FixedPreferredAndFallback,
@@ -89,21 +98,29 @@ namespace
 	        .provider_id = uam::provider_ids::kClaudeCli,
 	        .npm_package = "@anthropic-ai/claude-code",
 	        .fallback_title = "Claude Code",
+	        .executable_name = "claude",
 	        .version_probe_command = "claude --version",
+	        .homebrew_package = "claude-code",
+	        .homebrew_cask = true,
 	        .preferred_version = kLatestVersion,
 	    },
 	    ProviderCliPolicy{
 	        .provider_id = uam::provider_ids::kOpenCodeCli,
 	        .npm_package = "opencode-ai",
 	        .fallback_title = "OpenCode",
+	        .executable_name = "opencode",
 	        .version_probe_command = "opencode --version",
+	        .homebrew_package = "opencode",
 	        .preferred_version = kLatestVersion,
 	    },
 	    ProviderCliPolicy{
 	        .provider_id = uam::provider_ids::kCopilotCli,
 	        .npm_package = "@github/copilot",
 	        .fallback_title = "GitHub Copilot CLI",
+	        .executable_name = "copilot",
 	        .version_probe_command = "copilot --version",
+	        .homebrew_package = "copilot-cli",
+	        .homebrew_cask = true,
 	        .preferred_version = kLatestVersion,
 	    },
 	});
@@ -341,6 +358,71 @@ namespace
 		return command;
 	}
 
+	std::string BuildHomebrewUpgradeCommand(const ProviderCliPolicy& policy)
+	{
+		if (policy.homebrew_package.empty())
+		{
+			return "";
+		}
+		return policy.homebrew_cask
+		           ? "brew upgrade --cask " + std::string(policy.homebrew_package)
+		           : "brew upgrade " + std::string(policy.homebrew_package);
+	}
+
+	std::string BuildInstallCommand(const ProviderCliPolicy& policy, std::string_view version, std::string_view install_method)
+	{
+		if (install_method == "homebrew-formula" || install_method == "homebrew-cask")
+		{
+			return BuildHomebrewUpgradeCommand(policy);
+		}
+		return BuildNpmGlobalInstallCommand(policy.npm_package, version);
+	}
+
+	std::string InstallMethodFromProbeOutput(std::string_view output)
+	{
+		const std::size_t marker = output.find(kProviderCliPathMarker);
+		if (marker == std::string_view::npos)
+		{
+			return "npm";
+		}
+		const std::size_t line_end = output.find('\n', marker);
+		const std::string_view path_line = output.substr(marker, line_end == std::string_view::npos ? output.size() - marker : line_end - marker);
+		if (uam::strings::Contains(path_line, "Caskroom/"))
+		{
+			return "homebrew-cask";
+		}
+		if (uam::strings::Contains(path_line, "Cellar/"))
+		{
+			return "homebrew-formula";
+		}
+		return "npm";
+	}
+
+	std::string StripProbePathLine(std::string output)
+	{
+		const std::size_t marker = output.find(kProviderCliPathMarker);
+		if (marker == std::string::npos)
+		{
+			return output;
+		}
+		const std::size_t line_end = output.find('\n', marker);
+		output.erase(marker, line_end == std::string::npos ? output.size() - marker : line_end - marker + 1);
+		return output;
+	}
+
+	std::string BuildInstallAwareProbeCommand(const ProviderCliPolicy& policy)
+	{
+#if defined(__APPLE__)
+		std::string command = "uam_cli_path=$(command -v " + std::string(policy.executable_name) + " 2>/dev/null || true); ";
+		command += "uam_cli_target=$(readlink \"$uam_cli_path\" 2>/dev/null || true); ";
+		command += "printf '[UAM CLI PATH] %s|%s\\n' \"$uam_cli_path\" \"$uam_cli_target\"; ";
+		command += policy.version_probe_command;
+		return command;
+#else
+		return std::string(policy.version_probe_command);
+#endif
+	}
+
 	std::string ProviderTitle(const uam::AppState& app, std::string_view provider_id)
 	{
 		const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
@@ -433,7 +515,8 @@ void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 		return;
 	}
 
-	const std::string command = VersionProbeCommandForProvider(normalized_provider_id);
+	const ProviderCliPolicy& policy = ProviderCliPolicyOrDefault(normalized_provider_id);
+	const std::string command = BuildInstallAwareProbeCommand(policy);
 	if (command.empty())
 	{
 		app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = "Provider CLI version checks are not supported for this provider.";
@@ -486,15 +569,18 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 		return FailProviderCliInstall(error_out, "Cannot install a provider CLI version while that provider is processing.");
 	}
 
-	const std::string command = InstallCommandForProviderVersion(resolved.provider_id, trimmed_version);
+	uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[resolved.provider_id];
+	const std::string command = BuildInstallCommand(*resolved.policy, trimmed_version, provider_state.install_method);
 	if (command.empty())
 	{
 		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
 	}
 
 	app.runtime_cli_pin_provider_id = resolved.provider_id;
-	app.runtime_cli_versions_by_provider_id[resolved.provider_id].selected_version.assign(trimmed_version);
-	app.runtime_cli_versions_by_provider_id[resolved.provider_id].install_output.clear();
+	provider_state.selected_version.assign(trimmed_version);
+	provider_state.install_command = command;
+	provider_state.install_output.clear();
+	provider_state.last_install_status = "running";
 	StartAsyncCommandTask(app.runtime_cli_pin_task, command);
 	app.status_line = ProviderTitleMessage("Running ", ProviderTitle(app, resolved.provider_id), " install command...");
 	return true;
@@ -508,6 +594,8 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	{
 		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(app.runtime_cli_version_provider_id);
 		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
+		provider_state.install_method = InstallMethodFromProbeOutput(output);
+		output = StripProbePathLine(std::move(output));
 		provider_state.checked = true;
 		provider_state.raw_output = output;
 		provider_state.installed_version.clear();
@@ -552,11 +640,13 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		{
 			app.status_line = "Provider CLI update command failed. Review output in Settings.";
 			provider_state.message = "Update command failed.";
+			provider_state.last_install_status = "failed";
 		}
 		else
 		{
 			app.status_line = "Provider CLI update completed. Re-checking installed version.";
 			provider_state.message = app.status_line;
+			provider_state.last_install_status = "succeeded";
 			StartProviderVersionCheck(app, provider_id, true);
 		}
 	}
@@ -649,10 +739,26 @@ std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id,
 	return ProviderCliCompatibilityService().InstallCommandForProviderVersion(provider_id, version);
 }
 
+std::string BuildCliProviderInstallCommandForMethodForTests(std::string_view provider_id, std::string_view version, std::string_view install_method)
+{
+	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
+	const std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
+	if (resolved.policy == nullptr || !ProviderCliCompatibilityService().IsSupportedVersionForProvider(resolved.provider_id, trimmed_version))
+	{
+		return "";
+	}
+	return BuildInstallCommand(*resolved.policy, trimmed_version, install_method);
+}
+
 std::string ExtractCliProviderSemverVersionForTests(std::string_view output)
 {
 	const std::optional<std::string> parsed = ExtractSemverVersion(output);
 	return parsed.value_or("");
+}
+
+std::string ExtractCliProviderInstallMethodForTests(std::string_view output)
+{
+	return InstallMethodFromProbeOutput(output);
 }
 
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output)

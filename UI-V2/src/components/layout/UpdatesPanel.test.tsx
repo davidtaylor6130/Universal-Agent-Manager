@@ -24,7 +24,9 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
     dismiss: vi.fn(),
     dismissAll: vi.fn(),
     applyCliProviderVersion: vi.fn(async () => true),
-    providerChecksRunning: false,
+    providerStates: [],
+    providerTaskRunning: false,
+    providerUpdateResults: [],
     ...overrides,
   }
 }
@@ -73,6 +75,73 @@ describe('UpdatesPanel', () => {
     expect(checking.disabled).toBe(true)
     expect(checking.getAttribute('aria-busy')).toBe('true')
     expect(checking.querySelector('.animate-spin')).toBeTruthy()
+    act(() => root.unmount())
+  })
+
+  it('animates only the provider being updated', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [
+        ...monitor().updates,
+        {
+          id: 'opencode-cli',
+          providerId: 'opencode-cli',
+          name: 'OpenCode',
+          currentVersion: '1.17.15',
+          latestVersion: '1.18.0',
+          url: 'https://example.test/opencode',
+          installable: true,
+        },
+      ],
+      providerStates: [
+        {
+          providerId: 'codex-cli',
+          installedVersion: '0.124.0',
+          selectedVersion: '0.130.0',
+          availableVersions: [],
+          preferredVersion: '',
+          status: 'installing',
+          message: 'Running Codex install command...',
+          running: true,
+          lastCommand: '',
+          lastOutput: '',
+          installMethod: 'npm',
+          lastInstallStatus: 'running',
+        },
+      ],
+      providerTaskRunning: true,
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    const codex = host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement
+    const opencode = host.querySelector('button[aria-label="Update OpenCode to 1.18.0"]') as HTMLButtonElement
+    expect(codex.getAttribute('aria-busy')).toBe('true')
+    expect(codex.textContent).toContain('Updating…')
+    expect(opencode.getAttribute('aria-busy')).toBeNull()
+    expect(opencode.textContent).toContain('Install update')
+    expect(opencode.disabled).toBe(true)
+    act(() => root.unmount())
+  })
+
+  it('shows the completed provider install result after its update row disappears', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [],
+      providerUpdateResults: [{
+        providerId: 'opencode-cli',
+        name: 'OpenCode',
+        status: 'failed',
+        message: 'Update command failed.',
+        output: 'EEXIST: /opt/homebrew/bin/opencode',
+        installedVersion: '1.17.15',
+      }],
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('OpenCode update failed')
+    expect(host.textContent).toContain('EEXIST: /opt/homebrew/bin/opencode')
     act(() => root.unmount())
   })
 })

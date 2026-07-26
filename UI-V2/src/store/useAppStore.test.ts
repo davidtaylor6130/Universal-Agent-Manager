@@ -174,6 +174,16 @@ describe('useAppStore Gemini CLI slice', () => {
     vi.restoreAllMocks()
   })
 
+  it('keeps loaded skills cached when the Skills window closes', () => {
+    const entries = [{ id: 'github', title: 'GitHub', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/tmp/github.uam' }]
+    useAppStore.setState({ isMarkdownStoreOpen: true, markdownStoreEntries: entries })
+
+    useAppStore.getState().closeMarkdownStore()
+
+    expect(useAppStore.getState().isMarkdownStoreOpen).toBe(false)
+    expect(useAppStore.getState().markdownStoreEntries).toEqual(entries)
+  })
+
   it('persists the working display mode locally', () => {
     const stored = new Map<string, string>()
     Object.defineProperty(window, 'localStorage', {

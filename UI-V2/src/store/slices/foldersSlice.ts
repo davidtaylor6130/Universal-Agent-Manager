@@ -338,7 +338,6 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
     closeMarkdownStore: () => set({
       isMarkdownStoreOpen: false,
-      markdownStoreEntries: [],
       markdownStoreLoading: false,
       markdownStoreError: '',
     }),

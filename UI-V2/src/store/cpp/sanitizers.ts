@@ -871,6 +871,8 @@ export const emptyCliVersionProviderState: CliVersionProviderState = {
   status: 'unknown',
   message: '',
   running: false,
+  installMethod: 'npm',
+  lastInstallStatus: 'none',
   lastCommand: '',
   lastOutput: '',
 }
@@ -892,6 +894,16 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
     status === 'unknown'
       ? status
       : 'unknown'
+  const installMethod = stringOr(value.installMethod)
+  const normalizedInstallMethod: NonNullable<CliVersionProviderState['installMethod']> =
+    installMethod === 'homebrew-formula' || installMethod === 'homebrew-cask' ? installMethod : 'npm'
+  const lastInstallStatus = stringOr(value.lastInstallStatus)
+  const normalizedLastInstallStatus: NonNullable<CliVersionProviderState['lastInstallStatus']> =
+    lastInstallStatus === 'running' ||
+    lastInstallStatus === 'succeeded' ||
+    lastInstallStatus === 'failed'
+      ? lastInstallStatus
+      : 'none'
 
   return {
     providerId,
@@ -908,6 +920,8 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
     status: normalizedStatus,
     message: stringOr(value.message),
     running: booleanOr(value.running),
+    installMethod: normalizedInstallMethod,
+    lastInstallStatus: normalizedLastInstallStatus,
     lastCommand: stringOr(value.lastCommand),
     lastOutput: stringOr(value.lastOutput),
   }

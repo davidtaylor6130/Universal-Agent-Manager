@@ -4,18 +4,25 @@ import type { Provider } from '../types/provider'
 const CACHE_KEY = 'uam-update-catalog-v1'
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 
-const providerPackages: Record<string, string> = {
-  'gemini-cli': '@google/gemini-cli',
-  'codex-cli': '@openai/codex',
-  'claude-cli': '@anthropic-ai/claude-code',
-  'opencode-cli': 'opencode-ai',
-  'copilot-cli': '@github/copilot',
+const providerPackages: Record<string, {
+  npmPackage: string
+  homebrew: { kind: 'formula' | 'cask'; name: string }
+}> = {
+  'gemini-cli': { npmPackage: '@google/gemini-cli', homebrew: { kind: 'formula', name: 'gemini-cli' } },
+  'codex-cli': { npmPackage: '@openai/codex', homebrew: { kind: 'cask', name: 'codex' } },
+  'claude-cli': { npmPackage: '@anthropic-ai/claude-code', homebrew: { kind: 'cask', name: 'claude-code' } },
+  'opencode-cli': { npmPackage: 'opencode-ai', homebrew: { kind: 'formula', name: 'opencode' } },
+  'copilot-cli': { npmPackage: '@github/copilot', homebrew: { kind: 'cask', name: 'copilot-cli' } },
 }
 
 export interface LatestUpdateCatalog {
   checkedAt: string
   uam: { version: string; url: string }
-  providers: Record<string, { version: string; url: string }>
+  providers: Record<string, {
+    version: string
+    url: string
+    homebrew?: { version: string; url: string }
+  }>
 }
 
 export interface AvailableUpdate {
@@ -62,14 +69,20 @@ function cacheUpdateCatalog(catalog: LatestUpdateCatalog) {
 
 export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
   const providerEntries = Object.entries(providerPackages)
-  const [releaseResult, ...providerResults] = await Promise.allSettled([
+  const homebrewEntries = providerEntries
+  const [releaseResult, ...results] = await Promise.allSettled([
     fetch('https://api.github.com/repos/davidtaylor6130/Universal-Agent-Manager/releases/latest', {
       headers: { Accept: 'application/vnd.github+json' },
     }),
-    ...providerEntries.map(([, packageName]) =>
-      fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`)
+    ...providerEntries.map(([, providerPackage]) =>
+      fetch(`https://registry.npmjs.org/${encodeURIComponent(providerPackage.npmPackage)}/latest`)
+    ),
+    ...homebrewEntries.map(([, providerPackage]) =>
+      fetch(`https://formulae.brew.sh/api/${providerPackage.homebrew.kind}/${providerPackage.homebrew.name}.json`)
     ),
   ])
+  const providerResults = results.slice(0, providerEntries.length)
+  const homebrewResults = results.slice(providerEntries.length)
   const releaseResponse = releaseResult.status === 'fulfilled' ? releaseResult.value : null
   let release: { tag_name?: string; html_url?: string } = {}
   try {
@@ -80,7 +93,7 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
 
   const providers: LatestUpdateCatalog['providers'] = {}
   for (let index = 0; index < providerEntries.length; index += 1) {
-    const [providerId, packageName] = providerEntries[index]
+    const [providerId, providerPackage] = providerEntries[index]
     const result = providerResults[index]
     if (result.status !== 'fulfilled' || !result.value.ok) continue
     const response = result.value
@@ -93,7 +106,29 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
     if (!payload.version) continue
     providers[providerId] = {
       version: payload.version,
-      url: `https://www.npmjs.com/package/${packageName}`,
+      url: `https://www.npmjs.com/package/${providerPackage.npmPackage}`,
+    }
+  }
+
+  for (let index = 0; index < homebrewEntries.length; index += 1) {
+    const [providerId, providerPackage] = homebrewEntries[index]
+    const result = homebrewResults[index]
+    if (result.status !== 'fulfilled' || !result.value.ok) continue
+    let payload: { version?: string; versions?: { stable?: string } }
+    try {
+      payload = await result.value.json()
+    } catch {
+      continue
+    }
+    const version = payload.version || payload.versions?.stable || ''
+    if (!version) continue
+    providers[providerId] ??= {
+      version: '',
+      url: `https://www.npmjs.com/package/${providerPackage.npmPackage}`,
+    }
+    providers[providerId].homebrew = {
+      version,
+      url: `https://formulae.brew.sh/${providerPackage.homebrew.kind}/${providerPackage.homebrew.name}`,
     }
   }
 
@@ -135,7 +170,10 @@ export function availableUpdates(
   }
 
   for (const state of versionManager.providers) {
-    const latest = catalog.providers[state.providerId]
+    const catalogProvider = catalog.providers[state.providerId]
+    const latest = state.installMethod === 'homebrew-formula' || state.installMethod === 'homebrew-cask'
+      ? catalogProvider?.homebrew
+      : catalogProvider
     const currentVersion = cleanVersion(state.installedVersion)
     if (!currentVersion) continue
     const preferredVersion = state.preferredVersion === 'latest' ? '' : cleanVersion(state.preferredVersion)
@@ -152,7 +190,7 @@ export function availableUpdates(
       name: provider?.shortName || provider?.name || state.providerId,
       currentVersion,
       latestVersion,
-      url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId] ?? ''}`,
+      url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId]?.npmPackage ?? ''}`,
       installable: state.preferredVersion === 'latest' ||
         state.providerId === 'gemini-cli' ||
         state.availableVersions.some((option) => cleanVersion(option.version) === latestVersion),

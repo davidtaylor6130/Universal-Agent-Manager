@@ -1,7 +1,7 @@
 {
   "name": "uam-ui-v2",
   "private": true,
-  "version": "4.4.2",
+  "version": "4.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

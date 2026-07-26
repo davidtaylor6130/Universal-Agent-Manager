@@ -393,6 +393,8 @@ export interface CliVersionProviderState {
   status: 'unknown' | 'checking' | 'installing' | 'supported' | 'unsupported'
   message: string
   running: boolean
+  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask'
+  lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
 }

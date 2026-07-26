@@ -149,6 +149,14 @@ function joinedDictationText(base: string, finalText: string, interimText: strin
   return [base.trimEnd(), finalText.trim(), interimText.trim()].filter(Boolean).join(' ')
 }
 
+function slashName(value: string, fallback = 'skill') {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || fallback
+}
+
+function skillCommandName(entry: { commandName?: string; title: string }) {
+  return entry.commandName || slashName(entry.title)
+}
+
 function fileUriToPath(uri: string): string {
   if (!uri.startsWith('file://')) return uri
   try {
@@ -177,6 +185,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashMessage, setSlashMessage] = useState('')
   const [slashGroup, setSlashGroup] = useState('')
+  const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [memoryChipExplicit, setMemoryChipExplicit] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>([])
@@ -199,7 +208,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [])
 
   useEffect(() => setMemoryChipExplicit(false), [session.id])
-  const slashGroupButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
@@ -1070,47 +1079,61 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     void setSessionMemoryLevel(session.id, level)
   }
   const slashCommands = useMemo<SlashCommand[]>(
-    () => [
-      { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-      ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-      ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
-      { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
-      { id: 'safety', label: '/safety', hint: 'Choose the command safety tier', icon: <Shield size={15} />, run: () => void runCommandSafetyCommand() },
-      { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
-      {
-        id: 'memory',
-        label: '/memory',
-        hint: `Choose memory level · current: ${currentMemoryLevel}`,
-        icon: <Brain size={15} />,
-        run: () => setDraft('/memory '),
-      },
-      { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
-      { id: 'skills', label: '/skills', hint: 'Open Skills', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
-      ...markdownStoreEntries.filter((entry) => entry.favorite && !entry.group).map((entry) => ({
+    () => {
+      const favorites = markdownStoreEntries.filter((entry) => entry.favorite)
+      const prefixCounts = favorites.reduce<Record<string, number>>((counts, entry) => {
+        const [prefix, suffix] = skillCommandName(entry).split('-', 2)
+        if (!suffix) return counts
+        counts[prefix] = (counts[prefix] ?? 0) + 1
+        return counts
+      }, {})
+      const groups = favorites.reduce<Record<string, typeof favorites>>((result, entry) => {
+        const [prefix, suffix] = skillCommandName(entry).split('-', 2)
+        const group = entry.group?.trim() || (suffix && prefixCounts[prefix] > 1 ? prefix : '')
+        ;(result[group] ??= []).push(entry)
+        return result
+      }, {})
+      const skillCommand = (entry: typeof favorites[number], label = skillCommandName(entry)): SlashCommand => ({
         id: `md:${entry.id}`,
-        label: '/' + (entry.commandName || entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skill'),
+        label: `/${label}`,
         hint: `${entry.title}${entry.sourceProvider ? ` · ${entry.sourceProvider}` : ''}`,
         icon: <FileText size={15} />,
         run: () => attachMarkdownStoreEntry(session.id, entry),
-      })),
-      ...Object.entries(markdownStoreEntries.filter((entry) => entry.favorite && entry.group).reduce<Record<string, typeof markdownStoreEntries>>((groups, entry) => {
-        ;(groups[entry.group!] ??= []).push(entry)
-        return groups
-      }, {})).map(([group, entries]) => ({
-        id: `md-group:${group}`,
-        label: '/' + (group.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skills'),
-        hint: `${entries.length} skill${entries.length === 1 ? '' : 's'}`,
-        icon: <BookOpen size={15} />,
-        run: () => setSlashGroup(group),
-        groupEntries: entries.map((entry) => ({
-          id: `md:${entry.id}`,
-          label: '/' + (entry.commandName || entry.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skill'),
-          hint: `${entry.title}${entry.sourceProvider ? ` · ${entry.sourceProvider}` : ''}`,
-          icon: <FileText size={15} />,
-          run: () => attachMarkdownStoreEntry(session.id, entry),
-        })),
-      })),
-    ],
+      })
+
+      return [
+        { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
+        { id: 'safety', label: '/safety', hint: 'Choose the command safety tier', icon: <Shield size={15} />, run: () => void runCommandSafetyCommand() },
+        { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
+        {
+          id: 'memory',
+          label: '/memory',
+          hint: `Choose memory level · current: ${currentMemoryLevel}`,
+          icon: <Brain size={15} />,
+          run: () => setDraft('/memory '),
+        },
+        { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
+        { id: 'skills', label: '/skills', hint: 'Open Skills', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
+        ...(groups[''] ?? []).map((entry) => skillCommand(entry)),
+        ...Object.entries(groups).filter(([group]) => group).map(([group, entries]) => {
+          const groupSlug = slashName(group, 'skills')
+          return {
+            id: `md-group:${group}`,
+            label: `/${groupSlug}`,
+            hint: `${entries.length} skill${entries.length === 1 ? '' : 's'}`,
+            icon: <BookOpen size={15} />,
+            run: () => setSlashGroup(group),
+            groupEntries: entries.map((entry) => {
+              const stem = skillCommandName(entry).replace(/-[0-9a-f]{8}$/i, '')
+              return skillCommand(entry, stem.startsWith(`${groupSlug}-`) ? stem.slice(groupSlug.length + 1) : stem)
+            }),
+          }
+        }),
+      ]
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
   )
@@ -1180,9 +1203,15 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slashPaletteVisible])
-  const runSlashCommand = (command: { run: () => void }) => {
+  const runSlashCommand = (command: SlashCommand) => {
+    if (command.groupEntries) {
+      setSlashGroup(command.id.slice('md-group:'.length))
+      setSlashGroupIndex(0)
+      return
+    }
     setDraft('')
     setSlashIndex(0)
+    setSlashGroup('')
     setPermissionMenuOpen(false)
     command.run()
   }
@@ -1190,6 +1219,28 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const activeSlashGroupAnchor = { current: slashGroupButtonRefs.current[slashGroup] }
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (activeSlashGroup?.groupEntries) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSlashGroupIndex((i) => (i + 1) % activeSlashGroup.groupEntries!.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSlashGroupIndex((i) => (i - 1 + activeSlashGroup.groupEntries!.length) % activeSlashGroup.groupEntries!.length)
+        return
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        runSlashCommand(activeSlashGroup.groupEntries[Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)])
+        return
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+        event.preventDefault()
+        setSlashGroup('')
+        return
+      }
+    }
     if (slashOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -1200,6 +1251,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         event.preventDefault()
         setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
         return
+      }
+      if (event.key === 'ArrowRight') {
+        const command = slashMatches[Math.min(slashIndex, slashMatches.length - 1)]
+        if (command.groupEntries) {
+          event.preventDefault()
+          runSlashCommand(command)
+          return
+        }
       }
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
@@ -1802,18 +1861,22 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         type="button"
                         role="option"
                         aria-selected={active}
+                        aria-haspopup={command.groupEntries ? 'menu' : undefined}
+                        aria-expanded={command.groupEntries ? slashGroup === command.id.slice('md-group:'.length) : undefined}
                         ref={(element) => {
-                          if (command.groupEntries) slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element
                           if (active) element?.scrollIntoView?.({ block: 'nearest' })
                         }}
-                        onMouseEnter={() => setSlashIndex(index)}
+                        onMouseEnter={() => {
+                          setSlashIndex(index)
+                          if (command.id !== `md-group:${slashGroup}`) setSlashGroup('')
+                        }}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
                         style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}
                       >
                         <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined && commandSafetyQuery === undefined && codexOptionKind === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <ChevronRight className="ml-1 inline" size={14} aria-hidden />}</span>
+                          <span className={permissionModeQuery === undefined && commandSafetyQuery === undefined && codexOptionKind === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -1826,7 +1889,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             {activeSlashGroup?.groupEntries && activeSlashGroupAnchor.current && (
               <ViewportMenu anchorRef={activeSlashGroupAnchor} side="right" role="menu" aria-label={`${slashGroup} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
                 <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>{slashGroup}</div>
-                {activeSlashGroup.groupEntries.map((command) => <button key={command.id} type="button" role="menuitem" onMouseDown={(event) => { event.preventDefault(); setSlashGroup(''); runSlashCommand(command) }} className="uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left" style={{ borderRadius: 6, color: 'var(--text-2)' }}><FileText size={15} className="mt-0.5 shrink-0" aria-hidden /><span className="min-w-0"><span className="block font-mono text-sm" style={{ color: 'var(--text)' }}>{command.label}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>)}
+                {activeSlashGroup.groupEntries.map((command, index) => <button key={command.id} type="button" role="menuitem" onMouseEnter={() => setSlashGroupIndex(index)} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${index === slashGroupIndex ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: index === slashGroupIndex ? 'var(--text)' : 'var(--text-2)' }}><FileText size={15} className="mt-0.5 shrink-0" aria-hidden /><span className="min-w-0"><span className="block font-mono text-sm" style={{ color: index === slashGroupIndex ? 'var(--accent)' : 'var(--text)' }}>{command.label}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>)}
               </ViewportMenu>
             )}
             {(dictationActive || dictationError) && (
@@ -1851,6 +1914,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               value={draft}
               onChange={(event) => {
                 setDraft(event.target.value)
+                setSlashGroup('')
                 setPermissionMenuOpen(false)
               }}
               onKeyDown={onComposerKeyDown}

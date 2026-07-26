@@ -32,6 +32,38 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </div>
         )}
 
+        {monitor.providerUpdateResults.length > 0 && (
+          <div className="mb-3 grid gap-2">
+            {monitor.providerUpdateResults.map((result) => (
+              <div
+                key={result.providerId}
+                role={result.status === 'failed' ? 'alert' : 'status'}
+                className="rounded-lg p-3 text-xs"
+                style={{
+                  color: result.status === 'failed' ? 'var(--red)' : 'var(--green)',
+                  border: `1px solid ${result.status === 'failed' ? 'var(--red)' : 'var(--green)'}`,
+                  background: 'var(--surface-up)',
+                }}
+              >
+                <div className="font-semibold">
+                  {result.name} update {result.status === 'failed' ? 'failed' : 'completed'}
+                </div>
+                <div className="mt-1" style={{ color: 'var(--text-2)' }}>
+                  {result.message || (result.status === 'failed' ? 'The installer returned an error.' : `Installed ${result.installedVersion}.`)}
+                </div>
+                {result.output && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer">Installer output</summary>
+                    <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded p-2 font-mono text-[10px]" style={{ color: 'var(--text-2)', background: 'var(--bg)' }}>
+                      {result.output}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {monitor.updates.length === 0 ? (
           <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
             <ArrowUpCircle size={24} />
@@ -54,65 +86,70 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                 </div>
               </div>
             </div>
-            {monitor.updates.map((update) => (
-              <article
-                key={update.id}
-                data-update-available="true"
-                className="grid gap-3 rounded-lg p-3"
-                style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{update.name}</div>
-                    <div className="mt-1.5 flex items-center gap-2 text-[11px]">
-                      <span style={{ color: 'var(--text-3)' }}>Current <span className="font-mono">{update.currentVersion}</span></span>
-                      <span aria-hidden style={{ color: 'var(--text-3)' }}>→</span>
-                      <strong style={{ color: 'var(--text)' }}>Available <span className="font-mono">{update.latestVersion}</span></strong>
+            {monitor.updates.map((update) => {
+              const providerState = monitor.providerStates.find((state) => state.providerId === update.providerId)
+              const providerRunning = Boolean(providerState?.running)
+              return (
+                <article
+                  key={update.id}
+                  data-update-available="true"
+                  className="grid gap-3 rounded-lg p-3"
+                  style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{update.name}</div>
+                      <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+                        <span style={{ color: 'var(--text-3)' }}>Current <span className="font-mono">{update.currentVersion}</span></span>
+                        <span aria-hidden style={{ color: 'var(--text-3)' }}>→</span>
+                        <strong style={{ color: 'var(--text)' }}>Available <span className="font-mono">{update.latestVersion}</span></strong>
+                      </div>
                     </div>
+                    <IconButton
+                      icon={<X size={14} />}
+                      label={`Dismiss ${update.name} ${update.latestVersion}`}
+                      onClick={() => monitor.dismiss(update.id, update.latestVersion)}
+                    />
                   </div>
-                  <IconButton
-                    icon={<X size={14} />}
-                    label={`Dismiss ${update.name} ${update.latestVersion}`}
-                    onClick={() => monitor.dismiss(update.id, update.latestVersion)}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {update.providerId && update.installable ? (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      leadingIcon={<Download size={14} aria-hidden />}
-                      aria-label={`Update ${update.name} to ${update.latestVersion}`}
-                      loading={monitor.providerChecksRunning}
-                      onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }}
-                    >
-                      {monitor.providerChecksRunning ? 'Updating…' : 'Install update'}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      leadingIcon={<ExternalLink size={14} aria-hidden />}
-                      aria-label={`View ${update.name} ${update.latestVersion} release`}
-                      onClick={() => window.open(update.url, '_blank', 'noopener')}
-                    >
-                      View release
-                    </Button>
-                  )}
-                  {update.providerId && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      leadingIcon={<ExternalLink size={14} aria-hidden />}
-                      aria-label={`Open ${update.name} update instructions`}
-                      onClick={() => window.open(update.url, '_blank', 'noopener')}
-                    >
-                      Release notes
-                    </Button>
-                  )}
-                </div>
-              </article>
-            ))}
+                  <div className="flex flex-wrap gap-2">
+                    {update.providerId && update.installable ? (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        leadingIcon={<Download size={14} aria-hidden />}
+                        aria-label={`Update ${update.name} to ${update.latestVersion}`}
+                        loading={providerRunning}
+                        disabled={monitor.providerTaskRunning && !providerRunning}
+                        onClick={() => { void monitor.applyCliProviderVersion(update.providerId!, update.latestVersion) }}
+                      >
+                        {providerState?.status === 'checking' ? 'Verifying…' : providerRunning ? 'Updating…' : 'Install update'}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        leadingIcon={<ExternalLink size={14} aria-hidden />}
+                        aria-label={`View ${update.name} ${update.latestVersion} release`}
+                        onClick={() => window.open(update.url, '_blank', 'noopener')}
+                      >
+                        View release
+                      </Button>
+                    )}
+                    {update.providerId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        leadingIcon={<ExternalLink size={14} aria-hidden />}
+                        aria-label={`Open ${update.name} update instructions`}
+                        onClick={() => window.open(update.url, '_blank', 'noopener')}
+                      >
+                        Release notes
+                      </Button>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
           </div>
         )}
       </div>

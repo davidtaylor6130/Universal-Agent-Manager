@@ -343,6 +343,63 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('persists dragged workspace order inside a collection', () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => true)
+    const reorderResourceReferences = vi.fn(async () => true)
+    useAppStore.setState({
+      folders: [makeFolder(), second],
+      sessions: [],
+      resourceCollections: [{
+        id: 'work',
+        name: 'Work',
+        collapsed: false,
+        references: [
+          { id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' },
+          { id: 'website-ref', type: 'website', target: 'https://example.com', label: 'Example' },
+          { id: 'second-ref', type: 'workspace-folder', target: 'second', label: 'Second' },
+        ],
+      }],
+      reorderFolders,
+      reorderResourceReferences,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const keyboardSource = host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
+    const data = new Map<string, string>()
+    const transfer = {
+      effectAllowed: '',
+      get types() { return [...data.keys()] },
+      getData: (type: string) => data.get(type) ?? '',
+      setData: (type: string, value: string) => { data.set(type, value) },
+    }
+    const dragStart = new Event('dragstart', { bubbles: true })
+    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
+    Object.defineProperty(drop, 'clientY', { value: 35 })
+
+    act(() => source.dispatchEvent(dragStart))
+    act(() => target.dispatchEvent(drop))
+
+    expect(host.querySelector('[data-testid="folder-drag-handle-project"]')).toBeNull()
+    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
+    expect(reorderFolders).not.toHaveBeenCalled()
+
+    reorderResourceReferences.mockClear()
+    act(() => keyboardSource.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('selects a visible chat row after folders are grouped for rendering', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

@@ -681,9 +681,9 @@ void Application::Shutdown()
 	uam::FastStopAcpSessionsForExit(m_app);
 	uam::FastStopCliTerminalsForExit(m_app);
 
-	uam_cef_globals::g_app_state = nullptr;
-	uam_cef_globals::g_client = nullptr;
 	m_browser = nullptr;
+	uam_cef_globals::g_client = nullptr;
+	uam_cef_globals::g_app_state = nullptr;
 
 	CefShutdown();
 	m_dataRootLock.reset();

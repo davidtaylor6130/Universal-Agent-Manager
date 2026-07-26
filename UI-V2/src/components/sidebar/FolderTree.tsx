@@ -26,6 +26,38 @@ interface FolderTreeProps {
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
+type FolderDropEdge = 'before' | 'after'
+
+function moveId(ids: string[], sourceId: string, targetId: string, edge: FolderDropEdge) {
+  const reordered = ids.filter((id) => id !== sourceId)
+  const targetIndex = reordered.indexOf(targetId)
+  if (targetIndex < 0 || reordered.length === ids.length) return ids
+  reordered.splice(targetIndex + (edge === 'after' ? 1 : 0), 0, sourceId)
+  return reordered
+}
+
+function reorderCollectionFolderReferences(
+  collection: ResourceCollection,
+  sourceFolderId: string,
+  targetFolderId: string,
+  edge: FolderDropEdge,
+) {
+  const folderReferences = collection.references.filter((reference) => reference.type === 'workspace-folder')
+  const sourceReference = folderReferences.find((reference) => reference.target === sourceFolderId)
+  const targetReference = folderReferences.find((reference) => reference.target === targetFolderId)
+  if (!sourceReference || !targetReference) return null
+
+  const reorderedFolderIds = moveId(
+    folderReferences.map((reference) => reference.id),
+    sourceReference.id,
+    targetReference.id,
+    edge,
+  )
+  let folderIndex = 0
+  return collection.references.map((reference) =>
+    reference.type === 'workspace-folder' ? reorderedFolderIds[folderIndex++] : reference.id
+  )
+}
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders = useAppStore(useShallow((s) => s.folders))
@@ -42,6 +74,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
   const reorderFolders = useAppStore((s) => s.reorderFolders)
+  const reorderResourceReferences = useAppStore((s) => s.reorderResourceReferences)
   const createResourceCollection = useAppStore((s) => s.createResourceCollection)
 
   const [addingFolder, setAddingFolder] = useState(false)
@@ -55,7 +88,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
-  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
+  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
   const addControlsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
@@ -180,17 +213,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     }
   }
 
-  const commitFolderDrop = (targetId: string, edge: 'before' | 'after') => {
-    if (!draggedFolderId || draggedFolderId === targetId) return
-    const ids = folders.map((folder) => folder.id).filter((id) => id !== draggedFolderId)
-    const targetIndex = ids.indexOf(targetId)
-    if (targetIndex < 0) return
-    ids.splice(targetIndex + (edge === 'after' ? 1 : 0), 0, draggedFolderId)
-    void reorderFolders(ids)
-  }
-
   const folderRowsById = new Map(searchModel.folderRows.map((row) => [row.folder.id, row]))
   const groupedFolderIds = new Set<string>()
+  const folderCollectionIds = new Map<string, string>()
   const collectionGroups = resourceCollections.map((collection) => ({
     collection,
     folderRows: collection.references.flatMap((reference) => {
@@ -198,10 +223,38 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       const row = folderRowsById.get(reference.target)
       if (!row) return []
       groupedFolderIds.add(reference.target)
+      folderCollectionIds.set(reference.target, collection.id)
       return [row]
     }),
   }))
   const ungroupedFolderRows = searchModel.folderRows.filter(({ folder }) => !groupedFolderIds.has(folder.id))
+
+  const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
+    if (sourceId === targetId) return
+    const sourceCollectionId = folderCollectionIds.get(sourceId)
+    const targetCollectionId = folderCollectionIds.get(targetId)
+    if (sourceCollectionId && sourceCollectionId === targetCollectionId) {
+      const collection = resourceCollections.find((item) => item.id === sourceCollectionId)
+      const referenceIds = collection
+        ? reorderCollectionFolderReferences(collection, sourceId, targetId, edge)
+        : null
+      if (referenceIds) void reorderResourceReferences(sourceCollectionId, referenceIds)
+      return
+    }
+    if (!sourceCollectionId && !targetCollectionId) {
+      void reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
+    }
+  }
+
+  const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
+    const collectionId = folderCollectionIds.get(sourceId)
+    const rows = collectionId
+      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
+      : ungroupedFolderRows
+    const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
+    const target = rows[sourceIndex + direction]
+    if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+  }
 
   const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => (
     <FolderRow
@@ -231,8 +284,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onDragStart={() => setDraggedFolderId(folder.id)}
       onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
       onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onMove={(direction) => moveFolderWithKeyboard(folder.id, direction)}
       onDrop={(edge) => {
-        commitFolderDrop(folder.id, edge)
+        if (draggedFolderId) commitFolderMove(draggedFolderId, folder.id, edge)
         setDraggedFolderId(null)
         setFolderDropTarget(null)
       }}
@@ -792,11 +846,12 @@ interface FolderRowProps {
   onOpenMemory: () => void
   sessionsById: Map<string, Session>
   draggable: boolean
-  dropEdge: 'before' | 'after' | null
+  dropEdge: FolderDropEdge | null
   onDragStart: () => void
-  onDragOver: (edge: 'before' | 'after') => void
+  onDragOver: (edge: FolderDropEdge) => void
   onDragEnd: () => void
-  onDrop: (edge: 'before' | 'after') => void
+  onMove: (direction: -1 | 1) => void
+  onDrop: (edge: FolderDropEdge) => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -825,6 +880,7 @@ const FolderRow = memo(function FolderRow({
   onDragStart,
   onDragOver,
   onDragEnd,
+  onMove,
   onDrop,
 }: FolderRowProps) {
   const [showAllSessions, setShowAllSessions] = useState(false)
@@ -893,12 +949,19 @@ const FolderRow = memo(function FolderRow({
       {/* Folder header */}
       <div
         data-testid={`folder-header-${folder.id}`}
-        className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1"
+        tabIndex={draggable ? 0 : -1}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
         style={{
           background: 'transparent',
           color: 'var(--text-2)',
         }}
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.currentTarget !== event.target || !draggable || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+          event.preventDefault()
+          onMove(event.key === 'ArrowUp' ? -1 : 1)
+        }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()

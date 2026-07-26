@@ -946,7 +946,11 @@ namespace uam
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
 			provider_json["running"] = check_running_for_provider || install_running_for_provider;
-			provider_json["lastCommand"] = install_running_for_provider ? app.runtime_cli_pin_task.command_preview : app.runtime_cli_version_check_task.command_preview;
+			provider_json["installMethod"] = provider_state.install_method;
+			provider_json["lastInstallStatus"] = provider_state.last_install_status;
+			provider_json["lastCommand"] = install_running_for_provider
+			                                   ? app.runtime_cli_pin_task.command_preview
+			                                   : uam::strings::NonEmptyOrFallback(provider_state.install_command, app.runtime_cli_version_check_task.command_preview);
 			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
 			return provider_json;
 		}

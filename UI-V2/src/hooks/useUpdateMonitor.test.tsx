@@ -48,9 +48,9 @@ describe('useUpdateMonitor', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1) })
     expect(fetch).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(fetch).toHaveBeenCalledTimes(6)
+    expect(fetch).toHaveBeenCalledTimes(11)
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS) })
-    expect(fetch).toHaveBeenCalledTimes(12)
+    expect(fetch).toHaveBeenCalledTimes(22)
 
     act(() => root.unmount())
   })
@@ -80,7 +80,7 @@ describe('useUpdateMonitor', () => {
       }
     })
 
-    expect(fetch).toHaveBeenCalledTimes(6)
+    expect(fetch).toHaveBeenCalledTimes(11)
     finishFetches.forEach((finish) => finish({ ok: true, json: async () => ({ version: '1.0.0' }) }))
     await act(async () => { await Promise.all(checks) })
     act(() => root.unmount())

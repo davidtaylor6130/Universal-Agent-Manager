@@ -4337,6 +4337,12 @@ UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("claude-cli", "release_2026-05.1"), std::string("npm install -g @anthropic-ai/claude-code@release_2026-05.1"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("opencode-cli", "0.6.6"), std::string("npm install -g opencode-ai@0.6.6"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "latest"), std::string("npm install -g @github/copilot@latest"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("opencode-cli", "1.18.0", "homebrew-formula"), std::string("brew upgrade opencode"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("codex-cli", "0.124.0", "homebrew-cask"), std::string("brew upgrade --cask codex"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("claude-cli", "latest", "npm"), std::string("npm install -g @anthropic-ai/claude-code@latest"));
+	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/opencode|../Cellar/opencode/1.17.15/bin/opencode\n1.17.15\n"), std::string("homebrew-formula"));
+	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/codex|/opt/homebrew/Caskroom/codex/0.144.5/codex\ncodex-cli 0.144.5\n"), std::string("homebrew-cask"));
+	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/claude|../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe\n2.1.207\n"), std::string("npm"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("unknown-provider", "0.38.1"), std::string(""));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "--bad"), std::string(""));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("claude-cli", "--bad"), std::string(""));

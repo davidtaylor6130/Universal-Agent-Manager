@@ -390,6 +390,9 @@ namespace uam
 		bool supported = false;
 		std::string installed_version;
 		std::string selected_version;
+		std::string install_method = "npm";
+		std::string install_command;
+		std::string last_install_status = "none";
 		std::string raw_output;
 		std::string message;
 		std::string install_output;

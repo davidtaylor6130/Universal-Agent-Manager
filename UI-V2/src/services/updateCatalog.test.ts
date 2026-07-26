@@ -59,6 +59,48 @@ describe('update catalog', () => {
     expect(updates[0]).toMatchObject({ currentVersion: '0.140.0', latestVersion: '0.124.0', installable: true })
   })
 
+  it('uses the Homebrew release channel for Homebrew-managed providers', () => {
+    const updates = availableUpdates(
+      {
+        checkedAt: '2026-07-25T00:00:00.000Z',
+        uam: { version: 'V4.5.0', url: 'https://example.test/uam' },
+        providers: {
+          'opencode-cli': {
+            version: '1.18.5',
+            url: 'https://www.npmjs.com/package/opencode-ai',
+            homebrew: { version: '1.18.0', url: 'https://formulae.brew.sh/formula/opencode' },
+          },
+        },
+      },
+      'V4.5.0',
+      {
+        providers: [{
+          providerId: 'opencode-cli',
+          installedVersion: '1.17.15',
+          selectedVersion: '',
+          availableVersions: [{ version: 'latest', preferred: true }],
+          preferredVersion: 'latest',
+          status: 'supported',
+          message: '',
+          running: false,
+          lastCommand: '',
+          lastOutput: '',
+          installMethod: 'homebrew-formula',
+          lastInstallStatus: 'none',
+        }],
+      },
+      [{ id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', description: '', color: '#fff' }],
+      {},
+    )
+
+    expect(updates).toEqual([expect.objectContaining({
+      providerId: 'opencode-cli',
+      latestVersion: '1.18.0',
+      url: 'https://formulae.brew.sh/formula/opencode',
+      installable: true,
+    })])
+  })
+
   it('fetches the GitHub release and all provider package releases', async () => {
     const responses = [
       { tag_name: 'V4.2.0', html_url: 'https://example.test/release' },
@@ -66,6 +108,11 @@ describe('update catalog', () => {
       { version: '0.130.0' },
       { version: '2.1.0' },
       { version: '1.2.0' },
+      { version: '0.0.400' },
+      { versions: { stable: '0.40.0' } },
+      { version: '0.130.0' },
+      { version: '2.1.0' },
+      { versions: { stable: '1.18.0' } },
       { version: '0.0.400' },
     ]
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -77,7 +124,8 @@ describe('update catalog', () => {
     const catalog = await fetchLatestUpdateCatalog()
     expect(catalog.uam.version).toBe('V4.2.0')
     expect(catalog.providers['codex-cli'].version).toBe('0.130.0')
-    expect(fetch).toHaveBeenCalledTimes(6)
+    expect(catalog.providers['opencode-cli'].homebrew?.version).toBe('1.18.0')
+    expect(fetch).toHaveBeenCalledTimes(11)
     vi.unstubAllGlobals()
   })
 
@@ -95,7 +143,7 @@ describe('update catalog', () => {
 
     const catalog = await fetchLatestUpdateCatalog()
     expect(catalog.uam.version).toBe('')
-    expect(Object.keys(catalog.providers)).toHaveLength(4)
+    expect(Object.keys(catalog.providers)).toHaveLength(5)
     vi.unstubAllGlobals()
   })
 
@@ -117,7 +165,7 @@ describe('update catalog', () => {
 
     const catalog = await fetchLatestUpdateCatalog()
     expect(catalog.uam.version).toBe('V4.2.0')
-    expect(Object.keys(catalog.providers)).toHaveLength(4)
+    expect(Object.keys(catalog.providers)).toHaveLength(5)
     vi.unstubAllGlobals()
   })
 })
