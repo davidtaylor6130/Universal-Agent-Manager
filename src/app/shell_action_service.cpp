@@ -476,7 +476,7 @@ namespace
 	{
 		const std::wstring shell_path = L"Software\\Classes\\" + std::wstring(kind) + L"\\shell";
 		HKEY shell = nullptr;
-		const LSTATUS opened = RegOpenKeyExW(HKEY_CURRENT_USER, shell_path.c_str(), 0, KEY_READ | KEY_WRITE, &shell);
+		const LSTATUS opened = RegOpenKeyExW(HKEY_CURRENT_USER, shell_path.c_str(), 0, KEY_READ | KEY_WRITE | DELETE, &shell);
 		if (opened == ERROR_FILE_NOT_FOUND) return true;
 		if (opened != ERROR_SUCCESS)
 		{

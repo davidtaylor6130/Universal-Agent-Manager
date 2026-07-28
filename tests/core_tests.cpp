@@ -3,6 +3,10 @@
 #include "app/persistence_coordinator.h"
 #include "cef/uam_query_handler_internal.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 using namespace uam_test;
 
 UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
@@ -483,6 +487,65 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(workflows.front().filename() == "Universal Agent Manager - review-selection.workflow");
+}
+#endif
+
+#if defined(_WIN32)
+UAM_TEST(WindowsShellActionsReplaceLegacyMenuAndReapply)
+{
+	const std::string token = uam::time::SteadyEpochNanosecondsTokenNow();
+	const std::wstring sandbox_path = L"Software\\UniversalAgentManagerTests\\" + std::wstring(token.begin(), token.end());
+	HKEY sandbox = nullptr;
+	UAM_ASSERT_EQ(RegCreateKeyExW(HKEY_CURRENT_USER, sandbox_path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &sandbox, nullptr), ERROR_SUCCESS);
+	struct ScopedRegistrySandbox
+	{
+		HKEY key;
+		std::wstring path;
+		bool overridden = false;
+		~ScopedRegistrySandbox()
+		{
+			if (overridden) RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+			RegCloseKey(key);
+			RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+		}
+	} guard{sandbox, sandbox_path};
+	UAM_ASSERT_EQ(RegOverridePredefKey(HKEY_CURRENT_USER, sandbox), ERROR_SUCCESS);
+	guard.overridden = true;
+
+	auto create_key = [](const wchar_t* path)
+	{
+		HKEY key = nullptr;
+		const LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr);
+		if (key != nullptr) RegCloseKey(key);
+		return status;
+	};
+	auto key_exists = [](const wchar_t* path)
+	{
+		HKEY key = nullptr;
+		const LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &key);
+		if (key != nullptr) RegCloseKey(key);
+		return status == ERROR_SUCCESS;
+	};
+	UAM_ASSERT_EQ(create_key(L"Software\\Classes\\*\\shell\\UAM_Legacy"), ERROR_SUCCESS);
+	UAM_ASSERT_EQ(create_key(L"Software\\Classes\\Directory\\shell\\UAM_Legacy"), ERROR_SUCCESS);
+
+	uam::AppState app;
+	ShellAction action;
+	action.id = "review";
+	action.label = "Review";
+	action.group_path = {"Version Control", "GitHub"};
+	action.open_workspace = true;
+	app.shell_actions.push_back(action);
+	std::string error;
+	const fs::path executable = LR"(C:\Program Files\Universal Agent Manager\universal_agent_manager.exe)";
+	UAM_ASSERT(ShellActionService::Apply(app, executable, &error));
+	UAM_ASSERT(!key_exists(L"Software\\Classes\\*\\shell\\UAM_Legacy"));
+	UAM_ASSERT(!key_exists(L"Software\\Classes\\Directory\\shell\\UAM_Legacy"));
+	UAM_ASSERT(key_exists(L"Software\\Classes\\*\\shell\\UAM_Actions\\shell\\0000\\shell\\0000\\shell\\0000\\command"));
+	UAM_ASSERT_EQ(create_key(L"Software\\Classes\\*\\shell\\UAM_Actions\\sentinel"), ERROR_SUCCESS);
+	UAM_ASSERT(ShellActionService::Apply(app, executable, &error));
+	UAM_ASSERT(!key_exists(L"Software\\Classes\\*\\shell\\UAM_Actions\\sentinel"));
+	UAM_ASSERT(key_exists(L"Software\\Classes\\Directory\\shell\\UAM_Actions\\shell\\0000\\shell\\0000\\shell\\0000\\command"));
 }
 #endif
 
