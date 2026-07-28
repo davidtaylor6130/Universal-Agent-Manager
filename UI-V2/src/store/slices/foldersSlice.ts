@@ -400,7 +400,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         sourceProvider: '',
         sourcePath: '',
         commandName: draft.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'skill',
-        group: '',
+        group: draft.group,
         filePath: `${get().markdownStoreDirectory}/${draft.title || Date.now()}.uam`,
       }
       set((state) => ({ markdownStoreEntries: [...state.markdownStoreEntries, synthetic] }))

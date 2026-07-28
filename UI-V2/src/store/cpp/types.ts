@@ -409,6 +409,7 @@ export interface ShellAction {
   skillPath: string
   providerId: string
   modelId: string
+  groupPath: string[]
   acceptsFiles: boolean
   acceptsFolders: boolean
   enabled: boolean

@@ -19,12 +19,14 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <iterator>
 #include <random>
 #include <set>
 #include <sstream>
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <shlobj.h>
 #endif
 
 namespace
@@ -34,6 +36,8 @@ namespace
 	constexpr std::string_view kLaunchFlag = "--uam-shell-action";
 	constexpr std::string_view kMacWorkflowPrefix = "Universal Agent Manager - ";
 	constexpr std::string_view kWindowsKeyPrefix = "UAM_";
+	constexpr std::size_t kMaxGroupDepth = 8;
+	constexpr std::size_t kMaxGroupSegmentBytes = 80;
 
 	fs::path ActionsPath(const fs::path& data_root)
 	{
@@ -107,6 +111,109 @@ namespace
 		return result + "'";
 	}
 
+	bool NormalizeGroupPath(const std::vector<std::string>& source, std::vector<std::string>& result, std::string* error_out)
+	{
+		result.clear();
+		if (source.size() > kMaxGroupDepth)
+		{
+			if (error_out != nullptr) *error_out = "Shell action groups support up to eight nested levels.";
+			return false;
+		}
+		for (const std::string& raw_segment : source)
+		{
+			if (std::ranges::any_of(raw_segment, [](unsigned char c) { return c < 0x20; }))
+			{
+				if (error_out != nullptr) *error_out = "Shell action group names cannot contain control characters.";
+				return false;
+			}
+			const std::string segment = uam::strings::SafeLine(raw_segment, kMaxGroupSegmentBytes, true);
+			if (segment.empty() || segment.find_first_of("/\\") != std::string::npos)
+			{
+				if (error_out != nullptr) *error_out = "Shell action group names must be non-empty path segments.";
+				return false;
+			}
+			result.push_back(segment);
+		}
+		return true;
+	}
+
+	std::vector<std::string> SplitGroupPath(std::string_view path)
+	{
+		std::vector<std::string> result;
+		while (!path.empty())
+		{
+			const std::size_t separator = path.find('/');
+			const std::string segment = uam::strings::Trim(path.substr(0, separator));
+			if (!segment.empty()) result.push_back(segment);
+			if (separator == std::string_view::npos) break;
+			path.remove_prefix(separator + 1);
+		}
+		return result;
+	}
+
+	std::vector<std::string> DefaultGroupPath(const MarkdownStoreService::Entry& entry)
+	{
+		if (!entry.group.empty()) return SplitGroupPath(entry.group);
+		std::vector<std::string> result;
+		for (const fs::path& component : uam::paths::PathFromUtf8(entry.id).parent_path())
+		{
+			const std::string segment = uam::paths::Utf8PathString(component);
+			if (result.empty() && uam::strings::EqualsIgnoreCase(segment, "bundled")) continue;
+			if (!segment.empty()) result.push_back(segment);
+		}
+		return result;
+	}
+
+	bool IsUnmodifiedBundledGitHubEntry(const MarkdownStoreService::Entry& entry)
+	{
+		const fs::path parent = uam::paths::PathFromUtf8(entry.id).parent_path();
+		auto component = parent.begin();
+		if (component == parent.end() || !uam::strings::EqualsIgnoreCase(uam::paths::Utf8PathString(*component), "bundled")) return false;
+		++component;
+		return component != parent.end() && uam::strings::EqualsIgnoreCase(uam::paths::Utf8PathString(*component), "GitHub");
+	}
+
+	std::string MenuPathKey(std::vector<std::string> path)
+	{
+		for (std::string& segment : path) segment = uam::strings::ToLowerAscii(segment);
+		return nlohmann::json(path).dump();
+	}
+
+	bool ValidateMenuHierarchy(const std::vector<ShellAction>& actions, std::string* error_out)
+	{
+		std::set<std::string> groups;
+		std::set<std::string> leaves;
+		for (const ShellAction& action : actions)
+		{
+			if (!action.enabled) continue;
+			std::vector<std::string> path;
+			for (const std::string& segment : action.group_path)
+			{
+				path.push_back(segment);
+				const std::string key = MenuPathKey(path);
+				if (leaves.contains(key))
+				{
+					if (error_out != nullptr) *error_out = "A shell action cannot have the same name as a group beside it.";
+					return false;
+				}
+				groups.insert(key);
+			}
+			path.push_back(action.label);
+			const std::string key = MenuPathKey(path);
+			if (groups.contains(key))
+			{
+				if (error_out != nullptr) *error_out = "A shell action cannot have the same name as a group beside it.";
+				return false;
+			}
+			if (!leaves.insert(key).second)
+			{
+				if (error_out != nullptr) *error_out = "Shell action labels must be unique within each group.";
+				return false;
+			}
+		}
+		return true;
+	}
+
 	bool NormalizeAction(const ShellAction& source, ShellAction& result, std::string* error_out)
 	{
 		result = source;
@@ -115,6 +222,7 @@ namespace
 		result.skill_path = uam::strings::Trim(source.skill_path);
 		result.provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id);
 		result.model_id = uam::strings::Trim(source.model_id);
+		if (!NormalizeGroupPath(source.group_path, result.group_path, error_out)) return false;
 		if (result.id.empty() || result.label.empty())
 		{
 			if (error_out != nullptr) *error_out = "Every shell action requires an id and label.";
@@ -148,9 +256,39 @@ namespace
 		return {
 			{"id", action.id}, {"label", action.label}, {"skillPath", action.skill_path},
 			{"providerId", action.provider_id}, {"modelId", action.model_id},
+			{"groupPath", action.group_path},
 			{"acceptsFiles", action.accepts_files}, {"acceptsFolders", action.accepts_folders},
 			{"enabled", action.enabled}, {"openWorkspace", action.open_workspace}
 		};
+	}
+
+	std::vector<ShellAction> DefaultActions(const fs::path& skills_root, std::string* error_out)
+	{
+		std::vector<ShellAction> actions;
+		ShellAction workspace;
+		workspace.id = "open-workspace";
+		workspace.label = "Open as Workspace";
+		workspace.open_workspace = true;
+		actions.push_back(std::move(workspace));
+
+		const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(skills_root, error_out);
+		if (error_out != nullptr && !error_out->empty()) return {};
+		for (const MarkdownStoreService::Entry& entry : entries)
+		{
+			if (!entry.favorite && !IsUnmodifiedBundledGitHubEntry(entry)) continue;
+			ShellAction action;
+			action.id = SafeId(entry.command_name);
+			action.label = entry.title;
+			action.skill_path = uam::paths::Utf8PathString(entry.file_path);
+			action.group_path = DefaultGroupPath(entry);
+			actions.push_back(std::move(action));
+		}
+		std::ranges::sort(actions.begin() + 1, actions.end(),
+		                  [](const ShellAction& lhs, const ShellAction& rhs)
+		                  {
+			                  return lhs.group_path == rhs.group_path ? lhs.label < rhs.label : lhs.group_path < rhs.group_path;
+		                  });
+		return actions;
 	}
 
 	std::string MacWorkflowDocument(const ShellAction& action, const fs::path& executable)
@@ -216,35 +354,135 @@ namespace
 		return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()), static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 	}
 
-	bool InstallWindowsVerb(const ShellAction& action, const fs::path& executable, std::wstring_view kind, std::string* error_out)
+	struct WindowsMenuNode
 	{
-		const std::wstring key_path = L"Software\\Classes\\" + std::wstring(kind) + L"\\shell\\" + Wide(std::string(kWindowsKeyPrefix) + action.id);
-		HKEY key = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+		std::string label;
+		const ShellAction* action = nullptr;
+		std::vector<WindowsMenuNode> children;
+	};
+
+	WindowsMenuNode BuildWindowsMenu(const std::vector<ShellAction>& actions, bool folders)
+	{
+		WindowsMenuNode root;
+		for (const ShellAction& action : actions)
 		{
-			if (error_out != nullptr) *error_out = "Failed to create the Windows shell action registry key.";
+			if (!action.enabled || (folders ? !action.accepts_folders : !action.accepts_files)) continue;
+			WindowsMenuNode* parent = &root;
+			for (const std::string& segment : action.group_path)
+			{
+				auto group = std::ranges::find_if(parent->children,
+				                                  [&](const WindowsMenuNode& child)
+				                                  {
+					                                  return child.action == nullptr && uam::strings::EqualsIgnoreCase(child.label, segment);
+				                                  });
+				if (group == parent->children.end())
+				{
+					parent->children.push_back({segment});
+					group = std::prev(parent->children.end());
+				}
+				parent = &*group;
+			}
+			parent->children.push_back({action.label, &action});
+		}
+		return root;
+	}
+
+	std::wstring OrderedWindowsKey(std::size_t index)
+	{
+		std::wstring key = std::to_wstring(index);
+		if (key.size() < 4) key.insert(0, 4 - key.size(), L'0');
+		return key;
+	}
+
+	bool InstallWindowsMenuNode(HKEY key, const WindowsMenuNode& node, const fs::path& executable, std::string* error_out)
+	{
+		if (!SetRegistryString(key, L"MUIVerb", Wide(node.label)))
+		{
+			if (error_out != nullptr) *error_out = "Failed to configure a Windows shell menu label.";
 			return false;
 		}
-		const bool label_ok = SetRegistryString(key, nullptr, Wide(action.label));
-		HKEY command_key = nullptr;
-		const bool command_key_ok = RegCreateKeyExW(key, L"command", 0, nullptr, 0, KEY_WRITE, nullptr, &command_key, nullptr) == ERROR_SUCCESS;
-		const std::wstring command = L"\"" + executable.wstring() + L"\" " + Wide(kLaunchFlag) + L" \"" + Wide(action.id) + L"\" \"%1\"";
-		const bool command_ok = command_key_ok && SetRegistryString(command_key, nullptr, command);
-		if (command_key != nullptr) RegCloseKey(command_key);
-		RegCloseKey(key);
-		if (!label_ok || !command_ok)
+		if (node.action != nullptr)
 		{
-			if (error_out != nullptr) *error_out = "Failed to configure the Windows shell action command.";
+			if (!SetRegistryString(key, L"MultiSelectModel", L"Single"))
+			{
+				if (error_out != nullptr) *error_out = "Failed to configure Windows shell action selection.";
+				return false;
+			}
+			HKEY command_key = nullptr;
+			if (RegCreateKeyExW(key, L"command", 0, nullptr, 0, KEY_WRITE, nullptr, &command_key, nullptr) != ERROR_SUCCESS)
+			{
+				if (error_out != nullptr) *error_out = "Failed to create a Windows shell action command.";
+				return false;
+			}
+			const std::wstring command = L"\"" + executable.wstring() + L"\" " + Wide(kLaunchFlag) + L" \"" + Wide(node.action->id) + L"\" \"%1\"";
+			const bool configured = SetRegistryString(command_key, nullptr, command);
+			RegCloseKey(command_key);
+			if (!configured)
+			{
+				if (error_out != nullptr) *error_out = "Failed to configure a Windows shell action command.";
+				return false;
+			}
+			return true;
+		}
+		if (!SetRegistryString(key, L"SubCommands", L""))
+		{
+			if (error_out != nullptr) *error_out = "Failed to configure a Windows shell submenu.";
 			return false;
 		}
+		HKEY shell_key = nullptr;
+		if (RegCreateKeyExW(key, L"shell", 0, nullptr, 0, KEY_WRITE, nullptr, &shell_key, nullptr) != ERROR_SUCCESS)
+		{
+			if (error_out != nullptr) *error_out = "Failed to create a Windows shell submenu.";
+			return false;
+		}
+		for (std::size_t index = 0; index < node.children.size(); ++index)
+		{
+			HKEY child_key = nullptr;
+			const std::wstring child_name = OrderedWindowsKey(index);
+			if (RegCreateKeyExW(shell_key, child_name.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &child_key, nullptr) != ERROR_SUCCESS ||
+			    !InstallWindowsMenuNode(child_key, node.children[index], executable, error_out))
+			{
+				if (child_key != nullptr) RegCloseKey(child_key);
+				RegCloseKey(shell_key);
+				if (error_out != nullptr && error_out->empty()) *error_out = "Failed to create a Windows shell menu item.";
+				return false;
+			}
+			RegCloseKey(child_key);
+		}
+		RegCloseKey(shell_key);
 		return true;
 	}
 
-	void RemoveWindowsVerbs(std::wstring_view kind)
+	bool InstallWindowsMenu(const std::vector<ShellAction>& actions, const fs::path& executable, std::wstring_view kind, bool folders, std::string* error_out)
+	{
+		WindowsMenuNode root = BuildWindowsMenu(actions, folders);
+		if (root.children.empty()) return true;
+		root.label = "Universal Agent Manager";
+		const std::wstring key_path = L"Software\\Classes\\" + std::wstring(kind) + L"\\shell\\UAM_Actions";
+		HKEY key = nullptr;
+		if (RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+		{
+			if (error_out != nullptr) *error_out = "Failed to create the Universal Agent Manager shell menu.";
+			return false;
+		}
+		const bool icon_ok = SetRegistryString(key, L"Icon", L"\"" + executable.wstring() + L"\",0");
+		const bool installed = icon_ok && InstallWindowsMenuNode(key, root, executable, error_out);
+		RegCloseKey(key);
+		if (!icon_ok && error_out != nullptr) *error_out = "Failed to configure the Universal Agent Manager shell menu icon.";
+		return installed;
+	}
+
+	bool RemoveWindowsVerbs(std::wstring_view kind, std::string* error_out)
 	{
 		const std::wstring shell_path = L"Software\\Classes\\" + std::wstring(kind) + L"\\shell";
 		HKEY shell = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, shell_path.c_str(), 0, KEY_READ | KEY_WRITE, &shell) != ERROR_SUCCESS) return;
+		const LSTATUS opened = RegOpenKeyExW(HKEY_CURRENT_USER, shell_path.c_str(), 0, KEY_READ | KEY_WRITE, &shell);
+		if (opened == ERROR_FILE_NOT_FOUND) return true;
+		if (opened != ERROR_SUCCESS)
+		{
+			if (error_out != nullptr) *error_out = "Failed to open the Windows shell menu registry key.";
+			return false;
+		}
 		std::vector<std::wstring> keys;
 		wchar_t name[512];
 		for (DWORD index = 0;; ++index)
@@ -253,9 +491,24 @@ namespace
 			const LSTATUS status = RegEnumKeyExW(shell, index, name, &length, nullptr, nullptr, nullptr, nullptr);
 			if (status == ERROR_NO_MORE_ITEMS) break;
 			if (status == ERROR_SUCCESS && std::wstring_view(name, length).starts_with(Wide(kWindowsKeyPrefix))) keys.emplace_back(name, length);
+			if (status != ERROR_SUCCESS)
+			{
+				RegCloseKey(shell);
+				if (error_out != nullptr) *error_out = "Failed to inspect existing Windows shell actions.";
+				return false;
+			}
 		}
-		for (const std::wstring& key : keys) RegDeleteTreeW(shell, key.c_str());
+		for (const std::wstring& key : keys)
+		{
+			if (RegDeleteTreeW(shell, key.c_str()) != ERROR_SUCCESS)
+			{
+				RegCloseKey(shell);
+				if (error_out != nullptr) *error_out = "Failed to replace existing Windows shell actions.";
+				return false;
+			}
+		}
 		RegCloseKey(shell);
+		return true;
 	}
 #endif
 
@@ -363,10 +616,18 @@ namespace
 	}
 }
 
-std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& data_root)
+std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& data_root, const std::filesystem::path& default_skills_root)
 {
 	std::vector<ShellAction> result;
-	const std::string text = uam::io::ReadTextFile(ActionsPath(data_root));
+	const fs::path actions_path = ActionsPath(data_root);
+	if (!uam::paths::PathExistsNoThrow(actions_path) && !default_skills_root.empty())
+	{
+		std::string error;
+		result = DefaultActions(default_skills_root, &error);
+		if (!error.empty() || !ShellActionService::Save(data_root, result, &error)) return {};
+		return result;
+	}
+	const std::string text = uam::io::ReadTextFile(actions_path);
 	if (text.empty()) return result;
 	try
 	{
@@ -382,6 +643,13 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 			raw.skill_path = value.value("skillPath", "");
 			raw.provider_id = value.value("providerId", "");
 			raw.model_id = value.value("modelId", "");
+			if (value.contains("groupPath") && value["groupPath"].is_array())
+			{
+				for (const auto& segment : value["groupPath"])
+				{
+					if (segment.is_string()) raw.group_path.push_back(segment.get<std::string>());
+				}
+			}
 			raw.accepts_files = value.value("acceptsFiles", true);
 			raw.accepts_folders = value.value("acceptsFolders", true);
 			raw.enabled = value.value("enabled", true);
@@ -400,7 +668,7 @@ bool ShellActionService::Save(const std::filesystem::path& data_root, const std:
 {
 	nlohmann::json root = nlohmann::json::array();
 	std::set<std::string> ids;
-	std::set<std::string> labels;
+	std::vector<ShellAction> normalized_actions;
 	for (const ShellAction& action : actions)
 	{
 		ShellAction normalized;
@@ -410,15 +678,10 @@ bool ShellActionService::Save(const std::filesystem::path& data_root, const std:
 			if (error_out != nullptr) *error_out = "Shell action ids must be unique.";
 			return false;
 		}
-		std::string os_label = SafeFileName(normalized.label);
-		std::ranges::transform(os_label, os_label.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		if (!labels.insert(os_label).second)
-		{
-			if (error_out != nullptr) *error_out = "Shell action labels must be unique.";
-			return false;
-		}
-		root.push_back(ActionJson(normalized));
+		normalized_actions.push_back(std::move(normalized));
 	}
+	if (!ValidateMenuHierarchy(normalized_actions, error_out)) return false;
+	for (const ShellAction& action : normalized_actions) root.push_back(ActionJson(action));
 	if (!uam::io::WriteTextFile(ActionsPath(data_root), root.dump(2) + "\n"))
 	{
 		if (error_out != nullptr) *error_out = "Failed to persist shell actions.";
@@ -434,14 +697,19 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 		if (error_out != nullptr) *error_out = "The UAM executable path is unavailable.";
 		return false;
 	}
+	std::vector<ShellAction> normalized_actions;
 	for (const ShellAction& action : app.shell_actions)
 	{
 		ShellAction normalized;
 		if (!NormalizeAction(action, normalized, error_out)) return false;
-		if (!normalized.enabled || normalized.open_workspace) continue;
-		std::filesystem::path skill;
-		if (!MarkdownStoreService::ValidateStoreFilePath(MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory), normalized.skill_path, &skill, error_out)) return false;
+		if (normalized.enabled && !normalized.open_workspace)
+		{
+			std::filesystem::path skill;
+			if (!MarkdownStoreService::ValidateStoreFilePath(MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory), normalized.skill_path, &skill, error_out)) return false;
+		}
+		normalized_actions.push_back(std::move(normalized));
 	}
+	if (!ValidateMenuHierarchy(normalized_actions, error_out)) return false;
 
 #if defined(__APPLE__)
 	const auto home = uam::env::GetUserHomePath();
@@ -461,10 +729,10 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 	{
 		if (entry.path().extension() == ".workflow" && entry.path().stem().string().starts_with(kMacWorkflowPrefix)) uam::paths::RemoveAllNoThrow(entry.path());
 	}
-	for (const ShellAction& action : app.shell_actions)
+	for (const ShellAction& action : normalized_actions)
 	{
 		if (!action.enabled) continue;
-		const fs::path contents = services / (std::string(kMacWorkflowPrefix) + SafeFileName(action.label) + ".workflow") / "Contents";
+		const fs::path contents = services / (std::string(kMacWorkflowPrefix) + SafeFileName(action.id) + ".workflow") / "Contents";
 		if (!uam::io::WriteTextFile(contents / "document.wflow", MacWorkflowDocument(action, executable)) ||
 		    !uam::io::WriteTextFile(contents / "Info.plist", MacWorkflowInfo(action)))
 		{
@@ -474,14 +742,20 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 	}
 	return true;
 #elif defined(_WIN32)
-	RemoveWindowsVerbs(L"*");
-	RemoveWindowsVerbs(L"Directory");
-	for (const ShellAction& action : app.shell_actions)
+	if (!RemoveWindowsVerbs(L"*", error_out) || !RemoveWindowsVerbs(L"Directory", error_out))
 	{
-		if (!action.enabled) continue;
-		if (action.accepts_files && !InstallWindowsVerb(action, executable, L"*", error_out)) return false;
-		if (action.accepts_folders && !InstallWindowsVerb(action, executable, L"Directory", error_out)) return false;
+		SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+		return false;
 	}
+	if (!InstallWindowsMenu(normalized_actions, executable, L"*", false, error_out) ||
+	    !InstallWindowsMenu(normalized_actions, executable, L"Directory", true, error_out))
+	{
+		RemoveWindowsVerbs(L"*", nullptr);
+		RemoveWindowsVerbs(L"Directory", nullptr);
+		SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+		return false;
+	}
+	SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
 	return true;
 #else
 	if (error_out != nullptr) *error_out = "Shell actions are supported on macOS and Windows.";

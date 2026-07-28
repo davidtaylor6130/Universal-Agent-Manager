@@ -16,6 +16,7 @@ describe('ShellActionsSettings', () => {
         skillPath: '/tmp/Skills/Review ü.uam',
         providerId: 'codex-cli',
         modelId: 'gpt-5.4',
+        groupPath: ['GitHub', 'Review'],
         acceptsFiles: true,
         acceptsFolders: true,
         enabled: true,
@@ -52,6 +53,7 @@ describe('ShellActionsSettings', () => {
     expect(host.textContent).toContain('Finder / Explorer actions')
     expect(host.textContent).toContain('Review skill')
     const label = host.querySelector('input[aria-label="Label for Review Selection"]') as HTMLInputElement
+    const groupPath = host.querySelector('input[aria-label="Group path for Review Selection"]') as HTMLInputElement
     const enabled = Array.from(host.querySelectorAll('input[type="checkbox"]'))[0] as HTMLInputElement
     const inputType = host.querySelector('button[aria-label="Input type for Review Selection"]') as HTMLButtonElement
     const provider = host.querySelector('button[aria-label="Provider for Review Selection"]') as HTMLButtonElement
@@ -62,6 +64,8 @@ describe('ShellActionsSettings', () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(label, 'Review résumé')
       label.dispatchEvent(new Event('input', { bubbles: true }))
+      valueSetter?.call(groupPath, 'GitHub / Pull requests')
+      groupPath.dispatchEvent(new Event('input', { bubbles: true }))
       enabled.click()
       inputType.click()
     })
@@ -84,6 +88,7 @@ describe('ShellActionsSettings', () => {
         label: 'Review résumé',
         providerId: 'gemini-cli',
         modelId: 'flash',
+        groupPath: ['GitHub', 'Pull requests'],
         enabled: false,
         acceptsFiles: true,
         acceptsFolders: false,

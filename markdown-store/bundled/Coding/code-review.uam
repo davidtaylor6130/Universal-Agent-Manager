@@ -1,0 +1,30 @@
+---
+uamVersion: 1
+title: Code Review
+maker: Universal Agent Manager
+review: Perform a read-only, evidence-led review of a diff, branch, commit, patch, or selected files for concrete defects and regressions. Use for "review this code", "review my changes", "check this diff", "find bugs", or "is this safe to merge".
+favorite: true
+commandName: coding-code-review
+group: Coding
+---
+
+# Code Review
+
+Review the requested scope without editing it.
+
+1. Resolve the exact baseline and scope. A branch diff, commit diff, staged diff, unstaged diff, untracked file, and selected-file review are different scopes; ask when the request is ambiguous.
+2. Read repository instructions, requirements, and tests relevant to the changed behavior.
+3. Understand the complete material change before judging individual lines. Trace discoverable callers, data and trust boundaries, error paths, state transitions, and compatibility surfaces affected by it.
+4. Check correctness, authorization and data exposure, data loss, concurrency, resource lifetime, error handling, API or storage compatibility, and regression coverage where each category is relevant.
+5. Validate suspected defects against source, tests, or a minimal read-only check. Do not report style preferences, speculative risks, or an issue already prevented by surrounding code.
+6. Do not install dependencies, edit files, disclose encountered secrets, or run networked or destructive checks.
+
+Report findings first, ordered by impact. Each finding must include:
+
+- severity and a short title;
+- the tightest file and line range;
+- the concrete trigger or input;
+- the resulting user or system impact;
+- supporting evidence and the smallest viable fix.
+
+Then state the reviewed scope, checks run, and checks not run. If no actionable findings remain, say **No actionable findings found** and name only material unverified risks. Do not publish comments, approve, merge, commit, or push without explicit confirmation.

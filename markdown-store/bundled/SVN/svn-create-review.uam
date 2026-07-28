@@ -1,0 +1,43 @@
+---
+uamVersion: 1
+title: SVN Create Review
+maker: Universal Agent Manager
+review: Prepare an SVN change set for human review as a pull-request analogue. Use for "create SVN review", "review my SVN changes", "prepare a patch", "make a review branch", or "submit these Subversion changes".
+favorite: true
+commandName: svn-create-review
+group: SVN
+---
+
+# SVN Create Review
+
+Prepare a complete review package without pretending SVN has pull requests.
+
+## Establish the source state
+
+1. Record the SVN client version, working-copy root, repository root and UUID, URL, and
+   working revision state.
+2. Detect mixed revisions, switched or sparse paths, conflicts, missing or obstructed
+   items, locks, and modified externals. Treat a review branch as repository convention,
+   not a special SVN object.
+3. Inspect `svn status --no-ignore`. When repository access is authorized, use
+   `svn status -u` to detect out-of-date items; plain `svn status` is local-only.
+4. Run `svn diff --summarize` and a scoped `svn diff`. State that ordinary working-copy
+   diffs compare against `BASE` and omit unversioned or ignored file contents. Inventory
+   those paths separately and identify intended additions.
+5. Read history with an explicit target, revision range, and limit. Do not present a
+   local-path log ending at an old working revision as current repository history.
+
+## Prepare the review
+
+Return a review title and description containing the purpose, exact source state,
+repository-relative changed paths, property and external changes, patch coverage
+limits, tests run and not run, risks, and reviewer notes. Redact credentials and
+sensitive data from diffs and excerpts.
+
+If the user requests a mutating next step, show one exact proposed command separately
+and explain its effect. A working-copy-to-working-copy copy schedules an addition; a
+working-copy-to-URL or URL-to-URL copy creates a repository commit immediately.
+
+Never create a patch file, commit, copy remotely, upload, email, or change an external
+review system without explicit confirmation. If an approved remote operation runs,
+return its committed revision and verify the target URL and changed paths read-only.

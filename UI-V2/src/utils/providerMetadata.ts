@@ -49,7 +49,8 @@ export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel:
   low: { label: 'Low', shortLabel: 'Low', detail: 'Faster responses' },
   medium: { label: 'Medium', shortLabel: 'Medium', detail: 'Balanced reasoning' },
   high: { label: 'High', shortLabel: 'High', detail: 'Deeper reasoning' },
-  xhigh: { label: 'XHigh', shortLabel: 'XHigh', detail: 'Maximum reasoning' },
+  xhigh: { label: 'Extra High', shortLabel: 'XHigh', detail: 'Very deep reasoning' },
+  ultra: { label: 'Ultra', shortLabel: 'Ultra', detail: 'Maximum reasoning' },
 }
 
 export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
@@ -64,7 +65,7 @@ export const CODEX_REASONING_OPTIONS = [
   { id: 'low', label: 'Low', detail: 'Faster responses' },
   { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
   { id: 'high', label: 'High', detail: 'Deeper reasoning' },
-  { id: 'xhigh', label: 'XHigh', detail: 'Maximum reasoning' },
+  { id: 'xhigh', label: 'Extra High', detail: 'Very deep reasoning' },
 ]
 
 export const CODEX_SPEED_OPTIONS = [
@@ -81,9 +82,10 @@ const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string
   flash: { label: 'Flash', detail: 'Prioritize speed' },
   'flash-lite': { label: 'Flash Lite', detail: 'Fastest option' },
 }
-const CODEX_MEMORY_MODEL_IDS = ['', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5.1']
+const CODEX_MEMORY_MODEL_IDS = ['', 'gpt-5.6', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5.1']
 const CODEX_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
   '': { label: 'Default', detail: 'Use Codex settings' },
+  'gpt-5.6': { label: 'GPT-5.6', detail: 'Latest frontier coding model' },
   'gpt-5.4': { label: 'GPT-5.4', detail: 'Frontier coding model' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
   'gpt-5.2': { label: 'GPT-5.2', detail: 'Balanced coding model' },

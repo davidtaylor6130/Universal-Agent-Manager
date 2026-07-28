@@ -3091,6 +3091,7 @@ describe('useAppStore Gemini CLI slice', () => {
       skillPath: '/tmp/Review ü.uam',
       providerId: 'codex-cli',
       modelId: 'gpt-5.4',
+      groupPath: ['GitHub', 'Review'],
       acceptsFiles: true,
       acceptsFolders: false,
       enabled: true,

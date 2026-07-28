@@ -233,6 +233,7 @@ struct ShellAction
 	std::string skill_path;
 	std::string provider_id;
 	std::string model_id;
+	std::vector<std::string> group_path;
 	bool accepts_files = true;
 	bool accepts_folders = true;
 	bool enabled = true;

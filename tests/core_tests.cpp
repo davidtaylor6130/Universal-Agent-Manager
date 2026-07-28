@@ -303,6 +303,7 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	action.skill_path = uam::paths::Utf8PathString(temp.root / "skills" / uam::paths::PathFromUtf8("review ü.uam"));
 	action.provider_id = "codex";
 	action.model_id = "gpt-5.4";
+	action.group_path = {" Version Control ", "GitHub ü"};
 	action.accepts_files = true;
 	action.accepts_folders = false;
 	action.enabled = true;
@@ -315,6 +316,7 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	UAM_ASSERT_EQ(loaded.front().skill_path, action.skill_path);
 	UAM_ASSERT_EQ(loaded.front().provider_id, std::string(uam::provider_ids::kCodexCli));
 	UAM_ASSERT_EQ(loaded.front().model_id, action.model_id);
+	UAM_ASSERT_EQ(loaded.front().group_path, (std::vector<std::string>{"Version Control", "GitHub ü"}));
 	UAM_ASSERT(loaded.front().accepts_files);
 	UAM_ASSERT(!loaded.front().accepts_folders);
 
@@ -329,6 +331,27 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	UAM_ASSERT_EQ(legacy.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(legacy.front().provider_id.empty());
 	UAM_ASSERT(legacy.front().model_id.empty());
+	UAM_ASSERT(legacy.front().group_path.empty());
+
+	ShellAction invalid_group = action;
+	invalid_group.group_path = {"GitHub/Issues"};
+	UAM_ASSERT(!ShellActionService::Save(temp.root, {invalid_group}, &error));
+	UAM_ASSERT(error.find("path segments") != std::string::npos);
+
+	ShellAction same_label_other_group = action;
+	same_label_other_group.id = "review-svn";
+	same_label_other_group.group_path = {"Version Control", "SVN"};
+	UAM_ASSERT(ShellActionService::Save(temp.root, {action, same_label_other_group}, &error));
+	ShellAction root_action = action;
+	root_action.id = "root-github";
+	root_action.label = "GitHub";
+	root_action.group_path.clear();
+	ShellAction colliding_group = same_label_other_group;
+	colliding_group.id = "github-group-child";
+	colliding_group.label = "Child";
+	colliding_group.group_path = {"github"};
+	UAM_ASSERT(!ShellActionService::Save(temp.root, {root_action, colliding_group}, &error));
+	UAM_ASSERT(error.find("same name as a group") != std::string::npos);
 
 	const fs::path selected = temp.root / "folder with spaces" / uam::paths::PathFromUtf8("résumé.txt");
 	bool recognized = false;
@@ -341,6 +364,41 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	const nlohmann::json request = nlohmann::json::parse(ReadFile(request_files.front()));
 	UAM_ASSERT_EQ(request.value("actionId", ""), action.id);
 	UAM_ASSERT_EQ(request["paths"][0].get<std::string>(), uam::paths::Utf8PathString(selected));
+}
+
+UAM_TEST(ShellActionsSeedBundledFavoritesOnlyWhenSettingsFileIsMissing)
+{
+	TempDir temp("uam-shell-action-defaults");
+	const fs::path data_root = temp.root / "data";
+	const fs::path skills_root = temp.root / "markdown-store";
+	const fs::path skill = skills_root / "connections" / "GitHub" / "review.uam";
+	fs::create_directories(skill.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(skill, R"(---
+title: Review Pull Request
+favorite: true
+commandName: github-review
+group: Version Control/GitHub
+---
+
+# Review
+)"));
+	UAM_ASSERT(uam::io::WriteTextFile(skills_root / "not-default.uam", R"(---
+title: Optional Skill
+favorite: false
+---
+
+# Optional
+)"));
+
+	const std::vector<ShellAction> seeded = ShellActionService::Load(data_root, skills_root);
+	UAM_ASSERT_EQ(seeded.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(seeded.front().open_workspace);
+	UAM_ASSERT_EQ(seeded.back().id, std::string("github-review"));
+	UAM_ASSERT_EQ(seeded.back().group_path, (std::vector<std::string>{"Version Control", "GitHub"}));
+	UAM_ASSERT(uam::paths::PathExistsNoThrow(data_root / "shell_actions.json"));
+
+	UAM_ASSERT(ShellActionService::Save(data_root, {}));
+	UAM_ASSERT(ShellActionService::Load(data_root, skills_root).empty());
 }
 
 UAM_TEST(ShellActionOpenWorkspaceRequestCreatesAndSelectsPersistedChat)
@@ -407,7 +465,7 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 	std::vector<fs::path> workflows;
 	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(2));
-	const fs::path workflow = services / "Universal Agent Manager - Review Selection.workflow";
+	const fs::path workflow = services / "Universal Agent Manager - review-selection.workflow";
 	const std::string document = ReadFile(workflow / "Contents" / "document.wflow");
 	const std::string info = ReadFile(workflow / "Contents" / "Info.plist");
 	UAM_ASSERT(RunTestCommand("plutil -lint " + ShellQuoteForTest((workflow / "Contents" / "document.wflow").string())));
@@ -424,7 +482,7 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 	workflows.clear();
 	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT(workflows.front().filename() == "Universal Agent Manager - Review Selection.workflow");
+	UAM_ASSERT(workflows.front().filename() == "Universal Agent Manager - review-selection.workflow");
 }
 #endif
 
@@ -1780,7 +1838,7 @@ UAM_TEST(AcpModelJsonParserHandlesCodexModelAliasesAndVisibility)
 	model["description"] = "Frontier model";
 	model["visibility"] = "list";
 	model["default_reasoning_effort"] = " MEDIUM ";
-	model["supportedReasoningEfforts"] = nlohmann::json::array({{{"reasoningEffort", "low"}}, {{"id", " HIGH "}}, "high", "unknown"});
+	model["supportedReasoningEfforts"] = nlohmann::json::array({{{"reasoningEffort", "low"}}, {{"id", " HIGH "}}, "high", " ULTRA ", "unknown"});
 	model["additionalSpeedTiers"] = nlohmann::json::array({" FAST ", "fast", "unknown"});
 
 	const std::optional<uam::acp_models::ParsedCodexModelEntry> parsed = uam::acp_models::ParseCodexModelEntry(model);
@@ -1788,8 +1846,9 @@ UAM_TEST(AcpModelJsonParserHandlesCodexModelAliasesAndVisibility)
 	UAM_ASSERT_EQ(parsed->model.id, std::string("gpt-5.4"));
 	UAM_ASSERT_EQ(parsed->model.name, std::string("GPT-5.4"));
 	UAM_ASSERT_EQ(parsed->model.default_reasoning_effort, std::string("medium"));
-	UAM_ASSERT_EQ(parsed->model.supported_reasoning_efforts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(parsed->model.supported_reasoning_efforts.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(parsed->model.supported_reasoning_efforts[1], std::string("high"));
+	UAM_ASSERT_EQ(parsed->model.supported_reasoning_efforts[2], std::string("ultra"));
 	UAM_ASSERT_EQ(parsed->model.additional_speed_tiers.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(parsed->model.additional_speed_tiers[0], std::string("fast"));
 
@@ -1797,7 +1856,7 @@ UAM_TEST(AcpModelJsonParserHandlesCodexModelAliasesAndVisibility)
 	const std::optional<uam::AcpModelState> generic = uam::acp_models::ParseAcpModelState(model);
 	UAM_ASSERT(generic.has_value());
 	UAM_ASSERT_EQ(generic->default_reasoning_effort, std::string("medium"));
-	UAM_ASSERT_EQ(generic->supported_reasoning_efforts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(generic->supported_reasoning_efforts.size(), static_cast<std::size_t>(3));
 
 	model["visibility"] = "hidden";
 	UAM_ASSERT(!uam::acp_models::ParseCodexModelEntry(model).has_value());
@@ -1865,6 +1924,7 @@ UAM_TEST(CodexOptionNormalizationUsesSharedAllowlists)
 	UAM_ASSERT_EQ(uam::codex::NormalizeReasoningEffort(std::string_view("xx minimal yy").substr(2, 9)), std::string("minimal"));
 	UAM_ASSERT_EQ(uam::codex::NormalizeReasoningEffort(std::string_view("xx XHIGH yy").substr(2, 7)), std::string("xhigh"));
 	UAM_ASSERT_EQ(uam::codex::NormalizeReasoningEffort("xhigh"), std::string("xhigh"));
+	UAM_ASSERT_EQ(uam::codex::NormalizeReasoningEffort(" ULTRA "), std::string("ultra"));
 	UAM_ASSERT_EQ(uam::codex::NormalizeReasoningEffort("unknown"), std::string(""));
 	UAM_ASSERT(uam::codex::IsServiceTier("fast"));
 	UAM_ASSERT(!uam::codex::IsServiceTier(" FAST "));
@@ -4020,6 +4080,7 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	action.skill_path = "/tmp/review.uam";
 	action.provider_id = uam::provider_ids::kCodexCli;
 	action.model_id = "gpt-5.4";
+	action.group_path = {"Coding", "Review"};
 	action.accepts_files = true;
 	action.accepts_folders = false;
 	action.enabled = true;
@@ -4030,6 +4091,7 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("label", ""), action.label);
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("providerId", ""), action.provider_id);
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("modelId", ""), action.model_id);
+	UAM_ASSERT_EQ(serialized["shellActions"][0]["groupPath"].get<std::vector<std::string>>(), action.group_path);
 	UAM_ASSERT(!serialized["shellActions"][0].value("acceptsFolders", true));
 	UAM_ASSERT_EQ(serialized.value("shellActionNotification", ""), app.shell_action_notification);
 }
@@ -6348,8 +6410,8 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	ChatSession chat;
 	chat.provider_id = "codex-cli";
 	chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
-	chat.model_id = "gpt-5.4";
-	chat.reasoning_effort = "high";
+	chat.model_id = "gpt-5.6";
+	chat.reasoning_effort = "ultra";
 	chat.service_tier = "fast";
 	chat.approval_mode = "plan";
 
@@ -6382,7 +6444,7 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(thread_start["params"].value("cwd", ""), std::string("/tmp/project"));
 	UAM_ASSERT_EQ(thread_start["params"].value("approvalPolicy", ""), std::string(uam::acp_request_defaults::kCodexApprovalPolicy));
 	UAM_ASSERT_EQ(thread_start["params"].value("sandbox", ""), std::string(uam::acp_request_defaults::kCodexSandbox));
-	UAM_ASSERT_EQ(thread_start["params"].value("model", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(thread_start["params"].value("model", ""), std::string("gpt-5.6"));
 	UAM_ASSERT(thread_start["params"].value("persistExtendedHistory", false));
 
 	const nlohmann::json thread_resume = nlohmann::json::parse(uam::BuildCodexThreadResumeRequestForTests(24, chat, "/tmp/project"));
@@ -6390,7 +6452,7 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(thread_resume["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(thread_resume["params"].value("approvalPolicy", ""), std::string(uam::acp_request_defaults::kCodexApprovalPolicy));
 	UAM_ASSERT_EQ(thread_resume["params"].value("sandbox", ""), std::string(uam::acp_request_defaults::kCodexSandbox));
-	UAM_ASSERT_EQ(thread_resume["params"].value("model", ""), std::string("gpt-5.4"));
+	UAM_ASSERT_EQ(thread_resume["params"].value("model", ""), std::string("gpt-5.6"));
 	UAM_ASSERT(thread_resume["params"].value("persistExtendedHistory", false));
 
 	ChatSession yolo_chat = chat;
@@ -6411,12 +6473,12 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(turn_start.value("method", ""), std::string("turn/start"));
 	UAM_ASSERT_EQ(turn_start["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(turn_start["params"]["input"][0].value("text", ""), std::string("hello"));
-	UAM_ASSERT_EQ(turn_start["params"].value("model", ""), std::string("gpt-5.4"));
-	UAM_ASSERT_EQ(turn_start["params"].value("effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(turn_start["params"].value("model", ""), std::string("gpt-5.6"));
+	UAM_ASSERT_EQ(turn_start["params"].value("effort", ""), std::string("ultra"));
 	UAM_ASSERT_EQ(turn_start["params"].value("serviceTier", ""), std::string("fast"));
 	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"].value("mode", ""), std::string("plan"));
-	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.4"));
-	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("reasoning_effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("model", ""), std::string("gpt-5.6"));
+	UAM_ASSERT_EQ(turn_start["params"]["collaborationMode"]["settings"].value("reasoning_effort", ""), std::string("ultra"));
 
 	ChatSession active_model_chat = chat;
 	active_model_chat.model_id.clear();
@@ -6433,7 +6495,7 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	const nlohmann::json missing_model_turn_start = nlohmann::json::parse(uam::BuildCodexTurnStartRequestForTests(251, chat.native_session_id, "hello", active_model_chat));
 	UAM_ASSERT(!missing_model_turn_start["params"].contains("model"));
 	UAM_ASSERT(!missing_model_turn_start["params"].contains("collaborationMode"));
-	UAM_ASSERT_EQ(missing_model_turn_start["params"].value("effort", ""), std::string("high"));
+	UAM_ASSERT_EQ(missing_model_turn_start["params"].value("effort", ""), std::string("ultra"));
 	UAM_ASSERT_EQ(missing_model_turn_start["params"].value("serviceTier", ""), std::string("fast"));
 
 	const nlohmann::json interrupt = nlohmann::json::parse(uam::BuildCodexTurnInterruptRequestForTests(26, chat.native_session_id, "turn-1"));
@@ -7372,6 +7434,73 @@ UAM_TEST(NewChatFolderResolutionRequiresExistingFolder)
 	UAM_ASSERT_EQ(ResolveRequestedNewChatFolderId(app, " " + created_id + " "), created_id);
 }
 
+UAM_TEST(MarkdownStoreFindsBundledFolderBesideExecutableOrMacResources)
+{
+	TempDir temp("uam-bundled-markdown-store");
+	const fs::path flat_executable = temp.root / "portable" / "universal_agent_manager.exe";
+	const fs::path flat_store = flat_executable.parent_path() / "markdown-store";
+	fs::create_directories(flat_store);
+	UAM_ASSERT_EQ(MarkdownStoreService::BundledRootForExecutable(flat_executable), uam::paths::NormalizeExistingPath(flat_store));
+
+	const fs::path mac_executable = temp.root / "Universal Agent Manager.app" / "Contents" / "MacOS" / "universal_agent_manager";
+	const fs::path mac_store = mac_executable.parent_path().parent_path() / "Resources" / "markdown-store";
+	fs::create_directories(mac_store);
+	UAM_ASSERT_EQ(MarkdownStoreService::BundledRootForExecutable(mac_executable), uam::paths::NormalizeExistingPath(mac_store));
+	UAM_ASSERT(MarkdownStoreService::BundledRootForExecutable(temp.root / "missing" / "uam.exe").empty());
+}
+
+UAM_TEST(MarkdownStoreSeedsNestedBundledEntriesWithoutReplacingUserFiles)
+{
+	TempDir temp("uam-seed-bundled-markdown-store");
+	const fs::path bundled = temp.root / "app" / "markdown-store";
+	const fs::path destination = temp.root / "data" / "markdown-store";
+	const fs::path copied_source = bundled / "bundled" / "SVN" / "tag.uam";
+	const fs::path colliding_source = bundled / "bundled" / "Coding" / "review.uam";
+	const fs::path user_file = destination / "mine" / "review.uam";
+	const std::string copied_text = "---\ntitle: SVN Tag\ncommandName: svn-tag\n---\n\n# Tag\n";
+	const std::string user_text = "---\ntitle: Code Review\ncommandName: my-review\n---\n\n# Mine\n";
+	UAM_ASSERT(uam::io::WriteTextFile(copied_source, copied_text));
+	UAM_ASSERT(uam::io::WriteTextFile(colliding_source, "---\ntitle: Code Review\ncommandName: bundled-review\n---\n\n# Bundled\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(user_file, user_text));
+
+	std::string error;
+	UAM_ASSERT(MarkdownStoreService::SeedBundledEntries(bundled, destination, &error));
+	UAM_ASSERT(error.empty());
+	const fs::path copied = destination / "bundled" / "SVN" / "tag.uam";
+	UAM_ASSERT_EQ(ReadFile(copied), copied_text);
+	UAM_ASSERT_EQ(ReadFile(user_file), user_text);
+	UAM_ASSERT(!uam::paths::PathExistsNoThrow(destination / "bundled" / "Coding" / "review.uam"));
+
+	const std::string customized = "---\ntitle: SVN Tag Customized\ncommandName: svn-tag\n---\n\n# Customized\n";
+	UAM_ASSERT(uam::io::WriteTextFile(copied, customized));
+	UAM_ASSERT(MarkdownStoreService::SeedBundledEntries(bundled, destination, &error));
+	UAM_ASSERT_EQ(ReadFile(copied), customized);
+}
+
+UAM_TEST(BundledMarkdownStoreEntriesParseFromNestedFolders)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path() / "markdown-store";
+	const fs::path root = source_root / "bundled";
+	std::string error;
+	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(18));
+	UAM_ASSERT_EQ(std::ranges::count_if(entries, [](const auto& entry) { return entry.favorite; }), 12);
+	for (const MarkdownStoreService::Entry& entry : entries)
+	{
+		UAM_ASSERT(!entry.command_name.empty());
+		UAM_ASSERT(entry.id.starts_with("Coding/") || entry.id.starts_with("GitHub/") || entry.id.starts_with("SVN/"));
+	}
+	TempDir temp("uam-bundled-shell-actions");
+	const fs::path imported_root = temp.root / "markdown-store";
+	UAM_ASSERT(MarkdownStoreService::SeedBundledEntries(source_root, imported_root, &error));
+	const std::vector<ShellAction> actions = ShellActionService::Load(temp.root, imported_root);
+	UAM_ASSERT_EQ(actions.size(), static_cast<std::size_t>(18));
+	UAM_ASSERT(actions.front().open_workspace);
+	UAM_ASSERT(std::ranges::all_of(actions.begin() + 1, actions.end(), [](const ShellAction& action) { return !action.group_path.empty(); }));
+	UAM_ASSERT(std::ranges::any_of(actions, [](const ShellAction& action) { return action.group_path == std::vector<std::string>{"GitHub"}; }));
+}
+
 UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 {
 	TempDir temp("uam-markdown-store");
@@ -7405,11 +7534,14 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(entries.front().title, std::string("Release Notes"));
-	UAM_ASSERT(uam::io::WriteTextFile(root / "grouped.uam", "---\ntitle: Grouped\nfavorite: true\ngroup: Workflows\n---\n\n# Grouped\n"));
+	const fs::path nested = root / "connections" / "Coding" / "grouped.uam";
+	fs::create_directories(nested.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(nested, "---\ntitle: Grouped\nfavorite: true\ngroup: Workflows\n---\n\n# Grouped\n"));
 	entries = MarkdownStoreService::ListEntries(root, &error);
 	const auto grouped = std::find_if(entries.begin(), entries.end(), [](const MarkdownStoreService::Entry& entry) { return entry.title == "Grouped"; });
 	UAM_ASSERT(grouped != entries.end());
 	UAM_ASSERT_EQ(grouped->group, std::string("Workflows"));
+	UAM_ASSERT_EQ(grouped->id, std::string("connections/Coding/grouped.uam"));
 	MarkdownStoreService::Entry grouped_favorite;
 	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, grouped->file_path.string(), false, &grouped_favorite, &error));
 	UAM_ASSERT_EQ(grouped_favorite.group, std::string("Workflows"));
@@ -7511,13 +7643,17 @@ UAM_TEST(MarkdownStoreImportsEditsFavoritesAndResolvesConflictsWithoutChangingSo
 	const std::string original_created = favorite_entry.date_created;
 	const std::string original_command = favorite_entry.command_name;
 	const std::string original_provenance = favorite_entry.source_path;
-	MarkdownStoreService::Draft edited{favorite_entry.title + " Edited", "Editor", "Updated summary", "# Updated\n\nEdited body."};
+	MarkdownStoreService::Draft edited{favorite_entry.title + " Edited", "Editor", "Updated summary", "# Updated\n\nEdited body.", "Coding / Review"};
 	UAM_ASSERT(MarkdownStoreService::UpdateEntry(root, favorite_entry.file_path.string(), edited, &favorite_entry, &error));
 	UAM_ASSERT_EQ(favorite_entry.date_created, original_created);
 	UAM_ASSERT_EQ(favorite_entry.command_name, original_command);
 	UAM_ASSERT_EQ(favorite_entry.source_path, original_provenance);
 	UAM_ASSERT(favorite_entry.favorite);
 	UAM_ASSERT(favorite_entry.body.find("Edited body.") != std::string::npos);
+	UAM_ASSERT_EQ(favorite_entry.group, std::string("Coding / Review"));
+	edited.group.clear();
+	UAM_ASSERT(MarkdownStoreService::UpdateEntry(root, favorite_entry.file_path.string(), edited, &favorite_entry, &error));
+	UAM_ASSERT(favorite_entry.group.empty());
 
 	std::string before_failed_save;
 	UAM_ASSERT(uam::io::TryReadTextFile(favorite_entry.file_path, before_failed_save));

@@ -1019,6 +1019,7 @@ namespace uam
 				    {"skillPath", action.skill_path},
 				    {"providerId", action.provider_id},
 				    {"modelId", action.model_id},
+				    {"groupPath", action.group_path},
 				    {"acceptsFiles", action.accepts_files},
 				    {"acceptsFolders", action.accepts_folders},
 				    {"enabled", action.enabled},

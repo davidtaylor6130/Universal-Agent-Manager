@@ -33,7 +33,7 @@ import {
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
-import { titleFromModelId } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, reasoningEffortForModel, titleFromModelId } from '../chat/modelOptions'
 
 interface MemoryModelOption {
   id: string
@@ -959,8 +959,16 @@ export function SettingsModal() {
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
                   const providerSession = sessions.find((session) => session.providerId === provider.id)
-                  const modelsLoading = providerSession ? acpBindings[providerSession.id]?.modelsLoading : false
-                  const modelRefreshError = providerSession ? acpBindings[providerSession.id]?.modelRefreshError : ''
+                  const providerAcp = providerSession ? acpBindings[providerSession.id] : undefined
+                  const modelsLoading = providerAcp?.modelsLoading ?? false
+                  const modelRefreshError = providerAcp?.modelRefreshError ?? ''
+                  const liveReasoningOptions = caps.hasReasoningEffort
+                    ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort)
+                    : []
+                  const defaultReasoningOption = caps.reasoningOptions.find((option) => !option.id)
+                  const reasoningOptions = defaultReasoningOption && !liveReasoningOptions.some((option) => !option.id)
+                    ? [defaultReasoningOption, ...liveReasoningOptions]
+                    : liveReasoningOptions
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
@@ -985,7 +993,11 @@ export function SettingsModal() {
                               defaults.modelId,
                               `${providerName} default model`,
                               modelOptions,
-                              (modelId) => updateProviderDefaults(provider.id, { ...defaults, modelId })
+                              (modelId) => updateProviderDefaults(provider.id, {
+                                ...defaults,
+                                modelId,
+                                reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
+                              })
                             )}
                           </div>
                           <div className="grid gap-1">
@@ -1005,7 +1017,7 @@ export function SettingsModal() {
                                 `${provider.id}:reasoning`,
                                 defaults.reasoningEffort,
                                 `${providerName} default reasoning`,
-                                caps.reasoningOptions,
+                                reasoningOptions,
                                 (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
                               )}
                             </div>

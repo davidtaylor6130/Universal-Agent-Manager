@@ -1,26 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildModelOptions, reasoningEffortForModel } from './modelOptions'
+import { buildCodexReasoningOptions, buildModelOptions, reasoningEffortForModel } from './modelOptions'
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {
     const acp = {
       availableModels: [{
-        id: 'gpt-5.4',
-        name: 'GPT-5.4',
+        id: 'gpt-5.6',
+        name: 'GPT-5.6',
         defaultReasoningEffort: 'medium',
-        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'ultra'],
       }],
     } as AcpBinding
 
-    expect(reasoningEffortForModel(acp, 'gpt-5.4')).toBe('medium')
-    expect(reasoningEffortForModel(acp, 'gpt-5.4', 'unknown')).toBe('medium')
-    expect(reasoningEffortForModel(acp, 'gpt-5.4', 'low')).toBe('low')
+    expect(reasoningEffortForModel(acp, 'gpt-5.6')).toBe('medium')
+    expect(reasoningEffortForModel(acp, 'gpt-5.6', 'unknown')).toBe('medium')
+    expect(reasoningEffortForModel(acp, 'gpt-5.6', 'low')).toBe('low')
+    expect(reasoningEffortForModel(acp, 'gpt-5.6', 'ultra')).toBe('ultra')
   })
 
   it('keeps provider-default model selection explicit', () => {
     const options = buildModelOptions(undefined, '', undefined, 'gemini-cli', true)
 
     expect(options[0]).toMatchObject({ id: '', label: 'Default' })
+  })
+
+  it('offers ultra reasoning when live model metadata is unavailable', () => {
+    expect(buildCodexReasoningOptions(undefined, 'gpt-5.6').at(-1)).toMatchObject({
+      id: 'ultra',
+      label: 'Ultra',
+    })
+    expect(buildCodexReasoningOptions(undefined, 'gpt-5.4').some((option) => option.id === 'ultra')).toBe(false)
+    expect(reasoningEffortForModel(undefined, 'gpt-5.4', 'ultra')).toBe('')
   })
 })

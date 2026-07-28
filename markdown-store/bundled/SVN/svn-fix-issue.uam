@@ -1,0 +1,44 @@
+---
+uamVersion: 1
+title: SVN Fix Issue
+maker: Universal Agent Manager
+review: Diagnose and fix an issue in an SVN working copy, then prepare the focused change for review or commit. Use for "fix SVN issue", "work on this Subversion bug", "repair this regression", or an issue ID plus an SVN repository.
+favorite: true
+commandName: svn-fix-issue
+group: SVN
+---
+
+# SVN Fix Issue
+
+1. Obtain the issue evidence and tracker context; SVN itself is not an issue tracker.
+2. Record repository and working-copy identity. Inspect normal and `--no-ignore`
+   status, mixed revisions, switched or sparse paths, conflicts, externals, locks, and
+   existing local changes. When access is authorized, check remote staleness with
+   `svn status -u`.
+3. Do not automatically update, switch, revert, clean, or otherwise normalize the
+   working copy. Those operations mutate state and may merge, conflict, or destroy
+   unrelated work.
+4. Reproduce the failure only when safe. Do not install dependencies or run networked,
+   destructive, production-facing, privileged, or unusually expensive checks without
+   confirmation.
+5. Trace all discoverable callers of the affected boundary and distinguish the
+   supported root cause from hypotheses.
+6. Implement the smallest complete local fix while preserving unrelated work. Schedule
+   intended new versioned files with `svn add`; unversioned files are absent from normal
+   diffs and commits.
+7. Add a focused regression test when the project has a suitable test surface.
+   Otherwise use the smallest repeatable verification appropriate to code,
+   configuration, documentation, or data.
+8. Run the focused verification and smallest relevant suite. Record exact commands,
+   results, and anything not run.
+9. Show status and diff for the identical explicit target set intended for commit.
+   Provide the target list, property changes, external effects, lock-release behavior,
+   and proposed log message. Do not use `.` when it would include unrelated paths.
+10. Obtain explicit confirmation before a branch copy, commit, tracker update, upload,
+   or review submission.
+
+If an approved commit runs, return the committed revision, verify the repository log
+and diff for that revision, and show that unrelated working-copy changes remain.
+A successful commit need not make the entire working copy clean or single-revision.
+Redact credentials, tokens, private data, authentication details, and sensitive paths
+from diffs, logs, commands, and output.
