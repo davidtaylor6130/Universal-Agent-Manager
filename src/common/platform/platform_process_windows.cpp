@@ -424,16 +424,19 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	std::filesystem::path ResolveCurrentExecutablePath() const override
 	{
-		std::wstring buffer(static_cast<std::size_t>(MAX_PATH), L'\0');
-		const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-
-		if (length == 0 || length >= buffer.size())
+		std::wstring buffer(512, L'\0');
+		while (buffer.size() <= 32768)
 		{
-			return {};
+			const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+			if (length == 0) return {};
+			if (length < buffer.size())
+			{
+				buffer.resize(static_cast<std::size_t>(length));
+				return std::filesystem::path(buffer);
+			}
+			buffer.resize(buffer.size() * 2);
 		}
-
-		buffer.resize(static_cast<std::size_t>(length));
-		return std::filesystem::path(buffer);
+		return {};
 	}
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override

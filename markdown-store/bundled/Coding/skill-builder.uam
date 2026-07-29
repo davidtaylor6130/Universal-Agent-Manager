@@ -1,0 +1,85 @@
+---
+uamVersion: 1
+title: Skill Builder
+maker: Universal Agent Manager
+review: Create and validate a focused reusable skill for the selected agent host, using that host's current documented format, locations, metadata, and tool contracts. Use for "create a skill", "build SKILL.md", "make this workflow reusable", or "package these instructions as a skill".
+dateCreated: 2026-07-13T00:00:00Z
+dateUpdated: 2026-07-13T00:00:00Z
+favorite: false
+commandName: coding-skill-builder
+group: Coding
+---
+
+# Skill Builder
+
+Create the smallest valid skill that handles the user's concrete examples.
+
+## Define the workflow
+
+First identify the target host and discover its installed or current official skill
+documentation, schema, supported locations, and validator. Do not assume different
+agent hosts share one format. Cite the contract used and label any undocumented
+assumption.
+
+Then establish:
+
+1. the single user goal and expected output;
+2. requests that should and should not trigger it;
+3. at least two representative requests, plus an incomplete or edge-case request;
+4. required tools, environment, network access, policies, schemas, and reusable assets;
+5. target scope: repository, user, or plugin distribution.
+
+Ask only for missing facts that materially change the workflow. Never overwrite an existing skill without confirmation.
+
+## Choose the smallest structure
+
+When the target follows the Agent Skills specification, default to an
+instruction-only folder:
+
+```text
+skill-name/
+└── SKILL.md
+```
+
+Add `scripts/` only for deterministic or repeatedly rewritten operations, `references/` for detailed material loaded on demand, and `assets/` for output resources. Keep references one level deep and the main instructions concise.
+
+For OpenAI hosts, add `agents/openai.yaml` only when the discovered contract calls for
+UI metadata, invocation policy, or tool dependencies. Put supported MCP dependency
+declarations there for plugin-backed skills.
+
+## Write `SKILL.md`
+
+For an Agent Skills-compatible target:
+
+1. Normalize `name` to 1–64 lowercase letters, digits, and hyphens. Do not start or end with a hyphen, use consecutive hyphens, or differ from the parent folder name.
+2. Write a non-empty `description` of at most 1024 characters that states what the skill does and when it should trigger. Front-load the key use case.
+3. Use optional frontmatter such as `license`, `compatibility`, or `metadata` only when it carries real information. Treat `allowed-tools` as experimental and include it only for a known-compatible host.
+4. Put inputs, ordered decisions, output requirements, safety boundaries, stop conditions, and facts that must not be inferred in the body.
+5. Use imperative instructions. Do not duplicate triggering guidance in a body section.
+6. Reference only tools, parameters, resource identifiers, and MCP contracts actually discovered or supplied.
+
+## Place or package it
+
+For Codex, use the locations confirmed by its current documentation, normally:
+
+- repository skill: `$REPO_ROOT/.agents/skills/<skill-name>/`;
+- user skill: `$HOME/.agents/skills/<skill-name>/`;
+- shared distribution or bundled connectors: a validated plugin.
+
+Confirm the destination before writing outside the active workspace.
+
+## Validate and test
+
+1. Build and validate in a temporary staging folder. Discover and run the target host's
+   documented validator; if none is available, report manual validation explicitly.
+2. Verify every relative link, script dependency, declared tool, and optional resource.
+3. Run added scripts only with inert fixtures in an isolated sandbox. Inspect them first
+   and obtain explicit confirmation before any networked, external, privileged, or
+   mutating operation.
+4. Test direct, indirect, incomplete, negative, and edge-case prompts with tool use
+   disabled or mocked unless the user explicitly approved a safe sandbox.
+5. Reject embedded secrets and symlinks that escape the skill folder. Package only an
+   enumerated set of validated files.
+6. Remove placeholders, unused resources, wrapper documentation, and duplicated instructions.
+
+Report the destination, created files, validator result, tests performed, and any host-specific limitations. Do not claim compatibility with a surface or tool that was not verified.

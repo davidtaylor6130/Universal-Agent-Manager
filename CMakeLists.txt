@@ -663,9 +663,13 @@ if(APPLE AND UAM_MACOS_BUNDLE)
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
     COMMAND ${CMAKE_COMMAND} -E make_directory
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/skill-builder.uam"
+    COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/skill-builder.uam"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
@@ -678,9 +682,13 @@ else()
       "$<TARGET_FILE_DIR:universal_agent_manager>/UI-V2/dist"
     COMMAND ${CMAKE_COMMAND} -E make_directory
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/skill-builder.uam"
+    COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/skill-builder.uam"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
@@ -892,6 +900,7 @@ if(UAM_BUILD_TESTS)
       libcef_dll_wrapper
       "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
       advapi32
+      shell32
       windowsapp
     )
   endif()

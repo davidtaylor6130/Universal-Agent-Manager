@@ -174,7 +174,7 @@ export function isAllowedAcpModelId(modelId: string): boolean {
 
 export function normalizeCodexReasoningEffort(value: unknown): string {
   const effort = stringOr(value).trim().toLowerCase()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'].includes(effort) ? effort : ''
 }
 
 export function normalizeCodexServiceTier(value: unknown): string {
@@ -1310,6 +1310,9 @@ function sanitizeShellActions(value: unknown): ShellAction[] {
       skillPath: stringOr(entry.skillPath),
       providerId: normalizeCliProviderIdAlias(stringOr(entry.providerId)),
       modelId: normalizeAcpModelId(entry.modelId),
+      groupPath: Array.isArray(entry.groupPath)
+        ? entry.groupPath.map((segment) => stringOr(segment).trim()).filter(Boolean)
+        : [],
       acceptsFiles: booleanOr(entry.acceptsFiles, true),
       acceptsFolders: booleanOr(entry.acceptsFolders, true),
       enabled: booleanOr(entry.enabled, true),

@@ -143,15 +143,17 @@ export function buildCodexReasoningOptions(acp: AcpBinding | undefined, modelId:
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
 	const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
 	if (runtimeModel && runtimeEfforts.length === 0) return []
-	const base = runtimeEfforts.length > 0 ? runtimeEfforts : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+	const fallbackEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+	if (/^gpt-5\.6(?:$|-)/i.test(modelId.trim())) fallbackEfforts.push('ultra')
+	const base = runtimeEfforts.length > 0 ? runtimeEfforts : fallbackEfforts
 	const ids = runtimeModel ? [...base] : ['', ...base]
-	if (!runtimeModel && selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
+	if (!runtimeModel && selectedReasoningEffort && selectedReasoningEffort !== 'ultra' && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
 	return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
 }
 
 export function reasoningEffortForModel(acp: AcpBinding | undefined, modelId: string, currentEffort = '') {
 	const model = selectedRuntimeModel(acp, modelId)
-	if (!model) return currentEffort
+	if (!model) return currentEffort === 'ultra' && !/^gpt-5\.6(?:$|-)/i.test(modelId.trim()) ? '' : currentEffort
 	const supported = model.supportedReasoningEfforts ?? []
 	if (supported.length === 0) return ''
 	if (supported.includes(currentEffort)) return currentEffort

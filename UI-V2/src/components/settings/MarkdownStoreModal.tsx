@@ -6,7 +6,7 @@ import { MarkdownContent } from '../markdown/Markdown'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { BookOpen, ExternalLink, FileInput, FolderInput, Paperclip, Pencil, Plus, RefreshCw, Search, Star, Users, X } from 'lucide-react'
 
-const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '' }
+const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
 
 export function MarkdownStoreModal() {
   const activeSessionId = useAppStore((s) => s.activeSessionId)
@@ -54,12 +54,14 @@ export function MarkdownStoreModal() {
   }, [entries, selectedPath])
 
   const sourceProviders = useMemo(() => Array.from(new Set(entries.map((entry) => entry.sourceProvider).filter(Boolean))).sort(), [entries])
+  const groups = useMemo(() => Array.from(new Set(entries.map((entry) => entry.group?.trim()).filter(Boolean))).sort(), [entries])
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     return entries.filter((entry) => {
       if (filter === 'favorites' && !entry.favorite) return false
       if (filter.startsWith('source:') && entry.sourceProvider !== filter.slice(7)) return false
-      return !query || [entry.title, entry.maker, entry.review, entry.preview, entry.sourceProvider ?? '', entry.filePath]
+      if (filter.startsWith('group:') && entry.group !== filter.slice(6)) return false
+      return !query || [entry.title, entry.maker, entry.review, entry.preview, entry.sourceProvider ?? '', entry.group ?? '', entry.filePath]
         .some((value) => value.toLowerCase().includes(query))
     })
   }, [entries, filter, search])
@@ -68,7 +70,7 @@ export function MarkdownStoreModal() {
   const beginNew = () => { setDraft(EMPTY_DRAFT); setEditing('new'); setShowEditorPreview(false) }
   const beginEdit = (entry: MarkdownStoreEntry) => {
     setSelectedPath(entry.filePath)
-    setDraft({ title: entry.title, maker: entry.maker, review: entry.review, body: entry.body ?? entry.preview })
+    setDraft({ title: entry.title, maker: entry.maker, review: entry.review, body: entry.body ?? entry.preview, group: entry.group ?? '' })
     setEditing('existing')
     setShowEditorPreview(false)
   }
@@ -77,7 +79,7 @@ export function MarkdownStoreModal() {
     if (submittingRef.current || !draft.title.trim() || !draft.body.trim()) return
     submittingRef.current = true
     setSubmitting(true)
-    const clean = { title: draft.title.trim(), maker: draft.maker.trim(), review: draft.review.trim(), body: draft.body.trim() }
+    const clean = { title: draft.title.trim(), maker: draft.maker.trim(), review: draft.review.trim(), body: draft.body.trim(), group: draft.group.trim() }
     let ok = false
     try {
       ok = editing === 'existing' && selected ? await updateEntry(selected, clean) : await createEntry(clean)
@@ -144,6 +146,7 @@ export function MarkdownStoreModal() {
           </label>
           <select aria-label="Filter Skills" value={filter} onChange={(event) => setFilter(event.target.value)} className="text-xs" style={{ border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg)', color: 'var(--text)', padding: '7px 9px' }}>
             <option value="all">All entries</option><option value="favorites">Favorites</option>
+            {groups.map((group) => <option key={group} value={`group:${group}`}>Group: {group}</option>)}
             {sourceProviders.map((provider) => <option key={provider} value={`source:${provider}`}>Source: {provider}</option>)}
           </select>
           <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{filtered.length} of {entries.length}</span>
@@ -161,7 +164,8 @@ export function MarkdownStoreModal() {
           {editing && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)', backdropFilter: 'blur(3px)' }}><div className="grid w-full max-w-3xl gap-3 rounded-xl p-4 animate-slide-in" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}>
             <div className="flex items-center justify-between"><strong className="text-sm" style={{ color: 'var(--text)' }}>{editing === 'new' ? 'New entry' : 'Edit entry'}</strong><Button variant="secondary" size="sm" onClick={() => setShowEditorPreview((value) => !value)}>{showEditorPreview ? 'Edit Markdown' : 'Preview Markdown'}</Button></div>
             <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /><input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group, for example Coding / Safety" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /></div>
+            <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
             {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />}
             <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button><Button variant="primary" size="sm" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</Button></div>
           </div></div>}
@@ -178,7 +182,7 @@ export function MarkdownStoreModal() {
           {importResults.length > 0 && <div role="status" className="mb-3 flex items-start gap-2 rounded-md p-2 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface-up)' }}><div className="min-w-0 flex-1">{importResults.map((result) => <div key={`${result.sourcePath}-${result.status}`}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>}
 
           {loading ? <div className="text-sm" style={{ color: 'var(--text-3)' }}>Loading Skills...</div> : filtered.length === 0 ? <div className="flex flex-col items-center gap-2 rounded-xl p-8 text-center animate-fade-in" style={{ color: 'var(--text-3)', border: '1px solid var(--border)', background: 'var(--surface-up)' }}><BookOpen size={24} strokeWidth={1.5} aria-hidden /><div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>{search.trim() || filter !== 'all' ? 'No entries match this view' : 'No skills yet'}</div></div> : <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.2fr)]">
-            <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1">{filtered.map((entry) => <div key={entry.filePath} className="flex items-start gap-2 p-3 transition-[border-color,background,transform] duration-150 hover:-translate-y-px" style={{ border: `1px solid ${selectedPath === entry.filePath ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, background: selectedPath === entry.filePath ? 'var(--accent-dim)' : 'transparent' }}><button type="button" onClick={() => setSelectedPath(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, padding: 0 }}><div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>{entry.title}</div><div className="mt-1 flex flex-wrap gap-x-3 text-[11px]" style={{ color: 'var(--text-3)' }}>{entry.maker && <span>{entry.maker}</span>}{entry.sourceProvider && <span>{entry.sourceProvider}</span>}</div>{(entry.review || entry.preview) && <div className="mt-2 text-xs line-clamp-2" style={{ color: 'var(--text-2)' }}>{entry.review || entry.preview}</div>}</button><IconButton size="sm" icon={<Star size={15} fill={entry.favorite ? 'currentColor' : 'none'} />} label={`${entry.favorite ? 'Remove' : 'Add'} ${entry.title} ${entry.favorite ? 'from' : 'to'} favorites`} onClick={() => void setFavorite(entry, !entry.favorite)} style={{ color: entry.favorite ? 'var(--yellow)' : 'var(--text-3)' }} /></div>)}</div>
+            <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1">{filtered.map((entry) => <div key={entry.filePath} className="flex items-start gap-2 p-3 transition-[border-color,background,transform] duration-150 hover:-translate-y-px" style={{ border: `1px solid ${selectedPath === entry.filePath ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, background: selectedPath === entry.filePath ? 'var(--accent-dim)' : 'transparent' }}><button type="button" onClick={() => setSelectedPath(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, padding: 0 }}><div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>{entry.title}</div><div className="mt-1 flex flex-wrap gap-x-3 text-[11px]" style={{ color: 'var(--text-3)' }}>{entry.group && <span>{entry.group}</span>}{entry.maker && <span>{entry.maker}</span>}{entry.sourceProvider && <span>{entry.sourceProvider}</span>}</div>{(entry.review || entry.preview) && <div className="mt-2 text-xs line-clamp-2" style={{ color: 'var(--text-2)' }}>{entry.review || entry.preview}</div>}</button><IconButton size="sm" icon={<Star size={15} fill={entry.favorite ? 'currentColor' : 'none'} />} label={`${entry.favorite ? 'Remove' : 'Add'} ${entry.title} ${entry.favorite ? 'from' : 'to'} favorites`} onClick={() => void setFavorite(entry, !entry.favorite)} style={{ color: entry.favorite ? 'var(--yellow)' : 'var(--text-3)' }} /></div>)}</div>
             <div className="min-h-0 overflow-y-auto rounded-lg p-4" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>{selected ? <><div className="flex items-start justify-between gap-3"><div><h3 className="text-base font-semibold" style={{ color: 'var(--text)' }}>{selected.title}</h3><div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>{selected.review || selected.preview}</div></div><IconButton icon={<Pencil size={15} />} label={`Edit ${selected.title} in app`} onClick={() => beginEdit(selected)} /></div><div className="my-4 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={selected.body ?? selected.preview} /></div><div className="mb-3 grid gap-1 text-[11px]" style={{ color: 'var(--text-3)' }}>{selected.commandName && <span>Favorite command: /{selected.commandName}</span>}{selected.sourceProvider && <span>Imported from {selected.sourceProvider}: {selected.sourcePath}</span>}<span className="truncate">{selected.filePath}</span></div><div className="flex flex-wrap gap-1"><IconButton icon={<Paperclip size={15} />} label="Attach to message" variant={activeSessionId ? 'solid' : 'ghost'} disabled={!activeSessionId} onClick={() => attach(selected)} /><IconButton icon={<BookOpen size={15} />} label="Open in external editor" onClick={() => void editEntry(selected)} /><IconButton icon={<ExternalLink size={15} />} label="Reveal file" onClick={() => void revealEntry(selected)} /></div></> : <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-3)' }}>Select an entry to preview it.</div>}</div>
           </div>}
         </div>

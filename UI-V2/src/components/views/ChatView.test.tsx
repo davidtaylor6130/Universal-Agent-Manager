@@ -1292,7 +1292,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to XHigh.')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
       setDraft('/speed flex')

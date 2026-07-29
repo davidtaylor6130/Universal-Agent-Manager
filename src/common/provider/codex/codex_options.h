@@ -17,6 +17,7 @@ namespace uam::codex
 	    "medium",
 	    "high",
 	    "xhigh",
+	    "ultra",
 	});
 
 	inline constexpr auto kServiceTiers = std::to_array<std::string_view>({

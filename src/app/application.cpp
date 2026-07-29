@@ -2,6 +2,7 @@
 
 #include "chat_domain_service.h"
 #include "goal_service.h"
+#include "markdown_store_service.h"
 #include "persistence_coordinator.h"
 #include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
@@ -531,6 +532,21 @@ bool Application::InitializeState()
 
 	PersistenceCoordinator().LoadSettings(m_app);
 	bool settings_dirty = false;
+	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
+	if (m_app.settings.markdown_store_directory.empty())
+	{
+		m_app.settings.markdown_store_directory = uam::paths::Utf8PathString(m_app.data_root / "markdown-store");
+		settings_dirty = true;
+	}
+	const fs::path configured_skills_root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
+	bool bundled_skills_ready = false;
+	if (!bundled_skills_root.empty())
+	{
+		std::string bundled_skills_error;
+		bundled_skills_ready = MarkdownStoreService::SeedBundledEntries(bundled_skills_root, configured_skills_root, &bundled_skills_error);
+		if (!bundled_skills_ready && !bundled_skills_error.empty())
+			m_app.status_line = "Could not import bundled skills: " + bundled_skills_error;
+	}
 	if (ThemeService::IsCustomThemeId(m_app.settings.ui_theme) && !ThemeService::Exists(m_app.data_root, m_app.settings.ui_theme))
 	{
 		m_app.settings.ui_theme = uam::settings::kFocusThemeId;
@@ -559,7 +575,7 @@ bool Application::InitializeState()
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root);
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, bundled_skills_ready ? configured_skills_root : fs::path{});
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();

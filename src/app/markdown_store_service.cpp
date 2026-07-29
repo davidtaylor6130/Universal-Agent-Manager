@@ -395,6 +395,87 @@ fs::path MarkdownStoreService::NormalizeRoot(std::string_view root)
 	return uam::paths::NormalizeExistingPath(expanded);
 }
 
+fs::path MarkdownStoreService::BundledRootForExecutable(const fs::path& executable)
+{
+	if (executable.empty()) return {};
+	const fs::path executable_directory = executable.parent_path();
+	for (const fs::path& candidate : {
+	         executable_directory / "markdown-store",
+	         executable_directory.parent_path() / "Resources" / "markdown-store",
+	     })
+	{
+		if (uam::paths::IsDirectoryNoThrow(candidate)) return uam::paths::NormalizeExistingPath(candidate);
+	}
+	return {};
+}
+
+bool MarkdownStoreService::SeedBundledEntries(const fs::path& bundled_root, const fs::path& destination_root, std::string* error_out)
+{
+	ClearError(error_out);
+	if (!IsConfiguredRoot(bundled_root, error_out)) return false;
+	if (destination_root.empty())
+	{
+		SetError(error_out, "Markdown Store destination is unavailable.");
+		return false;
+	}
+
+	std::error_code ec;
+	if (!uam::paths::CreateDirectoriesNoThrow(destination_root, &ec))
+	{
+		SetError(error_out, "Failed to create the Markdown Store directory.");
+		return false;
+	}
+	const fs::path source_root = uam::paths::NormalizeExistingPath(bundled_root);
+	const fs::path target_root = uam::paths::NormalizeExistingPath(destination_root);
+	if (source_root == target_root) return true;
+
+	std::string list_error;
+	const std::vector<Entry> bundled_entries = ListEntries(source_root, &list_error);
+	if (!list_error.empty())
+	{
+		SetError(error_out, list_error);
+		return false;
+	}
+	const std::vector<Entry> existing_entries = ListEntries(target_root, &list_error);
+	if (!list_error.empty())
+	{
+		SetError(error_out, list_error);
+		return false;
+	}
+
+	std::set<std::string> titles;
+	std::set<std::string> commands;
+	for (const Entry& entry : existing_entries)
+	{
+		titles.insert(uam::strings::TrimAndLowerAscii(entry.title));
+		commands.insert(uam::strings::TrimAndLowerAscii(entry.command_name));
+	}
+	for (const Entry& entry : bundled_entries)
+	{
+		const std::string title = uam::strings::TrimAndLowerAscii(entry.title);
+		const std::string command = uam::strings::TrimAndLowerAscii(entry.command_name);
+		if (titles.contains(title) || commands.contains(command)) continue;
+
+		const std::optional<fs::path> relative = uam::paths::RelativePathIfInsideRoot(source_root, entry.file_path);
+		if (!relative)
+		{
+			SetError(error_out, "Bundled Markdown Store entry escaped its source directory.");
+			return false;
+		}
+		const fs::path target = target_root / *relative;
+		if (uam::paths::PathExistsNoThrow(target)) continue;
+		if (!uam::paths::CreateDirectoriesNoThrow(target.parent_path(), &ec) ||
+		    !fs::copy_file(entry.file_path, target, fs::copy_options::none, ec))
+		{
+			SetError(error_out, "Failed to import bundled Markdown Store entries.");
+			return false;
+		}
+		titles.insert(title);
+		commands.insert(command);
+	}
+	return true;
+}
+
 bool MarkdownStoreService::IsConfiguredRoot(const fs::path& root, std::string* error_out)
 {
 	ClearError(error_out);
@@ -531,7 +612,6 @@ bool MarkdownStoreService::UpdateEntry(const fs::path& root, std::string_view fi
 		SetError(error_out, "Markdown Store entry could not be loaded.");
 		return false;
 	}
-	if (draft.group.empty()) draft.group = existing.group;
 	PersistedMetadata metadata{existing.date_created, existing.favorite, existing.source_provider, existing.source_path,
 	                           existing.command_name.empty() ? UniqueCommandName(root, existing.title, target) : existing.command_name};
 	if (!uam::io::WriteTextFile(target, BuildMarkdown(draft, metadata)))

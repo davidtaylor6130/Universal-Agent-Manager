@@ -29,6 +29,13 @@ namespace
 			action.skill_path = uam::strings::Trim(value.value("skillPath", ""));
 			action.provider_id = uam::strings::Trim(value.value("providerId", ""));
 			action.model_id = uam::strings::Trim(value.value("modelId", ""));
+			if (value.contains("groupPath") && value["groupPath"].is_array())
+			{
+				for (const auto& segment : value["groupPath"])
+				{
+					if (segment.is_string()) action.group_path.push_back(segment.get<std::string>());
+				}
+			}
 			action.accepts_files = value.value("acceptsFiles", true);
 			action.accepts_folders = value.value("acceptsFolders", true);
 			action.enabled = value.value("enabled", true);

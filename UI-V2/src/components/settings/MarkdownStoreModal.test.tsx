@@ -15,7 +15,7 @@ describe('MarkdownStoreModal', () => {
       markdownStoreLoading: false,
       markdownStoreError: '',
       markdownStoreEntries: [
-        { id: 'review', title: 'Review code', maker: 'David', review: '', dateCreated: '', dateUpdated: '', preview: 'Find regressions', body: '# Review\n\nFind regressions', favorite: false, sourceProvider: 'codex', sourcePath: '/tmp/codex/review.md', commandName: 'review-code', filePath: '/tmp/store/review.uam' },
+        { id: 'review', title: 'Review code', maker: 'David', review: '', dateCreated: '', dateUpdated: '', preview: 'Find regressions', body: '# Review\n\nFind regressions', favorite: false, sourceProvider: 'codex', sourcePath: '/tmp/codex/review.md', commandName: 'review-code', group: 'Coding', filePath: '/tmp/store/review.uam' },
         { id: 'notes', title: 'Release notes', maker: 'Sam', review: '', dateCreated: '', dateUpdated: '', preview: 'Summarize changes', body: '# Notes', favorite: true, sourceProvider: 'gemini-cli', sourcePath: '/tmp/gemini/notes.md', commandName: 'release-notes', filePath: '/tmp/store/notes.uam' },
       ],
       closeMarkdownStore: vi.fn(),
@@ -113,6 +113,9 @@ describe('MarkdownStoreModal', () => {
     act(() => { filter.value = 'source:codex'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
+    act(() => { filter.value = 'group:Coding'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(host.textContent).toContain('Review code')
+    expect(host.textContent).not.toContain('Release notes')
 
     const favorite = host.querySelector('[aria-label="Add Review code to favorites"]') as HTMLElement
     await act(async () => { favorite.dispatchEvent(new MouseEvent('click', { bubbles: true })); await Promise.resolve() })
@@ -136,11 +139,16 @@ describe('MarkdownStoreModal', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, 'Review carefully')
       title.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    const group = host.querySelector('input[aria-label="Entry group"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(group, 'Coding / Review')
+      group.dispatchEvent(new Event('input', { bubbles: true }))
+    })
     act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview Markdown')?.click())
     expect(host.textContent).toContain('Find regressions')
 
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save')?.click(); await Promise.resolve() })
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }), expect.objectContaining({ title: 'Review carefully' }))
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }), expect.objectContaining({ title: 'Review carefully', group: 'Coding / Review' }))
     expect(host.querySelector('input[aria-label="Entry title"]')).toBeTruthy()
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save')?.click(); await Promise.resolve() })
     expect(host.querySelector('input[aria-label="Entry title"]')).toBeFalsy()

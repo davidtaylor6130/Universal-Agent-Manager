@@ -1,0 +1,48 @@
+---
+uamVersion: 1
+title: SVN Version Tag and Release
+maker: Universal Agent Manager
+review: Prepare release notes and create an SVN tag from an exact source revision. Use for "tag an SVN release", "create Subversion version", "publish an SVN release", "write release notes", or "copy trunk to tags".
+favorite: true
+commandName: svn-version-tag-release
+group: SVN
+---
+
+# SVN Version Tag and Release
+
+Prepare one reproducible repository snapshot and keep tagging separate from artifact
+publication or announcement.
+
+1. Inspect the SVN client version, repository root and UUID, repository layout,
+   existing tags, project conventions, and relevant test evidence.
+2. Identify the exact source URL and **operative revision** to copy. Add a peg revision
+   only when needed to identify the source line of history; do not conflate the two.
+3. Prefer a URL-to-URL copy at an explicit operative revision for a normal release tag.
+   Local working-copy changes do not enter that copy. Use a working-copy source only
+   when the user explicitly wants that local or mixed snapshot and its state has been
+   fully recorded.
+4. Verify that source and destination are in the same repository, the source exists at
+   the chosen revision, the target parent exists, and the exact target does not. Do not
+   use `--parents` to invent a tags layout.
+5. Infer naming from existing tags. If no convention exists, propose one and obtain a
+   decision.
+6. Inspect every `svn:externals` definition. Use `--pin-externals` only when the client
+   supports it and verify any external it cannot pin, especially foreign-repository
+   externals.
+7. Draft release notes from an explicit previous-tag-to-source range. For a first
+   release, state that no previous tag exists and use an explicit project-approved
+   baseline rather than inventing one. State tests, compatibility, known issues, and
+   history limits.
+8. Show the source URL and peg revision if needed, operative revision, target URL,
+   externals policy, log message, and exact proposed command. The command must include
+   `-r OPERATIVE`; without it, a URL source defaults to its latest revision.
+9. Obtain explicit confirmation immediately before the URL-to-URL copy. It creates a
+   repository commit.
+10. If approved and executed, capture the committed revision and verify target info,
+    the creation log, changed paths, and the target tree against the selected source
+    snapshot.
+
+SVN tags are ordinary copied directories, not inherently immutable. Treat completed
+tags as immutable project policy unless repository authorization or hooks enforce it.
+Never edit a completed tag, upload artifacts, publish release notes, or announce the
+release without separate explicit confirmation.

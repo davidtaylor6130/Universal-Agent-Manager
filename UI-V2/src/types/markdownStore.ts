@@ -20,6 +20,7 @@ export interface MarkdownStoreDraft {
   maker: string
   review: string
   body: string
+  group: string
 }
 
 export interface MarkdownStoreImportCandidate {

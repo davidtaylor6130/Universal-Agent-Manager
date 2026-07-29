@@ -1,0 +1,41 @@
+---
+uamVersion: 1
+title: SVN Draft Issue
+maker: Universal Agent Manager
+review: Draft a portable issue report for an SVN-hosted project without assuming a tracker. Use for "draft SVN issue", "write a Subversion bug report", "document this defect", "prepare a ticket", or "report a problem at this revision".
+favorite: true
+commandName: svn-draft-issue
+group: SVN
+---
+
+# SVN Draft Issue
+
+Research read-only evidence, then return a portable Markdown issue draft.
+
+1. Record the SVN client version, repository root and UUID, exact URL, working-copy
+   revision state, mixed, switched, and sparse state, local changes, and environment.
+   Distinguish repository revision, item working revision, and last-changed revision.
+2. Capture the exact reproducing command, working directory or target, input, complete
+   redacted error, exit status, expected behavior, actual behavior, and repeatability.
+3. Inspect local status and diff without updating the working copy. When current
+   repository state matters and access is authorized, check out-of-date status without
+   mutating the working copy.
+4. Query history by exact URL and explicit revision range. For historical paths, record
+   operative and peg revisions separately.
+5. Treat `svn blame` only as the last textual author and revision for each line, not
+   evidence of who caused a defect. Confirm a relevant revision with its log and diff;
+   inspect merge history only when it affects the claim.
+
+Return one Markdown draft with:
+
+- concise title and confirmed source and environment identity;
+- exact reproducer, expected and actual result, and exit status;
+- status, diff, log, and error evidence with repository-relative paths;
+- impact and affected scope;
+- acceptance criteria;
+- a separate **Hypotheses** section for anything not proved.
+
+Redact credentials, authentication realms, private usernames and paths, tokens, and
+sensitive logs. Do not update or otherwise change the working copy merely to improve
+evidence. Do not post, comment, email, save a file, or name a suspected person from
+blame without explicit confirmation.

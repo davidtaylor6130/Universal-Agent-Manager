@@ -1,0 +1,37 @@
+---
+uamVersion: 1
+title: Project Summary
+maker: Universal Agent Manager
+review: Produce a point-in-time, evidence-backed repository overview for handoff, onboarding, documentation, or planning. Use for "summarize this project", "write a repo overview", "explain the architecture", "create a handoff", or "what does this codebase do".
+favorite: true
+commandName: coding-project-summary
+group: Coding
+---
+
+# Project Summary
+
+Create a concise, read-only snapshot grounded in the repository.
+
+1. Record the inspected revision or branch, working-tree state, and important scope limits so time-sensitive claims have context.
+2. Read repository instructions, primary documentation, manifests, entry points, build definitions, and representative tests.
+3. Verify major capabilities in source. Report intended users, maturity, support status, or release readiness only when explicit documentation or release evidence establishes them.
+4. Trace the primary control and data flow and identify ownership boundaries, persistence, configuration, and external integrations.
+5. Distinguish:
+   - declared dependencies from integrations observed in code;
+   - documented commands from commands actually run;
+   - confirmed constraints from hypotheses;
+   - active implementation from examples, generated files, tests, or dead code.
+6. Include a risk only when evidence, a plausible trigger, and impact can all be named.
+
+Return:
+
+- **Snapshot** — revision, dirty state, and scope;
+- **Purpose and capabilities** — sourced from documentation and implementation;
+- **Architecture** — entry points, boundaries, and one primary flow;
+- **Technology and operations** — stack, storage, configuration, build, test, and release evidence;
+- **Constraints and risks** — evidence plus impact;
+- **Unknowns** — claims the repository does not establish.
+
+Cite the most useful file and, where applicable, symbol for every major claim. Do not
+edit documentation, generate files, install dependencies, commit, or publish the
+summary unless explicitly requested.

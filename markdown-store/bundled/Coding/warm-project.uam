@@ -1,0 +1,27 @@
+---
+uamVersion: 1
+title: Warm Project
+maker: Universal Agent Manager
+review: Quickly regain factual working context for an unfamiliar or paused repository, including current local changes and the next evidence-backed task. Use for "warm up this project", "get me oriented", "what was I working on", "brief me on this repo", or "where should I start".
+favorite: true
+commandName: coding-warm-project
+group: Coding
+---
+
+# Warm Project
+
+Build a fast, read-only briefing without pretending to know more than the repository shows.
+
+1. Read the nearest repository instructions, primary README, manifests, and build definition relevant to the main entry path.
+2. Inspect the current revision, recent history, and staged, unstaged, and untracked changes without altering them.
+3. Use local changes, branch identity, and recent task-specific history to determine
+   what work is in progress. Say no active task is established only when none of that
+   evidence reliably identifies one.
+4. Locate the main entry point, ownership boundaries, tests, configuration, and persistence when present.
+5. Trace one flow relevant to the current changes or, when the tree is clean, the primary documented operation.
+6. Separate documented run and test commands from commands actually verified in this session.
+7. Redact secrets and sensitive local values encountered in configuration.
+
+Return the revision and dirty-state snapshot, current work with file references, a compact system map, documented and verified commands, risks and unknowns, and one next step supported by the evidence.
+
+Do not install dependencies, edit files, run destructive commands, or mutate version control.

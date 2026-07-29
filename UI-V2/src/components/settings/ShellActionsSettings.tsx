@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { BookOpen, Check, ChevronRight, File, Files, Folder, FolderOpen, MousePointerClick, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { BookOpen, Check, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, MousePointerClick, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
@@ -14,11 +14,20 @@ function newAction(): ShellAction {
     skillPath: '',
     providerId: '',
     modelId: '',
+    groupPath: [],
     acceptsFiles: true,
     acceptsFolders: true,
     enabled: true,
     openWorkspace: true,
   }
+}
+
+function groupPathText(action: ShellAction) {
+  return action.groupPath.join(' / ')
+}
+
+function parseGroupPath(value: string) {
+  return value.split('/').map((segment) => segment.trim()).filter(Boolean)
 }
 
 export function ShellActionsSettings() {
@@ -35,8 +44,12 @@ export function ShellActionsSettings() {
   const applyingRef = useRef(false)
   const [error, setError] = useState('')
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({})
+  const [groupDrafts, setGroupDrafts] = useState<Record<string, string>>({})
 
-  useEffect(() => setActions(savedActions), [savedActions])
+  useEffect(() => {
+    setActions(savedActions)
+    setGroupDrafts(Object.fromEntries(savedActions.map((action) => [action.id, groupPathText(action)])))
+  }, [savedActions])
   useEffect(() => { void refreshMarkdownStore() }, [refreshMarkdownStore])
 
   const update = (id: string, patch: Partial<ShellAction>) => {
@@ -45,7 +58,8 @@ export function ShellActionsSettings() {
 
   const apply = async () => {
     if (applyingRef.current) return
-    const invalid = actions.find((action) => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
+    const prepared = actions.map((action) => ({ ...action, groupPath: parseGroupPath(groupDrafts[action.id] ?? groupPathText(action)) }))
+    const invalid = prepared.find((action) => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
     if (invalid) {
       setError('Each action needs a label and input type; enabled skill actions also need a skill.')
       return
@@ -54,13 +68,15 @@ export function ShellActionsSettings() {
     applyingRef.current = true
     setApplying(true)
     try {
-      const saved = await setShellActions(actions)
+      const saved = await setShellActions(prepared)
       if (saved) await applyShellActions()
     } finally {
       applyingRef.current = false
       setApplying(false)
     }
   }
+
+  const groupOptions = Array.from(new Set(actions.map((action) => groupDrafts[action.id] ?? groupPathText(action)))).filter(Boolean)
 
   return (
     <div className="space-y-4">
@@ -85,6 +101,7 @@ export function ShellActionsSettings() {
           <div className="flex items-center gap-2 px-3 py-2" style={{ background: 'var(--surface-up)', borderBottom: expanded ? '1px solid var(--border)' : 0 }}>
             <IconButton size="sm" icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
             <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{action.label || 'Untitled action'}</span>
+            {(groupDrafts[action.id] ?? groupPathText(action)) && <span className="hidden sm:flex max-w-52 items-center gap-1 truncate rounded-md px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)', background: 'var(--bg)' }}><FolderTree size={12} aria-hidden />{groupDrafts[action.id] ?? groupPathText(action)}</span>}
             <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
             <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="danger" onClick={() => { if (window.confirm(`Delete shell action “${action.label}”?`)) setActions((current) => current.filter((item) => item.id !== action.id)) }} />
           </div>
@@ -101,6 +118,20 @@ export function ShellActionsSettings() {
               />
             </label>
           </div>
+
+          <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+            Group path
+            <input
+              aria-label={`Group path for ${action.label}`}
+              list="shell-action-groups"
+              value={groupDrafts[action.id] ?? groupPathText(action)}
+              placeholder="GitHub / Pull requests"
+              onChange={(event) => setGroupDrafts((current) => ({ ...current, [action.id]: event.target.value }))}
+              className="rounded-md px-3 py-2 text-sm"
+              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+            />
+            <span style={{ color: 'var(--text-3)' }}>Use / to create nested Explorer submenus. Leave blank to place the action directly under Universal Agent Manager.</span>
+          </label>
 
           <div className="grid sm:grid-cols-2 gap-3">
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -192,6 +223,7 @@ export function ShellActionsSettings() {
         <IconButton icon={<Plus size={16} />} label="Add shell action" variant="solid" onClick={() => setActions((current) => [...current, newAction()])} />
         <Button variant="primary" leadingIcon={<Check size={14} />} loading={applying} onClick={() => void apply()}>Apply</Button>
       </div>
+      <datalist id="shell-action-groups">{groupOptions.map((group) => <option key={group} value={group} />)}</datalist>
       {(error || notification) && <div role="status" className="text-xs" style={{ color: error ? 'var(--red)' : 'var(--text-2)' }}>{error || notification}</div>}
     </div>
   )

@@ -1,0 +1,31 @@
+---
+uamVersion: 1
+title: Learn Repository
+maker: Universal Agent Manager
+review: Teach how a repository works through source-backed mental models, architecture boundaries, and a concrete execution flow. Use for "help me learn this repo", "teach me this codebase", "how are these modules connected", "walk me through the code", or "explain this execution path".
+favorite: true
+commandName: coding-learn-repository
+group: Coding
+---
+
+# Learn Repository
+
+Teach from evidence, not architectural guesswork.
+
+1. Establish the learner's goal and assumed experience level; infer them only when the request makes both clear.
+2. Bound discovery to repository instructions, manifests, documented entry points, and files connected to that goal. Do not read the whole repository by default.
+3. Build a short mental model from implemented boundaries. Distinguish documented intent from behavior verified in source.
+4. Select one named user or system flow tied to the goal. Trace it from its real entry point through state, services, persistence or integrations when present, and observable output.
+5. Cite a file and symbol for every major hop. Explain why the hop exists, what data crosses it, and which component owns the next decision.
+6. Use tests, configuration, and schemas when present to confirm behavior or expose edge cases. Never infer runtime use merely because a dependency is declared.
+7. Mark missing evidence as **Not established** instead of completing the story from convention.
+
+Return:
+
+- a five-sentence-or-shorter mental model;
+- the end-to-end flow as an ordered connection map;
+- key abstractions in plain language;
+- confirmed facts, inferences, and unknowns;
+- a short reading path of the next most useful files.
+
+Stay read-only. Do not install tools, edit files, or expose secrets found in configuration.

@@ -1,0 +1,43 @@
+---
+uamVersion: 1
+title: SVN Working Copy Cleanup
+maker: Universal Agent Manager
+review: Audit and clean an SVN working copy while preserving intentional files, local data, history, and repository conventions. Use for "clean up this SVN repo", "remove working-copy clutter", "fix svn:ignore", "polish this Subversion project", or "prepare this repo for release".
+favorite: true
+commandName: svn-repo-cleanup
+group: SVN
+---
+
+# SVN Working Copy Cleanup
+
+Clean the client working copy; do not confuse it with repository-database
+administration.
+
+1. Read project instructions and record repository and working-copy identity, local
+   changes, conflicts, mixed or switched state, sparse depth, locks, and externals.
+2. Inspect versioned repository entries, `svn status --no-ignore`, recursive properties,
+   inherited `svn:global-ignores`, directory-local `svn:ignore`, and external working
+   copies. Treat property changes as first-class changes.
+3. Classify each candidate as **keep**, **ignore**, **schedule-delete**,
+   **property-fix**, **unsafe or secret**, or **no action**. Do not classify a file from
+   its name alone.
+4. Remember:
+   - `svn:ignore` applies to unversioned immediate children of its directory;
+   - `svn:global-ignores` is inherited;
+   - neither makes an already-versioned item unversioned or prevents its commit;
+   - normal diffs omit unversioned and ignored contents and may omit binary content.
+5. Present exact proposed targets and state whether each operation removes disk content,
+   retains it locally, or only changes a property or schedule. For a generated item that
+   should remain locally, an approved `svn delete --keep-local` plus an appropriate
+   ignore rule may be suitable.
+6. Obtain confirmation before any edit, property change, scheduled deletion, or disk
+   deletion. Never use `svn cleanup --remove-unversioned`,
+   `svn cleanup --remove-ignored`, forced deletion, or shell deletion as routine
+   cleanup.
+7. After approved local edits, verify normal and `--no-ignore` status, retained local
+   files, property-aware diff, relevant checks, and preservation of unrelated changes.
+8. Show exact proposed commit targets and log message, then obtain separate confirmation
+   before commit, remote copy, upload, or publication.
+
+Do not change branch or tag layout, externals, or unrelated working-copy state as an
+incidental cleanup.

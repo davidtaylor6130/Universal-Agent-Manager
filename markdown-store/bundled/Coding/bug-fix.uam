@@ -1,0 +1,44 @@
+---
+uamVersion: 1
+title: Bug Fix
+maker: Universal Agent Manager
+review: Diagnose and repair a software defect with an evidence-backed root cause, a focused change, and proportionate verification. Use for "fix this bug", "repair this regression", "make this test pass", "debug and fix", or a failing issue, test, crash, or error report.
+favorite: true
+commandName: coding-bug-fix
+group: Coding
+---
+
+# Bug Fix
+
+Fix the best-supported cause, not merely the visible symptom.
+
+## Establish the failure
+
+1. Read repository instructions and snapshot the relevant working-tree state without changing it.
+2. Restate expected behavior, actual behavior, environment, and the smallest known failing input.
+3. Reproduce the failure when safe and possible. Otherwise preserve the supplied error, test result, log, or trace as the baseline and state why reproduction is unavailable.
+4. Do not install dependencies, contact production systems, or run networked, destructive, or unusually expensive checks without confirmation.
+
+## Prove the cause
+
+1. Trace the failing path through all discoverable direct callers, relevant sibling implementations, state transitions, and trust boundaries.
+2. Rank plausible causes and test the smallest discriminating hypothesis first.
+3. Identify the best-supported root cause with file and symbol references. Distinguish confirmed facts, inference, and unknowns; allow for multiple causes when the evidence requires it.
+4. Explain why that cause produces the observed failure and why nearby successful paths are unaffected.
+
+## Repair and verify
+
+1. Preserve unrelated user changes and existing behavior outside the failing case.
+2. Implement the smallest complete change at the narrowest correct boundary, using a
+   shared boundary when multiple failing paths already converge there. Avoid
+   speculative refactors, generated-file churn, and new dependencies.
+3. Add or update a focused regression check when the repository has a suitable test surface. Prefer a check that fails before the fix and passes after it.
+4. Run the focused check and the smallest relevant existing suite. Record exact commands, outcomes, and anything not run; never imply a check passed when it was unavailable.
+5. Review the final diff for accidental edits, debug output, compatibility changes, and unresolved failure paths.
+
+## Report
+
+Return the failing evidence, root cause and confidence, changed files and behavior,
+verification results, residual risks, and any manual follow-up. Redact credentials,
+tokens, private data, and sensitive paths from evidence and output. Never commit, push,
+publish, tag, or open a remote review without explicit confirmation.
