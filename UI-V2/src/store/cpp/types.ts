@@ -174,6 +174,12 @@ export interface AcpMode {
   description: string
 }
 
+export interface AcpCommand {
+  name: string
+  description: string
+  inputHint: string
+}
+
 export interface AcpModel {
   id: string
   name: string
@@ -279,6 +285,7 @@ export interface CppAcpSession {
   toolCalls?: AcpToolCall[]
   planSummary?: string
   planEntries?: AcpPlanEntry[]
+  availableCommands?: AcpCommand[]
   availableModes?: AcpMode[]
   currentModeId?: string
   availableModels?: AcpModel[]
@@ -393,7 +400,7 @@ export interface CliVersionProviderState {
   status: 'unknown' | 'checking' | 'installing' | 'supported' | 'unsupported'
   message: string
   running: boolean
-  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask'
+  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget'
   lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
@@ -578,6 +585,7 @@ export interface AcpBinding {
   toolCalls: AcpToolCall[]
   planSummary?: string
   planEntries: AcpPlanEntry[]
+  availableCommands?: AcpCommand[]
   availableModes: AcpMode[]
   currentModeId: string
   availableModels: AcpModel[]

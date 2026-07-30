@@ -806,6 +806,36 @@ std::vector<MarkdownStoreService::ImportResult> MarkdownStoreService::ImportEntr
 	return results;
 }
 
+bool MarkdownStoreService::LoadEntry(const fs::path& root, std::string_view file_path, Entry* entry_out, std::string* error_out)
+{
+	ClearError(error_out);
+	if (entry_out != nullptr)
+		*entry_out = Entry{};
+
+	fs::path normalized_path;
+	if (!ValidateStoreFilePath(root, file_path, &normalized_path, error_out))
+	{
+		return false;
+	}
+	const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(normalized_path);
+	if (!size || *size > kImportMaxBytes)
+	{
+		SetError(error_out, size ? "Markdown Store file exceeds the 2 MiB limit." : "Could not inspect Markdown Store file size.");
+		return false;
+	}
+
+	Entry entry;
+	if (!ParseEntryFile(normalized_path, entry))
+	{
+		SetError(error_out, "Could not read Markdown Store file.");
+		return false;
+	}
+	entry.id = EntryIdForPath(root, normalized_path);
+	if (entry_out != nullptr)
+		*entry_out = std::move(entry);
+	return true;
+}
+
 bool MarkdownStoreService::ValidateStoreFilePath(const fs::path& root, std::string_view file_path, fs::path* normalized_path_out, std::string* error_out)
 {
 	ClearError(error_out);

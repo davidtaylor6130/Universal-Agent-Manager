@@ -88,5 +88,6 @@ class MarkdownStoreService
 	static std::vector<ImportSource> DefaultImportSources();
 	static std::vector<ImportCandidate> PreviewImports(const std::filesystem::path& root, const std::vector<ImportSource>& sources, std::string* error_out = nullptr);
 	static std::vector<ImportResult> ImportEntries(const std::filesystem::path& root, const std::vector<ImportRequest>& requests, std::string* error_out = nullptr);
+	static bool LoadEntry(const std::filesystem::path& root, std::string_view file_path, Entry* entry_out = nullptr, std::string* error_out = nullptr);
 	static bool ValidateStoreFilePath(const std::filesystem::path& root, std::string_view file_path, std::filesystem::path* normalized_path_out = nullptr, std::string* error_out = nullptr);
 };

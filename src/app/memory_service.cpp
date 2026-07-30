@@ -9,9 +9,11 @@
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -639,9 +641,9 @@ namespace
 		return last_match;
 	}
 
-	std::string BuildMemoryWorkerCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id)
+	uam::ProviderWorkerInvocation BuildMemoryWorkerInvocation(const uam::AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out = nullptr)
 	{
-		return uam::BuildProviderWorkerCommand(profile, settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions);
+		return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, error_out);
 	}
 
 	void SetError(std::string* error_out, const std::string& message)
@@ -803,6 +805,17 @@ namespace
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat, const uam::QueuedMemoryExtractionTask& queued)
 	{
 		return ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || (!queued.manual && !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds()));
+	}
+
+	bool CopilotWorkerVersionCheckPending(const uam::AppState& app, const ChatSession& chat)
+	{
+		const ProviderProfile* provider = ProviderResolutionService().WorkerProviderForChat(app, chat);
+		if (provider == nullptr || !uam::provider_ids::IsCliProviderAliasOf(provider->id, uam::provider_ids::kCopilotCli))
+		{
+			return false;
+		}
+		const auto version = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kCopilotCli);
+		return version != app.runtime_cli_versions_by_provider_id.end() && !version->second.checked;
 	}
 
 	double RetryDelayForFailureCount(int failure_count)
@@ -1015,10 +1028,11 @@ namespace
 		}
 
 		const std::string prompt = BuildWorkerPrompt(chat, start_message_index);
-		const std::string command = BuildMemoryWorkerCommand(*worker_provider, app.settings, prompt, worker.model_id);
-		if (command.empty())
+		std::string compatibility_error;
+		uam::ProviderWorkerInvocation invocation = BuildMemoryWorkerInvocation(app, *worker_provider, prompt, worker.model_id, &compatibility_error);
+		if (invocation.Empty())
 		{
-			app.memory_last_status = "Memory worker command is empty.";
+			app.memory_last_status = uam::strings::NonEmptyOrFallback(compatibility_error, "Memory worker command is empty.");
 			return false;
 		}
 
@@ -1039,15 +1053,14 @@ namespace
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		task.state->launch_time = std::chrono::steady_clock::now();
 		task.state->provider_id = worker_provider->id;
-		task.command_preview = command;
+		task.command_preview = invocation.command_preview;
 
 		auto state = task.state;
 		const fs::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, command, cwd](std::stop_token stop_token)
+		    [state, invocation = std::move(invocation), cwd](std::stop_token stop_token)
 		    {
-			    const std::string shell_command = PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(cwd, command);
-			    state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(shell_command, kMemoryWorkerTimeoutMs, stop_token);
+			    state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
 			    state->completed = true;
 		    });
 
@@ -1378,7 +1391,15 @@ void MemoryService::RefreshMemoryActivity(uam::AppState& app)
 
 std::string MemoryService::BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id)
 {
-	return BuildMemoryWorkerCommand(profile, settings, prompt, model_id);
+	uam::AppState app;
+	app.settings = settings;
+	if (uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kCopilotCli))
+	{
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+		version.checked = true;
+		version.supported = true;
+	}
+	return BuildMemoryWorkerInvocation(app, profile, prompt, model_id).command_preview;
 }
 
 std::string MemoryService::BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index)
@@ -1524,6 +1545,14 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 
 			if (QueuedMemoryWorkTemporarilyBlocked(app, chat, queued))
 			{
+				RequeueMemoryWork(app, std::move(queued));
+				continue;
+			}
+			if (CopilotWorkerVersionCheckPending(app, chat))
+			{
+				const std::string pending_status = CopilotLaunchBlockReason(app);
+				changed = changed || app.memory_last_status != pending_status;
+				app.memory_last_status = pending_status;
 				RequeueMemoryWork(app, std::move(queued));
 				continue;
 			}

@@ -43,7 +43,7 @@ export const GEMINI_DEFAULT_MODEL_LABELS: Record<string, { label: string; shortL
 }
 
 export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
-  '': { label: 'Default', shortLabel: 'Default', detail: 'Use Codex default reasoning' },
+  '': { label: 'Default', shortLabel: 'Default', detail: 'Use provider default reasoning' },
   none: { label: 'None', shortLabel: 'None', detail: 'No extra reasoning' },
   minimal: { label: 'Minimal', shortLabel: 'Minimal', detail: 'Fastest reasoning' },
   low: { label: 'Low', shortLabel: 'Low', detail: 'Faster responses' },
@@ -51,6 +51,7 @@ export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel:
   high: { label: 'High', shortLabel: 'High', detail: 'Deeper reasoning' },
   xhigh: { label: 'Extra High', shortLabel: 'XHigh', detail: 'Very deep reasoning' },
   ultra: { label: 'Ultra', shortLabel: 'Ultra', detail: 'Maximum reasoning' },
+  max: { label: 'Max', shortLabel: 'Max', detail: 'Maximum available reasoning' },
 }
 
 export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {

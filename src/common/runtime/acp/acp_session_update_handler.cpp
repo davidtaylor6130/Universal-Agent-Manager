@@ -48,6 +48,34 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 		}
 		return;
 	}
+	if (update_type == uam::acp_stream_types::kSessionUpdateConfigOptions)
+	{
+		if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(update, "configOptions"))
+		{
+			(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+			session.awaiting_model_config_options = false;
+			(void)ReconcileCopilotReasoningEffort(app, session, chat);
+			(void)SendQueuedPromptIfReady(session, chat);
+		}
+		return;
+	}
+	if (update_type == uam::acp_stream_types::kSessionUpdateAvailableCommands)
+	{
+		session.available_commands.clear();
+		for (const nlohmann::json& command : JsonArrayValue(update, "availableCommands"))
+		{
+			AcpCommandState parsed;
+			parsed.name = uam::nlohmann_json::TrimmedStringValue(command, {"name"});
+			if (parsed.name.empty())
+			{
+				continue;
+			}
+			parsed.description = uam::nlohmann_json::TrimmedStringValue(command, {"description"});
+			parsed.input_hint = uam::nlohmann_json::TrimmedStringValue(JsonObjectValue(command, "input"), {"hint"});
+			session.available_commands.push_back(std::move(parsed));
+		}
+		return;
+	}
 	if (session.ignore_session_updates_until_ready)
 	{
 		(void)TryConsumeLoadHistoryReplayUpdate(session, update, update_type, content_text, live_text);
@@ -115,9 +143,10 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			tool_call.title = JsonDiagnosticStringValueOr(update, "title", tool_call.title);
 			tool_call.kind = JsonDiagnosticStringValueOr(update, "kind", uam::acp_tool_kinds::ExistingOrOther(tool_call.kind));
 			tool_call.status = JsonDiagnosticStringValueOr(update, "status", uam::acp_statuses::ExistingOrPending(tool_call.status));
-			if (content != nullptr)
+			const std::string tool_content = ToolCallContentTextFromJson(update);
+			if (!tool_content.empty())
 			{
-				tool_call.content = ContentTextFromJson(*content);
+				tool_call.content = tool_content;
 			}
 			if (const ProviderProfile* provider_profile = ProviderResolutionService().ProviderForChat(app, chat); provider_profile != nullptr)
 			{

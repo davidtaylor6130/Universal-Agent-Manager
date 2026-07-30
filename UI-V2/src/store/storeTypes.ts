@@ -135,6 +135,7 @@ export interface AppState {
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
+  dismissShellActionNotification: () => Promise<void>
   refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
   applyCliProviderVersion: (providerId: string, version: string) => Promise<boolean>
   browseMarkdownStoreDirectory: (currentValue: string) => Promise<string | null>

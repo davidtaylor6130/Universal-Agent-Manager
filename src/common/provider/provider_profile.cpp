@@ -164,7 +164,7 @@ ProviderProfile ProviderProfileStore::DefaultCopilotProfile()
 	    .title = "GitHub Copilot CLI",
 	    .interactive_command = "copilot",
 	    .structured_protocol = uam::provider_profile_constants::kProtocolCopilotAcp,
-	    .resume_argument = "--resume",
+	    .resume_argument = "--session-id",
 	    .history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson,
 	    .prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone,
 	    .prompt_bootstrap_path = "",

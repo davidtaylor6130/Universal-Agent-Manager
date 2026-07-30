@@ -67,6 +67,49 @@ std::string ContentTextFromJson(const nlohmann::json& content)
 	return "";
 }
 
+std::string ToolCallContentTextFromJson(const nlohmann::json& tool_call)
+{
+	for (const char* field : {"content", "rawOutput", "rawInput"})
+	{
+		const nlohmann::json* value = uam::nlohmann_json::FindField(tool_call, field);
+		if (value == nullptr || value->is_null())
+		{
+			continue;
+		}
+
+		std::string text = uam::strings::Trim(ContentTextFromJson(*value));
+		if (text.empty() && value->is_object())
+		{
+			const std::string command = JsonDiagnosticStringValue(*value, "command");
+			const std::string file_name = JsonDiagnosticStringValue(*value, "fileName");
+			const std::string diff = JsonDiagnosticStringValue(*value, "diff");
+			const std::string path = JsonDiagnosticStringValue(*value, "path");
+			const std::string url = JsonDiagnosticStringValue(*value, "url");
+			text = !command.empty() ? command : !file_name.empty() ? file_name + (diff.empty() ? "" : "\n\n" + diff) : !path.empty() ? path : !url.empty() ? url : !diff.empty() ? diff : value->dump(2);
+		}
+		else if (text.empty() && !value->empty())
+		{
+			text = value->dump(2);
+		}
+		if (!text.empty())
+		{
+			return text;
+		}
+	}
+
+	const nlohmann::json locations = JsonArrayValue(tool_call, "locations");
+	std::vector<std::string> paths;
+	for (const nlohmann::json& location : locations)
+	{
+		const std::string path = JsonDiagnosticStringValue(location, "path");
+		if (!path.empty())
+		{
+			paths.push_back(path);
+		}
+	}
+	return uam::strings::JoinNonEmpty(paths, "\n");
+}
+
 std::string ClaudeContentTextFromMessage(const nlohmann::json& message)
 {
 	if (!message.is_object())

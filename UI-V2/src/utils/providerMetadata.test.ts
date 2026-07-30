@@ -71,6 +71,8 @@ describe('providerMetadata', () => {
       expect(providerMetadataForId(id).id).toBe(id)
       expect(providerMetadataForId(id).npmPackage).toBeTruthy()
     }
+    expect(providerMetadataForId(COPILOT_CLI_PROVIDER_ID).capabilities.hasReasoningEffort).toBe(false)
+    expect(providerMetadataForId(COPILOT_CLI_PROVIDER_ID).capabilities.reasoningOptions).toEqual([])
   })
 
   it('normalization aliases resolve to the same canonical ids in both directions', () => {

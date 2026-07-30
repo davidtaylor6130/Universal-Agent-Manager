@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AcpBinding } from './cpp/types'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 
@@ -1755,6 +1756,48 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions[0].serviceTier).toBe('flex')
   })
 
+  it('sends Copilot launch-time reasoning without a Codex speed tier', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [{
+        id: 'chat-copilot',
+        name: 'Copilot Session',
+        viewMode: 'chat',
+        folderId: 'default',
+        providerId: 'copilot-cli',
+        modelId: 'gpt-5.1',
+        reasoningEffort: 'medium',
+        serviceTier: '',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      acpBindingBySessionId: {
+        'chat-copilot': {
+          availableModels: [{
+            id: 'gpt-5.1',
+            name: 'GPT-5.1',
+            supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+          }],
+        } as AcpBinding,
+      },
+    })
+
+    await expect(useAppStore.getState().setSessionCodexOptions('chat-copilot', {
+      reasoningEffort: 'max',
+      serviceTier: 'flex',
+    })).resolves.toBe(true)
+
+    expect(requests[0]).toMatchObject({
+      action: 'setChatCodexOptions',
+      payload: { chatId: 'chat-copilot', reasoningEffort: 'max', serviceTier: '' },
+    })
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ reasoningEffort: 'max', serviceTier: '' })
+  })
+
   it('changes Auto Decide without altering model reasoning or speed', async () => {
     const now = new Date()
     window.cefQuery = ({ onSuccess }) => onSuccess('{}')
@@ -3100,12 +3143,14 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setShellActions(actions)).resolves.toBe(true)
     await expect(useAppStore.getState().applyShellActions()).resolves.toBe(true)
+    await expect(useAppStore.getState().dismissShellActionNotification()).resolves.toBeUndefined()
 
-    expect(requests).toHaveLength(2)
+    expect(requests).toHaveLength(3)
     expect(requests[0]).toMatchObject({ action: 'setShellActions', payload: { actions } })
     expect(requests[1]).toMatchObject({ action: 'applyShellActions' })
+    expect(requests[2]).toMatchObject({ action: 'dismissShellActionNotification' })
     expect(useAppStore.getState().shellActions).toEqual(actions)
-    expect(useAppStore.getState().shellActionNotification).toBe('Shell actions applied successfully.')
+    expect(useAppStore.getState().shellActionNotification).toBe('')
   })
 
   it('clamps memory settings before optimistic updates and CEF persistence', async () => {

@@ -312,6 +312,37 @@ namespace uam_test
 		}
 	};
 
+#if defined(_WIN32)
+	struct ScopedWideWindowsEnvVar
+	{
+		std::wstring name;
+		std::wstring previous;
+		bool had_previous = false;
+		bool applied = false;
+
+		ScopedWideWindowsEnvVar(std::wstring key, const std::wstring& value) : name(std::move(key))
+		{
+			const DWORD required = GetEnvironmentVariableW(name.c_str(), nullptr, 0);
+			if (required > 0)
+			{
+				previous.resize(static_cast<std::size_t>(required));
+				const DWORD written = GetEnvironmentVariableW(name.c_str(), previous.data(), required);
+				if (written > 0 && written < required)
+				{
+					previous.resize(static_cast<std::size_t>(written));
+					had_previous = true;
+				}
+			}
+			applied = SetEnvironmentVariableW(name.c_str(), value.c_str()) != FALSE;
+		}
+
+		~ScopedWideWindowsEnvVar()
+		{
+			SetEnvironmentVariableW(name.c_str(), had_previous ? previous.c_str() : nullptr);
+		}
+	};
+#endif
+
 #if !defined(_WIN32)
 	struct ScopedDirectoryNoWrite
 	{

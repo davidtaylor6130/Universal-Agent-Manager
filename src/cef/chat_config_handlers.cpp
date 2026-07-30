@@ -10,6 +10,7 @@
 #include "common/config/approval_modes.h"
 #include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -18,6 +19,7 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/security/command_safety.h"
+#include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
@@ -255,7 +257,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(payload.value("reasoningEffort", ""));
+	const std::string requested_reasoning_effort = payload.value("reasoningEffort", "");
 	std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
 
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
@@ -271,19 +273,32 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
+	const bool is_copilot = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCopilotCli);
+	std::string reasoning_effort = is_copilot ? NormalizeCopilotReasoningEffort(requested_reasoning_effort) : uam::codex::NormalizeReasoningEffort(requested_reasoning_effort);
+	if (is_copilot && session != nullptr && uam::AcpSessionHasBlockingRuntimeWork(*session))
+	{
+		cb->Failure(409, "Wait for the active Copilot request to finish before changing reasoning effort.");
+		return;
+	}
 	const uam::AcpModelState* selected_model = nullptr;
 	if (session != nullptr)
 	{
+		const std::string selected_model_id = chat->model_id.empty() ? session->current_model_id : chat->model_id;
 		for (const uam::AcpModelState& model : session->available_models)
 		{
-			if (model.id == chat->model_id)
+			if (model.id == selected_model_id)
 			{
 				selected_model = &model;
 				break;
 			}
 		}
 	}
-	if (!is_codex && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty()))
+	if (is_copilot && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty() || !uam::ranges::Contains(selected_model->supported_reasoning_efforts, reasoning_effort)))
+	{
+		cb->Failure(409, "The selected Copilot model does not expose that reasoning-effort option.");
+		return;
+	}
+	if (!is_codex && !is_copilot && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty()))
 	{
 		cb->Failure(409, "This provider model does not expose reasoning-effort options.");
 		return;
@@ -321,6 +336,19 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
 		return;
+	}
+	if (is_copilot && session != nullptr && session->running)
+	{
+		std::string acp_error;
+		if (!uam::SetAcpSessionReasoningEffort(m_app, chat->id, reasoning_effort, &acp_error, previous_reasoning_effort))
+		{
+			chat->reasoning_effort = previous_reasoning_effort;
+			chat->service_tier = previous_service_tier;
+			chat->updated_at = previous_updated_at;
+			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options reverted.", "Chat model options changed in UI, but failed to revert.");
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live Copilot reasoning effort."));
+			return;
+		}
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);

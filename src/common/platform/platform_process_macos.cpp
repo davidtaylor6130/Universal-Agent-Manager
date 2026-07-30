@@ -2,6 +2,7 @@
 
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <Security/Security.h>
+#include <cstdio>
 
 using namespace uam::platform_macos_impl;
 
@@ -75,6 +76,17 @@ class MacProcessService final : public IPlatformProcessService
 
 	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 	{
+		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, error_out);
+	}
+
+	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const override
+	{
+		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, error_out);
+	}
+
+  private:
+	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, std::string* error_out) const
+	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
 			if (error_out != nullptr)
@@ -92,12 +104,54 @@ class MacProcessService final : public IPlatformProcessService
 		int stdin_pipe[2] = {-1, -1};
 		int stdout_pipe[2] = {-1, -1};
 		int stderr_pipe[2] = {-1, -1};
+		std::FILE* stdin_file = nullptr;
 
-		if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0)
+		if (preloaded_input != nullptr)
+		{
+			stdin_file = std::tmpfile();
+			if (stdin_file == nullptr)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create private provider worker input.";
+				}
+				return false;
+			}
+
+			const int input_fd = fileno(stdin_file);
+			if (!WriteAllToFd(input_fd, preloaded_input->data(), preloaded_input->size(), error_out))
+			{
+				std::fclose(stdin_file);
+				return false;
+			}
+			if (lseek(input_fd, 0, SEEK_SET) < 0)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to rewind provider worker input: " + std::string(std::strerror(errno)) + ".";
+				}
+				std::fclose(stdin_file);
+				return false;
+			}
+		}
+		else if (pipe(stdin_pipe) != 0)
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to create stdio process pipes.";
+				*error_out = "Failed to create stdio process input pipe.";
+			}
+			return false;
+		}
+
+		if (pipe(stdout_pipe) != 0 || (!merge_output && pipe(stderr_pipe) != 0))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to create stdio process output pipes.";
+			}
+			if (stdin_file != nullptr)
+			{
+				std::fclose(stdin_file);
 			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
@@ -114,6 +168,10 @@ class MacProcessService final : public IPlatformProcessService
 			{
 				*error_out = CommandNotFoundOnPathMessage(argv.front());
 			}
+			if (stdin_file != nullptr)
+			{
+				std::fclose(stdin_file);
+			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
 			ClosePipeFds(stderr_pipe);
@@ -122,6 +180,10 @@ class MacProcessService final : public IPlatformProcessService
 
 		if (!ValidateRequiredNodeRuntime(argv.front(), resolved_executable, path_dirs, error_out))
 		{
+			if (stdin_file != nullptr)
+			{
+				std::fclose(stdin_file);
+			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
 			ClosePipeFds(stderr_pipe);
@@ -140,6 +202,10 @@ class MacProcessService final : public IPlatformProcessService
 			{
 				*error_out = "fork failed.";
 			}
+			if (stdin_file != nullptr)
+			{
+				std::fclose(stdin_file);
+			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
 			ClosePipeFds(stderr_pipe);
@@ -149,9 +215,22 @@ class MacProcessService final : public IPlatformProcessService
 		if (pid == 0)
 		{
 			(void)setpgid(0, 0);
-			dup2(stdin_pipe[0], STDIN_FILENO);
+			const int input_fd = stdin_file != nullptr ? fileno(stdin_file) : stdin_pipe[0];
+			dup2(input_fd, STDIN_FILENO);
+			if (input_fd == STDIN_FILENO)
+			{
+				const int descriptor_flags = fcntl(STDIN_FILENO, F_GETFD);
+				if (descriptor_flags >= 0)
+				{
+					(void)fcntl(STDIN_FILENO, F_SETFD, descriptor_flags & ~FD_CLOEXEC);
+				}
+			}
 			dup2(stdout_pipe[1], STDOUT_FILENO);
-			dup2(stderr_pipe[1], STDERR_FILENO);
+			dup2(merge_output ? stdout_pipe[1] : stderr_pipe[1], STDERR_FILENO);
+			if (stdin_file != nullptr && input_fd != STDIN_FILENO)
+			{
+				close(input_fd);
+			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
 			ClosePipeFds(stderr_pipe);
@@ -172,6 +251,10 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		(void)setpgid(pid, pid);
+		if (stdin_file != nullptr)
+		{
+			std::fclose(stdin_file);
+		}
 		CloseFdIfOpen(stdin_pipe[0]);
 		CloseFdIfOpen(stdout_pipe[1]);
 		CloseFdIfOpen(stderr_pipe[1]);
@@ -188,6 +271,7 @@ class MacProcessService final : public IPlatformProcessService
 		return true;
 	}
 
+  public:
 	void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 	{
 		CloseFdIfOpen(process.stdin_write_fd);
@@ -214,11 +298,15 @@ class MacProcessService final : public IPlatformProcessService
 		return WriteAllToFd(process.stdin_write_fd, bytes, len, error_out);
 	}
 
-	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
+	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
+	{
+		CloseFdIfOpen(process.stdin_write_fd);
+	}
+
+	void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
 	{
 		if (process.child_pid <= 0)
 		{
-			CloseStdioProcessHandles(process);
 			return;
 		}
 
@@ -239,14 +327,22 @@ class MacProcessService final : public IPlatformProcessService
 			const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
 			if (wait_result == child_pid || (wait_result < 0 && errno == ECHILD))
 			{
-				CloseStdioProcessHandles(process);
+				process.child_pid = -1;
 				return;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 
 		SignalTerminalProcessGroup(child_pid, SIGKILL);
-		(void)waitpid(child_pid, &status, WNOHANG);
+		while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR)
+		{
+		}
+		process.child_pid = -1;
+	}
+
+	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
+	{
+		TerminateStdioProcess(process, fast_exit);
 		CloseStdioProcessHandles(process);
 	}
 

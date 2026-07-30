@@ -248,6 +248,20 @@ void ApplyCommandSafetyDecision(const AppState& app, const ChatSession& chat, Ac
 	pending.safety_requires_approval = uam::command_safety::RequiresApproval(tier, risk, pending.version_controlled_workspace);
 }
 
+std::string PermissionContentFromToolCall(const nlohmann::json& tool_call)
+{
+	if (const nlohmann::json* raw_input = uam::nlohmann_json::FindField(tool_call, "rawInput"); raw_input != nullptr)
+	{
+		std::string command = raw_input->is_object() ? JsonDiagnosticStringValue(*raw_input, "command") : ContentTextFromJson(*raw_input);
+		command = uam::strings::Trim(command);
+		if (!command.empty())
+			return command;
+		if (raw_input->is_object() && !raw_input->empty())
+			return raw_input->dump();
+	}
+	return ToolCallContentTextFromJson(tool_call);
+}
+
 void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	if (uam::AcpSessionHasPendingCancel(session))
@@ -265,10 +279,7 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	pending.title = JsonDiagnosticStringValueOr(tool_call, "title", "Permission required");
 	pending.kind = JsonDiagnosticStringValueOr(tool_call, "kind", uam::acp_tool_kinds::kOther);
 	pending.status = JsonDiagnosticStringValueOr(tool_call, "status", std::string(uam::acp_statuses::kPending));
-	if (const nlohmann::json* content = uam::nlohmann_json::FindField(tool_call, "content"); content != nullptr)
-	{
-		pending.content = ContentTextFromJson(*content);
-	}
+	pending.content = PermissionContentFromToolCall(tool_call);
 
 	const nlohmann::json options = JsonArrayValue(params, "options");
 	if (options.is_array())

@@ -139,23 +139,35 @@ export function labeledOption(id: string, labels: Record<string, Pick<ModelOptio
   return { id, ...fallback }
 }
 
-export function buildCodexReasoningOptions(acp: AcpBinding | undefined, modelId: string, selectedReasoningEffort = ''): ModelOption[] {
+export function buildCodexReasoningOptions(
+  acp: AcpBinding | undefined,
+  modelId: string,
+  selectedReasoningEffort = '',
+  fallbackEfforts?: string[]
+): ModelOption[] {
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
 	const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
-	if (runtimeModel && runtimeEfforts.length === 0) return []
-	const fallbackEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-	if (/^gpt-5\.6(?:$|-)/i.test(modelId.trim())) fallbackEfforts.push('ultra')
-	const base = runtimeEfforts.length > 0 ? runtimeEfforts : fallbackEfforts
+	if (runtimeModel && runtimeEfforts.length === 0 && fallbackEfforts === undefined) return []
+	const defaultFallbackEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+	if (/^gpt-5\.6(?:$|-)/i.test(modelId.trim())) defaultFallbackEfforts.push('ultra')
+	const base = runtimeEfforts.length > 0
+	  ? runtimeEfforts
+	  : fallbackEfforts ?? defaultFallbackEfforts
 	const ids = runtimeModel ? [...base] : ['', ...base]
 	if (!runtimeModel && selectedReasoningEffort && selectedReasoningEffort !== 'ultra' && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
 	return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
 }
 
-export function reasoningEffortForModel(acp: AcpBinding | undefined, modelId: string, currentEffort = '') {
+export function reasoningEffortForModel(
+  acp: AcpBinding | undefined,
+  modelId: string,
+  currentEffort = '',
+  preserveWhenRuntimeOmitsEfforts = false
+) {
 	const model = selectedRuntimeModel(acp, modelId)
 	if (!model) return currentEffort === 'ultra' && !/^gpt-5\.6(?:$|-)/i.test(modelId.trim()) ? '' : currentEffort
 	const supported = model.supportedReasoningEfforts ?? []
-	if (supported.length === 0) return ''
+	if (supported.length === 0) return preserveWhenRuntimeOmitsEfforts ? currentEffort : ''
 	if (supported.includes(currentEffort)) return currentEffort
 	const defaultEffort = model.defaultReasoningEffort ?? ''
 	return supported.includes(defaultEffort) ? defaultEffort : supported[0]

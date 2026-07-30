@@ -40,6 +40,14 @@ void ClearAcpStartupModelRequest(AcpSessionState& session)
 	session.pending_startup_model_id.clear();
 }
 
+void ClearAcpReasoningChangeRequest(AcpSessionState& session)
+{
+	session.reasoning_change_request_id = 0;
+	session.reasoning_change_previous_id.clear();
+	session.reasoning_change_previous_chat_id.reset();
+	session.reasoning_change_requested_id.clear();
+}
+
 void ClearAcpModeChangeRequest(AcpSessionState& session)
 {
 	session.mode_change_request_id = 0;

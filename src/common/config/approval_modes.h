@@ -17,6 +17,10 @@ namespace uam::approval_modes
 	inline constexpr const char* kProviderAutoApprovalMode = "auto";
 	inline constexpr const char* kProviderAutoEditApprovalMode = "auto_edit";
 
+	inline constexpr const char* kAcpAgentMode = "https://agentclientprotocol.com/protocol/session-modes#agent";
+	inline constexpr const char* kAcpPlanMode = "https://agentclientprotocol.com/protocol/session-modes#plan";
+	inline constexpr const char* kAcpAutopilotMode = "https://agentclientprotocol.com/protocol/session-modes#autopilot";
+
 	inline constexpr auto kAppApprovalModes = std::to_array<std::string_view>({
 	    kDefaultApprovalMode,
 	    kAcceptEditsApprovalMode,
@@ -36,6 +40,7 @@ namespace uam::approval_modes
 	inline constexpr auto kSuppressedProviderApprovalModes = std::to_array<std::string_view>({
 	    kLegacyYoloApprovalMode,
 	    kProviderAutoApprovalMode,
+	    kAcpAutopilotMode,
 	});
 
 	inline bool IsAppApprovalMode(std::string_view mode_id)
@@ -113,6 +118,14 @@ namespace uam::approval_modes
 		if (normalized == kProviderAutoEditApprovalMode)
 		{
 			return kAcceptEditsApprovalMode;
+		}
+		if (normalized == kAcpAgentMode)
+		{
+			return kDefaultApprovalMode;
+		}
+		if (normalized == kAcpPlanMode)
+		{
+			return kPlanApprovalMode;
 		}
 
 		return std::string(normalized);

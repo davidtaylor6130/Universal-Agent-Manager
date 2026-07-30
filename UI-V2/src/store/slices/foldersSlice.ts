@@ -331,6 +331,13 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
+    dismissShellActionNotification: async () => {
+      set({ shellActionNotification: '' })
+      if (isCefContext()) {
+        await sendToCEF({ action: 'dismissShellActionNotification' })
+      }
+    },
+
     openMarkdownStore: async () => {
       set({ isMarkdownStoreOpen: true, markdownStoreLoading: true, markdownStoreError: '' })
       return get().refreshMarkdownStore()

@@ -35,7 +35,7 @@ std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
 std::string AcpWorkingDirectoryString(const std::filesystem::path& workspace_root)
 {
 	const std::filesystem::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
-	return cwd.string();
+	return uam::paths::Utf8PathString(cwd);
 }
 
 std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)

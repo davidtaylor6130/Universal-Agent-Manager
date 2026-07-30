@@ -21,6 +21,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
@@ -556,6 +557,10 @@ bool Application::InitializeState()
 	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
 	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	if (ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kCopilotCli) != nullptr)
+	{
+		ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, uam::provider_ids::kCopilotCli, false);
+	}
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;

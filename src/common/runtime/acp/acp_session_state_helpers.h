@@ -31,13 +31,7 @@ inline bool AcpSessionHasPendingCancel(const AcpSessionState& session)
 
 inline bool AcpSessionHasPendingRuntimeRequest(const AcpSessionState& session)
 {
-	return session.initialize_request_id != 0 ||
-	       session.session_setup_request_id != 0 ||
-	       session.startup_model_request_id != 0 ||
-	       session.mode_change_request_id != 0 ||
-	       session.model_change_request_id != 0 ||
-	       session.prompt_request_id != 0 ||
-	       session.cancel_request_id != 0;
+	return session.initialize_request_id != 0 || session.session_setup_request_id != 0 || session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.prompt_request_id != 0 || session.cancel_request_id != 0;
 }
 
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)

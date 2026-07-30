@@ -1112,8 +1112,8 @@ describe('ChatView', () => {
     const attachMarkdownStoreEntry = vi.fn()
     useAppStore.setState({
       markdownStoreEntries: [
-        { id: 'one', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'codex', commandName: 'review', filePath: '/tmp/one.uam' },
-        { id: 'two', title: 'Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'gemini-cli', commandName: 'review-2', filePath: '/tmp/two.uam' },
+        { id: 'one', title: 'GitHub Review', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'codex', commandName: 'github-review', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'GitHub Release', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, sourceProvider: 'gemini-cli', commandName: 'github-release', filePath: '/tmp/two.uam' },
         { id: 'three', title: 'Hidden', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: false, sourceProvider: 'claude-code', commandName: 'hidden', filePath: '/tmp/three.uam' },
       ],
       refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
@@ -1135,13 +1135,14 @@ describe('ChatView', () => {
     expect(palette?.style.right).toBe('12px')
     expect(palette?.parentElement).toBe(textarea.previousElementSibling)
     expect(palette?.textContent).toContain('/skills')
-    expect(palette?.textContent).toContain('/review')
-    expect(palette?.textContent).toContain('/review-2')
+    expect(palette?.textContent).toContain('/github-review')
+    expect(palette?.textContent).toContain('/github-release')
+    expect(Array.from(palette?.querySelectorAll('[aria-haspopup="menu"]') ?? []).some((option) => option.textContent?.includes('/github'))).toBe(false)
     expect(palette?.textContent).toContain('codex')
     expect(palette?.textContent).toContain('gemini-cli')
     expect(palette?.textContent).not.toContain('/hidden')
 
-    const reviewTwo = Array.from(palette?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('/review-2')) as HTMLElement
+    const reviewTwo = Array.from(palette?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('/github-release')) as HTMLElement
     act(() => reviewTwo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
     expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'two' }))
 
@@ -1149,12 +1150,58 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('condenses prefixed skills into a keyboard-accessible submenu', async () => {
+  it('offers Copilot ACP advertised commands without shadowing local slash actions', async () => {
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'copilot-cli', name: 'GitHub Copilot CLI', shortName: 'Copilot', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'copilot-acp' },
+      ],
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'copilot-cli' } : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'copilot-cli',
+          protocolKind: 'copilot-acp',
+          availableCommands: [
+            { name: 'security-review', description: 'Review the current changes for security issues', inputHint: '[focus]' },
+            { name: 'model', description: 'Provider model picker', inputHint: '' },
+          ],
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    act(() => setDraft('/'))
+    const allCommands = document.body.querySelector('[aria-label="Slash commands"]') as HTMLElement
+    expect(allCommands.textContent).toContain('/security-review')
+    expect(Array.from(allCommands.querySelectorAll('[role="option"]')).filter((option) => option.textContent?.includes('/model'))).toHaveLength(1)
+
+    act(() => setDraft('/sec'))
+    const command = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/security-review')) as HTMLElement
+    expect(command.textContent).toContain('Review the current changes for security issues')
+    expect(command.textContent).toContain('[focus]')
+    act(() => command.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(textarea.value).toBe('/security-review ')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows explicit groups with only their favorite skills', async () => {
     const attachMarkdownStoreEntry = vi.fn()
     useAppStore.setState({
       markdownStoreEntries: [
-        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', filePath: '/tmp/one.uam' },
-        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-create-pr-eb8349e5', filePath: '/tmp/two.uam' },
+        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', group: 'GitHub', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: false, commandName: 'github-create-pr-eb8349e5', group: 'GitHub', filePath: '/tmp/two.uam' },
       ],
       refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
       attachMarkdownStoreEntry,
@@ -1169,21 +1216,20 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
       await Promise.resolve()
     })
-    const group = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/github')) as HTMLElement
+    const group = document.body.querySelector('[aria-label="Slash commands"] [aria-haspopup="menu"]') as HTMLElement
     expect(group.textContent).toContain('/github')
     expect(group.textContent).not.toContain('/fix-issue')
     vi.spyOn(group.querySelector('[data-slash-group-anchor]') as HTMLSpanElement, 'getBoundingClientRect').mockReturnValue({ left: 180, right: 194, top: 40, bottom: 54, width: 14, height: 14, x: 180, y: 40, toJSON: () => ({}) })
-    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
-    const submenu = document.body.querySelector('[aria-label="github skills"]') as HTMLElement
+    act(() => group.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    const submenu = document.body.querySelector('[aria-label="GitHub skills"]') as HTMLElement
     expect(document.body.querySelector('[aria-label="Slash commands"]')).toBeTruthy()
     expect(submenu.style.left).toBe('198px')
     expect(submenu.textContent).toContain('/fix-issue')
-    expect(submenu.textContent).toContain('/create-pr')
+    expect(submenu.textContent).not.toContain('/create-pr')
     expect(submenu.textContent).not.toContain('3aa611dd')
     expect(submenu.textContent).not.toContain('eb8349e5')
-    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'two' }))
+    expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'one' }))
     act(() => root.unmount())
     host.remove()
   })
@@ -1191,8 +1237,8 @@ describe('ChatView', () => {
   it('hides the slash palette and submenu while an app modal is open', async () => {
     useAppStore.setState({
       markdownStoreEntries: [
-        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', filePath: '/tmp/one.uam' },
-        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-create-pr-eb8349e5', filePath: '/tmp/two.uam' },
+        { id: 'one', title: 'GitHub Fix Issue', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-fix-issue-3aa611dd', group: 'GitHub', filePath: '/tmp/one.uam' },
+        { id: 'two', title: 'GitHub Create PR', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-create-pr-eb8349e5', group: 'GitHub', filePath: '/tmp/two.uam' },
       ],
       refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
     })
@@ -1209,11 +1255,11 @@ describe('ChatView', () => {
     const group = document.body.querySelector('[aria-label="Slash commands"] [role="option"]') as HTMLElement
     vi.spyOn(group.querySelector('[data-slash-group-anchor]') as HTMLSpanElement, 'getBoundingClientRect').mockReturnValue({ left: 180, right: 194, top: 40, bottom: 54, width: 14, height: 14, x: 180, y: 40, toJSON: () => ({}) })
     act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
-    expect(document.body.querySelector('[aria-label="github skills"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="GitHub skills"]')).toBeTruthy()
 
     act(() => useAppStore.setState({ isSettingsOpen: true }))
     expect(document.body.querySelector('[aria-label="Slash commands"]')).toBeNull()
-    expect(document.body.querySelector('[aria-label="github skills"]')).toBeNull()
+    expect(document.body.querySelector('[aria-label="GitHub skills"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -3996,10 +4042,21 @@ describe('ChatView', () => {
         detail: { type: 'dictation', event: 'error', message: 'Microphone permission was denied.' },
       }))
     })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microphone permission was denied.')
-    const errorButton = host.querySelector('button[aria-label="Dictation error"]') as HTMLButtonElement
+    expect(host.querySelector('[role="alert"][data-dictation-state="error"]')?.textContent).toContain('Microphone permission was denied.')
+    const errorButton = host.querySelector('button[aria-label="Retry dictation"]') as HTMLButtonElement
     expect(errorButton.dataset.dictationState).toBe('error')
     expect(errorButton.querySelector('.uam-dictation-listening-indicator')).toBeNull()
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(false)
+
+    const dismissButton = host.querySelector('button[aria-label="Dismiss dictation error"]') as HTMLButtonElement
+    await act(async () => {
+      dismissButton.click()
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+    expect(host.querySelector('[role="alert"][data-dictation-state="error"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Start dictation"]')).toBeTruthy()
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(false)
+    expect(document.activeElement).toBe(host.querySelector('textarea'))
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
@@ -4008,9 +4065,43 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(sendAcpPrompt).not.toHaveBeenCalled()
-    const retryButton = host.querySelector('button[aria-label="Retry dictation"]') as HTMLButtonElement
-    expect(retryButton.dataset.dictationState).toBe('error')
-    expect(retryButton.disabled).toBe(false)
+    expect(host.querySelector('[role="alert"][data-dictation-state="error"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+  })
+
+  it('can dismiss a rejected dictation start and keep typing', async () => {
+    window.cefQuery = vi.fn(({ request, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      if (parsed.action === 'startDictation') {
+        onFailure(409, 'Microphone permission was denied by policy.')
+      }
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Start dictation"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(host.querySelector('[role="alert"][data-dictation-state="error"]')?.textContent).toContain('Microphone permission was denied by policy.')
+    expect(host.querySelector('button[aria-label="Retry dictation"]')).toBeTruthy()
+    expect(textarea.disabled).toBe(false)
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Dismiss dictation error"]') as HTMLButtonElement).click()
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+    expect(host.querySelector('[role="alert"][data-dictation-state="error"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Start dictation"]')).toBeTruthy()
+    expect(document.activeElement).toBe(textarea)
 
     act(() => root.unmount())
     host.remove()

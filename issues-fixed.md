@@ -7,7 +7,30 @@ radius, and kept here with its validation evidence.
 > Scope exclusion: GitHub issue #97 is intentionally untouched because its work lives on
 > separate branches.
 
-## Current validation
+## v4.5.1 release candidate
+
+- #188 — Fix GitHub Copilot provider failures on Windows.
+- #189 — Make notification bars dismissible.
+- #190 — Fix one-click collection collapsing on Windows.
+- #191 — Allow the dictation surface to exit after microphone policy errors.
+- #192 — Show favorited grouped skills individually in the slash menu.
+- #193 — Inline attached skill content for external provider workers.
+- #194 — Build, test, package, and smoke-test Windows Release output on pull requests.
+
+Validation:
+
+- Full frontend suite: 386/386 tests passed across 32/32 files.
+- Frontend production TypeScript/Vite build passed.
+- Native Release build passed; the macOS bundle was signed and verified.
+- Native CTest suite: 3/3 targets passed.
+- Final diff whitespace check, workflow YAML parse, and high-confidence secret scan passed.
+- Local validation ran on macOS and is not proof of Windows behaviour.
+- PR CI is the Windows gate: it builds and tests x64 Release, packages the actual executable,
+  extracts that package, smoke-launches it, and uploads the tested ZIP for review.
+- An authenticated GitHub Copilot smoke test on that Windows artifact is required before the
+  release tag is approved.
+
+## v4.5.0 historical validation
 
 - Full frontend suite: 375/375 tests passed across 32/32 files.
 - Native CTest suite: 3/3 targets passed.

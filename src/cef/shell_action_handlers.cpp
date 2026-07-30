@@ -44,7 +44,7 @@ namespace
 		}
 		return true;
 	}
-}
+} // namespace
 
 void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -73,6 +73,13 @@ void UamQueryHandler::HandleApplyShellActions(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 	m_app.shell_action_notification = "Shell actions applied successfully.";
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDismissShellActionNotification(CefRefPtr<CefBrowser> browser, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	m_app.shell_action_notification.clear();
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

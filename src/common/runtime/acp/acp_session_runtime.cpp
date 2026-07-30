@@ -40,6 +40,8 @@
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/runtime/terminal/terminal_identity.h"
 
+#include "common/runtime/terminal/terminal_lifecycle.h"
+
 #include "cef/cef_push.h"
 #include "common/runtime/acp/acp_tool_kinds.h"
 #include "common/runtime/app_time.h"
@@ -74,6 +76,7 @@ namespace uam
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
 		constexpr double kAcpCancelTimeoutSeconds = 5.0;
 		constexpr double kAcpSetupInactivityTimeoutSeconds = 60.0;
+		constexpr std::size_t kMarkdownStorePromptMaxBytes = 2U * 1024U * 1024U;
 
 		double AcpReconnectDelaySeconds(int attempt)
 		{
@@ -137,6 +140,8 @@ namespace uam
 			}
 
 			const bool active_turn = uam::AcpSessionHasActiveTurn(session);
+			const bool undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
+			const std::string pending_prompt = session.queued_prompt;
 			const bool model_discovery_only = session.model_discovery_only;
 			const std::string message = std::string(RuntimeDisplayName(session)) + " setup timed out after 60 seconds without runtime activity.";
 			const std::string detail = "pending_requests=" + PendingRequestSummary(session) +
@@ -145,6 +150,12 @@ namespace uam
 			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
 			session.last_error = message;
 			MarkAcpProcessExited(session, false, 0);
+
+			if (undelivered_prompt)
+			{
+				session.queued_prompt = pending_prompt;
+				session.processing = true;
+			}
 
 			if (model_discovery_only)
 			{
@@ -202,16 +213,46 @@ namespace uam
 
 	namespace
 	{
-		std::string BuildAcpPromptBody(AppState& app, ChatSession& chat, const AcpQueuedUserPromptState& queued)
+		std::string BuildMarkdownStorePromptBlock(const MarkdownStoreService::Entry& entry)
+		{
+			return "--- BEGIN ATTACHED SKILL: " + entry.title + " ---\n" + entry.body + "\n--- END ATTACHED SKILL ---";
+		}
+
+		bool BuildAcpPromptBody(AppState& app, ChatSession& chat, const AcpQueuedUserPromptState& queued, std::size_t& markdown_store_bytes, std::string& effective_prompt, std::string* error_out)
 		{
 			const std::string recall_preface = MemoryService::BuildRecallPreface(app, chat, queued.text);
-			std::string effective_prompt = recall_preface.empty() ? queued.text : recall_preface + queued.text;
+			effective_prompt = recall_preface.empty() ? queued.text : recall_preface + queued.text;
 			if (!queued.markdown_store_files.empty())
 			{
-				effective_prompt += "\n\nReferenced Markdown Store files:\n";
-				for (const std::string& file : queued.markdown_store_files)
+				const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
+				const bool has_snapshots = queued.markdown_store_prompt_blocks.size() == queued.markdown_store_files.size();
+				for (std::size_t index = 0; index < queued.markdown_store_files.size(); ++index)
 				{
-					effective_prompt += "- " + file + "\n";
+					std::string prompt_block;
+					if (has_snapshots)
+					{
+						prompt_block = queued.markdown_store_prompt_blocks[index];
+					}
+					else
+					{
+						MarkdownStoreService::Entry entry;
+						std::string load_error;
+						if (!MarkdownStoreService::LoadEntry(markdown_store_root, queued.markdown_store_files[index], &entry, &load_error))
+						{
+							if (error_out != nullptr)
+								*error_out = "Could not load an attached skill: " + load_error;
+							return false;
+						}
+						prompt_block = BuildMarkdownStorePromptBlock(entry);
+					}
+					if (prompt_block.size() > kMarkdownStorePromptMaxBytes - markdown_store_bytes)
+					{
+						if (error_out != nullptr)
+							*error_out = "Attached skill content exceeds the 2 MiB prompt limit.";
+						return false;
+					}
+					markdown_store_bytes += prompt_block.size();
+					effective_prompt += "\n\n" + prompt_block;
 				}
 			}
 			if (!queued.attachments.empty())
@@ -244,12 +285,12 @@ namespace uam
 					}
 				}
 			}
-			return effective_prompt;
+			return true;
 		}
 
-		std::string BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch)
+		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out)
 		{
-			std::string effective_prompt;
+			std::size_t markdown_store_bytes = 0;
 			for (std::size_t index = 0; index < batch.size(); ++index)
 			{
 				if (!effective_prompt.empty())
@@ -260,7 +301,12 @@ namespace uam
 				{
 					effective_prompt += "Queued user message " + std::to_string(index + 1) + ":\n";
 				}
-				effective_prompt += BuildAcpPromptBody(app, chat, batch[index]);
+				std::string prompt_body;
+				if (!BuildAcpPromptBody(app, chat, batch[index], markdown_store_bytes, prompt_body, error_out))
+				{
+					return false;
+				}
+				effective_prompt += prompt_body;
 			}
 
 			const AcpQueuedUserPromptState& first = batch.front();
@@ -275,7 +321,7 @@ namespace uam
 					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
 				}
 			}
-			return effective_prompt;
+			return true;
 		}
 
 		void AppendQueuedUserMessages(ChatSession& chat, AcpSessionState& session, const std::deque<AcpQueuedUserPromptState>& batch)
@@ -304,7 +350,16 @@ namespace uam
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
 		{
-			if (batch.empty() || !StartAcpProcessForChat(app, session, chat, error_out))
+			if (batch.empty())
+			{
+				return false;
+			}
+			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, error_out))
+			{
+				return false;
+			}
+			std::string effective_prompt;
+			if (!BuildAcpBatchPrompt(app, chat, batch, effective_prompt, error_out) || !StartAcpProcessForChat(app, session, chat, error_out))
 			{
 				return false;
 			}
@@ -317,7 +372,8 @@ namespace uam
 				                            : selected_model->supported_reasoning_efforts.front();
 			}
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
-			if (session.session_ready && !uam::strings::IsBlank(chat.approval_mode) && session.current_mode_id != desired_mode && !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
+			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
+			if (session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && session.current_mode_id != desired_mode && !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
 			{
 				return false;
 			}
@@ -326,7 +382,7 @@ namespace uam
 				return false;
 			}
 
-			session.queued_prompt = BuildAcpBatchPrompt(app, chat, batch);
+			session.queued_prompt = std::move(effective_prompt);
 			session.crash_restart_attempts = 0;
 			session.goal_auto_resume_attempts = 0;
 			session.goal_resume_suppressed = false;
@@ -384,14 +440,24 @@ namespace uam
 			}
 
 			const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
+			std::size_t markdown_store_bytes = 0;
 			for (const std::string& file : markdown_store_files)
 			{
-				std::filesystem::path normalized_file;
-				if (!MarkdownStoreService::ValidateStoreFilePath(markdown_store_root, file, &normalized_file, error_out))
+				MarkdownStoreService::Entry entry;
+				if (!MarkdownStoreService::LoadEntry(markdown_store_root, file, &entry, error_out))
 				{
 					return false;
 				}
-				queued.markdown_store_files.push_back(normalized_file.string());
+				std::string prompt_block = BuildMarkdownStorePromptBlock(entry);
+				if (prompt_block.size() > kMarkdownStorePromptMaxBytes - markdown_store_bytes)
+				{
+					if (error_out != nullptr)
+						*error_out = "Attached skill content exceeds the 2 MiB prompt limit.";
+					return false;
+				}
+				markdown_store_bytes += prompt_block.size();
+				queued.markdown_store_files.push_back(uam::paths::Utf8PathString(entry.file_path));
+				queued.markdown_store_prompt_blocks.push_back(std::move(prompt_block));
 			}
 
 			const Goal* active_goal = GoalService::FindActiveGoal(app, chat.id);
@@ -423,16 +489,59 @@ namespace uam
 			       target.goal_mode == next.goal_mode && target.goal_id == next.goal_id;
 		}
 
+		bool QueuedMarkdownStoreContentFits(const std::deque<AcpQueuedUserPromptState>& existing, const AcpQueuedUserPromptState& next, bool merge_with_back, std::string* error_out)
+		{
+			std::size_t markdown_store_bytes = 0;
+			const auto add_prompt_block = [&](const std::string& prompt_block)
+			{
+				if (prompt_block.size() > kMarkdownStorePromptMaxBytes - markdown_store_bytes)
+				{
+					if (error_out != nullptr)
+						*error_out = "Queued attached skill content exceeds the 2 MiB prompt limit.";
+					return false;
+				}
+				markdown_store_bytes += prompt_block.size();
+				return true;
+			};
+
+			for (const AcpQueuedUserPromptState& queued : existing)
+			{
+				for (const std::string& prompt_block : queued.markdown_store_prompt_blocks)
+				{
+					if (!add_prompt_block(prompt_block))
+						return false;
+				}
+			}
+			for (std::size_t index = 0; index < next.markdown_store_prompt_blocks.size(); ++index)
+			{
+				if (merge_with_back && uam::ranges::Contains(existing.back().markdown_store_files, next.markdown_store_files[index]))
+				{
+					continue;
+				}
+				if (!add_prompt_block(next.markdown_store_prompt_blocks[index]))
+					return false;
+			}
+			return true;
+		}
+
 		void MergeQueuedUserPrompt(AcpQueuedUserPromptState& target, AcpQueuedUserPromptState&& next)
 		{
 			target.text += "\n\n" + next.text;
-			for (std::string& file : next.markdown_store_files)
+			const bool can_merge_snapshots = target.markdown_store_prompt_blocks.size() == target.markdown_store_files.size() && next.markdown_store_prompt_blocks.size() == next.markdown_store_files.size();
+			for (std::size_t index = 0; index < next.markdown_store_files.size(); ++index)
 			{
+				std::string& file = next.markdown_store_files[index];
 				if (!uam::ranges::Contains(target.markdown_store_files, file))
 				{
 					target.markdown_store_files.push_back(std::move(file));
-				}
+					if (can_merge_snapshots)
+					{
+						target.markdown_store_prompt_blocks.push_back(std::move(next.markdown_store_prompt_blocks[index]));
+					}
 			}
+			}
+			if (!can_merge_snapshots)
+				target.markdown_store_prompt_blocks.clear();
 			target.attachments.insert(target.attachments.end(),
 			                          std::make_move_iterator(next.attachments.begin()),
 			                          std::make_move_iterator(next.attachments.end()));
@@ -462,8 +571,10 @@ namespace uam
 		{
 			const std::string provider_id = session.provider_id;
 			const std::string protocol_kind = session.protocol_kind;
+			std::deque<AcpQueuedUserPromptState> queued_prompts = std::move(session.queued_user_prompts);
 			if (!StopAcpSession(app, chat_id))
 			{
+				session.queued_user_prompts = std::move(queued_prompts);
 				if (error_out != nullptr)
 				{
 					*error_out = "Failed to restart ACP session after cancelling the previous turn.";
@@ -473,10 +584,24 @@ namespace uam
 
 			session.provider_id = provider_id;
 			session.protocol_kind = protocol_kind;
+			session.queued_user_prompts = std::move(queued_prompts);
+			if (!session.queued_user_prompts.empty() && !DrainNextQueuedAcpUserPrompt(app, session, chat))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = uam::strings::NonEmptyOrFallback(session.last_error, "Failed to restart ACP session after cancelling the previous turn.");
+				}
+				return false;
+			}
 		}
 		if (session.processing || !session.queued_user_prompts.empty())
 		{
-			if (!chat.small_model_mode && !session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued))
+			const bool merge_with_back = !chat.small_model_mode && !session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued);
+			if (!chat.small_model_mode && !QueuedMarkdownStoreContentFits(session.queued_user_prompts, queued, merge_with_back, error_out))
+			{
+				return false;
+			}
+			if (merge_with_back)
 			{
 				MergeQueuedUserPrompt(session.queued_user_prompts.back(), std::move(queued));
 			}
@@ -804,8 +929,10 @@ namespace uam
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
 		ClearAcpStartupModelRequest(*session);
+		ClearAcpReasoningChangeRequest(*session);
 		ClearAcpModeChangeRequest(*session);
 		ClearAcpModelChangeRequest(*session);
+		session->awaiting_model_config_options = false;
 		session->prompt_request_id = 0;
 		session->cancel_request_id = 0;
 		session->current_assistant_message_index = -1;
@@ -840,11 +967,11 @@ namespace uam
 			}
 			return false;
 		}
-		if (session->mode_change_request_id != 0)
+		if (session->mode_change_request_id != 0 || session->model_change_request_id != 0 || session->reasoning_change_request_id != 0 || session->awaiting_model_config_options)
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Cannot change structured runtime mode while another mode change is pending.";
+				*error_out = "Cannot change structured runtime mode while another session setting change is pending.";
 			}
 			return false;
 		}
@@ -897,6 +1024,76 @@ namespace uam
 		}
 	}
 
+	bool SetAcpSessionReasoningEffort(AppState& app, const std::string& chat_id, const std::string& reasoning_effort, std::string* error_out, std::optional<std::string> previous_chat_reasoning_effort)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || !session->running)
+		{
+			return true;
+		}
+		const bool prompt_is_queued_but_not_sent = session->processing && session->prompt_request_id == 0 && !session->queued_prompt.empty() && !session->waiting_for_permission && !session->waiting_for_user_input;
+		if (uam::AcpSessionHasCancelableWork(*session) && !prompt_is_queued_but_not_sent)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change Copilot reasoning effort while Copilot is busy.";
+			}
+			return false;
+		}
+		if (session->reasoning_change_request_id != 0 || session->startup_model_request_id != 0 || session->mode_change_request_id != 0 || session->model_change_request_id != 0 || session->awaiting_model_config_options)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Cannot change Copilot reasoning effort while another session setting change is pending.";
+			}
+			return false;
+		}
+		if (!session->session_ready || session->session_id.empty())
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Copilot ACP session is not ready.";
+			}
+			return false;
+		}
+
+		AcpModelState* selected_model = nullptr;
+		for (AcpModelState& model : session->available_models)
+		{
+			if (model.id == session->current_model_id)
+			{
+				selected_model = &model;
+				break;
+			}
+		}
+		if (selected_model == nullptr || !uam::ranges::Contains(selected_model->supported_reasoning_efforts, reasoning_effort))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "The selected Copilot model does not support that reasoning effort.";
+			}
+			return false;
+		}
+		if (selected_model->default_reasoning_effort == reasoning_effort)
+		{
+			return true;
+		}
+
+		const int id = NextAcpRequestId(*session, uam::acp_methods::kSessionSetConfigOption);
+		session->reasoning_change_request_id = id;
+		session->reasoning_change_previous_id = selected_model->default_reasoning_effort;
+		session->reasoning_change_previous_chat_id = previous_chat_reasoning_effort;
+		session->reasoning_change_requested_id = reasoning_effort;
+		if (!acp_detail::WriteAcpMessage(*session, BuildSetConfigOptionRequest(id, session->session_id, "reasoning_effort", reasoning_effort), error_out))
+		{
+			session->pending_request_methods.erase(id);
+			ClearAcpReasoningChangeRequest(*session);
+			return false;
+		}
+		selected_model->default_reasoning_effort = reasoning_effort;
+		return true;
+	}
+
 	bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out, std::optional<std::string> previous_chat_model_id)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
@@ -912,11 +1109,11 @@ namespace uam
 			}
 			return false;
 		}
-		if (session->model_change_request_id != 0)
+		if (session->model_change_request_id != 0 || session->mode_change_request_id != 0 || session->reasoning_change_request_id != 0 || session->awaiting_model_config_options)
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Cannot change structured runtime model while another model change is pending.";
+				*error_out = "Cannot change structured runtime model while another session setting change is pending.";
 			}
 			return false;
 		}
@@ -946,11 +1143,13 @@ namespace uam
 			session->model_change_previous_id = previous_model_id;
 			session->model_change_previous_chat_id = previous_chat_model_id.value_or(previous_model_id);
 			session->model_change_requested_id = model_id;
+			session->awaiting_model_config_options = uam::provider_ids::IsCliProviderAliasOf(session->provider_id, uam::provider_ids::kCopilotCli);
 			if (!acp_detail::WriteAcpMessage(*session, BuildSetModelRequest(id, session->session_id, model_id), error_out))
 			{
 				session->pending_request_methods.erase(id);
 				session->current_model_id = session->model_change_previous_id;
 				ClearAcpModelChangeRequest(*session);
+				session->awaiting_model_config_options = false;
 				return false;
 			}
 			session->current_model_id = model_id;

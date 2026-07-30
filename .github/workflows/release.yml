@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -50,26 +50,26 @@ jobs:
       - name: Install frontend dependencies
         run: npm --prefix UI-V2 ci
 
+      - name: Test frontend
+        run: npm --prefix UI-V2 run test
+
+      - name: Validate release tag matches product version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node -e "const version = require('./UI-V2/package.json').version; const tag = 'v' + version; if (process.env.GITHUB_REF_NAME !== tag) throw new Error('Tag ' + process.env.GITHUB_REF_NAME + ' does not match ' + tag + '.');"
+
       - name: Configure (macOS)
         if: runner.os == 'macOS'
-        run: cmake -S . -B Builds -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B Builds -DCMAKE_BUILD_TYPE=Release -DUAM_BUILD_TESTS=ON
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S . -B Builds
+        run: cmake -S . -B Builds -A x64 -DUAM_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build Builds --config Release
 
-      - name: Smoke test Windows app launch
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
-          $process = Start-Process Builds/Release/universal_agent_manager.exe -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) { throw "Windows app exited during startup with code $($process.ExitCode)." }
-          Stop-Process -Id $process.Id -Force
+      - name: Test native Release build
+        run: ctest --test-dir Builds -C Release --output-on-failure
 
       # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
       # `codesign --sign -`, no certificate required). ditto preserves the bundle.
@@ -81,7 +81,22 @@ jobs:
       # resources, and the bundled UI-V2/dist — zip the whole payload.
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path Builds/Release/* -DestinationPath UAM-Windows.zip
+        shell: pwsh
+        run: |
+          Remove-Item Builds/Release/uam_core_tests* -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path Builds/Release/* -DestinationPath UAM-Windows.zip
+
+      - name: Smoke test packaged Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'uam-package'
+          Expand-Archive UAM-Windows.zip -DestinationPath $packageRoot
+          $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
+          $process = Start-Process (Join-Path $packageRoot 'universal_agent_manager.exe') -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
+          Stop-Process -Id $process.Id -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -93,7 +108,7 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -12,12 +12,15 @@
 #include <array>
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace uam
 {
+	struct AppState;
+
 	inline constexpr auto kBaseProviderWorkerPathEntries = std::to_array<std::string_view>({
 	    "/opt/homebrew/bin",
 	    "/opt/homebrew/sbin",
@@ -34,6 +37,20 @@ namespace uam
 	{
 		BasePath,
 		IncludeNvmNodeVersions
+	};
+
+	struct ProviderWorkerInvocation
+	{
+		bool direct_process = false;
+		std::vector<std::string> argv;
+		std::string standard_input;
+		std::string shell_command;
+		std::string command_preview;
+
+		bool Empty() const
+		{
+			return direct_process ? argv.empty() : shell_command.empty();
+		}
 	};
 
 	inline void AppendUniqueProviderWorkerPathEntry(std::vector<std::string>& values, std::string_view value)
@@ -130,5 +147,6 @@ namespace uam
 		return WithProviderWorkerPathEnvironment(uam::shell::JoinEscapedArgs(argv), path_mode);
 	}
 
-	std::string BuildProviderWorkerCommand(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode);
+	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out = nullptr);
+	ProcessExecutionResult ExecuteProviderWorkerInvocation(const ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms = -1, std::stop_token stop_token = {});
 } // namespace uam

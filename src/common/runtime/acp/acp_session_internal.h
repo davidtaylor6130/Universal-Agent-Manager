@@ -194,6 +194,7 @@ void AppendRecentStderr(AcpSessionState& session, const std::string& chunk);
 // Claude content text helpers
 nlohmann::json BuildClaudeInputMessage(const std::string& text);
 std::string ContentTextFromJson(const nlohmann::json& content);
+std::string ToolCallContentTextFromJson(const nlohmann::json& tool_call);
 std::string ClaudeContentTextFromMessage(const nlohmann::json& message);
 std::string StripLeadingLineBreaks(std::string value);
 bool StartsWithLineBreak(const std::string& value);
@@ -220,6 +221,7 @@ nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id,
 nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id);
 nlohmann::json BuildCancelNotification(const std::string& session_id);
 nlohmann::json BuildCodexTurnInterruptRequest(int request_id, const std::string& thread_id, const std::string& turn_id);
+nlohmann::json BuildSetConfigOptionRequest(int request_id, const std::string& session_id, const std::string& config_id, const std::string& value);
 nlohmann::json BuildSetModeRequest(int request_id, const std::string& session_id, const std::string& mode_id);
 nlohmann::json BuildSetModelRequest(int request_id, const std::string& session_id, const std::string& model_id);
 
@@ -250,9 +252,12 @@ void ResetAcpWaitState(AcpSessionState& session);
 void ResetAcpPendingInteractionState(AcpSessionState& session);
 void ResetAcpTurnStreamState(AcpSessionState& session);
 void ClearAcpStartupModelRequest(AcpSessionState& session);
+void ClearAcpReasoningChangeRequest(AcpSessionState& session);
 void ClearAcpModeChangeRequest(AcpSessionState& session);
 bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat);
 void ClearAcpModelChangeRequest(AcpSessionState& session);
+bool UpdateCopilotReasoningFromConfigOptions(AcpSessionState& session, ChatSession& chat, const nlohmann::json& config_options);
+bool ReconcileCopilotReasoningEffort(AppState& app, AcpSessionState& session, ChatSession& chat);
 void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state);
 void ClearAcpPendingWait(AcpSessionState& session);
 std::string ActiveAcpWaitRequestId(const AcpSessionState& session);
@@ -266,7 +271,8 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
-bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
+bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
+bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);

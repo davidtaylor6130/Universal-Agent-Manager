@@ -31,6 +31,7 @@ bool SetAcpSessionMode(AppState& app,
                        std::optional<std::string> previous_chat_mode_id = std::nullopt,
                        std::optional<std::string> previous_command_safety_tier = std::nullopt);
 bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr, std::optional<std::string> previous_chat_model_id = std::nullopt);
+bool SetAcpSessionReasoningEffort(AppState& app, const std::string& chat_id, const std::string& reasoning_effort, std::string* error_out = nullptr, std::optional<std::string> previous_chat_reasoning_effort = std::nullopt);
 bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool ResolveAcpPermission(AppState& app,
                           const std::string& chat_id,

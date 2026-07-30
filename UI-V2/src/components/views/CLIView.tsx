@@ -3,12 +3,12 @@ import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { AlertTriangle, Zap } from 'lucide-react'
+import { AlertTriangle, X, Zap } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
 import type { CliLifecycleState } from '../../store/useAppStore'
-import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 interface CLIViewProps {
   session: Session
@@ -78,13 +78,19 @@ export function CLIView({ session }: CLIViewProps) {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const theme = useAppStore((s) => s.theme)
   const providers = useAppStore((s) => s.providers)
+  const copilotVersionStatus = useAppStore((s) =>
+    s.cliVersionManager.providers.find((provider) => provider.providerId === COPILOT_CLI_PROVIDER_ID)?.status ?? 'unknown'
+  )
   const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
   const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
   const [steerDraft, setSteerDraft] = useState('')
   const [steerSubmitting, setSteerSubmitting] = useState(false)
+  const [terminalStartAttempt, setTerminalStartAttempt] = useState(0)
+  const [dismissedTerminalError, setDismissedTerminalError] = useState('')
   const pendingSteerWasSeenRef = useRef(false)
   const steerInFlightRef = useRef(false)
+  const copilotCompatibilityRetryPendingRef = useRef(false)
   const currentSessionIdRef = useRef(session.id)
   const currentProviderId = session.providerId?.trim() || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
@@ -92,13 +98,19 @@ export function CLIView({ session }: CLIViewProps) {
   const steerPending = Boolean(cliBinding?.pendingSteer)
   const steerWaiting = steerSubmitting || (steerPending && !cliBinding?.lastError)
   const steerActionLabel = steerWaiting ? 'Steering…' : steerPending ? 'Retry steer' : 'Steer now'
+  const visibleTerminalError =
+    cliBinding?.lastError && cliBinding.lastError !== dismissedTerminalError
+      ? cliBinding.lastError
+      : ''
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
 
   useEffect(() => {
     currentSessionIdRef.current = session.id
     steerInFlightRef.current = false
+    copilotCompatibilityRetryPendingRef.current = false
     setSteerSubmitting(false)
-  }, [session.id])
+    setDismissedTerminalError('')
+  }, [currentProviderId, session.id])
 
   useEffect(() => {
     if (cliBinding?.pendingSteer) pendingSteerWasSeenRef.current = true
@@ -107,6 +119,21 @@ export function CLIView({ session }: CLIViewProps) {
       setSteerDraft('')
     }
   }, [cliBinding?.pendingSteer])
+
+  useEffect(() => {
+    const compatibilityCheckFinished =
+      copilotVersionStatus === 'supported' || copilotVersionStatus === 'unsupported'
+    if (compatibilityCheckFinished && copilotCompatibilityRetryPendingRef.current) {
+      copilotCompatibilityRetryPendingRef.current = false
+      setTerminalStartAttempt((attempt) => attempt + 1)
+    }
+  }, [copilotVersionStatus])
+
+  useEffect(() => {
+    if (!cliBinding?.lastError && dismissedTerminalError) {
+      setDismissedTerminalError('')
+    }
+  }, [cliBinding?.lastError, dismissedTerminalError])
 
   const steerTerminal = async () => {
     const text = steerDraft.trim()
@@ -198,6 +225,22 @@ export function CLIView({ session }: CLIViewProps) {
         let resizeAnimationFrame: number | null = null
         let bestKnownTerminalId = effectiveTerminalId
         let bestKnownBoundChatId = session.id
+        const retryCopilotAfterCompatibilityCheck = (error: string) => {
+          if (
+            currentProviderId !== COPILOT_CLI_PROVIDER_ID ||
+            !error.startsWith('Checking GitHub Copilot CLI compatibility.')
+          ) {
+            return
+          }
+          copilotCompatibilityRetryPendingRef.current = true
+          const status = useAppStore.getState().cliVersionManager.providers.find(
+            (provider) => provider.providerId === COPILOT_CLI_PROVIDER_ID
+          )?.status
+          if (status === 'supported' || status === 'unsupported') {
+            copilotCompatibilityRetryPendingRef.current = false
+            setTerminalStartAttempt((attempt) => attempt + 1)
+          }
+        }
 
         const detachTerminal = (terminalId = bestKnownTerminalId, chatId = bestKnownBoundChatId) => {
           sendToCEF({
@@ -254,6 +297,7 @@ export function CLIView({ session }: CLIViewProps) {
           }
 
           if (!resp.ok) {
+            retryCopilotAfterCompatibilityCheck(resp.error ?? '')
             setCliBinding(session.id, {
               running: false,
             processing: false,
@@ -267,6 +311,7 @@ export function CLIView({ session }: CLIViewProps) {
 
           if (data) {
             const running = Boolean(data.running)
+            retryCopilotAfterCompatibilityCheck(data.lastError ?? '')
             const lifecycleState = normalizeLifecycleState(data.lifecycleState, running, data.turnState)
             const processing = lifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
@@ -407,7 +452,7 @@ export function CLIView({ session }: CLIViewProps) {
       resizeObserver.disconnect()
       term.dispose()
     }
-  }, [effectiveTerminalId, providerSupported, session.id]) // Re-init per session/terminal identity and provider support
+  }, [currentProviderId, effectiveTerminalId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session/terminal identity, provider, support, and explicit retry
 
   // Refit on theme change
   useEffect(() => {
@@ -434,7 +479,7 @@ export function CLIView({ session }: CLIViewProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {!!cliBinding?.lastError && (
+      {!!visibleTerminalError && (
         <div
           className="flex-shrink-0 px-3 py-2 text-xs"
           style={{
@@ -443,7 +488,19 @@ export function CLIView({ session }: CLIViewProps) {
             color: 'var(--red)',
           }}
         >
-          {cliBinding.lastError}
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 flex-1">{visibleTerminalError}</span>
+            <button
+              type="button"
+              aria-label="Dismiss terminal error"
+              title="Dismiss"
+              onClick={() => setDismissedTerminalError(visibleTerminalError)}
+              className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded"
+              style={{ color: 'inherit' }}
+            >
+              <X size={13} aria-hidden />
+            </button>
+          </div>
         </div>
       )}
 
