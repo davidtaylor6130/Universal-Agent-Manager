@@ -128,7 +128,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
 
 		if (!created)
 		{

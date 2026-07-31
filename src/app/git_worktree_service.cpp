@@ -390,7 +390,7 @@ namespace uam
 			std::string relative_text;
 			while (std::getline(paths, relative_text))
 			{
-				const std::filesystem::path relative(relative_text);
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(relative_text);
 				if (HasUnsafeSnapshotName(relative) || IsExcludedSnapshotPath(relative))
 				{
 					error = "Chat changes contain an unsafe path: " + relative_text;
@@ -721,7 +721,7 @@ namespace uam
 
 		if (!result.status.worktree_missing)
 		{
-			const std::filesystem::path worktree(result.status.worktree_directory);
+			const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
 			if (!GitCommand(worktree, "reset --hard HEAD", &result.message))
 			{
 				return result;
@@ -754,8 +754,8 @@ namespace uam
 			return result;
 		}
 
-		const std::filesystem::path source(result.status.source_directory);
-		const std::filesystem::path worktree(result.status.worktree_directory);
+		const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, result.status);
+		const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
 		const std::string base_ref = uam::strings::Trim(result.status.base_ref);
 		if (base_ref.empty())
 		{
