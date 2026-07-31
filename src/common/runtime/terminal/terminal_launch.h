@@ -39,7 +39,7 @@ namespace uam
 		return false;
 	}
 
-	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, int rows, int cols)
+	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
 		StopCliTerminal(terminal);
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -65,6 +65,12 @@ namespace uam
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled, "Active provider does not expose an interactive runtime command.");
 		}
 
+		std::string runtime_handoff_error;
+		if (!PrepareAcpSessionForCliTerminalLaunch(app, chat, &runtime_handoff_error))
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
+		}
+
 		const bool chat_uses_native_history = ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat);
 		const bool chat_uses_codex_cli = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCodexCli);
 		std::filesystem::path native_history_chats_dir;
@@ -73,6 +79,12 @@ namespace uam
 		{
 			native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat);
 			app.native_history_chats_dir = native_history_chats_dir;
+		}
+
+		std::string session_id_error;
+		if (!EnsureCopilotInteractiveSessionIdForLaunch(app, chat, provider, &session_id_error))
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, session_id_error);
 		}
 
 		const std::vector<std::string> interactive_argv = BuildProviderInteractiveArgv(app, chat);

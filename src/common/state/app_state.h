@@ -106,6 +106,13 @@ namespace uam
 		std::string description;
 	};
 
+	struct AcpCommandState
+	{
+		std::string name;
+		std::string description;
+		std::string input_hint;
+	};
+
 	struct AcpModelState
 	{
 		std::string id;
@@ -200,6 +207,7 @@ namespace uam
 	{
 		std::string text;
 		std::vector<std::string> markdown_store_files;
+		std::vector<std::string> markdown_store_prompt_blocks;
 		std::vector<MessageAttachment> attachments;
 		bool append_user_message = true;
 		bool goal_mode = false;
@@ -230,8 +238,10 @@ namespace uam
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
 		int startup_model_request_id = 0;
+		int reasoning_change_request_id = 0;
 		int mode_change_request_id = 0;
 		int model_change_request_id = 0;
+		bool awaiting_model_config_options = false;
 		int prompt_request_id = 0;
 		int cancel_request_id = 0;
 		int current_assistant_message_index = -1;
@@ -265,7 +275,7 @@ namespace uam
 		int goal_review_repair_attempts = 0;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
-		bool gemini_resume_fallback_attempted = false;
+		bool acp_resume_fallback_attempted = false;
 		std::string stdout_buffer;
 		std::string stderr_buffer;
 		std::string recent_stderr;
@@ -288,6 +298,7 @@ namespace uam
 		std::string codex_last_agent_message_item_id;
 		std::unordered_set<std::string> codex_streamed_reasoning_keys;
 		std::string codex_last_reasoning_section;
+		std::vector<AcpCommandState> available_commands;
 		std::vector<AcpModeState> available_modes;
 		std::string current_mode_id;
 		std::string mode_change_previous_id;
@@ -297,6 +308,9 @@ namespace uam
 		std::vector<AcpModelState> available_models;
 		std::string current_model_id;
 		std::string pending_startup_model_id;
+		std::string reasoning_change_previous_id;
+		std::optional<std::string> reasoning_change_previous_chat_id;
+		std::string reasoning_change_requested_id;
 		std::string model_change_previous_id;
 		std::optional<std::string> model_change_previous_chat_id;
 		std::string model_change_requested_id;

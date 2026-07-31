@@ -21,3 +21,4 @@ class CopilotCliProviderRuntime final : public IProviderRuntime
 };
 
 const IProviderRuntime& GetCopilotCliProviderRuntime();
+std::string NormalizeCopilotReasoningEffort(std::string_view value);

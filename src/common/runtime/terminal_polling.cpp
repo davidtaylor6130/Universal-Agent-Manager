@@ -43,6 +43,10 @@ bool ProviderRecentOutputIndicatesInputPrompt(const ProviderProfile& provider, s
 	{
 		return CodexCliRecentOutputIndicatesInputPrompt(recent_output);
 	}
+	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
+	{
+		return CopilotCliRecentOutputIndicatesInputPrompt(recent_output);
+	}
 
 	return FallbackCliRecentOutputIndicatesInputPrompt(recent_output);
 }
@@ -712,7 +716,7 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 				{
 					terminal->pending_steer_restart_attempted = true;
 					terminal->pending_steer_started_time_s = now;
-					if (const ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr && StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols))
+					if (ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr && StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols))
 					{
 						uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_hard_restart", terminal.get());
 					}

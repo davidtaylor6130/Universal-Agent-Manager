@@ -272,6 +272,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const bottomRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
@@ -380,6 +381,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setBranchingMessageIndex(null)
     setMessageBranchError('')
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
+    setDictationState('idle')
+    setDictationError('')
   }, [session.id])
 
   useEffect(() => {
@@ -856,6 +859,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
   }
 
+  function dismissDictationError() {
+    const wasActive = dictationActiveRef.current
+    dictationActiveRef.current = false
+    dictationSubmitAfterStopRef.current = false
+    setDictationState('idle')
+    setDictationError('')
+    if (wasActive) void sendToCEF({ action: 'stopDictation' })
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0)
+  }
+
   useEffect(() => {
     const onDictation = (event: Event) => {
       const message = (event as CustomEvent<DictationPushMessage>).detail
@@ -874,8 +887,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
       if (message.event === 'error') {
         dictationHadErrorRef.current = true
+        dictationActiveRef.current = false
+        dictationSubmitAfterStopRef.current = false
         setDictationError(message.message || 'Dictation failed.')
-        setDictationState('stopping')
+        setDictationState('idle')
         return
       }
 
@@ -911,7 +926,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
   const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
   const reasoningOptions = currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
-    ? buildCodexReasoningOptions(providerAcp, currentModel.id, session.reasoningEffort ?? '')
+    ? buildCodexReasoningOptions(
+        providerAcp,
+        currentModel.id,
+        session.reasoningEffort ?? '',
+        isCopilotProvider(currentProvider, currentProviderId)
+          ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
+          : undefined
+      )
     : []
   const speedOptions = currentProviderCapabilities.hasServiceTier
     ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '')
@@ -1088,15 +1110,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const slashCommands = useMemo<SlashCommand[]>(
     () => {
       const favorites = markdownStoreEntries.filter((entry) => entry.favorite)
-      const prefixCounts = favorites.reduce<Record<string, number>>((counts, entry) => {
-        const [prefix, suffix] = skillCommandName(entry).split('-', 2)
-        if (!suffix) return counts
-        counts[prefix] = (counts[prefix] ?? 0) + 1
-        return counts
-      }, {})
       const groups = favorites.reduce<Record<string, typeof favorites>>((result, entry) => {
-        const [prefix, suffix] = skillCommandName(entry).split('-', 2)
-        const group = entry.group?.trim() || (suffix && prefixCounts[prefix] > 1 ? prefix : '')
+        const group = entry.group?.trim() || ''
         ;(result[group] ??= []).push(entry)
         return result
       }, {})
@@ -1108,7 +1123,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         run: () => attachMarkdownStoreEntry(session.id, entry),
       })
 
-      return [
+      const commands: SlashCommand[] = [
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
         ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
         ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
@@ -1140,9 +1155,23 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           }
         }),
       ]
+      const usedLabels = new Set(commands.map((command) => command.label.toLowerCase()))
+      for (const command of providerAcp?.availableCommands ?? []) {
+        const label = `/${command.name}`
+        if (usedLabels.has(label.toLowerCase())) continue
+        usedLabels.add(label.toLowerCase())
+        commands.push({
+          id: `acp:${command.name}`,
+          label,
+          hint: [command.description, command.inputHint].filter(Boolean).join(' · ') || 'Provider command',
+          icon: <FileText size={15} />,
+          run: () => setDraft(`${label}${command.inputHint ? ' ' : ''}`),
+        })
+      }
+      return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions]
   )
   const permissionModeMatch = /^\/permission\s+([\w-]*)$/i.exec(draft)
   const commandSafetyMatch = /^\/safety\s+([\w-]*)$/i.exec(draft)
@@ -1905,19 +1934,30 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 role={dictationError ? 'alert' : 'status'}
                 aria-live={dictationError ? 'assertive' : 'polite'}
                 data-dictation-state={dictationError ? 'error' : dictationState}
-                className="px-3 pt-2 text-[11px]"
+                className="flex items-center gap-2 px-3 pt-2 text-[11px]"
                 style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
               >
-                {dictationError || (
-                  dictationState === 'starting'
-                    ? 'Starting dictation…'
-                    : dictationState === 'stopping'
-                      ? 'Finishing dictation…'
-                      : 'Listening…'
+                <span className="min-w-0 flex-1">
+                  {dictationError || (
+                    dictationState === 'starting'
+                      ? 'Starting dictation…'
+                      : dictationState === 'stopping'
+                        ? 'Finishing dictation…'
+                        : 'Listening…'
+                  )}
+                </span>
+                {dictationError && (
+                  <IconButton
+                    icon={<X size={12} />}
+                    label="Dismiss dictation error"
+                    size="sm"
+                    onClick={dismissDictationError}
+                  />
                 )}
               </div>
             )}
             <textarea
+              ref={composerTextareaRef}
               value={draft}
               onChange={(event) => {
                 setDraft(event.target.value)

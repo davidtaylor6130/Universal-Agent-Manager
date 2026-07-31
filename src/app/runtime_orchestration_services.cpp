@@ -65,6 +65,11 @@ namespace
 		return uam::paths::NormalizeExistingPath(expanded);
 	}
 
+	bool Utf8WorkspaceDirectoriesMatch(const std::string& lhs, const std::string& rhs)
+	{
+		return FolderDirectoryMatches(NormalizeWorkspacePathForComparison(lhs), NormalizeWorkspacePathForComparison(rhs));
+	}
+
 	bool FolderMatchesWorkspaceRoot(const ChatFolder& folder, const fs::path& workspace_root)
 	{
 		const fs::path normalized_folder = NormalizeWorkspacePathForComparison(folder.directory);
@@ -379,7 +384,7 @@ namespace
 	{
 		for (const ChatFolder& folder : app.folders)
 		{
-			if (FolderDirectoryMatches(folder.directory, source.folder_directory))
+			if (Utf8WorkspaceDirectoriesMatch(folder.directory, source.folder_directory))
 			{
 				return folder.id;
 			}
@@ -458,7 +463,7 @@ namespace
 			}
 
 			const fs::path normalized_root = uam::paths::AbsolutePathNoThrow(root);
-			const std::string key = normalized_root.string();
+			const std::string key = uam::paths::Utf8PathString(normalized_root);
 
 			if (key.empty() || seen.contains(key))
 			{
@@ -845,7 +850,7 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 
 	chat.title = previous_title;
 	chat.updated_at = previous_updated_at;
-	app.status_line = "Failed to save renamed chat file: " + AppPaths::UamChatFilePath(app.data_root, chat.id).string();
+	app.status_line = "Failed to save renamed chat file: " + uam::paths::Utf8PathString(AppPaths::UamChatFilePath(app.data_root, chat.id));
 	return false;
 }
 
@@ -922,7 +927,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 
 			++result.total_count;
 
-			native_chat.workspace_directory = workspace_root.string();
+			native_chat.workspace_directory = uam::paths::Utf8PathString(workspace_root);
 			AssignKnownWorkspaceFolderToNewImport(app, import_index, workspace_root, native_chat);
 
 			const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, native_chat, target_id);
@@ -1024,7 +1029,7 @@ void ChatHistorySyncService::ReconcileUnresolvedDraftLinksByDiscovery(uam::AppSt
 		for (ChatSession& native_chat : native_chats)
 		{
 			native_chat.workspace_directory = source.folder_directory;
-			AssignKnownWorkspaceFolderToNewImport(app, import_index, fs::path(source.folder_directory), native_chat);
+			AssignKnownWorkspaceFolderToNewImport(app, import_index, uam::paths::PathFromUtf8(source.folder_directory), native_chat);
 		}
 
 		ApplyLocalOverrides(app, native_chats);
@@ -1067,7 +1072,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				continue;
 			}
 
-			AssignKnownWorkspaceFolderToNewImport(app, import_index, fs::path(source.folder_directory), native_chat);
+			AssignKnownWorkspaceFolderToNewImport(app, import_index, uam::paths::PathFromUtf8(source.folder_directory), native_chat);
 
 			if (native_chat.folder_id.empty())
 			{
@@ -1259,7 +1264,7 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 	const fs::path project_root_file = *tmp_dir / ".project_root";
 	const std::string recorded_project_root = uam::strings::Trim(uam::io::ReadTextFile(project_root_file));
 
-	if (recorded_project_root.empty() || !FolderDirectoryMatches(workspace_root, fs::path(recorded_project_root)))
+	if (recorded_project_root.empty() || !FolderDirectoryMatches(workspace_root, uam::paths::PathFromUtf8(recorded_project_root)))
 	{
 		return false;
 	}
@@ -1524,7 +1529,7 @@ ChatSession* ChatHistorySyncService::FindInMemoryNativeSessionChatForOpen(uam::A
 			continue;
 		}
 
-		if (!source_workspace_directory.empty() && !FolderDirectoryMatches(chat.workspace_directory, source_workspace_directory))
+		if (!source_workspace_directory.empty() && !Utf8WorkspaceDirectoriesMatch(chat.workspace_directory, source_workspace_directory))
 		{
 			continue;
 		}
@@ -1594,7 +1599,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 			return true;
 		}
 
-		return FolderDirectoryMatches(chat.workspace_directory, source_workspace_directory);
+		return Utf8WorkspaceDirectoriesMatch(chat.workspace_directory, source_workspace_directory);
 	};
 
 	std::vector<ChatSession> candidate_chats;
@@ -1623,7 +1628,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		workspace_filtered.reserve(candidate_chats.size());
 		for (const ChatSession& chat : candidate_chats)
 		{
-			if (FolderDirectoryMatches(chat.workspace_directory, source_workspace_directory))
+			if (Utf8WorkspaceDirectoriesMatch(chat.workspace_directory, source_workspace_directory))
 			{
 				workspace_filtered.push_back(chat);
 			}
@@ -1660,7 +1665,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 				continue;
 			}
 
-			if (!source_workspace_directory.empty() && !FolderDirectoryMatches(chat.workspace_directory, source_workspace_directory))
+			if (!source_workspace_directory.empty() && !Utf8WorkspaceDirectoriesMatch(chat.workspace_directory, source_workspace_directory))
 			{
 				continue;
 			}

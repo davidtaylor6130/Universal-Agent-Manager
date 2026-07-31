@@ -33,4 +33,13 @@ describe('reasoningEffortForModel', () => {
     expect(buildCodexReasoningOptions(undefined, 'gpt-5.4').some((option) => option.id === 'ultra')).toBe(false)
     expect(reasoningEffortForModel(undefined, 'gpt-5.4', 'ultra')).toBe('')
   })
+
+  it('does not invent Copilot reasoning choices when ACP omits them', () => {
+    const acp = {
+      availableModels: [{ id: 'gpt-5.1', name: 'GPT-5.1', supportedReasoningEfforts: [] }],
+    } as AcpBinding
+
+    expect(buildCodexReasoningOptions(acp, 'gpt-5.1', 'max', [])).toEqual([])
+    expect(reasoningEffortForModel(acp, 'gpt-5.1', 'max')).toBe('')
+  })
 })

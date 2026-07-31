@@ -25,16 +25,12 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		SECURITY_ATTRIBUTES sa{};
-		sa.nLength = sizeof(sa);
-		sa.bInheritHandle = TRUE;
-
 		HANDLE pipe_pty_in = INVALID_HANDLE_VALUE;
 		HANDLE pipe_pty_out = INVALID_HANDLE_VALUE;
 		HANDLE pipe_con_in = INVALID_HANDLE_VALUE;
 		HANDLE pipe_con_out = INVALID_HANDLE_VALUE;
 
-		if (!CreatePipe(&pipe_pty_in, &pipe_con_out, &sa, 0) || !CreatePipe(&pipe_con_in, &pipe_pty_out, &sa, 0))
+		if (!CreatePipe(&pipe_pty_in, &pipe_con_out, nullptr, 0) || !CreatePipe(&pipe_con_in, &pipe_pty_out, nullptr, 0))
 		{
 			if (error_out != nullptr)
 			{
@@ -45,11 +41,6 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 			return false;
 		}
-
-		// Ensure our end of the pipes are not inherited by the child process.
-		// This prevents the child from keeping the pipes alive and causing hangs on ClosePseudoConsole.
-		SetHandleInformation(pipe_pty_in, HANDLE_FLAG_INHERIT, 0);
-		SetHandleInformation(pipe_pty_out, HANDLE_FLAG_INHERIT, 0);
 
 		const COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
 		HPCON pseudo_console = nullptr;
@@ -66,9 +57,6 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		CloseInvalidHandleIfOpen(pipe_con_in);
-		CloseInvalidHandleIfOpen(pipe_con_out);
-
 		SIZE_T attr_size = 0;
 		InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
 		terminal.attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, attr_size));
@@ -81,7 +69,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			}
 
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
@@ -96,12 +84,17 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 			terminal.attr_list = nullptr;
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
 		STARTUPINFOEXW si{};
 		si.StartupInfo.cb = sizeof(si);
+		// Keep redirected parent stdio from bypassing ConPTY.
+		si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+		si.StartupInfo.hStdInput = nullptr;
+		si.StartupInfo.hStdOutput = nullptr;
+		si.StartupInfo.hStdError = nullptr;
 		si.lpAttributeList = terminal.attr_list;
 		PROCESS_INFORMATION pi{};
 
@@ -119,7 +112,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 			terminal.attr_list = nullptr;
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
@@ -128,7 +121,9 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
+		CloseInvalidHandleIfOpen(pipe_con_in);
+		CloseInvalidHandleIfOpen(pipe_con_out);
 
 		if (!created)
 		{
@@ -302,6 +297,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 			if (err == ERROR_BROKEN_PIPE)
 			{
+				CloseInvalidHandleIfOpen(terminal.pipe_output);
 				return 0;
 			}
 
@@ -330,7 +326,8 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 		if (bytes_read == 0)
 		{
-			return -2;
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
+			return 0;
 		}
 
 		return static_cast<std::ptrdiff_t>(bytes_read);
@@ -348,7 +345,49 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return true;
 		}
 
-		return WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0;
+		if (WaitForSingleObject(terminal.process_info.hProcess, 0) != WAIT_OBJECT_0)
+		{
+			return false;
+		}
+
+		if (terminal.pipe_output == INVALID_HANDLE_VALUE)
+		{
+			return true;
+		}
+
+		if (terminal.pseudo_console != nullptr)
+		{
+			CloseInvalidHandleIfOpen(terminal.pipe_input);
+			if (terminal.job_object != nullptr)
+			{
+				CloseHandle(terminal.job_object);
+				terminal.job_object = nullptr;
+			}
+
+			const HPCON pseudo_console = terminal.pseudo_console;
+			terminal.pseudo_console = nullptr;
+			try
+			{
+				// ClosePseudoConsole can emit a final frame, so keep draining output concurrently.
+				std::thread([pseudo_console]() { ClosePseudoConsoleSafe(pseudo_console); }).detach();
+			}
+			catch (...)
+			{
+				CloseInvalidHandleIfOpen(terminal.pipe_output);
+				ClosePseudoConsoleSafe(pseudo_console);
+				return true;
+			}
+			return false;
+		}
+
+		DWORD available = 0;
+		if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr) && GetLastError() == ERROR_BROKEN_PIPE)
+		{
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
+			return true;
+		}
+
+		return false;
 	}
 
 	bool SupportsAsyncNativeGeminiHistoryRefresh() const override

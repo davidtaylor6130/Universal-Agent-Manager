@@ -3,6 +3,7 @@ import type { ResourceCollection, ResourceReference, ResourceReferenceType } fro
 import type { ZustandGet, ZustandSet } from '../storeTypes'
 
 let localId = 0
+const pendingToggles = new Map<string, { baseline: boolean; count: number; successCount: number }>()
 
 function nextLocalId(prefix: string) {
   localId += 1
@@ -62,16 +63,35 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
     },
 
     toggleResourceCollection: async (collectionId: string): Promise<boolean> => {
-      if (isCefContext()) {
-        const response = await sendToCEF({
-          action: 'toggleResourceCollection', payload: { collectionId }, requestId: createRequestId('toggleResourceCollection'),
-        })
-        if (!response.ok) return false
-      }
+      const collection = get().resourceCollections.find((item) => item.id === collectionId)
+      if (!collection) return false
+      const previousCollapsed = collection.collapsed
       set((state) => ({
-        resourceCollections: state.resourceCollections.map((item) => item.id === collectionId ? { ...item, collapsed: !item.collapsed } : item),
+        resourceCollections: state.resourceCollections.map((item) => item.id === collectionId ? { ...item, collapsed: !previousCollapsed } : item),
       }))
-      return true
+      if (!isCefContext()) return true
+
+      const pending = pendingToggles.get(collectionId) ?? {
+        baseline: previousCollapsed,
+        count: 0,
+        successCount: 0,
+      }
+      pending.count += 1
+      pendingToggles.set(collectionId, pending)
+      const requestId = createRequestId('toggleResourceCollection')
+      const response = await sendToCEF({
+        action: 'toggleResourceCollection', payload: { collectionId }, requestId,
+      })
+      pending.count -= 1
+      if (response.ok) pending.successCount += 1
+      if (pending.count === 0) {
+        pendingToggles.delete(collectionId)
+        const collapsed = pending.successCount % 2 === 0 ? pending.baseline : !pending.baseline
+        set((state) => ({
+          resourceCollections: state.resourceCollections.map((item) => item.id === collectionId ? { ...item, collapsed } : item),
+        }))
+      }
+      return response.ok
     },
 
     reorderResourceCollections: async (collectionIds: string[]): Promise<boolean> => {

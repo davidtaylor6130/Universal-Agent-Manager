@@ -62,6 +62,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
+		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
 		{"applyCliProviderVersion", &UamQueryHandler::HandleApplyCliProviderVersion},

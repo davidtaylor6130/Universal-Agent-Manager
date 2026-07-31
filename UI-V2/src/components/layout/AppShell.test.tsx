@@ -220,6 +220,51 @@ describe('AppShell', () => {
     host.remove()
   })
 
+  it('dismisses each notification and keeps it dismissed when the panel reopens', () => {
+    useAppStore.setState({
+      shellActionNotification: 'Shell actions applied successfully.',
+      folders: [{
+        id: 'missing',
+        name: 'Deleted project',
+        parentId: null,
+        directory: '/tmp/deleted project',
+        isExpanded: true,
+        missing: true,
+        createdAt: new Date(),
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    act(() => (host.querySelector('button[aria-label="2 alerts"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Dismiss Finder / Explorer action"]') as HTMLButtonElement).click())
+    expect(host.textContent).not.toContain('Shell actions applied successfully.')
+    expect(useAppStore.getState().shellActionNotification).toBe('')
+    expect(document.activeElement).toBe(host.querySelector('[data-notifications-heading]'))
+    expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
+
+    act(() => (host.querySelector('button[aria-label="Dismiss Workspace folder missing: Deleted project"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('You’re all caught up')
+    expect(host.querySelector('button[aria-label="No new alerts"]')).toBeTruthy()
+
+    act(() => (host.querySelector('button[aria-label="Close notifications"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="No new alerts"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('You’re all caught up')
+    expect(host.textContent).not.toContain('Shell actions applied successfully.')
+    expect(host.textContent).not.toContain('Workspace folder missing: Deleted project')
+
+    act(() => useAppStore.setState({ shellActionNotification: 'Shell actions applied successfully.' }))
+    expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
+    act(() => useAppStore.setState({ folders: [{ ...useAppStore.getState().folders[0], missing: false }] }))
+    act(() => useAppStore.setState({ folders: [{ ...useAppStore.getState().folders[0], missing: true }] }))
+    expect(host.querySelector('button[aria-label="2 alerts"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps right-side tool windows mutually exclusive', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

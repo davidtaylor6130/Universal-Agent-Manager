@@ -60,7 +60,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(cwd.string()) + " " + args;
+			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
 		}
 
 		bool CommandSucceeded(const ProcessExecutionResult& result)
@@ -180,7 +180,7 @@ namespace uam
 		{
 			for (const std::filesystem::path& part : relative)
 			{
-				const std::string name = uam::strings::ToLowerAscii(part.string());
+				const std::string name = uam::strings::ToLowerAscii(uam::paths::Utf8PathString(part));
 				if (name == ".git" || name == ".svn" || name == ".hg" || name == ".uam")
 				{
 					return true;
@@ -191,7 +191,7 @@ namespace uam
 
 		bool HasUnsafeSnapshotName(const std::filesystem::path& relative)
 		{
-			const std::string value = relative.generic_string();
+			const std::string value = uam::paths::PortablePathString(relative);
 			return value.empty() || relative.is_absolute() || value == ".." || value.starts_with("../") || value.find('\n') != std::string::npos || value.find('\r') != std::string::npos || value.find('\0') != std::string::npos;
 		}
 
@@ -246,12 +246,12 @@ namespace uam
 				const std::filesystem::file_status status = it->symlink_status(ec);
 				if (ec)
 				{
-					error = "Failed to inspect source path " + relative.generic_string() + ": " + ec.message();
+					error = "Failed to inspect source path " + uam::paths::PortablePathString(relative) + ": " + ec.message();
 					return false;
 				}
 				if (std::filesystem::is_symlink(status))
 				{
-					error = "Source workspace contains a symbolic link that cannot be snapshotted safely: " + relative.generic_string();
+					error = "Source workspace contains a symbolic link that cannot be snapshotted safely: " + uam::paths::PortablePathString(relative);
 					return false;
 				}
 				if (std::filesystem::is_directory(status))
@@ -260,7 +260,7 @@ namespace uam
 				}
 				if (!std::filesystem::is_regular_file(status))
 				{
-					error = "Source workspace contains an unsupported file type: " + relative.generic_string();
+					error = "Source workspace contains an unsupported file type: " + uam::paths::PortablePathString(relative);
 					return false;
 				}
 
@@ -269,7 +269,7 @@ namespace uam
 				std::ifstream readable(path, std::ios::binary);
 				if (ec || !readable)
 				{
-					error = "Source file is unreadable: " + relative.generic_string();
+					error = "Source file is unreadable: " + uam::paths::PortablePathString(relative);
 					return false;
 				}
 				total_bytes += size;
@@ -291,14 +291,14 @@ namespace uam
 				const std::filesystem::path target = repository / file.relative;
 				if (!uam::paths::CreateDirectoriesNoThrow(target.parent_path(), &ec) || !std::filesystem::copy_file(file.source, target, std::filesystem::copy_options::none, ec))
 				{
-					error = "Failed to snapshot source file " + file.relative.generic_string() + ": " + ec.message();
+					error = "Failed to snapshot source file " + uam::paths::PortablePathString(file.relative) + ": " + ec.message();
 					return false;
 				}
 				const std::uintmax_t current_size = std::filesystem::file_size(file.source, ec);
 				const std::filesystem::file_time_type current_modified_at = std::filesystem::last_write_time(file.source, ec);
 				if (ec || current_size != file.size || current_modified_at != file.modified_at)
 				{
-					error = "Source changed while its baseline was being created: " + file.relative.generic_string();
+					error = "Source changed while its baseline was being created: " + uam::paths::PortablePathString(file.relative);
 					return false;
 				}
 			}
@@ -390,7 +390,7 @@ namespace uam
 			std::string relative_text;
 			while (std::getline(paths, relative_text))
 			{
-				const std::filesystem::path relative(relative_text);
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(relative_text);
 				if (HasUnsafeSnapshotName(relative) || IsExcludedSnapshotPath(relative))
 				{
 					error = "Chat changes contain an unsafe path: " + relative_text;
@@ -398,7 +398,7 @@ namespace uam
 				}
 				if (!FilesHaveSameContents(repository / relative, source / relative))
 				{
-					error = "Source changed after the isolation baseline at " + relative.generic_string() + ". Resolve that conflict before porting chat changes.";
+					error = "Source changed after the isolation baseline at " + uam::paths::PortablePathString(relative) + ". Resolve that conflict before porting chat changes.";
 					return true;
 				}
 			}
@@ -427,7 +427,7 @@ namespace uam
 		std::filesystem::path TrimmedPathOrEmpty(std::string_view value)
 		{
 			const std::string_view trimmed = uam::strings::TrimAsciiView(value);
-			return trimmed.empty() ? std::filesystem::path() : std::filesystem::path(std::string(trimmed));
+			return trimmed.empty() ? std::filesystem::path() : uam::paths::PathFromUtf8(trimmed);
 		}
 
 		std::filesystem::path SourcePathFromStatusOrChat(const AppState& app, const ChatSession& chat, const GitWorktreeStatus& status)
@@ -478,7 +478,7 @@ namespace uam
 			{
 				if (uam::paths::PathExistsNoThrow(worktree))
 				{
-					if (!GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(worktree.string()), error_out))
+					if (!GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)), error_out))
 					{
 						SaveChat(app, chat, nullptr);
 						return false;
@@ -519,7 +519,7 @@ namespace uam
 				status.is_git_repository = true;
 				status.source_directory = repo_root;
 				bool source_dirty = false;
-				if (IsDirty(repo_root, &source_dirty))
+				if (IsDirty(uam::paths::PathFromUtf8(repo_root), &source_dirty))
 				{
 					status.source_dirty = source_dirty;
 				}
@@ -536,7 +536,7 @@ namespace uam
 				return;
 			}
 
-			const std::filesystem::path worktree_path(status.worktree_directory);
+			const std::filesystem::path worktree_path = TrimmedPathOrEmpty(status.worktree_directory);
 			status.worktree_missing = status.worktree_directory.empty() || !uam::paths::PathExistsNoThrow(worktree_path);
 			if (status.worktree_missing)
 			{
@@ -592,7 +592,7 @@ namespace uam
 			CompleteSuccessfulResult(result, result.status, "Chat already has an isolated Git worktree.");
 			return result;
 		}
-		const std::filesystem::path source_root = result.status.is_git_repository ? std::filesystem::path(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
+		const std::filesystem::path source_root = result.status.is_git_repository ? uam::paths::PathFromUtf8(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
 		const bool managed_repository = !result.status.is_git_repository;
 		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, chat.id) : source_root;
 		std::string head;
@@ -605,7 +605,7 @@ namespace uam
 			}
 			if (uam::paths::PathExistsNoThrow(repository))
 			{
-				result.message = "Managed repository path already exists: " + repository.string();
+				result.message = "Managed repository path already exists: " + uam::paths::Utf8PathString(repository);
 				return result;
 			}
 			std::error_code ec;
@@ -645,7 +645,7 @@ namespace uam
 		const std::filesystem::path worktree_root = WorktreeRootForChat(app, source_root, chat.id);
 		if (uam::paths::PathExistsNoThrow(worktree_root))
 		{
-			result.message = "Worktree path already exists: " + worktree_root.string();
+			result.message = "Worktree path already exists: " + uam::paths::Utf8PathString(worktree_root);
 			if (managed_repository)
 			{
 				std::error_code cleanup_error;
@@ -666,7 +666,7 @@ namespace uam
 		}
 
 		const std::string branch_name = BranchNameForChat(chat.id);
-		const ProcessExecutionResult add_result = RunCommand(BuildGitCommandInDirectory(repository, "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " + uam::shell::EscapeArg(worktree_root.string()) + " HEAD"));
+		const ProcessExecutionResult add_result = RunCommand(BuildGitCommandInDirectory(repository, "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree_root)) + " HEAD"));
 		if (!CommandSucceeded(add_result))
 		{
 			result.message = CommandOutputOrFallback(add_result, "Failed to create Git worktree.");
@@ -679,17 +679,17 @@ namespace uam
 		}
 
 		chat.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
-		chat.workspace_source_directory = source_root.string();
+		chat.workspace_source_directory = uam::paths::Utf8PathString(source_root);
 		chat.workspace_base_ref = head;
 		chat.workspace_branch_name = branch_name;
-		chat.workspace_worktree_directory = worktree_root.string();
+		chat.workspace_worktree_directory = uam::paths::Utf8PathString(worktree_root);
 		chat.updated_at = uam::time::TimestampNow();
 
 		std::string save_error;
 		if (!SaveChat(app, chat, &save_error))
 		{
 			result.message = save_error;
-			GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(worktree_root.string()));
+			GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree_root)));
 			GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch_name));
 			if (managed_repository)
 			{
@@ -721,7 +721,7 @@ namespace uam
 
 		if (!result.status.worktree_missing)
 		{
-			const std::filesystem::path worktree(result.status.worktree_directory);
+			const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
 			if (!GitCommand(worktree, "reset --hard HEAD", &result.message))
 			{
 				return result;
@@ -754,8 +754,8 @@ namespace uam
 			return result;
 		}
 
-		const std::filesystem::path source(result.status.source_directory);
-		const std::filesystem::path worktree(result.status.worktree_directory);
+		const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, result.status);
+		const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
 		const std::string base_ref = uam::strings::Trim(result.status.base_ref);
 		if (base_ref.empty())
 		{
@@ -820,7 +820,7 @@ namespace uam
 
 		if (result.status.managed_repository)
 		{
-			const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "-c core.autocrlf=false apply --check " + uam::shell::EscapeArg(patch_path.string())));
+			const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "-c core.autocrlf=false apply --check " + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
 			if (!CommandSucceeded(check_result))
 			{
 				result.patch_path = patch_path;
@@ -828,7 +828,7 @@ namespace uam
 				return result;
 			}
 		}
-		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(patch_path.string())));
+		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
 		if (!CommandSucceeded(apply_result))
 		{
 			result.patch_path = patch_path;

@@ -624,15 +624,49 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveCopilotWorkerCommand)
 	const std::string command = MemoryService::BuildWorkerCommandForTests(copilot, settings, "remember this", " gpt-5.1 ");
 
 	UAM_ASSERT(command.find("copilot") != std::string::npos);
+#if defined(_WIN32)
+	UAM_ASSERT(command.find("-p") == std::string::npos);
+	UAM_ASSERT(command.find("remember this") == std::string::npos);
+	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
+#else
 	UAM_ASSERT(command.find("-p") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") != std::string::npos);
+#endif
 	UAM_ASSERT(command.find("--model") != std::string::npos);
 	UAM_ASSERT(command.find("gpt-5.1") != std::string::npos);
 	UAM_ASSERT(command.find(" gpt-5.1 ") == std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
 #if !defined(_WIN32)
 	UAM_ASSERT(command.find("PATH=") != std::string::npos);
 	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
 #endif
+#endif
+}
+
+UAM_TEST(MemoryServiceWaitsForPendingCopilotCompatibilityCheck)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	TempDir temp("uam-memory-copilot-version-pending");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli] = {};
+
+	ChatSession chat;
+	chat.id = "chat-copilot-memory-pending";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember this.", "now"});
+	app.chats.push_back(chat);
+
+	int queued_count = 0;
+	std::string error;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued_count, &error));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(app.memory_failure_count_by_chat_id.empty());
+	UAM_ASSERT(app.memory_last_status.find("Checking") != std::string::npos);
 #endif
 }
 

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.5.0 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.5.1 LANGUAGES C CXX)
 
 if(APPLE)
   enable_language(OBJCXX)

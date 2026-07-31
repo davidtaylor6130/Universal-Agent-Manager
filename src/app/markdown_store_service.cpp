@@ -163,7 +163,7 @@ namespace
 		{
 			return uam::paths::PortablePathString(*relative);
 		}
-		return entry_path.filename().string();
+		return uam::paths::Utf8PathString(entry_path.filename());
 	}
 
 	std::string LegacyCommandName(const fs::path& path, std::string_view title)
@@ -198,7 +198,7 @@ namespace
 		}
 		if (out_entry.title.empty())
 		{
-			out_entry.title = path.stem().string();
+			out_entry.title = uam::paths::Utf8PathString(path.stem());
 		}
 		out_entry.maker = uam::strings::SafeLine(HeaderValue(parts.headers, "maker"), kMakerMaxChars, true);
 		out_entry.review = uam::strings::SafeLine(HeaderValue(parts.headers, "review"), kReviewMaxChars, true);
@@ -303,7 +303,7 @@ namespace
 
 	bool IsSupportedImportFile(const fs::path& path)
 	{
-		const std::string extension = uam::strings::ToLowerAscii(path.extension().string());
+		const std::string extension = uam::strings::ToLowerAscii(uam::paths::Utf8PathString(path.extension()));
 		return extension == ".md" || extension == ".markdown" || extension == ".uam";
 	}
 
@@ -342,7 +342,8 @@ namespace
 		MarkdownStoreService::Draft draft;
 		draft.title = uam::strings::SafeLine(HeaderValue(parts.headers, "title"), kTitleMaxChars, true);
 		if (draft.title.empty()) draft.title = FirstHeadingTitle(parts.body);
-		if (draft.title.empty()) draft.title = path.stem().string();
+		if (draft.title.empty())
+			draft.title = uam::paths::Utf8PathString(path.stem());
 		draft.maker = uam::strings::SafeLine(HeaderValue(parts.headers, "maker"), kMakerMaxChars, true);
 		draft.review = uam::strings::SafeLine(HeaderValue(parts.headers, "review"), kReviewMaxChars, true);
 		draft.body = uam::strings::Trim(parts.body);
@@ -804,6 +805,36 @@ std::vector<MarkdownStoreService::ImportResult> MarkdownStoreService::ImportEntr
 		results.push_back(std::move(result));
 	}
 	return results;
+}
+
+bool MarkdownStoreService::LoadEntry(const fs::path& root, std::string_view file_path, Entry* entry_out, std::string* error_out)
+{
+	ClearError(error_out);
+	if (entry_out != nullptr)
+		*entry_out = Entry{};
+
+	fs::path normalized_path;
+	if (!ValidateStoreFilePath(root, file_path, &normalized_path, error_out))
+	{
+		return false;
+	}
+	const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(normalized_path);
+	if (!size || *size > kImportMaxBytes)
+	{
+		SetError(error_out, size ? "Markdown Store file exceeds the 2 MiB limit." : "Could not inspect Markdown Store file size.");
+		return false;
+	}
+
+	Entry entry;
+	if (!ParseEntryFile(normalized_path, entry))
+	{
+		SetError(error_out, "Could not read Markdown Store file.");
+		return false;
+	}
+	entry.id = EntryIdForPath(root, normalized_path);
+	if (entry_out != nullptr)
+		*entry_out = std::move(entry);
+	return true;
 }
 
 bool MarkdownStoreService::ValidateStoreFilePath(const fs::path& root, std::string_view file_path, fs::path* normalized_path_out, std::string* error_out)

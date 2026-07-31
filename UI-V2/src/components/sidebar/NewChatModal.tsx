@@ -3,7 +3,7 @@ import { FolderPlus, TriangleAlert, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 
@@ -94,7 +94,7 @@ export function NewChatModal() {
     creatingChatRef.current = true
     setCreatingChat(true)
     const n = name.trim() || 'New chat'
-	const created = await addSession(n, folderId, providerId, selectedModelId, reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort))
+	const created = await addSession(n, folderId, providerId, selectedModelId, reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
     if (!created) {
       creatingChatRef.current = false
       setCreatingChat(false)
@@ -111,8 +111,14 @@ export function NewChatModal() {
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
 	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
-	const reasoningOptions = providerCapabilities(providerId, selectedProvider ?? undefined).hasReasoningEffort || runtimeSupportsReasoning
-	  ? buildCodexReasoningOptions(cachedAcp, selectedModelId, reasoningEffort)
+	const capabilities = providerCapabilities(providerId, selectedProvider ?? undefined)
+	const reasoningOptions = capabilities.hasReasoningEffort || runtimeSupportsReasoning
+	  ? buildCodexReasoningOptions(
+	      cachedAcp,
+	      selectedModelId,
+	      reasoningEffort,
+	      providerId === COPILOT_CLI_PROVIDER_ID ? capabilities.reasoningOptions.map((option) => option.id) : undefined
+	    )
 	  : []
   useEffect(() => {
     if (!discoverySession || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(providerId)) return
@@ -256,7 +262,7 @@ export function NewChatModal() {
               }))}
 			  onChange={(nextModelId) => {
 				setModelId(nextModelId)
-				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort))
+				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
 			  }}
             />
           </div>
@@ -265,7 +271,7 @@ export function NewChatModal() {
 			  <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
 			  <MenuSelect
 				label="Reasoning effort"
-				value={reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort)}
+				value={reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)}
 				options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
 				onChange={setReasoningEffort}
 			  />

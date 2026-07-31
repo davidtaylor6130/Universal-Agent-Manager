@@ -14,6 +14,7 @@ inline constexpr auto kGeminiExactPromptLines = std::to_array<std::string_view>(
 inline constexpr auto kGeminiPromptCueTexts = std::to_array<std::string_view>({"Type your message", "? for shortcuts"});
 inline constexpr auto kCodexPromptMarkers = std::to_array<std::string_view>({"\xE2\x80\xBA", "> "});
 inline constexpr auto kCodexPromptCueTexts = std::to_array<std::string_view>({"Send", "message", "for shortcuts"});
+inline constexpr auto kCopilotPromptCueTexts = std::to_array<std::string_view>({"/ commands", "? help"});
 inline constexpr int kGeminiPromptRecentLineLimit = 6;
 
 std::size_t CountTerminalLineBreaks(std::string_view value);
@@ -24,6 +25,7 @@ std::string NormalizeGeminiPromptLine(std::string_view line);
 std::string RecentTerminalPromptScanText(std::string_view recent_output);
 bool GeminiCliRecentOutputIndicatesInputPrompt(std::string_view recent_output);
 bool CodexCliRecentOutputIndicatesInputPrompt(std::string_view recent_output);
+bool CopilotCliRecentOutputIndicatesInputPrompt(std::string_view recent_output);
 bool FallbackCliRecentOutputIndicatesInputPrompt(std::string_view recent_output);
 
 } // namespace uam

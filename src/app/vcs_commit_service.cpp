@@ -72,17 +72,17 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(cwd.string()) + " " + args;
+			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
 		}
 
 		std::string BuildSvnCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "svn " + args + " " + uam::shell::EscapeArg(cwd.string());
+			return "svn " + args + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd));
 		}
 
 		std::string BuildSvnPathArgument(const std::filesystem::path& cwd, const std::string& path)
 		{
-			return uam::shell::EscapeArg(uam::paths::NormalizedNativePathString(cwd / path));
+			return uam::shell::EscapeArg(uam::paths::NormalizedNativePathString(cwd / uam::paths::PathFromUtf8(path)));
 		}
 
 		enum class CommandOutputMode
@@ -410,7 +410,7 @@ namespace uam
 				}
 				else if (file.status == "??")
 				{
-					if (const std::optional<int> lines = CountTextFileLines(uam::paths::LexicallyNormalPath(workspace / file.path)))
+					if (const std::optional<int> lines = CountTextFileLines(uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path))))
 					{
 						file.additions = *lines;
 					}
@@ -595,9 +595,9 @@ namespace uam
 			status.error = uam::strings::NonEmptyOrFallback(error, "Failed to read SVN status.");
 		}
 
-		std::string BuildCommitMessageWorkerCommand(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id)
+		ProviderWorkerInvocation BuildCommitMessageWorkerInvocation(const AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out)
 		{
-			return uam::BuildProviderWorkerCommand(profile, settings, prompt, model_id, uam::ProviderWorkerPathMode::BasePath);
+			return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::BasePath, error_out);
 		}
 
 		std::string BuildCommitMessagePrompt(const VcsCommitStatus& status, const std::vector<std::string>& selected_files)
@@ -744,11 +744,10 @@ namespace uam
 			return std::nullopt;
 		}
 
-		ProcessExecutionResult RunCommitMessageWorker(const std::filesystem::path& workspace, const std::string& command)
+		ProcessExecutionResult RunCommitMessageWorker(const std::filesystem::path& workspace, const ProviderWorkerInvocation& invocation)
 		{
 			const std::filesystem::path cwd = workspace.empty() ? uam::paths::CurrentPathOrDot() : workspace;
-			const std::string shell_command = PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(cwd, command);
-			return PlatformServicesFactory::Instance().process_service.ExecuteCommand(shell_command, kDefaultCommandTimeoutMs);
+			return uam::ExecuteProviderWorkerInvocation(invocation, cwd, kDefaultCommandTimeoutMs);
 		}
 
 		VcsCommitMessageSuggestion SuggestionFromJson(const nlohmann::json& parsed)
@@ -795,7 +794,7 @@ namespace uam
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		status.workspace_directory = workspace.string();
+		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 
 		PopulateAvailableVcsTypes(status, workspace);
 		if (!status.available)
@@ -911,15 +910,15 @@ namespace uam
 		}
 
 		const std::string prompt = BuildCommitMessagePrompt(status, files);
-		const std::string command = BuildCommitMessageWorkerCommand(*worker_provider, app.settings, prompt, worker.model_id);
-		if (command.empty())
+		const ProviderWorkerInvocation invocation = BuildCommitMessageWorkerInvocation(app, *worker_provider, prompt, worker.model_id, &suggestion.error);
+		if (invocation.Empty())
 		{
-			suggestion.error = "Commit message worker command is empty.";
+			suggestion.error = uam::strings::NonEmptyOrFallback(suggestion.error, "Commit message worker command is empty.");
 			return suggestion;
 		}
 
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		const ProcessExecutionResult result = RunCommitMessageWorker(workspace, command);
+		const ProcessExecutionResult result = RunCommitMessageWorker(workspace, invocation);
 		if (!CommandSucceeded(result))
 		{
 			suggestion.error = CommandErrorOrFallback(result, "Commit message worker failed.");

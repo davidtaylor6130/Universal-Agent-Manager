@@ -198,10 +198,20 @@ export function ComposerToolbar({
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel)
   const currentModel = modelOptionFor(modelOptions, modelId)
   const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
-  const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning ? buildCodexReasoningOptions(acp, currentModel.id, reasoningEffort ?? '') : []
+  const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
+    ? buildCodexReasoningOptions(
+        acp,
+        currentModel.id,
+        reasoningEffort ?? '',
+        providerId === COPILOT_CLI_PROVIDER_ID ? caps.reasoningOptions.map((option) => option.id) : undefined
+      )
+    : []
   const hasReasoningEffort = reasoningOptions.length > 0
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
-  const currentReasoning = modelOptionFor(reasoningOptions, reasoningEffortForModel(acp, currentModel.id, reasoningEffort))
+  const currentReasoning = modelOptionFor(
+    reasoningOptions,
+    reasoningEffortForModel(acp, currentModel.id, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
+  )
   const currentSpeed = modelOptionFor(speedOptions, serviceTier)
   const modelDisabled = acpRuntimeBlocksControlChanges(acp)
   const selectorDisabled = modelDisabled && !canChangeProvider

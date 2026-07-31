@@ -40,7 +40,7 @@ namespace
 
 	std::string CanonicalRootKey(const fs::path& root)
 	{
-		return uam::paths::NormalizeExistingPath(root).string();
+		return uam::paths::Utf8PathString(uam::paths::NormalizeExistingPath(root));
 	}
 
 	std::string HexEncode(std::string_view value)
@@ -116,7 +116,7 @@ namespace
 
 	std::string WorkspaceLabel(const fs::path& workspace_root, const ChatSession& chat)
 	{
-		const std::string filename = workspace_root.filename().string();
+		const std::string filename = uam::paths::Utf8PathString(workspace_root.filename());
 		const std::string fallback = uam::strings::NonEmptyOrFallback(filename, "Project memory");
 		return uam::strings::TrimOrFallback(chat.title, fallback);
 	}
@@ -364,7 +364,7 @@ namespace
 		{
 			return uam::paths::PortablePathString(*relative);
 		}
-		return entry_path.filename().string();
+		return uam::paths::Utf8PathString(entry_path.filename());
 	}
 
 	void PopulateEntryScope(MemoryLibraryService::Entry& entry, const MemoryLibraryService::Root& root, bool aggregate)
@@ -527,7 +527,7 @@ namespace
 			return false;
 		}
 
-		entry_path = scope.root_path / fs::path(trimmed_id);
+		entry_path = scope.root_path / uam::paths::PathFromUtf8(trimmed_id);
 		if (!uam::paths::IsSameOrInsideRoot(scope.root_path, entry_path))
 		{
 			SetError(error_out, "Memory entry path is outside the memory root.");

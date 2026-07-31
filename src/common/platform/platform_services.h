@@ -68,8 +68,14 @@ class IPlatformProcessService
 	virtual int NormalizeCapturedCommandExitCode(int raw_status) const = 0;
 	virtual ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const = 0;
 	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const = 0;
+	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
+	// blocking the caller while a child delays or refuses to consume stdin.
+	virtual bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const = 0;
 	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const = 0;
+	virtual void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const = 0;
+	// Stops and reaps the process tree while leaving output handles open for a final drain.
+	virtual void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
 	virtual void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;
 	virtual std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const = 0;
 	virtual std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields& process, char* buffer, std::size_t buffer_size, std::string* error_out = nullptr) const = 0;

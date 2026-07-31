@@ -220,7 +220,7 @@ inline bool LooksLikeWindowsPath(const std::string& value)
 
 inline std::string WindowsPathExtension(const std::string& value)
 {
-	return uam::strings::ToLowerAscii(std::filesystem::path(value).extension().string());
+	return uam::strings::ToLowerAscii(uam::paths::Utf8PathString(uam::paths::PathFromUtf8(value).extension()));
 }
 
 inline bool IsDirectWindowsExecutableExtension(const std::string& extension)
@@ -320,7 +320,7 @@ inline std::vector<std::string> SplitWindowsPathList(const std::string& value)
 
 inline std::string JoinWindowsPathUtf8(const std::string& directory, const std::string& filename)
 {
-	return (std::filesystem::path(directory) / filename).string();
+	return uam::paths::Utf8PathString(uam::paths::PathFromUtf8(directory) / uam::paths::PathFromUtf8(filename));
 }
 
 inline std::optional<std::string> ResolveWindowsCommandPath(const std::string& command)

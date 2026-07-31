@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, TriangleAlert, X } from 'lucide-react'
 
@@ -38,6 +38,14 @@ import { ThemeToggle } from '../shared/ThemeToggle'
 import { Button, IconButton, StatusDot } from '../ui'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
+
+function shellActionNotificationId(detail: string): string {
+  return `shell-action-${detail}`
+}
+
+function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
+  return `missing-folder-${folder.id}-${folder.name}-${folder.directory}`
+}
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   if (entryCount <= 0) {
@@ -105,7 +113,15 @@ function LeftActivityRail() {
   )
 }
 
-function NotificationsPanel({ onClose }: { onClose: () => void }) {
+function NotificationsPanel({
+  dismissedNotificationIds,
+  onClose,
+  onDismiss,
+}: {
+  dismissedNotificationIds: ReadonlySet<string>
+  onClose: () => void
+  onDismiss: (id: string) => void
+}) {
   const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const sessions = useAppStore((s) => s.sessions)
@@ -113,18 +129,19 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const renameFolder = useAppStore((s) => s.renameFolder)
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const [busyAction, setBusyAction] = useState('')
+  const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
   type Notification = { id: string; title: string; detail: string; warning?: boolean; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
     ...(shellActionNotification ? [{
-      id: 'shell-action',
+      id: shellActionNotificationId(shellActionNotification),
       title: 'Finder / Explorer action',
       detail: shellActionNotification,
     }] : []),
     ...missingFolders.map((folder): Notification => ({
-      id: `missing-folder-${folder.id}`,
+      id: missingFolderNotificationId(folder),
       title: `Workspace folder missing: ${folder.name}`,
       detail: folder.directory,
       warning: true,
@@ -148,7 +165,7 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
         },
       ],
     })),
-  ]
+  ].filter((notification) => !dismissedNotificationIds.has(notification.id))
 
   const runAction = async (notificationId: string, action: NotificationAction) => {
     const actionId = `${notificationId}-${action.label}`
@@ -168,7 +185,7 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
       <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: 'var(--text)' }}>
+        <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
           <Bell size={16} /> Notifications
         </div>
         <IconButton icon={<X size={16} />} label="Close notifications" onClick={onClose} />
@@ -186,10 +203,22 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
           <div className="grid gap-3">
             {notifications.map((notification) => (
               <div key={notification.id} className="grid gap-2 rounded-xl p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <strong className="flex items-start gap-2" style={{ color: notification.warning ? 'var(--yellow)' : 'var(--text)' }}>
-                  {notification.warning && <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />}
-                  <span>{notification.title}</span>
-                </strong>
+                <div className="flex items-start justify-between gap-2">
+                  <strong className="flex items-start gap-2" style={{ color: notification.warning ? 'var(--yellow)' : 'var(--text)' }}>
+                    {notification.warning && <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />}
+                    <span>{notification.title}</span>
+                  </strong>
+                  <IconButton
+                    icon={<X size={14} />}
+                    label={`Dismiss ${notification.title}`}
+                    size="sm"
+                    tooltipSide="left"
+                    onClick={() => {
+                      onDismiss(notification.id)
+                      headingRef.current?.focus()
+                    }}
+                  />
+                </div>
                 <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
                 {notification.actions && (
                   <div className="flex gap-2 pt-1">
@@ -297,14 +326,34 @@ export function AppShell() {
   const commitPanelWidthPx = useAppStore((s) => s.commitPanelWidthPx)
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
-  const alertCount = useAppStore((s) => s.folders.filter((folder) => folder.missing).length + (s.shellActionNotification ? 1 : 0))
+  const folders = useAppStore((s) => s.folders)
+  const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+  const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
+  const activeNotificationIds = [
+    ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
+    ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+  ]
+  const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
   useEffect(() => {
     void refreshCustomThemes()
   }, [refreshCustomThemes])
+
+  useEffect(() => {
+    const activeIds = new Set([
+      ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
+      ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+    ])
+    setDismissedNotificationIds((dismissed) => {
+      const currentIds = [...dismissed]
+      const remainingIds = currentIds.filter((id) => activeIds.has(id))
+      return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
+    })
+  }, [folders, shellActionNotification])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -403,7 +452,19 @@ export function AppShell() {
 
       {updatesOpen && <UpdatesPanel monitor={updateMonitor} onClose={() => setUpdatesOpen(false)} />}
 
-      {alertsOpen && <NotificationsPanel onClose={() => setAlertsOpen(false)} />}
+      {alertsOpen && (
+        <NotificationsPanel
+          dismissedNotificationIds={dismissedNotificationIds}
+          onClose={() => setAlertsOpen(false)}
+          onDismiss={(id) => {
+            if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {
+              void dismissShellActionNotification()
+              return
+            }
+            setDismissedNotificationIds((dismissed) => new Set(dismissed).add(id))
+          }}
+        />
+      )}
 
       <RightActivityRail
         alertCount={alertCount}

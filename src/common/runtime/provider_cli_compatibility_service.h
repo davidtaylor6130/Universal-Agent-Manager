@@ -36,6 +36,8 @@ std::string BuildCliProviderInstallCommandForMethodForTests(std::string_view pro
 std::string ExtractCliProviderSemverVersionForTests(std::string_view output);
 std::string ExtractCliProviderInstallMethodForTests(std::string_view output);
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);
+bool ProviderCliInstallBlockedByActiveRuntimeForTests(const uam::AppState& app, std::string_view provider_id);
+std::string CopilotLaunchBlockReason(const uam::AppState& app);
 
 /// <summary>Returns the npm package name for a CLI provider id, or empty if unknown.</summary>
 std::string GetNpmPackageNameForProvider(std::string_view provider_id);

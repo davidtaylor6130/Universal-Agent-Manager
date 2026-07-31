@@ -6,6 +6,8 @@
 #include "common/config/approval_modes.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_ids.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/string_utils.h"
@@ -95,8 +97,10 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
 	ClearAcpStartupModelRequest(session);
+	ClearAcpReasoningChangeRequest(session);
 	ClearAcpModeChangeRequest(session);
 	ClearAcpModelChangeRequest(session);
+	session.awaiting_model_config_options = false;
 	session.prompt_request_id = 0;
 	session.cancel_request_id = 0;
 	session.current_assistant_message_index = -1;
@@ -113,7 +117,7 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.goal_review_repair_attempts = 0;
 	session.ignore_session_updates_until_ready = false;
 	session.codex_resume_fallback_attempted = false;
-	session.gemini_resume_fallback_attempted = false;
+	session.acp_resume_fallback_attempted = false;
 	session.stdout_buffer.clear();
 	session.stderr_buffer.clear();
 	session.recent_stderr.clear();
@@ -127,6 +131,7 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.agent_name.clear();
 	session.agent_title.clear();
 	session.agent_version.clear();
+	session.available_commands.clear();
 	session.pending_request_methods.clear();
 	ResetAcpTurnStreamState(session);
 	session.codex_turn_id.clear();
@@ -166,10 +171,49 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 		return true;
 	}
 
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
+	{
+		ProviderCliCompatibilityService().Poll(app);
+		if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
+		{
+			session.provider_id = provider.id;
+			session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
+			session.lifecycle_state = kAcpLifecycleError;
+			session.last_error = compatibility_error;
+			if (error_out != nullptr)
+				*error_out = compatibility_error;
+			return false;
+		}
+	}
+
+	const bool retrying_undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
+	const std::string pending_prompt = session.queued_prompt;
+	const int turn_user_message_index = session.turn_user_message_index;
+	const int turn_serial = session.turn_serial;
+	const std::string goal_turn_kind = session.goal_turn_kind;
+	const bool goal_review_turn = session.goal_review_turn;
+	const bool goal_review_scheduled = session.goal_review_scheduled;
+	const std::string goal_review_goal_id = session.goal_review_goal_id;
+	const std::string goal_review_user_prompt = session.goal_review_user_prompt;
+	const std::string goal_review_assistant_text = session.goal_review_assistant_text;
+
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	ResetAcpRuntimeState(session);
+	if (retrying_undelivered_prompt)
+	{
+		session.queued_prompt = pending_prompt;
+		session.processing = true;
+		session.turn_user_message_index = turn_user_message_index;
+		session.turn_serial = turn_serial;
+		session.goal_turn_kind = goal_turn_kind;
+		session.goal_review_turn = goal_review_turn;
+		session.goal_review_scheduled = goal_review_scheduled;
+		session.goal_review_goal_id = goal_review_goal_id;
+		session.goal_review_user_prompt = goal_review_user_prompt;
+		session.goal_review_assistant_text = goal_review_assistant_text;
+	}
 	session.chat_id = chat.id;
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	session.provider_id = provider.id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
@@ -270,26 +314,25 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	return written;
 }
 
-bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details)
+bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-	const bool unsupported_session = runtime.IsGenericAcpSession() ||
-	    std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0;
 	const bool is_session_load = details.failure.method == uam::acp_methods::kSessionLoad;
-	const bool invalid_resume_error = GeminiErrorLooksLikeInvalidSessionId(details.failure.message, details.error_data);
-	if (unsupported_session || !is_session_load || session.gemini_resume_fallback_attempted || !invalid_resume_error)
+	const bool copilot_session_not_found = std::strcmp(runtime.RuntimeId(), uam::provider_ids::kCopilotCli) == 0 && details.failure.has_code && details.failure.code == -32002;
+	const bool gemini_invalid_session = !runtime.IsGenericAcpSession() && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") != 0 && GeminiErrorLooksLikeInvalidSessionId(details.failure.message, details.error_data);
+	if (!is_session_load || session.acp_resume_fallback_attempted || (!copilot_session_not_found && !gemini_invalid_session))
 	{
 		return false;
 	}
 
-	session.gemini_resume_fallback_attempted = true;
+	session.acp_resume_fallback_attempted = true;
 	session.session_setup_request_id = 0;
 	session.session_id.clear();
 	chat.native_session_id.clear();
 	SaveChatQuietly(app, chat);
 	const AcpFailureDetails& failure = details.failure;
-	const std::string retry_message = "Gemini rejected the stored session id. Starting a new session instead.";
-	AppendAcpDiagnostic(session, "response", "gemini_invalid_resume_id_retry_new", failure.method, failure.request_id, failure.has_code, failure.code, retry_message, details.detail_text);
+	const std::string retry_message = std::string(RuntimeDisplayName(session)) + " rejected the stored session id. Starting a new session instead.";
+	AppendAcpDiagnostic(session, "response", "invalid_resume_id_retry_new", failure.method, failure.request_id, failure.has_code, failure.code, retry_message, details.detail_text);
 
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
@@ -311,9 +354,42 @@ bool RetryGeminiSessionNewAfterInvalidLoad(AppState& app, AcpSessionState& sessi
 	return true;
 }
 
+bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const char* protocol = runtime.AcpProtocolKind();
+	if (!session.running || !session.session_ready || session.mode_change_request_id != 0 || session.session_id.empty() || std::strcmp(protocol, "codex-app-server") == 0 || std::strcmp(protocol, "claude-code-stream-json") == 0)
+	{
+		return false;
+	}
+
+	const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
+	const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
+	if ((uam::strings::IsBlank(chat.approval_mode) && !must_leave_hidden_autopilot) || session.current_mode_id == desired_mode)
+	{
+		return false;
+	}
+
+	const int id = NextAcpRequestId(session, uam::acp_methods::kSessionSetMode);
+	session.mode_change_request_id = id;
+	session.mode_change_previous_id = session.current_mode_id;
+	session.mode_change_requested_id = desired_mode;
+	if (!WriteAcpMessage(session, BuildSetModeRequest(id, session.session_id, ProviderApprovalModeId(session, desired_mode))))
+	{
+		session.pending_request_methods.erase(id);
+		session.current_mode_id = session.mode_change_previous_id;
+		ClearAcpModeChangeRequest(session);
+		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to set " + std::string(RuntimeDisplayName(session)) + " mode."));
+		return false;
+	}
+
+	session.current_mode_id = desired_mode;
+	return true;
+}
+
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
-	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.model_change_request_id != 0 || session.session_id.empty())
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.session_id.empty())
 	{
 		return false;
 	}
@@ -332,12 +408,14 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	session.model_change_previous_id = session.current_model_id;
 	session.model_change_previous_chat_id = session.current_model_id;
 	session.model_change_requested_id = model_id;
+	session.awaiting_model_config_options = uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli);
 	if (!WriteAcpMessage(session, BuildSetModelRequest(id, session.session_id, model_id)))
 	{
 		session.pending_request_methods.erase(id);
 		ClearAcpStartupModelRequest(session);
 		ClearAcpModelChangeRequest(session);
-		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to set OpenCode ACP model."));
+		session.awaiting_model_config_options = false;
+		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to set " + std::string(RuntimeDisplayName(session)) + " model."));
 		return false;
 	}
 
@@ -347,7 +425,11 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 {
-	if (session.startup_model_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0)
+	if (session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options)
+	{
+		return false;
+	}
+	if (SendStartupModeIfNeeded(session, chat))
 	{
 		return false;
 	}

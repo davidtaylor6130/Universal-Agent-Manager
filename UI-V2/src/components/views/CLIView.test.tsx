@@ -58,6 +58,7 @@ function resetStore() {
     activeSessionId: null,
     messages: {},
     providers: [],
+    cliVersionManager: { providers: [] },
     cliBindingBySessionId: {},
     acpBindingBySessionId: {},
     cliTranscriptBySessionId: {},
@@ -184,6 +185,84 @@ describe('CLIView', () => {
     host.remove()
   })
 
+  it('retries Copilot terminal startup when its compatibility check finishes', async () => {
+    const requests: Array<{ action: string }> = []
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'startCliTerminal') {
+        if (requests.filter((item) => item.action === 'startCliTerminal').length === 1) {
+          onFailure(1, 'Checking GitHub Copilot CLI compatibility. Try again in a moment.')
+        } else {
+          onSuccess(JSON.stringify({
+            terminalId: 'term-copilot',
+            sourceChatId: 'chat-copilot',
+            running: true,
+            lifecycleState: 'idle',
+            turnState: 'idle',
+            lastError: '',
+          }))
+        }
+      } else {
+        onSuccess('{}')
+      }
+    }
+    const copilotVersion = {
+      providerId: 'copilot-cli',
+      installedVersion: '',
+      selectedVersion: 'latest',
+      availableVersions: [],
+      preferredVersion: 'latest',
+      status: 'checking' as const,
+      message: '',
+      running: true,
+      installMethod: 'npm' as const,
+      lastInstallStatus: 'none' as const,
+      lastCommand: 'copilot --version',
+      lastOutput: '',
+    }
+    useAppStore.setState({
+      providers: [
+        { id: 'copilot-cli', name: 'GitHub Copilot CLI', shortName: 'Copilot', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'copilot-acp' },
+      ],
+      cliVersionManager: { providers: [copilotVersion] },
+    })
+    const session = {
+      id: 'chat-copilot',
+      name: 'Copilot Session',
+      providerId: 'copilot-cli',
+      viewMode: 'cli' as const,
+      folderId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    await act(async () => {
+      root.render(<CLIView session={session} />)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(requests.filter((request) => request.action === 'startCliTerminal')).toHaveLength(1)
+    const startsBeforeCompatibilityFinished = requests.filter((request) => request.action === 'startCliTerminal').length
+
+    await act(async () => {
+      useAppStore.setState({
+        cliVersionManager: {
+          providers: [{ ...copilotVersion, installedVersion: '1.0.75', status: 'supported', running: false }],
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(requests.filter((request) => request.action === 'startCliTerminal').length).toBeGreaterThan(startsBeforeCompatibilityFinished)
+    expect(useAppStore.getState().cliBindingBySessionId['chat-copilot']?.running).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('preserves and atomically submits a terminal-fallback steering prompt', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
@@ -292,6 +371,28 @@ describe('CLIView', () => {
 
     expect(host.textContent).toContain('Could not steer terminal.')
     expect(input.value).toBe('Try something else')
+
+    act(() => {
+      ;(host.querySelector('button[aria-label="Dismiss terminal error"]') as HTMLButtonElement).click()
+    })
+    expect(host.textContent).not.toContain('Could not steer terminal.')
+
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', {
+        lastError: 'Could not steer terminal.',
+      })
+    })
+    expect(host.textContent).not.toContain('Could not steer terminal.')
+
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { lastError: '' })
+    })
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', {
+        lastError: 'Could not steer terminal.',
+      })
+    })
+    expect(host.textContent).toContain('Could not steer terminal.')
 
     act(() => root.unmount())
     host.remove()

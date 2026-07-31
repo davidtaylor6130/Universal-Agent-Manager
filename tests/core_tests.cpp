@@ -2,6 +2,7 @@
 #include "app/chat_lifecycle_service.h"
 #include "app/persistence_coordinator.h"
 #include "cef/uam_query_handler_internal.h"
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -11,21 +12,18 @@ using namespace uam_test;
 
 UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
 {
-	const auto null_provider = uam::cef::ParseBridgeRequest(
-	    R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":null},"requestId":"switch-1"})");
+	const auto null_provider = uam::cef::ParseBridgeRequest(R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":null},"requestId":"switch-1"})");
 	UAM_ASSERT(null_provider.ok);
 	UAM_ASSERT_EQ(null_provider.request.action, std::string("setChatProvider"));
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(null_provider.request.payload), std::string("chat-opencode"));
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(null_provider.request.payload), std::string{});
 
-	const auto null_chat = uam::cef::ParseBridgeRequest(
-	    R"({"action":"setChatProvider","payload":{"chatId":null,"providerId":"codex-cli"},"requestId":"switch-2"})");
+	const auto null_chat = uam::cef::ParseBridgeRequest(R"({"action":"setChatProvider","payload":{"chatId":null,"providerId":"codex-cli"},"requestId":"switch-2"})");
 	UAM_ASSERT(null_chat.ok);
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(null_chat.request.payload), std::string{});
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(null_chat.request.payload), std::string("codex-cli"));
 
-	const auto valid_switch = uam::cef::ParseBridgeRequest(
-	    R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":"codex-cli"},"requestId":"switch-3"})");
+	const auto valid_switch = uam::cef::ParseBridgeRequest(R"({"action":"setChatProvider","payload":{"chatId":"chat-opencode","providerId":"codex-cli"},"requestId":"switch-3"})");
 	UAM_ASSERT(valid_switch.ok);
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchChatIdFromPayload(valid_switch.request.payload), std::string("chat-opencode"));
 	UAM_ASSERT_EQ(uam::query_handler_internal::ProviderSwitchProviderIdFromPayload(valid_switch.request.payload), std::string("codex-cli"));
@@ -33,14 +31,12 @@ UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
 
 UAM_TEST(AcpPromptBridgePayloadHandlesNullGoalId)
 {
-	const auto no_goal = uam::cef::ParseBridgeRequest(
-	    R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-opencode","text":"hello","markdownStoreFiles":[],"attachments":[],"goalMode":false,"goalId":null}})");
+	const auto no_goal = uam::cef::ParseBridgeRequest(R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-opencode","text":"hello","markdownStoreFiles":[],"attachments":[],"goalMode":false,"goalId":null}})");
 	UAM_ASSERT(no_goal.ok);
 	UAM_ASSERT_EQ(no_goal.request.action, std::string("sendAcpPrompt"));
 	UAM_ASSERT_EQ(uam::query_handler_internal::AcpPromptGoalIdFromPayload(no_goal.request.payload), std::string{});
 
-	const auto active_goal = uam::cef::ParseBridgeRequest(
-	    R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-codex","text":"continue","markdownStoreFiles":[],"attachments":[],"goalMode":true,"goalId":" goal-1 "}})");
+	const auto active_goal = uam::cef::ParseBridgeRequest(R"({"action":"sendAcpPrompt","payload":{"chatId":"chat-codex","text":"continue","markdownStoreFiles":[],"attachments":[],"goalMode":true,"goalId":" goal-1 "}})");
 	UAM_ASSERT(active_goal.ok);
 	UAM_ASSERT_EQ(uam::query_handler_internal::AcpPromptGoalIdFromPayload(active_goal.request.payload), std::string("goal-1"));
 }
@@ -363,7 +359,8 @@ UAM_TEST(ShellActionsPersistValidateAndQueueUnicodePaths)
 	UAM_ASSERT(recognized);
 	const fs::path requests = temp.root / "shell-action-requests";
 	std::vector<fs::path> request_files;
-	for (const fs::directory_entry& entry : fs::directory_iterator(requests)) request_files.push_back(entry.path());
+	for (const fs::directory_entry& entry : fs::directory_iterator(requests))
+		request_files.push_back(entry.path());
 	UAM_ASSERT_EQ(request_files.size(), static_cast<std::size_t>(1));
 	const nlohmann::json request = nlohmann::json::parse(ReadFile(request_files.front()));
 	UAM_ASSERT_EQ(request.value("actionId", ""), action.id);
@@ -467,7 +464,8 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 
 	const fs::path services = temp.root / "Library" / "Services";
 	std::vector<fs::path> workflows;
-	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
+	for (const fs::directory_entry& entry : fs::directory_iterator(services))
+		workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(2));
 	const fs::path workflow = services / "Universal Agent Manager - review-selection.workflow";
 	const std::string document = ReadFile(workflow / "Contents" / "document.wflow");
@@ -484,7 +482,8 @@ UAM_TEST(MacShellActionsApplyReplacesOnlyUamQuickActionsWithoutDuplicates)
 	app.shell_actions.front().enabled = false;
 	UAM_ASSERT(ShellActionService::Apply(app, executable, &error));
 	workflows.clear();
-	for (const fs::directory_entry& entry : fs::directory_iterator(services)) workflows.push_back(entry.path());
+	for (const fs::directory_entry& entry : fs::directory_iterator(services))
+		workflows.push_back(entry.path());
 	UAM_ASSERT_EQ(workflows.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(workflows.front().filename() == "Universal Agent Manager - review-selection.workflow");
 }
@@ -504,7 +503,8 @@ UAM_TEST(WindowsShellActionsReplaceLegacyMenuAndReapply)
 		bool overridden = false;
 		~ScopedRegistrySandbox()
 		{
-			if (overridden) RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+			if (overridden)
+				RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
 			RegCloseKey(key);
 			RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
 		}
@@ -516,14 +516,16 @@ UAM_TEST(WindowsShellActionsReplaceLegacyMenuAndReapply)
 	{
 		HKEY key = nullptr;
 		const LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr);
-		if (key != nullptr) RegCloseKey(key);
+		if (key != nullptr)
+			RegCloseKey(key);
 		return status;
 	};
 	auto key_exists = [](const wchar_t* path)
 	{
 		HKEY key = nullptr;
 		const LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &key);
-		if (key != nullptr) RegCloseKey(key);
+		if (key != nullptr)
+			RegCloseKey(key);
 		return status == ERROR_SUCCESS;
 	};
 	UAM_ASSERT_EQ(create_key(L"Software\\Classes\\*\\shell\\UAM_Legacy"), ERROR_SUCCESS);
@@ -602,19 +604,19 @@ order = 1
 	UAM_ASSERT(!alpha->visible);
 	UAM_ASSERT(beta->visible);
 
-		error = "stale error";
-		UAM_ASSERT(!uam::ParseFrontendActionMap("[action]\nlabel = Broken\n", actions, &error));
-		UAM_ASSERT(actions.actions.empty());
-		UAM_ASSERT(!error.empty());
+	error = "stale error";
+	UAM_ASSERT(!uam::ParseFrontendActionMap("[action]\nlabel = Broken\n", actions, &error));
+	UAM_ASSERT(actions.actions.empty());
+	UAM_ASSERT(!error.empty());
 
-		error = "stale error";
-		UAM_ASSERT(!uam::ParseFrontendActionMap("[action broken]\nvisible = maybe\n", actions, &error));
-		UAM_ASSERT(actions.actions.empty());
-		UAM_ASSERT(error.find("Invalid boolean value") != std::string::npos);
+	error = "stale error";
+	UAM_ASSERT(!uam::ParseFrontendActionMap("[action broken]\nvisible = maybe\n", actions, &error));
+	UAM_ASSERT(actions.actions.empty());
+	UAM_ASSERT(error.find("Invalid boolean value") != std::string::npos);
 
-		actions = uam::DefaultFrontendActionMap();
-		error = "stale error";
-		TempDir temp("uam-frontend-actions-load");
+	actions = uam::DefaultFrontendActionMap();
+	error = "stale error";
+	TempDir temp("uam-frontend-actions-load");
 	UAM_ASSERT(!uam::LoadFrontendActionMap(temp.root / "missing.actions", actions, &error));
 	UAM_ASSERT(actions.actions.empty());
 	UAM_ASSERT(error.find("Failed to open") != std::string::npos);
@@ -771,15 +773,15 @@ UAM_TEST(JsonRuntimeHelpersMaterializeSlicedKeysAndValues)
 	    {"fallback", "ignored"},
 	    {"number", 4},
 	};
-		UAM_ASSERT_EQ(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, "primary"), std::string_view("  value  "));
-		UAM_ASSERT_EQ(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, std::string_view("xxprimaryyy").substr(2, 7)), std::string_view("  value  "));
-		UAM_ASSERT(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, "number").empty());
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, "primary"), std::string_view("value"));
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, std::string_view("xxprimaryyy").substr(2, 7)), std::string_view("value"));
-		UAM_ASSERT(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, "number").empty());
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValue(nlohmann_object, {"missing", "primary"}), std::string("value"));
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValue(nlohmann_object, {std::string_view("xxmissingyy").substr(2, 7), std::string_view("xxprimaryyy").substr(2, 7)}), std::string("value"));
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_object, "primary", " fallback "), std::string("value"));
+	UAM_ASSERT_EQ(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, "primary"), std::string_view("  value  "));
+	UAM_ASSERT_EQ(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, std::string_view("xxprimaryyy").substr(2, 7)), std::string_view("  value  "));
+	UAM_ASSERT(uam::nlohmann_json::StringViewOrEmpty(nlohmann_object, "number").empty());
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, "primary"), std::string_view("value"));
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, std::string_view("xxprimaryyy").substr(2, 7)), std::string_view("value"));
+	UAM_ASSERT(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_object, "number").empty());
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValue(nlohmann_object, {"missing", "primary"}), std::string("value"));
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValue(nlohmann_object, {std::string_view("xxmissingyy").substr(2, 7), std::string_view("xxprimaryyy").substr(2, 7)}), std::string("value"));
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_object, "primary", " fallback "), std::string("value"));
 	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_object, "missing", " fallback "), std::string("fallback"));
 	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_object, "number", " fallback "), std::string("fallback"));
 	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringScalarValue(nlohmann::json(" value ")).value_or(""), std::string("value"));
@@ -811,12 +813,12 @@ UAM_TEST(JsonRuntimeHelpersMaterializeSlicedKeysAndValues)
 	UAM_ASSERT_EQ(scalar_string_items.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(scalar_string_items[0], std::string(" answer "));
 	const nlohmann::json blank_string_object = {{"blank", "  "}};
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(blank_string_object, "blank", " fallback "), std::string("fallback"));
-		const nlohmann::json nlohmann_array = nlohmann::json::array({"value"});
-		UAM_ASSERT(uam::nlohmann_json::StringViewOrEmpty(nlohmann_array, "primary").empty());
-		UAM_ASSERT(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_array, "primary").empty());
-		UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_array, "primary", " fallback "), std::string("fallback"));
-	}
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(blank_string_object, "blank", " fallback "), std::string("fallback"));
+	const nlohmann::json nlohmann_array = nlohmann::json::array({"value"});
+	UAM_ASSERT(uam::nlohmann_json::StringViewOrEmpty(nlohmann_array, "primary").empty());
+	UAM_ASSERT(uam::nlohmann_json::TrimmedStringViewOrEmpty(nlohmann_array, "primary").empty());
+	UAM_ASSERT_EQ(uam::nlohmann_json::TrimmedStringValueOr(nlohmann_array, "primary", " fallback "), std::string("fallback"));
+}
 
 UAM_TEST(JsonParserRejectsInvalidNumberForms)
 {
@@ -869,9 +871,11 @@ UAM_TEST(IoUtilsWritesSlicedTextAndBinaryContent)
 {
 	TempDir temp("uam-io-utils-sliced-write");
 	const std::string text_source = "xxhello from sliced textyy";
-	const fs::path text_file = temp.root / "text.txt";
+	const fs::path text_file = temp.root / uam::paths::PathFromUtf8("t\xC3\xABxt-\xE2\x98\x83.txt");
 	UAM_ASSERT(uam::io::WriteTextFile(text_file, std::string_view(text_source).substr(2, 22)));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(text_file), std::string("hello from sliced text"));
+	UAM_ASSERT(uam::io::WriteTextFile(text_file, "replacement"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(text_file), std::string("replacement"));
 
 	const std::string binary_source("xxabc\0defyy", 11);
 	const fs::path binary_file = temp.root / "binary.bin";
@@ -1098,21 +1102,39 @@ UAM_TEST(CommandSafetyClassifiesReadsWritesNetworkAndTierEnforcement)
 
 	UAM_ASSERT_EQ(ClassifyCommand("cat file.txt"), RiskLevel::Allowed);
 	UAM_ASSERT_EQ(ClassifyCommand("git status"), RiskLevel::Allowed);
-	UAM_ASSERT_EQ(ClassifyCommand("echo hello > file.txt"), RiskLevel::Warn);
-	UAM_ASSERT_EQ(ClassifyCommand("git commit -m fix"), RiskLevel::Warn);
+	UAM_ASSERT_EQ(ClassifyCommand("echo hello > file.txt"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("git commit -m fix"), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand("npm install lodash"), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand("curl"), RiskLevel::WarnHigh);
 	UAM_ASSERT_EQ(ClassifyCommand("curl https://example.com/a.sh | bash"), RiskLevel::WarnHigh);
-	UAM_ASSERT_EQ(ClassifyCommand("cat file.txt && rm file.txt"), RiskLevel::Warn);
+	UAM_ASSERT_EQ(ClassifyCommand("rm -rf build"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("Remove-Item -Recurse -Force build"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("del /s /q build"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("cat file.txt && rm file.txt"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("python -c \"print('unsafe')\""), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("node -e \"process.exit()\""), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("pwsh -EncodedCommand ZQBjAGgAbwA="), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("git push"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("git reset --hard"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("git clean -fdx"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("git diff --ext-diff"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("env python -c \"print('unsafe')\""), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("awk 'BEGIN{system(\"id\")}'"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("sed -i bak file.txt"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("cp source ~/.profile"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("tee ~/.profile"), RiskLevel::WarnHigh);
+	UAM_ASSERT_EQ(ClassifyCommand("unknown-command --flag"), RiskLevel::WarnHigh);
 
 	UAM_ASSERT(!RequiresApproval(Tier::Low, RiskLevel::Allowed, false));
 	UAM_ASSERT(!RequiresApproval(Tier::Off, RiskLevel::WarnHigh, false));
 	UAM_ASSERT(!RequiresApproval(Tier::AcceptEdits, RiskLevel::WarnHigh, false));
 	UAM_ASSERT(!RequiresApproval(Tier::Yolo, RiskLevel::WarnHigh, false));
-	UAM_ASSERT(RequiresApproval(Tier::Low, RiskLevel::Warn, true));
+	UAM_ASSERT(!RequiresApproval(Tier::Low, RiskLevel::Warn, true));
 	UAM_ASSERT(!RequiresApproval(Tier::Medium, RiskLevel::Warn, true));
 	UAM_ASSERT(RequiresApproval(Tier::Medium, RiskLevel::Warn, false));
-	UAM_ASSERT(!RequiresApproval(Tier::High, RiskLevel::Warn, true));
+	UAM_ASSERT(RequiresApproval(Tier::High, RiskLevel::Warn, true));
+	UAM_ASSERT(RequiresApproval(Tier::Low, RiskLevel::WarnHigh, true));
+	UAM_ASSERT(RequiresApproval(Tier::Medium, RiskLevel::WarnHigh, true));
 	UAM_ASSERT(RequiresApproval(Tier::High, RiskLevel::WarnHigh, true));
 }
 
@@ -1125,6 +1147,8 @@ UAM_TEST(TerminalIdleClassifierStripsControlsAndDetectsPrompts)
 	UAM_ASSERT_EQ(uam::RecentTerminalPromptScanText("prefix\x1B[31m> \x1B[0m"), std::string("prefix> "));
 	UAM_ASSERT(uam::GeminiCliRecentOutputIndicatesInputPrompt("working\n\x1B[32m> \x1B[0m"));
 	UAM_ASSERT(uam::CodexCliRecentOutputIndicatesInputPrompt("Send a message\n\xE2\x80\xBA "));
+	UAM_ASSERT(uam::CopilotCliRecentOutputIndicatesInputPrompt("\xE2\x9D\xAF\n/ commands \xC2\xB7 ? help"));
+	UAM_ASSERT(!uam::CopilotCliRecentOutputIndicatesInputPrompt("Generating answer\n/ commands \xC2\xB7 ? help"));
 	UAM_ASSERT(uam::FallbackCliRecentOutputIndicatesInputPrompt("working\n\x1B[32m> \x1B[0m"));
 
 	ProviderProfile codex_provider;
@@ -1135,6 +1159,10 @@ UAM_TEST(TerminalIdleClassifierStripsControlsAndDetectsPrompts)
 	ProviderProfile opencode_provider;
 	opencode_provider.id = uam::provider_ids::kOpenCodeCli;
 	UAM_ASSERT(uam::ProviderRecentOutputIndicatesInputPrompt(opencode_provider, "working\n\x1B[32m> \x1B[0m"));
+
+	ProviderProfile copilot_provider;
+	copilot_provider.id = uam::provider_ids::kCopilotCli;
+	UAM_ASSERT(uam::ProviderRecentOutputIndicatesInputPrompt(copilot_provider, "\xE2\x9D\xAF\n/ commands \xC2\xB7 ? help"));
 }
 
 UAM_TEST(FrontendActionMapParsesLegacyEscapedValues)
@@ -1662,7 +1690,7 @@ UAM_TEST(AcpProtocolMethodHelpersClassifySharedMethodSets)
 
 	UAM_ASSERT_EQ(kLifecycleResultMethods.size(), static_cast<std::size_t>(6));
 	UAM_ASSERT_EQ(kCodexThreadSetupMethods.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(kSessionModeOrModelUpdateMethods.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(kSessionModeOrModelUpdateMethods.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(kCodexItemLifecycleMethods.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(kCodexToolOutputDeltaMethods.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(kIgnoredCodexAppServerMethods.size(), static_cast<std::size_t>(8));
@@ -1673,6 +1701,7 @@ UAM_TEST(AcpProtocolMethodHelpersClassifySharedMethodSets)
 	UAM_ASSERT(IsLifecycleResultMethod(kSessionNew));
 	UAM_ASSERT(IsLifecycleResultMethod(kSessionLoad));
 	UAM_ASSERT(IsLifecycleResultMethod(std::string_view("xxsession/loadyy").substr(2, 12)));
+	UAM_ASSERT(IsSessionModeOrModelUpdateMethod(kSessionSetConfigOption));
 	UAM_ASSERT(!IsLifecycleResultMethod(kSessionPrompt));
 	UAM_ASSERT(IsCodexThreadSetupMethod(kThreadStart));
 	UAM_ASSERT(IsCodexThreadSetupMethod(kThreadResume));
@@ -1941,7 +1970,7 @@ UAM_TEST(ApprovalModeHelpersPreserveAppAndProviderMappings)
 
 	UAM_ASSERT_EQ(kAppApprovalModes.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(kPersistedProviderDefaultApprovalModes.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(kSuppressedProviderApprovalModes.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(kSuppressedProviderApprovalModes.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT(IsAppApprovalMode(kDefaultApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kAcceptEditsApprovalMode));
 	UAM_ASSERT(IsAppApprovalMode(kPlanApprovalMode));
@@ -1970,10 +1999,13 @@ UAM_TEST(ApprovalModeHelpersPreserveAppAndProviderMappings)
 	UAM_ASSERT_EQ(AppApprovalModeOrEmpty("unsupported"), std::string(""));
 	UAM_ASSERT(IsSuppressedProviderApprovalMode(kProviderAutoApprovalMode));
 	UAM_ASSERT(IsSuppressedProviderApprovalMode(std::string_view("xxautoyy").substr(2, 4)));
+	UAM_ASSERT(IsSuppressedProviderApprovalMode(kAcpAutopilotMode));
 	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(kProviderAutoEditApprovalMode), std::string(kAcceptEditsApprovalMode));
 	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(" auto "), std::string(kDefaultApprovalMode));
 	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(" auto_edit "), std::string(kAcceptEditsApprovalMode));
 	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(std::string_view("xxauto_edityy").substr(2, 9)), std::string(kAcceptEditsApprovalMode));
+	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(kAcpAgentMode), std::string(kDefaultApprovalMode));
+	UAM_ASSERT_EQ(AppApprovalModeFromProviderModeId(kAcpPlanMode), std::string(kPlanApprovalMode));
 	UAM_ASSERT_EQ(GeminiProviderApprovalModeFromAppModeId(kAcceptEditsApprovalMode), std::string(kProviderAutoEditApprovalMode));
 	UAM_ASSERT_EQ(GeminiProviderApprovalModeFromAppModeId(" acceptEdits "), std::string(kProviderAutoEditApprovalMode));
 	UAM_ASSERT_EQ(GeminiProviderApprovalModeFromAppModeId(std::string_view("xxacceptEditsyy").substr(2, 11)), std::string(kProviderAutoEditApprovalMode));
@@ -2588,13 +2620,22 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	uam::AppState app;
 	app.data_root = temp.root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path markdown_store = temp.root / "markdown-store";
+	fs::create_directories(workspace);
+	fs::create_directories(markdown_store);
+	const fs::path skill = markdown_store / "retry.uam";
+	const std::string retry_skill_sentinel = "UAM_RETRY_SKILL_SENTINEL";
+	const std::string source_path_sentinel = "C:\\Users\\outside\\retry.md";
+	UAM_ASSERT(uam::io::WriteTextFile(skill, "---\ntitle: Retry Skill\nsourcePath: " + source_path_sentinel + "\n---\n# Retry Skill\n\n" + retry_skill_sentinel + "\n"));
+	app.settings.markdown_store_directory = markdown_store.string();
 
 	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "gemini-cli");
 	source.id = "chat-source";
 	source.model_id = "gemini-2.5-pro";
-	source.workspace_directory = temp.root.string();
+	source.workspace_directory = workspace.string();
 	Message prompt{MessageRole::User, "Retry this prompt"};
-	prompt.markdown_store_files = {(temp.root / "context.md").string()};
+	prompt.markdown_store_files = {skill.string()};
 	prompt.attachments.push_back(MessageAttachment{"file-1", "notes.txt", "file", "text/plain", "notes.txt"});
 	source.messages.push_back(std::move(prompt));
 	app.chats.push_back(std::move(source));
@@ -2620,7 +2661,7 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
 #endif
 	std::string launch_error;
-	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &launch_error));
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, workspace, sink_argv, &launch_error));
 	app.acp_sessions.push_back(std::move(session));
 
 	std::string retry_error;
@@ -2629,6 +2670,9 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	UAM_ASSERT_EQ(branch->messages.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->turn_user_message_index, 0);
 	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(raw_session->queued_prompt.find(retry_skill_sentinel) != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find(uam::paths::Utf8PathString(uam::paths::NormalizeExistingPath(skill))) == std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find(source_path_sentinel) == std::string::npos);
 	UAM_ASSERT(raw_session->model_change_request_id != 0);
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
 	const int model_change_request_id = raw_session->model_change_request_id;
@@ -2639,6 +2683,50 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+}
+
+UAM_TEST(AcpQueueRejectsMergedSkillSnapshotsAbovePromptLimit)
+{
+	TempDir temp("uam-acp-queued-skill-limit");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path markdown_store = temp.root / "markdown-store";
+	fs::create_directories(markdown_store);
+	const fs::path first_skill = markdown_store / "first.uam";
+	const fs::path second_skill = markdown_store / "second.uam";
+	UAM_ASSERT(uam::io::WriteTextFile(first_skill, "---\ntitle: First\n---\n" + std::string(1100000, 'a')));
+	UAM_ASSERT(uam::io::WriteTextFile(second_skill, "---\ntitle: Second\n---\n" + std::string(1100000, 'b')));
+	app.settings.markdown_store_directory = markdown_store.string();
+
+	ChatSession chat;
+	chat.id = "chat-queued-skill-limit";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->processing = true;
+	session->lifecycle_state = "processing";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "first", {first_skill.string()}, {}, false, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+
+	UAM_ASSERT(!uam::SendAcpPrompt(app, app.chats.front().id, "second", {second_skill.string()}, {}, false, &error));
+	UAM_ASSERT_EQ(error, std::string("Queued attached skill content exceeds the 2 MiB prompt limit."));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("first"));
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("processing"));
+
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, app.chats.front().id, 0, &error));
+	error.clear();
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "second", {second_skill.string()}, {}, false, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("second"));
 }
 
 UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
@@ -3387,12 +3475,10 @@ UAM_TEST(ChatRepositoryLoadsOneChatWithoutScanningSiblingFiles)
 	chat.title = "Target";
 	chat.messages.push_back(Message{MessageRole::Assistant, "Loaded"});
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
-	UAM_ASSERT(uam::io::WriteTextFile(
-	    AppPaths::UamChatFilePath(temp.root, "broken-sibling"), "{not json"));
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(temp.root, "broken-sibling"), "{not json"));
 
 	std::string warning;
-	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(
-	    temp.root, chat.id, true, &warning);
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true, &warning);
 
 	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT(warning.empty());
@@ -3503,9 +3589,9 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	}
 
 	TempDir temp("uam-git-worktree");
-	const fs::path repo = temp.root / "repo";
+	const fs::path repo = temp.root / uam::paths::PathFromUtf8("r\xC3\xA9po-\xE2\x98\x83");
 	fs::create_directories(repo);
-	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(repo))));
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(RunGitForTest(repo, "config core.autocrlf false"));
@@ -3518,19 +3604,19 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatFolder folder;
 	folder.id = "folder";
-	folder.directory = repo.string();
+	folder.directory = uam::paths::Utf8PathString(repo);
 	app.folders.push_back(folder);
 	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
 	chat.id = "chat-worktree-service";
 	chat.title = "Worktree Service";
-	chat.workspace_directory = repo.string();
+	chat.workspace_directory = uam::paths::Utf8PathString(repo);
 	app.chats.push_back(chat);
 
 	uam::GitWorktreeService service;
 	uam::GitWorktreeOperationResult created = service.CreateForChat(app, app.chats.front());
 	UAM_ASSERT(created.ok);
 	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
-	const fs::path worktree = app.chats.front().workspace_worktree_directory;
+	const fs::path worktree = uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory);
 	const std::string branch_name = app.chats.front().workspace_branch_name;
 	UAM_ASSERT(fs::exists(worktree / "app.txt"));
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, app.chats.front()), uam::paths::AbsolutePathNoThrow(worktree));
@@ -3723,17 +3809,17 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	}
 
 	TempDir temp("uam-vcs-git");
-	const fs::path source = temp.root / "source";
-	const fs::path worktree = temp.root / "worktree";
+	const fs::path source = temp.root / uam::paths::PathFromUtf8("source-\xE2\x98\x83");
+	const fs::path worktree = temp.root / uam::paths::PathFromUtf8("worktree-\xC3\xA9");
 	fs::create_directories(source);
 	fs::create_directories(worktree);
-	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(source))));
 	UAM_ASSERT(RunGitForTest(source, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(source, "config user.name UAM"));
 	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source\n"));
 	UAM_ASSERT(RunGitForTest(source, "add app.txt"));
 	UAM_ASSERT(RunGitForTest(source, "commit -m initial"));
-	UAM_ASSERT(RunTestCommand("git clone " + ShellQuoteForTest(source.string()) + " " + ShellQuoteForTest(worktree.string())));
+	UAM_ASSERT(RunTestCommand("git clone " + ShellQuoteForTest(uam::paths::Utf8PathString(source)) + " " + ShellQuoteForTest(uam::paths::Utf8PathString(worktree))));
 	UAM_ASSERT(RunGitForTest(worktree, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(worktree, "config user.name UAM"));
 
@@ -3741,15 +3827,15 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	app.data_root = temp.root / "data";
 	ChatSession chat;
 	chat.id = "chat-vcs-worktree";
-	chat.workspace_directory = source.string();
+	chat.workspace_directory = uam::paths::Utf8PathString(source);
 	chat.workspace_isolation_kind = "gitWorktree";
-	chat.workspace_worktree_directory = worktree.string();
+	chat.workspace_worktree_directory = uam::paths::Utf8PathString(worktree);
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "worktree\n"));
 
 	uam::VcsCommitService service;
 	uam::VcsCommitStatus status = service.Status(app, chat);
 	UAM_ASSERT(status.available);
-	UAM_ASSERT_EQ(fs::path(status.workspace_directory), uam::paths::AbsolutePathNoThrow(worktree));
+	UAM_ASSERT_EQ(uam::paths::PathFromUtf8(status.workspace_directory), uam::paths::AbsolutePathNoThrow(worktree));
 	UAM_ASSERT_EQ(status.changed_files.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(status.changed_files.front().additions, 1);
 	UAM_ASSERT_EQ(status.changed_files.front().deletions, 1);
@@ -3860,6 +3946,34 @@ UAM_TEST(VcsCommitServiceRejectsBlankCommitMessageSelectionsBeforeWorkerLookup)
 
 	UAM_ASSERT(!suggestion.ok);
 	UAM_ASSERT_EQ(suggestion.error, std::string("Select at least one changed file before generating a commit message."));
+}
+
+UAM_TEST(VcsCommitServiceBlocksCopilotWorkerWhileCompatibilityCheckIsPending)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-vcs-copilot-version-pending");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "change\n"));
+
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli] = {};
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	chat.workspace_directory = uam::paths::Utf8PathString(repo);
+
+	const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(app, chat, uam::VcsType::Git, {"app.txt"});
+
+	UAM_ASSERT(!suggestion.ok);
+	UAM_ASSERT(suggestion.error.find("Checking") != std::string::npos);
+#endif
 }
 
 UAM_TEST(VcsCommitServiceTrimsSelectedFilesForCommitMessagePrompt)
@@ -3991,13 +4105,7 @@ UAM_TEST(ChatRepositoryPersistsMessageAttachments)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
 	nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)));
 	persisted["messages"][0]["attachments"][1]["size_bytes"] = -42;
-	persisted["messages"][0]["attachments"].push_back({
-	    {"id", "att-3"},
-	    {"kind", "file"},
-	    {"name", "huge.bin"},
-	    {"path", ".UAM/attachments/chat-attachments/huge.bin"},
-	    {"size_bytes", 1.0e100}
-	});
+	persisted["messages"][0]["attachments"].push_back({{"id", "att-3"}, {"kind", "file"}, {"name", "huge.bin"}, {"path", ".UAM/attachments/chat-attachments/huge.bin"}, {"size_bytes", 1.0e100}});
 	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(temp.root, chat.id), persisted.dump(2)));
 
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
@@ -4355,8 +4463,7 @@ UAM_TEST(PersistedToolOutputIsDeferredFromStatePayloads)
 	const nlohmann::json& serialized_tool = serialized["messages"][0]["toolCalls"][0];
 	UAM_ASSERT(serialized_tool.value("contentDeferred", false));
 	UAM_ASSERT(!serialized_tool.contains("content"));
-	UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentForFrontend(tool),
-	              std::string("Arguments:\n") + tool.args_json + "\n\nResult:\n" + tool.result_text);
+	UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentForFrontend(tool), std::string("Arguments:\n") + tool.args_json + "\n\nResult:\n" + tool.result_text);
 }
 
 UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
@@ -4465,12 +4572,17 @@ UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("claude-cli", "release_2026-05.1"), std::string("npm install -g @anthropic-ai/claude-code@release_2026-05.1"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("opencode-cli", "0.6.6"), std::string("npm install -g opencode-ai@0.6.6"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "latest"), std::string("npm install -g @github/copilot@latest"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "1.0.69"), std::string("npm install -g @github/copilot@1.0.69"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("copilot-cli", "1.0.68"), std::string(""));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("opencode-cli", "1.18.0", "homebrew-formula"), std::string("brew upgrade opencode"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("codex-cli", "0.124.0", "homebrew-cask"), std::string("brew upgrade --cask codex"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("copilot-cli", "latest", "winget"), std::string("winget upgrade --id GitHub.Copilot --exact --source winget --accept-source-agreements --accept-package-agreements"));
+	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("copilot-cli", "1.0.69", "winget"), std::string("winget upgrade --id GitHub.Copilot --exact --source winget --accept-source-agreements --accept-package-agreements --version 1.0.69"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForMethodForTests("claude-cli", "latest", "npm"), std::string("npm install -g @anthropic-ai/claude-code@latest"));
 	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/opencode|../Cellar/opencode/1.17.15/bin/opencode\n1.17.15\n"), std::string("homebrew-formula"));
 	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/codex|/opt/homebrew/Caskroom/codex/0.144.5/codex\ncodex-cli 0.144.5\n"), std::string("homebrew-cask"));
 	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] /opt/homebrew/bin/claude|../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe\n2.1.207\n"), std::string("npm"));
+	UAM_ASSERT_EQ(ExtractCliProviderInstallMethodForTests("[UAM CLI PATH] C:\\Users\\Jos\xc3\xa9\\AppData\\Local\\Microsoft\\WinGet\\Links\\copilot.exe|\n1.0.75\n"), std::string("winget"));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("unknown-provider", "0.38.1"), std::string(""));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("codex-cli", "--bad"), std::string(""));
 	UAM_ASSERT_EQ(BuildCliProviderInstallCommandForTests("claude-cli", "--bad"), std::string(""));
@@ -4483,7 +4595,88 @@ UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 	UAM_ASSERT(!service.IsSupportedVersionForProvider("codex-cli", "0.125.0"));
 	UAM_ASSERT(service.IsSupportedVersionForProvider("opencode-cli", "0.6.6"));
 	UAM_ASSERT(service.IsSupportedVersionForProvider("claude-cli", "latest"));
+	UAM_ASSERT(service.IsSupportedVersionForProvider("copilot-cli", "latest"));
+	UAM_ASSERT(service.IsSupportedVersionForProvider("copilot-cli", "1.0.69"));
+	UAM_ASSERT(service.IsSupportedVersionForProvider("copilot-cli", "1.1.0"));
+	UAM_ASSERT(!service.IsSupportedVersionForProvider("copilot-cli", "1.0.68"));
 	UAM_ASSERT(!service.IsSupportedVersionForProvider("claude-cli", "bad/version"));
+}
+
+UAM_TEST(CopilotLaunchCompatibilityBlocksPendingAndKnownBadVersions)
+{
+	uam::AppState app;
+	UAM_ASSERT(CopilotLaunchBlockReason(app).empty());
+
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	UAM_ASSERT(CopilotLaunchBlockReason(app).find("Checking") != std::string::npos);
+
+	state.checked = true;
+	state.installed_version = "1.0.68";
+	UAM_ASSERT(CopilotLaunchBlockReason(app).find("1.0.69 or newer") != std::string::npos);
+
+	state.supported = true;
+	UAM_ASSERT(CopilotLaunchBlockReason(app).empty());
+}
+
+UAM_TEST(CliProviderVersionProbeRejectsSemverFromFailedCommand)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_version_provider_id = uam::provider_ids::kCopilotCli;
+	app.runtime_cli_version_check_task.running = true;
+	app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.runtime_cli_version_check_task.state->result.output = "Failed to run command: copilot --version\n\n"
+	                                                          "GitHub Copilot CLI requires Node.js 22.0.0; current version is 20.11.1.";
+	app.runtime_cli_version_check_task.state->completed.store(true);
+
+	ProviderCliCompatibilityService().Poll(app);
+
+	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
+	UAM_ASSERT(state.checked);
+	UAM_ASSERT(!state.supported);
+	UAM_ASSERT(state.installed_version.empty());
+	UAM_ASSERT(state.message.find("Could not check") != std::string::npos);
+}
+
+UAM_TEST(CopilotVersionProbeReportsMissingWindowsPowerShellPrerequisite)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_version_provider_id = uam::provider_ids::kCopilotCli;
+	app.runtime_cli_version_check_task.running = true;
+	app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.runtime_cli_version_check_task.state->result.output = "GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found.\n\n"
+	                                                          "[Provider CLI exited with code 1]";
+	app.runtime_cli_version_check_task.state->completed.store(true);
+
+	ProviderCliCompatibilityService().Poll(app);
+
+	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
+	UAM_ASSERT_EQ(state.message, std::string("GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows."));
+}
+
+UAM_TEST(CliProviderInstallTreatsLaunchAndTimeoutFailuresAsFailures)
+{
+	for (const std::string output : {
+	         std::string("Failed to run command: npm install -g @github/copilot@latest"),
+	         std::string("partial output\n\n[Provider CLI command timed out]"),
+	     })
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.runtime_cli_pin_provider_id = uam::provider_ids::kCopilotCli;
+		app.runtime_cli_pin_task.running = true;
+		app.runtime_cli_pin_task.state = std::make_shared<AsyncProcessTaskState>();
+		app.runtime_cli_pin_task.state->result.output = output;
+		app.runtime_cli_pin_task.state->completed.store(true);
+
+		ProviderCliCompatibilityService().Poll(app);
+
+		const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
+		UAM_ASSERT_EQ(state.last_install_status, std::string("failed"));
+		UAM_ASSERT_EQ(state.message, std::string("Update command failed."));
+		UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+	}
 }
 
 UAM_TEST(CliProviderVersionInstallRejectsUnknownProvider)
@@ -4524,6 +4717,32 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 #else
 	(void)app;
 	(void)error;
+#endif
+}
+
+UAM_TEST(CliProviderVersionInstallAllowsCompatibilityBlockedCopilotDeferredQueue)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	version.checked = true;
+	version.supported = false;
+	version.installed_version = "1.0.68";
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->provider_id = uam::provider_ids::kCopilotCli;
+	session->reconnect_pending = true;
+	session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Retry after update"});
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
+	raw_session->processing = true;
+	UAM_ASSERT(ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
+	raw_session->processing = false;
+	version.supported = true;
+	UAM_ASSERT(ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
 #endif
 }
 
@@ -4732,6 +4951,9 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeOpenCodeCopilotAndUnknownExact
 	const IProviderRuntime& copilot = ProviderRuntimeRegistry::ResolveById("copilot-cli");
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
 	UAM_ASSERT_EQ(std::string(copilot.RuntimeId()), std::string("copilot-cli"));
+	UAM_ASSERT_EQ(copilot.OnAcpMapApprovalModeId("default"), std::string(uam::approval_modes::kAcpAgentMode));
+	UAM_ASSERT_EQ(copilot.OnAcpMapApprovalModeId("acceptEdits"), std::string(uam::approval_modes::kAcpAgentMode));
+	UAM_ASSERT_EQ(copilot.OnAcpMapApprovalModeId("plan"), std::string(uam::approval_modes::kAcpPlanMode));
 	UAM_ASSERT(ProviderRuntimeRegistry::IsEnabledRuntimeId("copilot-cli"));
 	UAM_ASSERT(ProviderRuntimeRegistry::IsEnabledRuntimeId("github-copilot"));
 	UAM_ASSERT_EQ(std::string(ProviderRuntimeRegistry::ResolveById("copilot").RuntimeId()), std::string("copilot-cli"));
@@ -6207,19 +6429,23 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	ChatSession chat;
 	chat.id = "chat-1";
 	chat.provider_id = "copilot-cli";
-	chat.native_session_id = " copilot-session-abc ";
+	chat.native_session_id = " 6a6f0f3b-1a0b-4a9c-8a01-111111111111 ";
 	chat.model_id = " gpt-5.1 ";
 	chat.approval_mode = " plan ";
+	chat.reasoning_effort = " xhigh ";
 
 	const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, settings);
 	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(7));
 	UAM_ASSERT_EQ(argv[0], std::string("copilot"));
-	UAM_ASSERT_EQ(argv[1], std::string("--resume"));
-	UAM_ASSERT_EQ(argv[2], std::string("copilot-session-abc"));
+	UAM_ASSERT_EQ(argv[1], std::string("--session-id"));
+	UAM_ASSERT_EQ(argv[2], std::string("6a6f0f3b-1a0b-4a9c-8a01-111111111111"));
 	UAM_ASSERT_EQ(argv[3], std::string("--model"));
 	UAM_ASSERT_EQ(argv[4], std::string("gpt-5.1"));
 	UAM_ASSERT_EQ(argv[5], std::string("--plan"));
 	UAM_ASSERT_EQ(argv[6], std::string("--debug"));
+	UAM_ASSERT(!uam::ranges::Contains(argv, "--effort"));
+	UAM_ASSERT_EQ(NormalizeCopilotReasoningEffort(" MAX "), std::string("max"));
+	UAM_ASSERT(NormalizeCopilotReasoningEffort("invalid").empty());
 
 	chat.approval_mode = "yolo";
 	const std::vector<std::string> yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
@@ -6236,7 +6462,207 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	// PR-4: yolo off → --allow-all absent.
 	const std::vector<std::string> no_yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
 	UAM_ASSERT(!uam::ranges::Contains(no_yolo_argv, "--allow-all"));
+
+	chat.command_safety_tier = "yolo";
+	const std::vector<std::string> chat_yolo_argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, AppSettings{});
+	UAM_ASSERT_EQ(std::ranges::count(chat_yolo_argv, std::string("--allow-all")), static_cast<std::ptrdiff_t>(1));
+
+	AppSettings worker_settings;
+	worker_settings.provider_extra_flags = "--no-auto-update --agent unsafe --plugin-dir injected";
+	const std::vector<std::string> worker_argv = ProviderRuntimeRegistry::Resolve(profile).BuildWorkerArgv(profile, worker_settings, "review this change", " gpt-5.1 ");
+	UAM_ASSERT_EQ(worker_argv, (std::vector<std::string>{
+	                               "copilot",
+	                               "-p",
+	                               "review this change",
+	                               "--model",
+	                               "gpt-5.1",
+	                               "--no-auto-update",
+	                               "--allow-all-tools",
+	                               "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
+	                               "--disable-builtin-mcps",
+	                               "--no-custom-instructions",
+	                               "--no-remote",
+	                               "--no-remote-export",
+	                               "--disallow-temp-dir",
+	                               "--silent",
+	                           }));
+	uam::AppState worker_app;
+	uam::CliProviderVersionState& worker_version = worker_app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	worker_version.checked = true;
+	worker_version.supported = true;
+	const uam::ProviderWorkerInvocation worker_invocation = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);
+	const std::string& worker_command = worker_invocation.command_preview;
+	UAM_ASSERT(uam::strings::Contains(worker_command, "uam-copilot-text-worker-7f4938d1"));
+	UAM_ASSERT(!uam::strings::Contains(worker_command, "COPILOT_HOME="));
+	UAM_ASSERT(!uam::strings::Contains(worker_command, "--agent"));
+	UAM_ASSERT(!uam::strings::Contains(worker_command, "--plugin-dir"));
+
+	const std::string long_prompt(12000, 'x');
+	const uam::ProviderWorkerInvocation long_worker = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, long_prompt, "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);
+#if defined(_WIN32)
+	UAM_ASSERT(long_worker.direct_process);
+	UAM_ASSERT(long_worker.shell_command.empty());
+	UAM_ASSERT_EQ(long_worker.standard_input, long_prompt);
+	UAM_ASSERT(!uam::ranges::Contains(long_worker.argv, long_prompt));
+	UAM_ASSERT(!uam::ranges::Contains(long_worker.argv, "-p"));
+	UAM_ASSERT(long_worker.command_preview.find(long_prompt) == std::string::npos);
+	UAM_ASSERT(long_worker.command_preview.size() < static_cast<std::size_t>(8191));
+#else
+	UAM_ASSERT(!long_worker.direct_process);
+	UAM_ASSERT(long_worker.standard_input.empty());
+	UAM_ASSERT(uam::strings::Contains(long_worker.shell_command, long_prompt));
 #endif
+
+	worker_version.checked = false;
+	worker_version.supported = false;
+	std::string worker_error;
+	UAM_ASSERT(uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, &worker_error).Empty());
+	UAM_ASSERT(worker_error.find("Checking") != std::string::npos);
+
+	worker_version.checked = true;
+	worker_version.installed_version = "1.0.68";
+	worker_error.clear();
+	UAM_ASSERT(uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, &worker_error).Empty());
+	UAM_ASSERT(worker_error.find("1.0.69 or newer") != std::string::npos);
+#endif
+}
+
+UAM_TEST(CopilotTerminalLaunchIdentityIsPersistedAndReused)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	TempDir temp("uam-copilot-terminal-session");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ProviderProfile profile = ProviderProfileStore::DefaultCopilotProfile();
+
+	ChatSession chat;
+	chat.id = "chat-copilot-terminal";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+
+	std::string error;
+	UAM_ASSERT(uam::EnsureCopilotInteractiveSessionIdForLaunch(app, chat, profile, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(uam::codex::IsValidThreadId(chat.native_session_id));
+	const std::string session_id = chat.native_session_id;
+
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->native_session_id, session_id);
+
+	const std::vector<std::string> argv = uam::BuildProviderInteractiveArgv(app, chat);
+	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(argv[0], std::string("copilot"));
+	UAM_ASSERT_EQ(argv[1], std::string("--session-id"));
+	UAM_ASSERT_EQ(argv[2], session_id);
+	UAM_ASSERT(uam::EnsureCopilotInteractiveSessionIdForLaunch(app, chat, profile, &error));
+	UAM_ASSERT_EQ(chat.native_session_id, session_id);
+
+	ChatSession task_chat;
+	task_chat.id = "chat-copilot-task";
+	task_chat.provider_id = uam::provider_ids::kCopilotCli;
+	task_chat.native_session_id = "task-opaque-id";
+	app.resolved_native_sessions_by_chat_id[task_chat.id] = task_chat.native_session_id;
+	UAM_ASSERT(uam::EnsureCopilotInteractiveSessionIdForLaunch(app, task_chat, profile, &error));
+	UAM_ASSERT_EQ(task_chat.native_session_id, std::string("task-opaque-id"));
+	const std::vector<std::string> task_argv = uam::BuildProviderInteractiveArgv(app, task_chat);
+	UAM_ASSERT_EQ(task_argv[1], std::string("--session-id"));
+	UAM_ASSERT_EQ(task_argv[2], std::string("task-opaque-id"));
+
+	uam::AppState pending_check_app;
+	pending_check_app.data_root = temp.root;
+	pending_check_app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli] = {};
+	ChatSession pending_check_chat;
+	pending_check_chat.id = "chat-copilot-checking";
+	pending_check_chat.provider_id = uam::provider_ids::kCopilotCli;
+	UAM_ASSERT(!uam::EnsureCopilotInteractiveSessionIdForLaunch(pending_check_app, pending_check_chat, profile, &error));
+	UAM_ASSERT(error.find("Checking") != std::string::npos);
+	UAM_ASSERT(pending_check_chat.native_session_id.empty());
+
+	uam::CliProviderVersionState& outdated_state = pending_check_app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	outdated_state.checked = true;
+	outdated_state.installed_version = "1.0.68";
+	UAM_ASSERT(!uam::EnsureCopilotInteractiveSessionIdForLaunch(pending_check_app, pending_check_chat, profile, &error));
+	UAM_ASSERT(error.find("1.0.69 or newer") != std::string::npos);
+	UAM_ASSERT(pending_check_chat.native_session_id.empty());
+
+	uam::AppState blocked_app;
+	blocked_app.data_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_app.data_root, "blocked"));
+	ChatSession blocked_chat;
+	blocked_chat.id = "chat-copilot-blocked";
+	blocked_chat.provider_id = uam::provider_ids::kCopilotCli;
+	UAM_ASSERT(!uam::EnsureCopilotInteractiveSessionIdForLaunch(blocked_app, blocked_chat, profile, &error));
+	UAM_ASSERT(blocked_chat.native_session_id.empty());
+	UAM_ASSERT(!error.empty());
+#endif
+}
+
+UAM_TEST(RuntimeHandoffRejectsBusyAcpAndStopsIdleAcpBeforeTerminalLaunch)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-runtime-handoff-acp";
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->processing = true;
+	session->lifecycle_state = "processing";
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.acp_sessions.front()->running);
+
+	app.acp_sessions.front()->processing = false;
+	app.acp_sessions.front()->reconnect_pending = true;
+	app.acp_sessions.front()->lifecycle_state = "ready";
+	UAM_ASSERT(uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!app.acp_sessions.front()->running);
+	UAM_ASSERT(!app.acp_sessions.front()->reconnect_pending);
+}
+
+UAM_TEST(RuntimeHandoffRejectsBusyTerminalAndStopsIdleOrShuttingTerminalBeforeAcp)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-runtime-handoff-terminal";
+	app.chats.push_back(chat);
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->running = true;
+	terminal->should_launch = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal->turn_state = uam::CliTerminalTurnState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::string error;
+	UAM_ASSERT(!uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.cli_terminals.front()->running);
+
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::ShuttingDown;
+	UAM_ASSERT(uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!app.cli_terminals.front()->running);
+	UAM_ASSERT(!app.cli_terminals.front()->should_launch);
+
+	app.cli_terminals.front()->running = true;
+	app.cli_terminals.front()->should_launch = true;
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	app.cli_terminals.front()->turn_state = uam::CliTerminalTurnState::Idle;
+	app.cli_terminals.front()->last_error = "stale";
+	UAM_ASSERT(uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!app.cli_terminals.front()->running);
+	UAM_ASSERT(!app.cli_terminals.front()->should_launch);
+	UAM_ASSERT(app.cli_terminals.front()->last_error.empty());
 }
 
 UAM_TEST(CodexSessionIndexPicksNewestNewSessionForMatchingCwd)
@@ -6481,8 +6907,7 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	const nlohmann::json initialize = nlohmann::json::parse(uam::BuildCodexInitializeRequestForTests(21));
 	UAM_ASSERT_EQ(initialize.value("method", ""), std::string("initialize"));
 	UAM_ASSERT(initialize["params"].contains("clientInfo"));
-	UAM_ASSERT_EQ(initialize["params"]["clientInfo"].value("version", ""),
-	              std::string(uam::constants::kAppVersion).substr(1));
+	UAM_ASSERT_EQ(initialize["params"]["clientInfo"].value("version", ""), std::string(uam::constants::kAppVersion).substr(1));
 	UAM_ASSERT(initialize["params"]["capabilities"].is_object());
 	UAM_ASSERT(initialize["params"]["capabilities"].value("experimentalApi", false));
 
@@ -6756,13 +7181,16 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	copilot_chat.id = "copilot-chat";
 	copilot_chat.provider_id = "copilot-cli";
 	copilot_chat.native_session_id = "copilot-session-1";
+	copilot_chat.reasoning_effort = "max";
 	const std::vector<std::string> copilot_argv = uam::BuildAcpLaunchArgvForTests(copilot_chat);
 	UAM_ASSERT_EQ(copilot_argv.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(copilot_argv[0], std::string("copilot"));
 	UAM_ASSERT_EQ(copilot_argv[1], std::string("--acp"));
 	UAM_ASSERT_EQ(copilot_argv[2], std::string("--stdio"));
+	UAM_ASSERT(!uam::ranges::Contains(copilot_argv, "--effort"));
 	const std::string copilot_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", copilot_chat);
 	UAM_ASSERT(copilot_detail.find("argv=copilot --acp --stdio") != std::string::npos);
+	UAM_ASSERT(copilot_detail.find("--effort") == std::string::npos);
 	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);
 }
 
@@ -6929,7 +7357,72 @@ UAM_TEST(GeminiInvalidSessionLoadFallsBackToNewSession)
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(raw_session);
 
-	UAM_ASSERT(raw_session.gemini_resume_fallback_attempted);
+	UAM_ASSERT(raw_session.acp_resume_fallback_attempted);
+	UAM_ASSERT_EQ(stored_chat.native_session_id, std::string(""));
+	UAM_ASSERT_EQ(raw_session.session_id, std::string(""));
+	UAM_ASSERT_EQ(raw_session.session_setup_request_id, 3);
+	UAM_ASSERT_EQ(raw_session.pending_request_methods[3], std::string("session/new"));
+	UAM_ASSERT_EQ(raw_session.lifecycle_state, std::string("starting"));
+
+	const nlohmann::json persisted = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(temp.root, stored_chat.id)));
+	UAM_ASSERT_EQ(persisted.value("native_session_id", "missing"), std::string(""));
+}
+
+UAM_TEST(CopilotMissingSessionLoadFallsBackToNewSession)
+{
+	TempDir temp("uam-copilot-missing-load");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-copilot-local";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& raw_session = *session;
+	raw_session.chat_id = chat.id;
+	raw_session.provider_id = uam::provider_ids::kCopilotCli;
+	raw_session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotAcp;
+	raw_session.running = true;
+	raw_session.initialized = true;
+	raw_session.load_session_supported = true;
+	raw_session.session_id = chat.native_session_id;
+	raw_session.session_setup_request_id = 2;
+	raw_session.next_request_id = 3;
+	raw_session.pending_request_methods[2] = "session/load";
+	raw_session.lifecycle_state = "starting";
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string launch_error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(raw_session, temp.root, sink_argv, &launch_error));
+	UAM_ASSERT(launch_error.empty());
+
+	app.acp_sessions.push_back(std::move(session));
+	ChatSession& stored_chat = app.chats.front();
+	const nlohmann::json load_error = {
+	    {"jsonrpc", "2.0"},
+	    {"id", 2},
+	    {"error",
+	     {
+	         {"code", -32002},
+	         {"message", "Resource not found: Session was not found"},
+	         {"data", {{"uri", "Session was not found"}}},
+	     }},
+	};
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, raw_session, stored_chat, load_error.dump()));
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(raw_session);
+
+	UAM_ASSERT(raw_session.acp_resume_fallback_attempted);
 	UAM_ASSERT_EQ(stored_chat.native_session_id, std::string(""));
 	UAM_ASSERT_EQ(raw_session.session_id, std::string(""));
 	UAM_ASSERT_EQ(raw_session.session_setup_request_id, 3);
@@ -7028,7 +7521,7 @@ UAM_TEST(CefTrustedUiIndexResolutionTerminatesAndFindsBundle)
 UAM_TEST(CefTrustedUiUrlIgnoresFileUrlDecorationAndLocalhostAuthority)
 {
 	TempDir temp("uam-cef-trusted-url");
-	const fs::path index = temp.root / "UI-V2" / "dist" / "index.html";
+	const fs::path index = temp.root / uam::paths::PathFromUtf8("install-\xE2\x98\x83") / "UI-V2" / "dist" / "index.html";
 	fs::create_directories(index.parent_path());
 	UAM_ASSERT(uam::io::WriteTextFile(index, "<!doctype html>"));
 
@@ -7197,15 +7690,11 @@ UAM_TEST(RemoveChatByIdKeepsChatWhenMetadataCannotBeDeleted)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
 
 	const fs::path chats_directory = AppPaths::UamChatFilePath(temp.root, chat.id).parent_path();
-	fs::permissions(chats_directory,
-	                fs::perms::owner_read | fs::perms::owner_exec,
-	                fs::perm_options::replace);
+	fs::permissions(chats_directory, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
 
 	const bool removed = RemoveChatById(app, chat.id);
 
-	fs::permissions(chats_directory,
-	                fs::perms::owner_all,
-	                fs::perm_options::replace);
+	fs::permissions(chats_directory, fs::perms::owner_all, fs::perm_options::replace);
 	UAM_ASSERT(!removed);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.chats.front().id, chat.id);
@@ -7333,15 +7822,11 @@ UAM_TEST(DeleteFolderKeepsFolderAndChatsWhenMetadataCannotBeDeleted)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
 
 	const fs::path chats_directory = AppPaths::UamChatFilePath(temp.root, chat.id).parent_path();
-	fs::permissions(chats_directory,
-	                fs::perms::owner_read | fs::perms::owner_exec,
-	                fs::perm_options::replace);
+	fs::permissions(chats_directory, fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace);
 
 	const bool removed = DeleteFolderById(app, folder_id);
 
-	fs::permissions(chats_directory,
-	                fs::perms::owner_all,
-	                fs::perm_options::replace);
+	fs::permissions(chats_directory, fs::perms::owner_all, fs::perm_options::replace);
 	UAM_ASSERT(!removed);
 	UAM_ASSERT(ChatDomainService().FindFolderById(app, folder_id) != nullptr);
 	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) != nullptr);
@@ -7608,6 +8093,11 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	MarkdownStoreService::Entry grouped_favorite;
 	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, grouped->file_path.string(), false, &grouped_favorite, &error));
 	UAM_ASSERT_EQ(grouped_favorite.group, std::string("Workflows"));
+	const fs::path unicode_untitled = root / uam::paths::PathFromUtf8("skill-\xE2\x98\x83.uam");
+	UAM_ASSERT(uam::io::WriteTextFile(unicode_untitled, "---\nfavorite: true\n---\n\nAttached skill body.\n"));
+	entries = MarkdownStoreService::ListEntries(root, &error);
+	const auto unicode_entry = std::find_if(entries.begin(), entries.end(), [](const MarkdownStoreService::Entry& entry) { return entry.title == "skill-\xE2\x98\x83"; });
+	UAM_ASSERT(unicode_entry != entries.end());
 
 	fs::path normalized_file;
 	error = "stale";
@@ -7680,7 +8170,8 @@ UAM_TEST(MarkdownStoreImportsEditsFavoritesAndResolvesConflictsWithoutChangingSo
 	std::vector<MarkdownStoreService::ImportRequest> requests;
 	for (const auto& candidate : preview)
 	{
-		if (candidate.supported) requests.push_back({candidate.source_provider, candidate.source_path, MarkdownStoreService::ImportConflictAction::Separate});
+		if (candidate.supported)
+			requests.push_back({candidate.source_provider, candidate.source_path, MarkdownStoreService::ImportConflictAction::Separate});
 	}
 	const auto imported = MarkdownStoreService::ImportEntries(root, requests, &error);
 	UAM_ASSERT(error.empty());
@@ -7698,7 +8189,8 @@ UAM_TEST(MarkdownStoreImportsEditsFavoritesAndResolvesConflictsWithoutChangingSo
 	UAM_ASSERT_EQ(entries.size(), static_cast<std::size_t>(5));
 	UAM_ASSERT(std::ranges::all_of(entries, [](const auto& entry) { return !entry.source_provider.empty() && !entry.source_path.empty() && !entry.command_name.empty() && !entry.body.empty(); }));
 	std::set<std::string> commands;
-	for (const auto& entry : entries) UAM_ASSERT(commands.insert(entry.command_name).second);
+	for (const auto& entry : entries)
+		UAM_ASSERT(commands.insert(entry.command_name).second);
 
 	MarkdownStoreService::Entry favorite_entry;
 	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, entries.front().file_path.string(), true, &favorite_entry, &error));
@@ -8319,6 +8811,15 @@ UAM_TEST(NativeGeminiHistoryLoadCapsAreBounded)
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages() > 0);
 }
 
+UAM_TEST(WindowsShellWorkingDirectoryPreservesUtf8)
+{
+#if defined(_WIN32)
+	const std::filesystem::path workspace = uam::paths::PathFromUtf8("C:\\Users\\Jos\xc3\xa9\\\xe5\xb7\xa5\xe4\xbd\x9c");
+	const std::string command = PlatformServicesFactory::Instance().process_service.BuildShellCommandWithWorkingDirectory(workspace, "echo ready");
+	UAM_ASSERT(uam::strings::Contains(command, uam::paths::Utf8PathString(workspace)));
+#endif
+}
+
 UAM_TEST(GeminiHistoryParseFileHonorsCaps)
 {
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -8478,11 +8979,7 @@ UAM_TEST(MacStoppingStdioProcessStopsDescendantProcesses)
 	uam::platform::StdioProcessPlatformFields process;
 	std::string error;
 	auto& process_service = PlatformServicesFactory::Instance().process_service;
-	UAM_ASSERT(process_service.StartStdioProcess(
-	    process,
-	    temp.root,
-	    {"/bin/sh", "-c", "(sleep 0.3; touch " + ShellQuoteForTest(marker.string()) + ") & wait"},
-	    &error));
+	UAM_ASSERT(process_service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", "(sleep 0.3; touch " + ShellQuoteForTest(marker.string()) + ") & wait"}, &error));
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	process_service.StopStdioProcess(process, true);
@@ -8523,72 +9020,189 @@ UAM_TEST(MacWritingToClosedStdioPipeDoesNotTerminateCaller)
 }
 #endif
 
+UAM_TEST(ProviderWorkerDirectExecutionHonorsTimeoutAndCancellation)
+{
+	TempDir temp("uam-provider-worker-direct-stop");
+	uam::ProviderWorkerInvocation invocation;
+	invocation.direct_process = true;
 #if defined(_WIN32)
-UAM_TEST(WindowsStdioProcessLaunchesPathCmdShim)
+	const fs::path shim_path = temp.root / "uam-slow-worker.cmd";
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho started\r\n:noise\r\necho noisy-output\r\ngoto noise\r\n"));
+	invocation.argv = {uam::paths::Utf8PathString(shim_path)};
+	const std::string input_prefix = "uam-provider-worker-stdin-" + std::to_string(GetCurrentProcessId()) + "-";
+	const auto count_worker_input_files = [&]()
+	{
+		std::error_code error;
+		const fs::path temp_directory = fs::temp_directory_path(error);
+		std::size_t count = 0;
+		for (fs::directory_iterator it(temp_directory, error), end; !error && it != end; it.increment(error))
+		{
+			if (it->path().filename().string().rfind(input_prefix, 0) == 0)
+			{
+				++count;
+			}
+		}
+		return count;
+	};
+	const std::size_t input_files_before = count_worker_input_files();
+#else
+	invocation.argv = {"/bin/sh", "-c", "printf 'started\\n'; sleep 5"};
+#endif
+	invocation.standard_input.assign(1024 * 1024, 'p');
+	invocation.command_preview = "uam-slow-worker";
+
+	const ProcessExecutionResult timed_out = uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 250);
+	UAM_ASSERT(timed_out.timed_out);
+	UAM_ASSERT(!timed_out.canceled);
+	UAM_ASSERT_EQ(timed_out.exit_code, -1);
+	UAM_ASSERT_EQ(timed_out.error, std::string("Command timed out."));
+	UAM_ASSERT(timed_out.output.find("started") != std::string::npos);
+
+	std::stop_source stop_source;
+	stop_source.request_stop();
+	const ProcessExecutionResult canceled = uam::ExecuteProviderWorkerInvocation(invocation, temp.root, -1, stop_source.get_token());
+	UAM_ASSERT(canceled.canceled);
+	UAM_ASSERT(!canceled.timed_out);
+	UAM_ASSERT_EQ(canceled.exit_code, -1);
+	UAM_ASSERT_EQ(canceled.error, std::string("Command canceled."));
+#if defined(_WIN32)
+	uam::ProviderWorkerInvocation missing_worker = invocation;
+	missing_worker.argv = {"uam-provider-worker-command-that-does-not-exist-7f4938d1"};
+	const ProcessExecutionResult launch_failed = uam::ExecuteProviderWorkerInvocation(missing_worker, temp.root, 250);
+	UAM_ASSERT(!launch_failed.ok);
+	UAM_ASSERT(!launch_failed.error.empty());
+	UAM_ASSERT_EQ(count_worker_input_files(), input_files_before);
+#endif
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsProviderWorkerDirectLaunchesPathCmdShimWithLongStdin)
 {
 	TempDir temp("uam-win-cmd-shim");
 	const fs::path shim_path = temp.root / "uam-fake-cli.cmd";
-	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho shim:%~1:%~2\r\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho shim:%~1:%~2\r\necho stderr-marker 1>&2\r\necho stdin-begin\r\nmore\r\necho stdin-end\r\n"));
 
 	const char* existing_path = std::getenv("PATH");
 	const std::string combined_path = temp.root.string() + (existing_path == nullptr ? "" : (";" + std::string(existing_path)));
 	ScopedEnvVar scoped_path("PATH", combined_path);
 
-	uam::platform::StdioProcessPlatformFields process;
+	uam::ProviderWorkerInvocation invocation;
+	invocation.direct_process = true;
+	invocation.argv = {"uam-fake-cli", "hello world", "tail"};
+	invocation.standard_input = std::string(12000, 'z');
+	invocation.command_preview = "uam-fake-cli <prompt via stdin>";
+
+	const ProcessExecutionResult result = uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 5000);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	UAM_ASSERT(result.output.find("shim:hello world:tail") != std::string::npos);
+	UAM_ASSERT(result.output.find("stderr-marker") != std::string::npos);
+	UAM_ASSERT(result.output.find("stdin-begin") != std::string::npos);
+	UAM_ASSERT(result.output.find("stdin-end") != std::string::npos);
+	UAM_ASSERT(std::ranges::count(result.output, 'z') >= static_cast<std::ptrdiff_t>(12000));
+	const std::size_t stdout_position = result.output.find("shim:hello world:tail");
+	const std::size_t stderr_position = result.output.find("stderr-marker");
+	const std::size_t stdin_position = result.output.find("stdin-begin");
+	UAM_ASSERT(stdout_position < stderr_position);
+	UAM_ASSERT(stderr_position < stdin_position);
+}
+
+UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
+{
+	TempDir temp("uam-win-copilot-terminal-shim");
+	const fs::path unicode_bin = temp.root / uam::paths::PathFromUtf8("copilot-\xE2\x98\x83-bin");
+	fs::create_directories(unicode_bin);
+	const fs::path shim_path = unicode_bin / "copilot.cmd";
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\nset /p \"UAM_INPUT=\"\r\necho copilot:%~1:%~2:%UAM_INPUT%\r\n"));
+
+	const DWORD existing_path_size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+	std::wstring existing_path(static_cast<std::size_t>(existing_path_size), L'\0');
+	if (existing_path_size > 0)
+	{
+		const DWORD written = GetEnvironmentVariableW(L"PATH", existing_path.data(), existing_path_size);
+		UAM_ASSERT(written > 0 && written < existing_path_size);
+		existing_path.resize(static_cast<std::size_t>(written));
+	}
+	const std::wstring combined_path = unicode_bin.wstring() + (existing_path.empty() ? std::wstring() : L";" + existing_path);
+	ScopedWideWindowsEnvVar scoped_path(L"PATH", combined_path);
+	UAM_ASSERT(scoped_path.applied);
+
+	uam::CliTerminalState terminal;
+	terminal.rows = uam::kCliTerminalDefaultRows;
+	terminal.cols = uam::kCliTerminalDefaultCols;
+	const std::string session_id = "7b7f1032-0e41-4af2-9cd9-222222222222";
 	std::string error;
-	auto& process_service = PlatformServicesFactory::Instance().process_service;
-	const bool started = process_service.StartStdioProcess(process, temp.root, {"uam-fake-cli", "hello world", "tail"}, &error);
-	UAM_ASSERT(started);
+	auto& terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	UAM_ASSERT(terminal_runtime.StartCliTerminalProcess(terminal, temp.root, {"copilot", "--session-id", session_id}, &error));
 	UAM_ASSERT(error.empty());
+	static constexpr char kInput[] = "hello\r\n";
+	UAM_ASSERT(terminal_runtime.WriteToCliTerminal(terminal, kInput, sizeof(kInput) - 1));
 
 	std::string output;
 	std::array<char, 512> buffer{};
-	int exit_code = -1;
 	bool exited = false;
-
-	for (int attempt = 0; attempt < 200; ++attempt)
+	for (int attempt = 0; attempt < 500; ++attempt)
 	{
-		std::string read_error;
-		const std::ptrdiff_t bytes = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
-		UAM_ASSERT(bytes >= -2);
-		UAM_ASSERT(read_error.empty());
+		const std::ptrdiff_t bytes = terminal_runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
+		UAM_ASSERT(bytes != -1);
 		if (bytes > 0)
 		{
 			output.append(buffer.data(), static_cast<std::size_t>(bytes));
 		}
-
-		if (process_service.PollStdioProcessExited(process, &exit_code))
+		if (terminal_runtime.PollCliTerminalProcessExited(terminal))
 		{
 			exited = true;
-			for (;;)
-			{
-				const std::ptrdiff_t drain_bytes = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
-				UAM_ASSERT(drain_bytes >= -2);
-				UAM_ASSERT(read_error.empty());
-				if (drain_bytes <= 0)
-				{
-					break;
-				}
-				output.append(buffer.data(), static_cast<std::size_t>(drain_bytes));
-			}
 			break;
 		}
-
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
-	if (!exited)
+	if (exited)
 	{
-		process_service.StopStdioProcess(process, true);
+		terminal_runtime.CloseCliTerminalHandles(terminal);
 	}
 	else
 	{
-		process_service.CloseStdioProcessHandles(process);
+		terminal_runtime.StopCliTerminalProcess(terminal, true);
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT(output.find("copilot:--session-id:" + session_id + ":hello") != std::string::npos);
+}
+
+UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
+{
+	TempDir temp("uam-win-copilot-version-shim");
+	const fs::path shim_bin = temp.root / uam::paths::PathFromUtf8("Jos\xC3\xA9") / "Microsoft" / "WinGet" / "Links";
+	fs::create_directories(shim_bin);
+	UAM_ASSERT(uam::io::WriteTextFile(shim_bin / "copilot.cmd", "@echo off\r\necho GitHub Copilot CLI 1.0.75\r\n"));
+
+	const DWORD existing_path_size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+	std::wstring existing_path(static_cast<std::size_t>(existing_path_size), L'\0');
+	if (existing_path_size > 0)
+	{
+		const DWORD written = GetEnvironmentVariableW(L"PATH", existing_path.data(), existing_path_size);
+		UAM_ASSERT(written > 0 && written < existing_path_size);
+		existing_path.resize(static_cast<std::size_t>(written));
+	}
+	const std::wstring combined_path = shim_bin.wstring() + (existing_path.empty() ? std::wstring() : L";" + existing_path);
+	ScopedWideWindowsEnvVar scoped_path(L"PATH", combined_path);
+	UAM_ASSERT(scoped_path.applied);
+
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderCliCompatibilityService service;
+	service.StartProviderVersionCheck(app, uam::provider_ids::kCopilotCli, true);
+	for (int attempt = 0; attempt < 500 && !app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli].checked; ++attempt)
+	{
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
-	UAM_ASSERT(exited);
-	UAM_ASSERT_EQ(exit_code, 0);
-	UAM_ASSERT(output.find("shim:hello world:tail") != std::string::npos);
+	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
+	UAM_ASSERT(state.checked);
+	UAM_ASSERT(state.supported);
+	UAM_ASSERT_EQ(state.installed_version, std::string("1.0.75"));
+	UAM_ASSERT_EQ(state.install_method, std::string("winget"));
 }
 #endif
 

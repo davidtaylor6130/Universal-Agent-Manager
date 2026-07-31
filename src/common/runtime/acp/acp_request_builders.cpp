@@ -248,6 +248,16 @@ nlohmann::json BuildCodexTurnInterruptRequest(int request_id, const std::string&
 	                                  });
 }
 
+nlohmann::json BuildSetConfigOptionRequest(int request_id, const std::string& session_id, const std::string& config_id, const std::string& value)
+{
+	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionSetConfigOption,
+		                              {
+		                                  {"sessionId", session_id},
+		                                  {"configId", config_id},
+		                                  {"value", value},
+		                              });
+}
+
 nlohmann::json BuildSetModeRequest(int request_id, const std::string& session_id, const std::string& mode_id)
 {
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionSetMode,
@@ -268,7 +278,14 @@ nlohmann::json BuildSetModelRequest(int request_id, const std::string& session_i
 
 std::string AppApprovalModeId(std::string_view mode_id)
 {
-	return uam::approval_modes::AppApprovalModeFromProviderModeId(uam::strings::TrimAsciiView(mode_id));
+	const std::string_view normalized = uam::strings::TrimAsciiView(mode_id);
+	// Keep hidden Copilot autopilot state distinct so the prompt path forces it
+	// back to the app's safe default agent mode before sending user input.
+	if (normalized == uam::approval_modes::kAcpAutopilotMode)
+	{
+		return std::string(normalized);
+	}
+	return uam::approval_modes::AppApprovalModeFromProviderModeId(normalized);
 }
 
 std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id)

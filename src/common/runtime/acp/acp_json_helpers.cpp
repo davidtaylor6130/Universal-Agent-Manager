@@ -1,5 +1,6 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
+#include "common/provider/provider_ids.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
@@ -167,6 +168,10 @@ std::string FormatAcpFailureMessage(const AcpSessionState& session, const AcpFai
 		out << " (" << uam::strings::JoinNonEmpty(detail_parts, ", ") << ")";
 	}
 	out << ": " << (details.message.empty() ? (std::string(RuntimeDisplayName(session)) + " request failed.") : details.message);
+	if (details.code == -32000 && uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) && uam::strings::ContainsCaseInsensitive(details.message, "authentication required"))
+	{
+		out << " Run `copilot login` in a terminal, then retry.";
+	}
 	if (details.has_detail)
 	{
 		out << " See diagnostics/stderr details.";

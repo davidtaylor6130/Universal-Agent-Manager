@@ -5,6 +5,8 @@
 #include "common/config/approval_modes.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_model_json.h"
 
 #include <cstring>
@@ -132,6 +134,95 @@ void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& mod
 	{
 		session.current_model_id = current_model_id;
 	}
+}
+
+bool UpdateCopilotReasoningFromConfigOptions(AcpSessionState& session, ChatSession& chat, const nlohmann::json& config_options)
+{
+	(void)chat;
+	if (!uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) || !config_options.is_array())
+	{
+		return false;
+	}
+
+	AcpModelState* selected_model = nullptr;
+	for (AcpModelState& model : session.available_models)
+	{
+		if (model.id == session.current_model_id)
+		{
+			selected_model = &model;
+			break;
+		}
+	}
+	if (selected_model == nullptr)
+	{
+		return false;
+	}
+
+	std::vector<std::string> supported_efforts;
+	std::string current_effort;
+	for (const nlohmann::json& option : config_options)
+	{
+		if (uam::nlohmann_json::TrimmedStringValue(option, {"id"}) != "reasoning_effort")
+		{
+			continue;
+		}
+		for (const nlohmann::json& choice : JsonArrayValue(option, "options"))
+		{
+			uam::ranges::PushUniqueNonEmptyString(supported_efforts, NormalizeCopilotReasoningEffort(uam::nlohmann_json::TrimmedStringValue(choice, {"value"})));
+		}
+		current_effort = NormalizeCopilotReasoningEffort(uam::nlohmann_json::TrimmedStringValue(option, {"currentValue"}));
+		if (!uam::ranges::Contains(supported_efforts, current_effort))
+		{
+			current_effort.clear();
+		}
+		break;
+	}
+
+	const bool changed = selected_model->supported_reasoning_efforts != supported_efforts || selected_model->default_reasoning_effort != current_effort;
+	selected_model->supported_reasoning_efforts = std::move(supported_efforts);
+	selected_model->default_reasoning_effort = current_effort;
+	return changed;
+}
+
+bool ReconcileCopilotReasoningEffort(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	if (!uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) || session.model_discovery_only || (!chat.model_id.empty() && chat.model_id != session.current_model_id))
+	{
+		return false;
+	}
+
+	AcpModelState* selected_model = nullptr;
+	for (AcpModelState& model : session.available_models)
+	{
+		if (model.id == session.current_model_id)
+		{
+			selected_model = &model;
+			break;
+		}
+	}
+	if (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty())
+	{
+		return false;
+	}
+
+	const std::string desired_effort = NormalizeCopilotReasoningEffort(chat.reasoning_effort);
+	if (uam::ranges::Contains(selected_model->supported_reasoning_efforts, desired_effort))
+	{
+		if (desired_effort == selected_model->default_reasoning_effort || !session.session_ready || session.startup_model_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.reasoning_change_request_id != 0)
+		{
+			return false;
+		}
+		std::string error;
+		return SetAcpSessionReasoningEffort(app, chat.id, desired_effort, &error, selected_model->default_reasoning_effort);
+	}
+
+	if (chat.reasoning_effort == selected_model->default_reasoning_effort)
+	{
+		return false;
+	}
+	chat.reasoning_effort = selected_model->default_reasoning_effort;
+	SaveChatQuietly(app, chat);
+	return true;
 }
 
 nlohmann::json ModelsForPersistentCache(const std::vector<AcpModelState>& models)
@@ -288,7 +379,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		invalid_load_retry.error_data = error_data;
 		invalid_load_retry.detail_text = detail_text;
 		invalid_load_retry.formatted_error = formatted_error;
-		if (RetryGeminiSessionNewAfterInvalidLoad(app, session, chat, invalid_load_retry))
+		if (RetrySessionNewAfterInvalidLoad(app, session, chat, invalid_load_retry))
 		{
 			return;
 		}
@@ -296,6 +387,23 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		{
 			StopBackgroundModelDiscovery(app, session);
 			return;
+		}
+		if (method == uam::acp_methods::kSessionSetConfigOption && id == session.reasoning_change_request_id)
+		{
+			for (AcpModelState& model : session.available_models)
+			{
+				if (model.id == session.current_model_id)
+				{
+					model.default_reasoning_effort = session.reasoning_change_previous_id;
+					break;
+				}
+			}
+			if (session.reasoning_change_previous_chat_id.has_value() && chat.reasoning_effort == session.reasoning_change_requested_id)
+			{
+				chat.reasoning_effort = *session.reasoning_change_previous_chat_id;
+				SaveChatQuietly(app, chat);
+			}
+			ClearAcpReasoningChangeRequest(session);
 		}
 		if (method == uam::acp_methods::kSessionSetMode && id == session.mode_change_request_id)
 		{
@@ -315,6 +423,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				SaveChatQuietly(app, chat);
 			}
 			ClearAcpModelChangeRequest(session);
+			session.awaiting_model_config_options = false;
 		}
 		if (method == uam::acp_methods::kSessionSetModel && id == session.startup_model_request_id)
 		{
@@ -494,6 +603,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.session_id = uam::nlohmann_json::TrimmedStringValueOr(result, "sessionId", session.session_id);
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
+			if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
+			{
+				(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+			}
 		}
 		RememberDiscoveredModels(app, session);
 		FinishModelDiscoveryWithoutResults(app, session);
@@ -518,6 +631,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (!session.model_discovery_only)
 		{
+			(void)ReconcileCopilotReasoningEffort(app, session, chat);
 			SaveChatQuietly(app, chat);
 		}
 		StopBackgroundModelDiscovery(app, session);
@@ -532,12 +646,17 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		{
 			UpdateAcpModesFromJson(session, JsonObjectValue(result, "modes"));
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
+			if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
+			{
+				(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+			}
 		}
 		RememberDiscoveredModels(app, session);
 		FinishModelDiscoveryWithoutResults(app, session);
 		session.session_ready = true;
 		session.ignore_session_updates_until_ready = false;
 		session.lifecycle_state = kAcpLifecycleReady;
+		(void)ReconcileCopilotReasoningEffort(app, session, chat);
 		StopBackgroundModelDiscovery(app, session);
 		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
 		return;
@@ -574,6 +693,21 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
 	{
 		const int response_id = JsonRpcNumericId(JsonRpcIdOrNull(message));
+		if (method == uam::acp_methods::kSessionSetConfigOption && response_id == session.reasoning_change_request_id)
+		{
+			if (result.is_object())
+			{
+				if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
+				{
+					(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+				}
+			}
+			ClearAcpReasoningChangeRequest(session);
+			session.last_error.clear();
+			session.lifecycle_state = kAcpLifecycleReady;
+			(void)ReconcileCopilotReasoningEffort(app, session, chat);
+			(void)SendQueuedPromptIfReady(session, chat);
+		}
 		if (method == uam::acp_methods::kSessionSetMode && response_id == session.mode_change_request_id)
 		{
 			session.current_mode_id = session.mode_change_requested_id;
@@ -587,6 +721,14 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			if (response_id == session.model_change_request_id)
 			{
 				session.current_model_id = session.model_change_requested_id;
+				if (result.is_object())
+				{
+					if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
+					{
+						(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+						session.awaiting_model_config_options = false;
+					}
+				}
 				ClearAcpModelChangeRequest(session);
 				session.last_error.clear();
 				session.lifecycle_state = kAcpLifecycleReady;
@@ -595,6 +737,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			{
 				ClearAcpStartupModelRequest(session);
 			}
+			(void)ReconcileCopilotReasoningEffort(app, session, chat);
 			(void)SendQueuedPromptIfReady(session, chat);
 		}
 		return;

@@ -123,7 +123,7 @@ namespace uam::cef
 		}
 #endif
 
-		std::filesystem::path fs_path(path);
+		const std::filesystem::path fs_path = uam::paths::PathFromUtf8(path);
 		const std::filesystem::path final_path = uam::paths::NormalizeExistingPath(fs_path);
 		return "file://" + uam::paths::PortablePathString(final_path);
 	}
@@ -291,7 +291,7 @@ namespace uam::cef
 		CefString exe_dir_str;
 		if (CefGetPath(PK_DIR_EXE, exe_dir_str))
 		{
-			return ResolveTrustedUiIndexUrl(std::filesystem::path(exe_dir_str.ToString()));
+			return ResolveTrustedUiIndexUrl(uam::paths::PathFromUtf8(exe_dir_str.ToString()));
 		}
 
 		return ResolveTrustedUiIndexUrl(".");

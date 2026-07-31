@@ -6,6 +6,7 @@
 #include "app/memory_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/range_utils.h"
@@ -117,7 +118,7 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 		                 scope_json["scopeType"] = scope.scope_type;
 		                 scope_json["folderId"] = scope.folder_id;
 		                 scope_json["label"] = scope.label;
-		                 scope_json["rootPath"] = uam::strings::NonEmptyOrFallback(scope.root_path.string(), "Global and project memory roots");
+		                 scope_json["rootPath"] = uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(scope.root_path), "Global and project memory roots");
 		                 scope_json["rootCount"] = scope.roots.size();
 
 		                 nlohmann::json response;
@@ -135,11 +136,11 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 			                     {"lastObserved", entry.last_observed},
 			                     {"occurrenceCount", entry.occurrence_count},
 			                     {"preview", entry.preview},
-			                     {"filePath", entry.file_path.string()},
+			                     {"filePath", uam::paths::Utf8PathString(entry.file_path)},
 			                     {"scopeType", entry.scope_type},
 			                     {"folderId", entry.folder_id},
 			                     {"scopeLabel", entry.scope_label},
-			                     {"rootPath", entry.root_path.string()},
+			                     {"rootPath", uam::paths::Utf8PathString(entry.root_path)},
 			                 });
 		                 }
 		                 return AsyncSuccess(WithOptionalRequestId(std::move(response), request_id));
@@ -196,11 +197,11 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	response["lastObserved"] = created.last_observed;
 	response["occurrenceCount"] = created.occurrence_count;
 	response["preview"] = created.preview;
-	response["filePath"] = created.file_path.string();
+	response["filePath"] = uam::paths::Utf8PathString(created.file_path);
 	response["scopeType"] = created.scope_type;
 	response["folderId"] = created.folder_id;
 	response["scopeLabel"] = created.scope_label;
-	response["rootPath"] = created.root_path.string();
+	response["rootPath"] = uam::paths::Utf8PathString(created.root_path);
 	MemoryService::RefreshMemoryActivity(m_app);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(response.dump());

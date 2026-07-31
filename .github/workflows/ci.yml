@@ -32,7 +32,7 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: Builds/_deps
+          path: Builds/tests/_deps
           key: ${{ runner.os }}-uam-test-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
             ${{ runner.os }}-uam-test-deps-
@@ -41,15 +41,37 @@ jobs:
       - run: npm --prefix UI-V2 ci
       - run: npm --prefix UI-V2 run test
       - run: npm --prefix UI-V2 run build
-      - run: cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
-      - run: cmake --build Builds/tests --config Debug
-      - run: ctest --test-dir Builds/tests -C Debug --output-on-failure
-      - name: Smoke test Windows app launch
+      - name: Configure native Release tests (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DUAM_BUILD_TESTS=ON
+      - name: Configure native Release tests (Windows x64)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON
+      - run: cmake --build Builds/tests --config Release --parallel 4
+      - run: ctest --test-dir Builds/tests -C Release --output-on-failure
+      - name: Package Windows review build
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          Remove-Item Builds/tests/Release/uam_core_tests* -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path Builds/tests/Release/* -DestinationPath UAM-Windows-PR.zip
+
+      - name: Smoke test packaged Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'uam-package'
+          Expand-Archive UAM-Windows-PR.zip -DestinationPath $packageRoot
           $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
-          $process = Start-Process Builds/tests/Debug/universal_agent_manager.exe -PassThru
+          $process = Start-Process (Join-Path $packageRoot 'universal_agent_manager.exe') -PassThru
           Start-Sleep -Seconds 5
-          if ($process.HasExited) { throw "Windows app exited during startup with code $($process.ExitCode)." }
+          if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
           Stop-Process -Id $process.Id -Force
+
+      - name: Upload Windows Release review artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: UAM-Windows-Release-PR
+          path: UAM-Windows-PR.zip
+          if-no-files-found: error

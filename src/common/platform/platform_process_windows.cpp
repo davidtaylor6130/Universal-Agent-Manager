@@ -1,9 +1,178 @@
 #include "platform_services_windows_impl_internal.h"
 
+#include <atomic>
+
 using namespace uam::platform_windows_impl;
 
 namespace uam::platform_windows_impl
 {
+
+	namespace
+	{
+		class ScopedThreadAttributeList
+		{
+		  public:
+			~ScopedThreadAttributeList()
+			{
+				if (m_attributes != nullptr)
+				{
+					DeleteProcThreadAttributeList(m_attributes);
+					HeapFree(GetProcessHeap(), 0, m_attributes);
+				}
+			}
+
+			bool Initialize(const std::vector<HANDLE>& inherited_handles, std::string* error_out)
+			{
+				SIZE_T bytes = 0;
+				(void)InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+				if (bytes == 0)
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to size the stdio process attribute list: " + FormatWindowsError(GetLastError()) + ".";
+					}
+					return false;
+				}
+
+				m_attributes = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, bytes));
+				if (m_attributes == nullptr)
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to allocate the stdio process attribute list.";
+					}
+					return false;
+				}
+				if (!InitializeProcThreadAttributeList(m_attributes, 1, 0, &bytes))
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to initialize the stdio process attribute list: " + FormatWindowsError(GetLastError()) + ".";
+					}
+					HeapFree(GetProcessHeap(), 0, m_attributes);
+					m_attributes = nullptr;
+					return false;
+				}
+				if (!UpdateProcThreadAttribute(m_attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, const_cast<HANDLE*>(inherited_handles.data()), inherited_handles.size() * sizeof(HANDLE), nullptr, nullptr))
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to restrict inherited stdio handles: " + FormatWindowsError(GetLastError()) + ".";
+					}
+					return false;
+				}
+				return true;
+			}
+
+			LPPROC_THREAD_ATTRIBUTE_LIST Get() const
+			{
+				return m_attributes;
+			}
+
+			ScopedThreadAttributeList() = default;
+			ScopedThreadAttributeList(const ScopedThreadAttributeList&) = delete;
+			ScopedThreadAttributeList& operator=(const ScopedThreadAttributeList&) = delete;
+
+		  private:
+			LPPROC_THREAD_ATTRIBUTE_LIST m_attributes = nullptr;
+		};
+
+		HANDLE CreatePreloadedStdinFile(std::string_view input, std::string* error_out)
+		{
+			std::wstring temp_directory(static_cast<std::size_t>(MAX_PATH) + 1, L'\0');
+			for (;;)
+			{
+				const DWORD length = GetTempPathW(static_cast<DWORD>(temp_directory.size()), temp_directory.data());
+				if (length == 0)
+				{
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to locate the temporary directory: " + FormatWindowsError(GetLastError()) + ".";
+					}
+					return INVALID_HANDLE_VALUE;
+				}
+				if (length < temp_directory.size())
+				{
+					temp_directory.resize(static_cast<std::size_t>(length));
+					break;
+				}
+				temp_directory.resize(static_cast<std::size_t>(length) + 1);
+			}
+
+			SECURITY_ATTRIBUTES security{};
+			security.nLength = sizeof(security);
+			security.bInheritHandle = TRUE;
+
+			static std::atomic<unsigned long long> serial{0};
+			HANDLE input_file = INVALID_HANDLE_VALUE;
+			std::wstring input_path;
+			for (int attempt = 0; attempt < 16; ++attempt)
+			{
+				input_path = temp_directory + L"uam-provider-worker-stdin-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(serial.fetch_add(1, std::memory_order_relaxed)) + L".tmp";
+				input_file = CreateFileW(input_path.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE, FILE_SHARE_DELETE, &security, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+				if (input_file != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS)
+				{
+					break;
+				}
+			}
+
+			if (input_file == INVALID_HANDLE_VALUE)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to create private provider worker input: " + FormatWindowsError(GetLastError()) + ".";
+				}
+				return INVALID_HANDLE_VALUE;
+			}
+
+			// Windows has no unnamed regular-file handle suitable for redirected stdin.
+			// Mark this private file for deletion before writing the prompt; the inherited
+			// handle remains readable while its directory entry cannot be reopened.
+			if (!DeleteFileW(input_path.c_str()))
+			{
+				const DWORD delete_error = GetLastError();
+				CloseInvalidHandleIfOpen(input_file);
+				DeleteFileW(input_path.c_str());
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to secure provider worker input: " + FormatWindowsError(delete_error) + ".";
+				}
+				return INVALID_HANDLE_VALUE;
+			}
+
+			std::size_t offset = 0;
+			while (offset < input.size())
+			{
+				const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(input.size() - offset, static_cast<std::size_t>(MAXDWORD)));
+				DWORD written = 0;
+				if (!WriteFile(input_file, input.data() + offset, chunk, &written, nullptr) || written == 0)
+				{
+					const DWORD write_error = GetLastError();
+					CloseInvalidHandleIfOpen(input_file);
+					if (error_out != nullptr)
+					{
+						*error_out = "Failed to prepare provider worker input: " + FormatWindowsError(write_error) + ".";
+					}
+					return INVALID_HANDLE_VALUE;
+				}
+				offset += static_cast<std::size_t>(written);
+			}
+
+			LARGE_INTEGER beginning{};
+			if (!SetFilePointerEx(input_file, beginning, nullptr, FILE_BEGIN))
+			{
+				const DWORD seek_error = GetLastError();
+				CloseInvalidHandleIfOpen(input_file);
+				if (error_out != nullptr)
+				{
+					*error_out = "Failed to rewind provider worker input: " + FormatWindowsError(seek_error) + ".";
+				}
+				return INVALID_HANDLE_VALUE;
+			}
+
+			return input_file;
+		}
+	} // namespace
 
 class WindowsProcessService final : public IPlatformProcessService
 {
@@ -30,7 +199,7 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const override
 	{
-		return "cd /d " + uam::shell::EscapeArg(working_directory.string()) + " && " + command;
+		return "cd /d " + uam::shell::EscapeArg(uam::paths::Utf8PathString(working_directory)) + " && " + command;
 	}
 
 	bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const override
@@ -219,6 +388,17 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
 	{
+		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, error_out);
+	}
+
+	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const override
+	{
+		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, error_out);
+	}
+
+  private:
+	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, std::string* error_out) const
+	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
 			if (error_out != nullptr)
@@ -239,19 +419,42 @@ class WindowsProcessService final : public IPlatformProcessService
 		HANDLE stderr_read = INVALID_HANDLE_VALUE;
 		HANDLE stderr_write = INVALID_HANDLE_VALUE;
 
-		if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) || !CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0))
+		if (preloaded_input != nullptr)
+		{
+			stdin_read = CreatePreloadedStdinFile(*preloaded_input, error_out);
+			if (stdin_read == INVALID_HANDLE_VALUE)
+			{
+				return false;
+			}
+		}
+		else if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0))
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to create stdio process pipes.";
+				*error_out = "Failed to create stdio process input pipe.";
+			}
+			return false;
+		}
+
+		if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || (!merge_output && !CreatePipe(&stderr_read, &stderr_write, &sa, 0)))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to create stdio process output pipes.";
 			}
 			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 			return false;
 		}
 
-		SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+		if (stdin_write != INVALID_HANDLE_VALUE)
+		{
+			SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+		}
 		SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-		SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+		if (stderr_read != INVALID_HANDLE_VALUE)
+		{
+			SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+		}
 
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
@@ -269,17 +472,30 @@ class WindowsProcessService final : public IPlatformProcessService
 		command_line.push_back(L'\0');
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 
-		STARTUPINFOW startup_info{};
-		startup_info.cb = sizeof(startup_info);
-		startup_info.dwFlags = STARTF_USESTDHANDLES;
-		startup_info.hStdInput = stdin_read;
-		startup_info.hStdOutput = stdout_write;
-		startup_info.hStdError = stderr_write;
+		std::vector<HANDLE> inherited_handles = {stdin_read, stdout_write};
+		if (!merge_output)
+		{
+			inherited_handles.push_back(stderr_write);
+		}
+		ScopedThreadAttributeList attribute_list;
+		if (!attribute_list.Initialize(inherited_handles, error_out))
+		{
+			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
+			return false;
+		}
+
+		STARTUPINFOEXW startup_info{};
+		startup_info.StartupInfo.cb = sizeof(startup_info);
+		startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+		startup_info.StartupInfo.hStdInput = stdin_read;
+		startup_info.StartupInfo.hStdOutput = stdout_write;
+		startup_info.StartupInfo.hStdError = merge_output ? stdout_write : stderr_write;
+		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &startup_info, &process_info);
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &startup_info.StartupInfo, &process_info);
 
 		CloseStdioChildPipeEnds(stdin_read, stdout_write, stderr_write);
 
@@ -309,6 +525,22 @@ class WindowsProcessService final : public IPlatformProcessService
 			return false;
 		}
 
+		const DWORD resumed = ResumeThread(process_info.hThread);
+		if (resumed == static_cast<DWORD>(-1))
+		{
+			const DWORD resume_error = GetLastError();
+			TerminateProcessTreeAndWaitBriefly(job, process_info.hProcess, 1);
+			CloseHandle(job);
+			CloseInvalidHandleIfOpen(process_info.hThread);
+			CloseInvalidHandleIfOpen(process_info.hProcess);
+			CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to resume stdio process: " + FormatWindowsError(resume_error) + ".";
+			}
+			return false;
+		}
+
 		process.stdin_write = stdin_write;
 		process.stdout_read = stdout_read;
 		process.stderr_read = stderr_read;
@@ -318,6 +550,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		return true;
 	}
 
+  public:
 	void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 	{
 		CloseInvalidHandleIfOpen(process.stdin_write);
@@ -368,16 +601,25 @@ class WindowsProcessService final : public IPlatformProcessService
 		return true;
 	}
 
-	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
+	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
+	{
+		CloseInvalidHandleIfOpen(process.stdin_write);
+	}
+
+	void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
 	{
 		if (process.process_info.hProcess == INVALID_HANDLE_VALUE)
 		{
-			CloseStdioProcessHandles(process);
 			return;
 		}
 
 		TerminateProcessTree(process.job_object, process.process_info.hProcess, 1);
 		WaitForSingleObject(process.process_info.hProcess, fast_exit ? 80 : 600);
+	}
+
+	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
+	{
+		TerminateStdioProcess(process, fast_exit);
 		CloseStdioProcessHandles(process);
 	}
 
@@ -428,7 +670,8 @@ class WindowsProcessService final : public IPlatformProcessService
 		while (buffer.size() <= 32768)
 		{
 			const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-			if (length == 0) return {};
+			if (length == 0)
+				return {};
 			if (length < buffer.size())
 			{
 				buffer.resize(static_cast<std::size_t>(length));
@@ -518,17 +761,18 @@ class WindowsProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		SHELLEXECUTEINFOA shim{};
-		shim.cbSize = sizeof(SHELLEXECUTEINFOA);
+		const std::wstring working_directory_w = working_directory.wstring();
+		SHELLEXECUTEINFOW shim{};
+		shim.cbSize = sizeof(SHELLEXECUTEINFOW);
 		shim.fMask = SEE_MASK_NOCLOSEPROCESS;
 		shim.hwnd = nullptr;
-		shim.lpVerb = "open";
-		shim.lpFile = "cmd.exe";
+		shim.lpVerb = L"open";
+		shim.lpFile = L"cmd.exe";
 		shim.lpParameters = nullptr;
-		shim.lpDirectory = working_directory.string().c_str();
+		shim.lpDirectory = working_directory_w.c_str();
 		shim.nShow = SW_SHOWNORMAL;
 
-		if (!ShellExecuteExA(&shim))
+		if (!ShellExecuteExW(&shim))
 		{
 			if (error_out != nullptr)
 			{

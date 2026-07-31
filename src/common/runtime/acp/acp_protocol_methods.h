@@ -18,6 +18,7 @@ namespace uam::acp_methods
 	inline constexpr const char* kSessionCancel = "session/cancel";
 	inline constexpr const char* kSessionUpdate = "session/update";
 	inline constexpr const char* kSessionRequestPermission = "session/request_permission";
+	inline constexpr const char* kSessionSetConfigOption = "session/set_config_option";
 	inline constexpr const char* kSessionSetMode = "session/set_mode";
 	inline constexpr const char* kSessionSetModel = "session/set_model";
 	inline constexpr const char* kThreadStart = "thread/start";
@@ -58,6 +59,7 @@ namespace uam::acp_methods
 	});
 
 	inline constexpr auto kSessionModeOrModelUpdateMethods = std::to_array<std::string_view>({
+	    kSessionSetConfigOption,
 	    kSessionSetMode,
 	    kSessionSetModel,
 	});

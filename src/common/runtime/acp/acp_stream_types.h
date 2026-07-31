@@ -16,6 +16,9 @@ namespace uam::acp_stream_types
 	inline constexpr const char* kSessionUpdateToolCallUpdate = "tool_call_update";
 	inline constexpr const char* kSessionUpdatePlan = "plan";
 	inline constexpr const char* kSessionUpdateCurrentMode = "current_mode_update";
+	inline constexpr const char* kSessionUpdateConfigOptions = "config_option_update";
+
+	inline constexpr const char* kSessionUpdateAvailableCommands = "available_commands_update";
 
 	inline constexpr const char* kTurnEventAssistantText = "assistant_text";
 	inline constexpr const char* kTurnEventThought = "thought";

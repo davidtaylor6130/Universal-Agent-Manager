@@ -27,6 +27,7 @@ import {
 import type {
   AcpAgentInfo,
   AcpBinding,
+  AcpCommand,
   AcpDiagnosticEntry,
   AcpLifecycleState,
   AcpMode,
@@ -314,6 +315,14 @@ function modesEquivalent(existing: AcpMode[], next: AcpMode[]) {
   })
 }
 
+function commandsEquivalent(existing: AcpCommand[], next: AcpCommand[]) {
+  if (existing.length !== next.length) return false
+  return existing.every((command, index) => {
+    const other = next[index]
+    return command.name === other.name && command.description === other.description && command.inputHint === other.inputHint
+  })
+}
+
 function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
   if (existing.length !== next.length) return false
   return existing.every((model, index) => {
@@ -416,6 +425,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
     existing.planSummary === next.planSummary &&
     planEntriesEquivalent(existing.planEntries, next.planEntries) &&
+    commandsEquivalent(existing.availableCommands ?? [], next.availableCommands ?? []) &&
     modesEquivalent(existing.availableModes, next.availableModes) &&
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
@@ -513,6 +523,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',
     planEntries: Array.isArray(acp?.planEntries) ? acp!.planEntries : [],
+    availableCommands: Array.isArray(acp?.availableCommands) ? acp!.availableCommands : [],
     availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],

@@ -29,7 +29,7 @@ namespace
 			return nullptr;
 		}
 
-		const std::filesystem::path exe_dir(exe_dir_string.ToString());
+		const std::filesystem::path exe_dir = uam::paths::PathFromUtf8(exe_dir_string.ToString());
 		const std::vector<std::filesystem::path> icon_paths = {
 		    exe_dir / "app_icon.png",
 		    uam::paths::LexicallyNormalPath(exe_dir / ".." / "Resources" / "app_icon.png"),

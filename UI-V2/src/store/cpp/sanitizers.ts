@@ -4,6 +4,7 @@
 import type {
   AcpAgentInfo,
   AcpAttentionKind,
+  AcpCommand,
   AcpDiagnosticEntry,
   AcpMode,
   AcpModel,
@@ -174,7 +175,7 @@ export function isAllowedAcpModelId(modelId: string): boolean {
 
 export function normalizeCodexReasoningEffort(value: unknown): string {
   const effort = stringOr(value).trim().toLowerCase()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'].includes(effort) ? effort : ''
 }
 
 export function normalizeCodexServiceTier(value: unknown): string {
@@ -514,6 +515,17 @@ export function sanitizeAcpMode(value: unknown): AcpMode | null {
   }
 }
 
+export function sanitizeAcpCommand(value: unknown): AcpCommand | null {
+  if (!isRecord(value)) return null
+  const name = stringOr(value.name).trim().replace(/^\/+/, '')
+  if (!name) return null
+  return {
+    name,
+    description: stringOr(value.description).trim(),
+    inputHint: stringOr(value.inputHint).trim(),
+  }
+}
+
 export function sanitizeAcpModel(value: unknown): AcpModel | null {
   if (!isRecord(value)) return null
   const id = normalizeAcpModelId(value.id)
@@ -567,6 +579,12 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     planEntries: Array.isArray(value.planEntries)
       ? value.planEntries.flatMap((entry) => {
           const sanitized = sanitizePlanEntry(entry)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    availableCommands: Array.isArray(value.availableCommands)
+      ? value.availableCommands.flatMap((command) => {
+          const sanitized = sanitizeAcpCommand(command)
           return sanitized ? [sanitized] : []
         })
       : [],
@@ -896,7 +914,9 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
       : 'unknown'
   const installMethod = stringOr(value.installMethod)
   const normalizedInstallMethod: NonNullable<CliVersionProviderState['installMethod']> =
-    installMethod === 'homebrew-formula' || installMethod === 'homebrew-cask' ? installMethod : 'npm'
+    installMethod === 'homebrew-formula' || installMethod === 'homebrew-cask' || installMethod === 'winget'
+      ? installMethod
+      : 'npm'
   const lastInstallStatus = stringOr(value.lastInstallStatus)
   const normalizedLastInstallStatus: NonNullable<CliVersionProviderState['lastInstallStatus']> =
     lastInstallStatus === 'running' ||

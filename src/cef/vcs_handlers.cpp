@@ -8,6 +8,7 @@
 #include "app/vcs_commit_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -18,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -29,13 +31,14 @@ using namespace uam::query_handler_async;
 
 namespace
 {
-	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles)
+	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles, std::unordered_map<std::string, uam::CliProviderVersionState> provider_versions)
 	{
 		uam::AppState snapshot;
 		snapshot.data_root = std::move(data_root);
 		snapshot.settings = std::move(settings);
 		snapshot.folders = std::move(folders);
 		snapshot.provider_profiles = std::move(provider_profiles);
+		snapshot.runtime_cli_versions_by_provider_id = std::move(provider_versions);
 		return snapshot;
 	}
 
@@ -45,16 +48,17 @@ namespace
 		AppSettings settings;
 		std::vector<ChatFolder> folders;
 		std::vector<ProviderProfile> provider_profiles;
+		std::unordered_map<std::string, uam::CliProviderVersionState> provider_versions;
 	};
 
 	ReadOnlyAppSnapshotInputs CaptureReadOnlyAppSnapshotInputs(const uam::AppState& app)
 	{
-		return {app.data_root, app.settings, app.folders, app.provider_profiles};
+		return {app.data_root, app.settings, app.folders, app.provider_profiles, app.runtime_cli_versions_by_provider_id};
 	}
 
 	uam::AppState BuildReadOnlyAppSnapshot(ReadOnlyAppSnapshotInputs inputs)
 	{
-		return BuildReadOnlyAppSnapshot(std::move(inputs.data_root), std::move(inputs.settings), std::move(inputs.folders), std::move(inputs.provider_profiles));
+		return BuildReadOnlyAppSnapshot(std::move(inputs.data_root), std::move(inputs.settings), std::move(inputs.folders), std::move(inputs.provider_profiles), std::move(inputs.provider_versions));
 	}
 
 	nlohmann::json SerializeGitWorktreeStatus(const uam::GitWorktreeStatus& status)
@@ -81,7 +85,7 @@ namespace
 		nlohmann::json json;
 		json["status"] = SerializeGitWorktreeStatus(result.status);
 		json["message"] = result.message;
-		json["patchPath"] = result.patch_path.empty() ? "" : result.patch_path.string();
+		json["patchPath"] = result.patch_path.empty() ? "" : uam::paths::Utf8PathString(result.patch_path);
 		return json;
 	}
 
@@ -154,7 +158,7 @@ namespace
 				    std::string message = FailureDetailOrFallback(state->result.message, failure_fallback);
 				    if (!state->result.patch_path.empty())
 				    {
-					    message += "\nPatch saved at: " + state->result.patch_path.string();
+					    message += "\nPatch saved at: " + uam::paths::Utf8PathString(state->result.patch_path);
 				    }
 				    return AsyncFailure(400, std::move(message));
 			    }

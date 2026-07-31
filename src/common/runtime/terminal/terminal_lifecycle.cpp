@@ -380,6 +380,36 @@ CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id
 	return FindCliTerminalForRoutingKey(app, chat_id, "");
 }
 
+bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std::string* error_out)
+{
+	if (error_out != nullptr)
+	{
+		error_out->clear();
+	}
+
+	CliTerminalState* terminal = FindCliTerminalForChat(app, chat_id);
+	if (terminal == nullptr || !terminal->running)
+	{
+		return true;
+	}
+
+	const bool shutting_down = terminal->lifecycle_state == CliTerminalLifecycleState::ShuttingDown;
+	const bool has_blocking_work = !shutting_down && (terminal->lifecycle_state == CliTerminalLifecycleState::Busy || terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress || !terminal->pending_steer_prompt.empty());
+	if (has_blocking_work)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Cannot start structured chat while terminal fallback is busy.";
+		}
+		return false;
+	}
+
+	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
+	terminal->should_launch = false;
+	terminal->last_error.clear();
+	return true;
+}
+
 void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
 {
 	const std::string sync_target_id = CliTerminalSyncTargetId(terminal);

@@ -33,7 +33,7 @@ import {
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
-import { buildCodexReasoningOptions, reasoningEffortForModel, titleFromModelId } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
 
 interface MemoryModelOption {
   id: string
@@ -962,7 +962,8 @@ export function SettingsModal() {
                   const providerAcp = providerSession ? acpBindings[providerSession.id] : undefined
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
-                  const liveReasoningOptions = caps.hasReasoningEffort
+                  const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, defaults.modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
+                  const liveReasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
                     ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort)
                     : []
                   const defaultReasoningOption = caps.reasoningOptions.find((option) => !option.id)
@@ -1010,7 +1011,7 @@ export function SettingsModal() {
                               (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
                           </div>
-                          {caps.hasReasoningEffort && (
+                          {reasoningOptions.length > 0 && (
                             <div className="grid gap-1">
                               <div>Reasoning</div>
                               {renderDefaultsMenu(

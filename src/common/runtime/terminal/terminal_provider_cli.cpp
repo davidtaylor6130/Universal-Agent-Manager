@@ -4,10 +4,13 @@
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
-#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -93,6 +96,91 @@ std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSe
 	}
 
 	return ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
+}
+
+bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out)
+{
+	if (error_out != nullptr)
+	{
+		error_out->clear();
+	}
+
+	AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	if (session == nullptr)
+	{
+		return true;
+	}
+	if (AcpSessionHasBlockingRuntimeWork(*session))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Cannot start terminal fallback while the structured runtime is busy.";
+		}
+		return false;
+	}
+
+	if (!StopAcpSession(app, chat.id))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to stop the idle structured runtime before starting terminal fallback.";
+		}
+		return false;
+	}
+	return true;
+}
+
+bool EnsureCopilotInteractiveSessionIdForLaunch(AppState& app, ChatSession& chat, const ProviderProfile& provider, std::string* error_out)
+{
+	if (error_out != nullptr)
+	{
+		error_out->clear();
+	}
+	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
+	{
+		return true;
+	}
+	ProviderCliCompatibilityService().Poll(app);
+	if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
+	{
+		if (error_out != nullptr)
+			*error_out = compatibility_error;
+		return false;
+	}
+
+	const std::string resolved_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
+	if (!resolved_session_id.empty())
+	{
+		return true;
+	}
+
+	const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	if (session_id.empty())
+	{
+		if (error_out != nullptr)
+			*error_out = "Failed to create a Copilot session id.";
+		return false;
+	}
+
+	const std::string previous_session_id = chat.native_session_id;
+	const auto previous_resolved_session = app.resolved_native_sessions_by_chat_id.find(chat.id);
+	const std::string previous_resolved_session_id = previous_resolved_session == app.resolved_native_sessions_by_chat_id.end() ? std::string() : previous_resolved_session->second;
+	const bool had_resolved_session = previous_resolved_session != app.resolved_native_sessions_by_chat_id.end();
+	app.resolved_native_sessions_by_chat_id.erase(chat.id);
+	chat.native_session_id = session_id;
+	if (ProviderRuntime::SaveHistory(provider, app.data_root, chat))
+	{
+		return true;
+	}
+
+	chat.native_session_id = previous_session_id;
+	if (had_resolved_session)
+	{
+		app.resolved_native_sessions_by_chat_id[chat.id] = previous_resolved_session_id;
+	}
+	if (error_out != nullptr)
+		*error_out = "Failed to persist the Copilot session id.";
+	return false;
 }
 
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)

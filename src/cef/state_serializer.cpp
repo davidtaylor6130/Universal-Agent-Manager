@@ -7,6 +7,7 @@
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -524,6 +525,20 @@ namespace uam
 			return modes_json;
 		}
 
+		nlohmann::json SerializeAcpCommands(const std::vector<AcpCommandState>& commands)
+		{
+			nlohmann::json commands_json = JsonArrayWithCapacity(commands.size());
+			for (const AcpCommandState& command : commands)
+			{
+				commands_json.push_back({
+				    {"name", command.name},
+				    {"description", command.description},
+				    {"inputHint", command.input_hint},
+				});
+			}
+			return commands_json;
+		}
+
 		nlohmann::json SerializeAcpModels(const std::vector<AcpModelState>& models)
 		{
 			nlohmann::json models_json = JsonArrayWithCapacity(models.size());
@@ -675,6 +690,7 @@ namespace uam
 			acp_json["toolCalls"] = nlohmann::json::array();
 			acp_json["planSummary"] = "";
 			acp_json["planEntries"] = nlohmann::json::array();
+			acp_json["availableCommands"] = nlohmann::json::array();
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
@@ -727,6 +743,7 @@ namespace uam
 			acp_json["toolCalls"] = SerializeAcpToolCalls(session->tool_calls);
 			acp_json["planSummary"] = session->plan_summary;
 			acp_json["planEntries"] = SerializeAcpPlanEntries(session->plan_entries);
+			acp_json["availableCommands"] = SerializeAcpCommands(session->available_commands);
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
@@ -756,7 +773,7 @@ namespace uam
 		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::ResolveWorkspaceRootPath(app, chat).string());
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 
