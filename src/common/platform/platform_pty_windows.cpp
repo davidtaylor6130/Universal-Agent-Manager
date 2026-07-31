@@ -25,16 +25,12 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		SECURITY_ATTRIBUTES sa{};
-		sa.nLength = sizeof(sa);
-		sa.bInheritHandle = TRUE;
-
 		HANDLE pipe_pty_in = INVALID_HANDLE_VALUE;
 		HANDLE pipe_pty_out = INVALID_HANDLE_VALUE;
 		HANDLE pipe_con_in = INVALID_HANDLE_VALUE;
 		HANDLE pipe_con_out = INVALID_HANDLE_VALUE;
 
-		if (!CreatePipe(&pipe_pty_in, &pipe_con_out, &sa, 0) || !CreatePipe(&pipe_con_in, &pipe_pty_out, &sa, 0))
+		if (!CreatePipe(&pipe_pty_in, &pipe_con_out, nullptr, 0) || !CreatePipe(&pipe_con_in, &pipe_pty_out, nullptr, 0))
 		{
 			if (error_out != nullptr)
 			{
@@ -45,11 +41,6 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 			return false;
 		}
-
-		// Ensure our end of the pipes are not inherited by the child process.
-		// This prevents the child from keeping the pipes alive and causing hangs on ClosePseudoConsole.
-		SetHandleInformation(pipe_pty_in, HANDLE_FLAG_INHERIT, 0);
-		SetHandleInformation(pipe_pty_out, HANDLE_FLAG_INHERIT, 0);
 
 		const COORD size{static_cast<SHORT>(terminal.cols), static_cast<SHORT>(terminal.rows)};
 		HPCON pseudo_console = nullptr;
@@ -66,9 +57,6 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		CloseInvalidHandleIfOpen(pipe_con_in);
-		CloseInvalidHandleIfOpen(pipe_con_out);
-
 		SIZE_T attr_size = 0;
 		InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
 		terminal.attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, attr_size));
@@ -81,7 +69,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			}
 
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
@@ -96,7 +84,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 			terminal.attr_list = nullptr;
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
@@ -119,7 +107,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
 			terminal.attr_list = nullptr;
 			ClosePseudoConsoleSafe(pseudo_console);
-			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
 			return false;
 		}
 
@@ -129,6 +117,8 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
+		CloseInvalidHandleIfOpen(pipe_con_in);
+		CloseInvalidHandleIfOpen(pipe_con_out);
 
 		if (!created)
 		{
