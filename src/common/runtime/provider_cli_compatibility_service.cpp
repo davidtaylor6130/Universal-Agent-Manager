@@ -511,17 +511,23 @@ namespace
 		return std::string(resolved.policy.fallback_title);
 	}
 
-	bool AcpSessionHasProviderInstallBlockingWork(const uam::AcpSessionState& session)
+	bool AcpSessionHasProviderInstallBlockingWork(const uam::AppState& app, const uam::AcpSessionState& session)
 	{
+		if (uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) &&
+		    uam::AcpSessionHasDeferredUserQueueOnly(session) &&
+		    !CopilotLaunchBlockReason(app).empty())
+		{
+			return false;
+		}
 		return uam::AcpSessionHasBlockingRuntimeWork(session);
 	}
 
 	bool ProviderHasActiveRuntimeWork(const uam::AppState& app, std::string_view provider_id)
 	{
-		const bool acp_has_work = std::ranges::any_of(app.acp_sessions, [provider_id](const auto& session) {
+		const bool acp_has_work = std::ranges::any_of(app.acp_sessions, [&app, provider_id](const auto& session) {
 			return session != nullptr &&
 			       uam::provider_ids::IsCliProviderAliasOf(session->provider_id, provider_id) &&
-			       AcpSessionHasProviderInstallBlockingWork(*session);
+			       AcpSessionHasProviderInstallBlockingWork(app, *session);
 		});
 		if (acp_has_work)
 		{
@@ -874,6 +880,11 @@ std::string ExtractCliProviderInstallMethodForTests(std::string_view output)
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output)
 {
 	return OutputIndicatesCommandMissing(output);
+}
+
+bool ProviderCliInstallBlockedByActiveRuntimeForTests(const uam::AppState& app, std::string_view provider_id)
+{
+	return ProviderHasActiveRuntimeWork(app, provider_id);
 }
 
 std::string GetNpmPackageNameForProvider(std::string_view provider_id)

@@ -52,7 +52,7 @@ UAM_TEST(CopilotAcpLaunchBlocksPendingAndUnsupportedVersions)
 #endif
 }
 
-UAM_TEST(AcpRestartPreservesUndeliveredPrompt)
+UAM_TEST(CopilotAcpRetriesPendingCompatibilityAndPreservesUndeliveredPrompt)
 {
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
 	TempDir temp("uam-acp-restart-prompt");
@@ -75,6 +75,103 @@ UAM_TEST(AcpRestartPreservesUndeliveredPrompt)
 	uam::AppState app;
 	app.data_root = temp.root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession pending_chat;
+	pending_chat.id = "chat-pending-copilot-check";
+	pending_chat.provider_id = uam::provider_ids::kCopilotCli;
+	pending_chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	app.chats.push_back(pending_chat);
+	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli] = {};
+
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = pending_chat.id;
+	terminal->attached_chat_id = pending_chat.id;
+	terminal->running = true;
+	terminal->should_launch = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal->turn_state = uam::CliTerminalTurnState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, pending_chat.id, "Reject while terminal fallback is busy.", {}, {}, false, &error));
+	UAM_ASSERT(error.find("terminal fallback is busy") != std::string::npos);
+	uam::AcpSessionState* pending_session = uam::FindAcpSessionForChat(app, pending_chat.id);
+	UAM_ASSERT(pending_session != nullptr);
+	UAM_ASSERT(pending_session->queued_user_prompts.empty());
+	UAM_ASSERT(!pending_session->reconnect_pending);
+
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	app.cli_terminals.front()->turn_state = uam::CliTerminalTurnState::Idle;
+	error.clear();
+	UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Cancel before the check.", {}, {}, false, &error));
+	UAM_ASSERT(!app.cli_terminals.front()->running);
+	UAM_ASSERT(uam::CancelAcpTurn(app, pending_chat.id, &error));
+	UAM_ASSERT(pending_session->queued_user_prompts.empty());
+	UAM_ASSERT(!pending_session->reconnect_pending);
+
+	UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Remove before the check.", {}, {}, false, &error));
+	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, pending_chat.id, 0, &error));
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.front().text, std::string("Remove before the check."));
+	UAM_ASSERT(pending_session->queued_user_prompts.front().priority_steer);
+	UAM_ASSERT(pending_session->reconnect_pending);
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, pending_chat.id, 0, &error));
+	UAM_ASSERT(pending_session->queued_user_prompts.empty());
+	UAM_ASSERT(!pending_session->reconnect_pending);
+
+	UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Queue before steering.", {}, {}, false, &error));
+	UAM_ASSERT(uam::SteerAcpPrompt(app, pending_chat.id, "Steer before the check.", {}, {}, false, &error));
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.front().text, std::string("Steer before the check."));
+	UAM_ASSERT(pending_session->reconnect_pending);
+	UAM_ASSERT(uam::CancelAcpTurn(app, pending_chat.id, &error));
+
+	UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Send after the check.", {}, {}, false, &error));
+	UAM_ASSERT(!pending_session->running);
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().messages.empty());
+
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "1.0.69";
+	app.cli_terminals.front()->running = true;
+	app.cli_terminals.front()->should_launch = true;
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	app.cli_terminals.front()->turn_state = uam::CliTerminalTurnState::Busy;
+	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, pending_chat.id, 0, &error));
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.front().text, std::string("Send after the check."));
+	UAM_ASSERT(pending_session->reconnect_pending);
+	for (int attempt = 0; attempt < 4; ++attempt)
+	{
+		pending_session->reconnect_not_before_time_s = 0.0;
+		UAM_ASSERT(uam::PollAllAcpSessions(app));
+		UAM_ASSERT(!pending_session->running);
+		UAM_ASSERT(pending_session->reconnect_pending);
+		UAM_ASSERT_EQ(pending_session->reconnect_attempts, 0);
+		UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	}
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	app.cli_terminals.front()->turn_state = uam::CliTerminalTurnState::Idle;
+	pending_session->reconnect_not_before_time_s = 0.0;
+	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	UAM_ASSERT(pending_session->running);
+	UAM_ASSERT(!app.cli_terminals.front()->running);
+	UAM_ASSERT(!pending_session->reconnect_pending);
+	UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!pending_session->processing);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *pending_session, app.chats.front(), R"({"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"copilot","title":"GitHub Copilot","version":"1.0.69"},"agentCapabilities":{"loadSession":true}}})"));
+	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	const int setup_request_id = pending_session->session_setup_request_id;
+	UAM_ASSERT(setup_request_id != 0);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *pending_session, app.chats.front(), nlohmann::json({{"jsonrpc", "2.0"}, {"id", setup_request_id}, {"result", {{"sessionId", "copilot-session-after-check"}}}}).dump()));
+	UAM_ASSERT(pending_session->processing);
+	UAM_ASSERT(pending_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Send after the check."));
+	UAM_ASSERT(uam::StopAcpSession(app, pending_chat.id));
+	app.acp_sessions.clear();
+	app.chats.clear();
+
 	ChatSession chat;
 	chat.id = "chat-restart-prompt";
 	chat.provider_id = uam::provider_ids::kCopilotCli;
@@ -88,7 +185,7 @@ UAM_TEST(AcpRestartPreservesUndeliveredPrompt)
 	session.turn_user_message_index = 3;
 	session.turn_serial = 7;
 
-	std::string error;
+	error.clear();
 	UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error));
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT(session.running);
@@ -2816,6 +2913,28 @@ UAM_TEST(AcpSetupInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
 	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic) {
 		return diagnostic.reason == "setup_timeout";
 	}));
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, raw_session->chat_id, 1, &error));
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, raw_session->chat_id, 0, &error));
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Active undelivered prompt"));
+	app.acp_sessions.clear();
+	auto deferred_session = std::make_unique<uam::AcpSessionState>();
+	deferred_session->chat_id = "chat-setup-timeout";
+	deferred_session->provider_id = "gemini-cli";
+	deferred_session->protocol_kind = "gemini-acp";
+	raw_session = deferred_session.get();
+	raw_session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Deferred Gemini prompt"});
+	raw_session->reconnect_pending = true;
+	app.acp_sessions.push_back(std::move(deferred_session));
+	UAM_ASSERT(uam::AcpSessionHasDeferredUserQueueOnly(*raw_session));
+	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, raw_session->chat_id, 0, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Deferred Gemini prompt"));
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT(uam::SteerAcpPrompt(app, raw_session->chat_id, "New Gemini steering prompt", {}, {}, false, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("New Gemini steering prompt"));
+	UAM_ASSERT(raw_session->reconnect_pending);
 }
 
 UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)

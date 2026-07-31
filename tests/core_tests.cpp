@@ -4720,6 +4720,32 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 #endif
 }
 
+UAM_TEST(CliProviderVersionInstallAllowsCompatibilityBlockedCopilotDeferredQueue)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
+	version.checked = true;
+	version.supported = false;
+	version.installed_version = "1.0.68";
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->provider_id = uam::provider_ids::kCopilotCli;
+	session->reconnect_pending = true;
+	session->queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Retry after update"});
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
+	raw_session->processing = true;
+	UAM_ASSERT(ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
+	raw_session->processing = false;
+	version.supported = true;
+	UAM_ASSERT(ProviderCliInstallBlockedByActiveRuntimeForTests(app, uam::provider_ids::kCopilotCli));
+#endif
+}
+
 UAM_TEST(CliProviderVersionInstallBlocksTerminalsMatchedByNativeSession)
 {
 	uam::AppState app;
@@ -9087,7 +9113,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	const fs::path unicode_bin = temp.root / uam::paths::PathFromUtf8("copilot-\xE2\x98\x83-bin");
 	fs::create_directories(unicode_bin);
 	const fs::path shim_path = unicode_bin / "copilot.cmd";
-	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho copilot:%~1:%~2\r\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\nset /p \"UAM_INPUT=\"\r\necho copilot:%~1:%~2:%UAM_INPUT%\r\n"));
 
 	const DWORD existing_path_size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
 	std::wstring existing_path(static_cast<std::size_t>(existing_path_size), L'\0');
@@ -9109,6 +9135,8 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	auto& terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 	UAM_ASSERT(terminal_runtime.StartCliTerminalProcess(terminal, temp.root, {"copilot", "--session-id", session_id}, &error));
 	UAM_ASSERT(error.empty());
+	static constexpr char kInput[] = "hello\r\n";
+	UAM_ASSERT(terminal_runtime.WriteToCliTerminal(terminal, kInput, sizeof(kInput) - 1));
 
 	std::string output;
 	std::array<char, 512> buffer{};
@@ -9116,7 +9144,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	for (int attempt = 0; attempt < 500; ++attempt)
 	{
 		const std::ptrdiff_t bytes = terminal_runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
-		UAM_ASSERT(bytes >= -2);
+		UAM_ASSERT(bytes != -1);
 		if (bytes > 0)
 		{
 			output.append(buffer.data(), static_cast<std::size_t>(bytes));
@@ -9132,7 +9160,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	for (int attempt = 0; exited && attempt < 20; ++attempt)
 	{
 		const std::ptrdiff_t bytes = terminal_runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
-		UAM_ASSERT(bytes >= -2);
+		UAM_ASSERT(bytes != -1);
 		if (bytes > 0)
 		{
 			output.append(buffer.data(), static_cast<std::size_t>(bytes));
@@ -9156,7 +9184,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 		terminal_runtime.StopCliTerminalProcess(terminal, true);
 	}
 	UAM_ASSERT(exited);
-	UAM_ASSERT(output.find("copilot:--session-id:" + session_id) != std::string::npos);
+	UAM_ASSERT(output.find("copilot:--session-id:" + session_id + ":hello") != std::string::npos);
 }
 
 UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)

@@ -90,6 +90,11 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 		STARTUPINFOEXW si{};
 		si.StartupInfo.cb = sizeof(si);
+		// Keep redirected parent stdio from bypassing ConPTY.
+		si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+		si.StartupInfo.hStdInput = nullptr;
+		si.StartupInfo.hStdOutput = nullptr;
+		si.StartupInfo.hStdError = nullptr;
 		si.lpAttributeList = terminal.attr_list;
 		PROCESS_INFORMATION pi{};
 

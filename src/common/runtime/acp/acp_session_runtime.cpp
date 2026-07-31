@@ -26,6 +26,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_attention_kind.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_content.h"
@@ -78,6 +79,12 @@ namespace uam
 		constexpr double kAcpSetupInactivityTimeoutSeconds = 60.0;
 		constexpr std::size_t kMarkdownStorePromptMaxBytes = 2U * 1024U * 1024U;
 
+		bool IsCopilotCompatibilityCheckPending(const AppState& app)
+		{
+			const auto state = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kCopilotCli);
+			return state != app.runtime_cli_versions_by_provider_id.end() && !state->second.checked;
+		}
+
 		double AcpReconnectDelaySeconds(int attempt)
 		{
 			return kAcpReconnectBaseDelaySeconds * (1 << std::clamp(attempt, 0, kAcpReconnectMaxAttempts - 1));
@@ -104,8 +111,14 @@ namespace uam
 				return false;
 			}
 
-			const int next_attempt = session.reconnect_attempts + 1;
 			std::string error;
+			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error))
+			{
+				session.reconnect_not_before_time_s = now_seconds + kAcpReconnectBaseDelaySeconds;
+				return true;
+			}
+
+			const int next_attempt = session.reconnect_attempts + 1;
 			if (StartAcpProcessForChat(app, session, chat, &error))
 			{
 				session.reconnect_pending = false;
@@ -594,6 +607,37 @@ namespace uam
 				return false;
 			}
 		}
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		const bool copilot = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli);
+		if (!session.running && !session.processing && copilot)
+		{
+			const std::string compatibility_error = CopilotLaunchBlockReason(app);
+			if (IsCopilotCompatibilityCheckPending(app))
+			{
+				if (session.queued_user_prompts.empty())
+				{
+					if (!PrepareCliTerminalForAcpLaunch(app, chat.id, error_out))
+					{
+						return false;
+					}
+					session.queued_user_prompts.push_back(std::move(queued));
+					session.reconnect_pending = true;
+					session.reconnect_attempts = 0;
+					session.reconnect_not_before_time_s = 0.0;
+					session.lifecycle_state = kAcpLifecycleStarting;
+					session.last_error.clear();
+					return true;
+				}
+			}
+			else if (!compatibility_error.empty())
+			{
+				session.lifecycle_state = kAcpLifecycleError;
+				session.last_error = compatibility_error;
+				if (error_out != nullptr)
+					*error_out = compatibility_error;
+				return false;
+			}
+		}
 		if (session.processing || !session.queued_user_prompts.empty())
 		{
 			const bool merge_with_back = !chat.small_model_mode && !session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued);
@@ -608,6 +652,12 @@ namespace uam
 			else
 			{
 				session.queued_user_prompts.push_back(std::move(queued));
+			}
+			if (!session.running && copilot && CopilotLaunchBlockReason(app).empty())
+			{
+				session.reconnect_pending = true;
+				session.reconnect_attempts = 0;
+				session.reconnect_not_before_time_s = 0.0;
 			}
 			return true;
 		}
@@ -634,6 +684,11 @@ namespace uam
 		steering_prompt.priority_steer = true;
 
 		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		if (uam::AcpSessionHasDeferredUserQueueOnly(session))
+		{
+			session.queued_user_prompts.push_front(std::move(steering_prompt));
+			return true;
+		}
 		if (!uam::AcpSessionHasActiveTurn(session))
 		{
 			return StartAcpUserPrompt(app, session, *chat, steering_prompt, error_out);
@@ -659,6 +714,14 @@ namespace uam
 			return false;
 		}
 		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
+		if (!session->running && session->queued_user_prompts.empty() && !uam::AcpSessionHasActiveTurn(*session))
+		{
+			session->reconnect_pending = false;
+			session->reconnect_attempts = 0;
+			session->reconnect_not_before_time_s = 0.0;
+			session->lifecycle_state = kAcpLifecycleStopped;
+			session->last_error.clear();
+		}
 		return true;
 	}
 
@@ -671,9 +734,15 @@ namespace uam
 			if (error_out != nullptr) *error_out = "Queued prompt not found.";
 			return false;
 		}
+		const bool deferred_queue = uam::AcpSessionHasDeferredUserQueueOnly(*session);
 		AcpQueuedUserPromptState prompt = std::move(session->queued_user_prompts[index]);
 		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
 		prompt.priority_steer = true;
+		if (deferred_queue)
+		{
+			session->queued_user_prompts.push_front(std::move(prompt));
+			return true;
+		}
 		if (!uam::AcpSessionHasActiveTurn(*session)) return StartAcpUserPrompt(app, *session, *chat, prompt, error_out);
 		std::deque<AcpQueuedUserPromptState> remaining_queue = std::move(session->queued_user_prompts);
 		if (!CancelAcpTurn(app, chat_id, error_out))
@@ -821,6 +890,9 @@ namespace uam
 			return true;
 		}
 		session->queued_user_prompts.clear();
+		session->reconnect_pending = false;
+		session->reconnect_attempts = 0;
+		session->reconnect_not_before_time_s = 0.0;
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
 		{
@@ -1267,6 +1339,28 @@ namespace uam
 			if (!session.running)
 			{
 				ChatSession* reconnect_chat = ChatDomainService().FindChatById(app, session.chat_id);
+				if (reconnect_chat != nullptr && session.reconnect_pending && !session.queued_user_prompts.empty())
+				{
+					const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *reconnect_chat);
+					if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
+					{
+						if (IsCopilotCompatibilityCheckPending(app))
+						{
+							continue;
+						}
+						const std::string compatibility_error = CopilotLaunchBlockReason(app);
+						if (!compatibility_error.empty())
+						{
+							if (session.last_error != compatibility_error || session.lifecycle_state != kAcpLifecycleError)
+							{
+								session.lifecycle_state = kAcpLifecycleError;
+								session.last_error = compatibility_error;
+								changed = true;
+							}
+							continue;
+						}
+					}
+				}
 				if (reconnect_chat != nullptr && TryReconnectAcpSession(app, session, *reconnect_chat, GetAppTimeSeconds()))
 				{
 					changed = true;

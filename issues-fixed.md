@@ -18,6 +18,8 @@ radius, and kept here with its validation evidence.
 - #192 — Show favorited grouped skills individually in the slash menu.
 - #193 — Inline attached skill content for external provider workers.
 - #194 — Build, test, package, and smoke-test Windows Release output on pull requests.
+- #196 — Preserve and automatically retry the first structured Copilot prompt when the
+  startup compatibility check completes.
 
 Validation:
 
