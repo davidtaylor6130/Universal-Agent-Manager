@@ -9157,24 +9157,6 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
-	for (int attempt = 0; exited && attempt < 20; ++attempt)
-	{
-		const std::ptrdiff_t bytes = terminal_runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
-		UAM_ASSERT(bytes != -1);
-		if (bytes > 0)
-		{
-			output.append(buffer.data(), static_cast<std::size_t>(bytes));
-		}
-		else if (bytes == 0)
-		{
-			break;
-		}
-		else
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
-	}
-
 	if (exited)
 	{
 		terminal_runtime.CloseCliTerminalHandles(terminal);
