@@ -110,12 +110,17 @@ namespace uam::io
 		const std::uint64_t monotonic_token = static_cast<std::uint64_t>(uam::time::SteadyEpochNanosecondsNow());
 		const std::uint64_t random_token = static_cast<std::uint64_t>(std::random_device{}());
 		const std::uint64_t token = monotonic_token ^ random_token;
-		return path.string() + kTempWritePathSuffix + std::to_string(token);
+		std::filesystem::path temp_path = path;
+		temp_path += kTempWritePathSuffix;
+		temp_path += std::to_string(token);
+		return temp_path;
 	}
 
 	inline std::filesystem::path MakeBackupPath(const std::filesystem::path& path)
 	{
-		return path.string() + kBackupPathSuffix;
+		std::filesystem::path backup_path = path;
+		backup_path += kBackupPathSuffix;
+		return backup_path;
 	}
 
 	inline bool AtomicWriteFile(const std::filesystem::path& path, std::string_view content)

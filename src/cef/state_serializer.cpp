@@ -7,6 +7,7 @@
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -772,7 +773,7 @@ namespace uam
 		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::ResolveWorkspaceRootPath(app, chat).string());
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 

@@ -871,9 +871,11 @@ UAM_TEST(IoUtilsWritesSlicedTextAndBinaryContent)
 {
 	TempDir temp("uam-io-utils-sliced-write");
 	const std::string text_source = "xxhello from sliced textyy";
-	const fs::path text_file = temp.root / "text.txt";
+	const fs::path text_file = temp.root / uam::paths::PathFromUtf8("t\xC3\xABxt-\xE2\x98\x83.txt");
 	UAM_ASSERT(uam::io::WriteTextFile(text_file, std::string_view(text_source).substr(2, 22)));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(text_file), std::string("hello from sliced text"));
+	UAM_ASSERT(uam::io::WriteTextFile(text_file, "replacement"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(text_file), std::string("replacement"));
 
 	const std::string binary_source("xxabc\0defyy", 11);
 	const fs::path binary_file = temp.root / "binary.bin";
@@ -3587,9 +3589,9 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	}
 
 	TempDir temp("uam-git-worktree");
-	const fs::path repo = temp.root / "repo";
+	const fs::path repo = temp.root / uam::paths::PathFromUtf8("r\xC3\xA9po-\xE2\x98\x83");
 	fs::create_directories(repo);
-	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(repo))));
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(RunGitForTest(repo, "config core.autocrlf false"));
@@ -3602,19 +3604,19 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatFolder folder;
 	folder.id = "folder";
-	folder.directory = repo.string();
+	folder.directory = uam::paths::Utf8PathString(repo);
 	app.folders.push_back(folder);
 	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
 	chat.id = "chat-worktree-service";
 	chat.title = "Worktree Service";
-	chat.workspace_directory = repo.string();
+	chat.workspace_directory = uam::paths::Utf8PathString(repo);
 	app.chats.push_back(chat);
 
 	uam::GitWorktreeService service;
 	uam::GitWorktreeOperationResult created = service.CreateForChat(app, app.chats.front());
 	UAM_ASSERT(created.ok);
 	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
-	const fs::path worktree = app.chats.front().workspace_worktree_directory;
+	const fs::path worktree = uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory);
 	const std::string branch_name = app.chats.front().workspace_branch_name;
 	UAM_ASSERT(fs::exists(worktree / "app.txt"));
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, app.chats.front()), uam::paths::AbsolutePathNoThrow(worktree));
@@ -3807,17 +3809,17 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	}
 
 	TempDir temp("uam-vcs-git");
-	const fs::path source = temp.root / "source";
-	const fs::path worktree = temp.root / "worktree";
+	const fs::path source = temp.root / uam::paths::PathFromUtf8("source-\xE2\x98\x83");
+	const fs::path worktree = temp.root / uam::paths::PathFromUtf8("worktree-\xC3\xA9");
 	fs::create_directories(source);
 	fs::create_directories(worktree);
-	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(source))));
 	UAM_ASSERT(RunGitForTest(source, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(source, "config user.name UAM"));
 	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source\n"));
 	UAM_ASSERT(RunGitForTest(source, "add app.txt"));
 	UAM_ASSERT(RunGitForTest(source, "commit -m initial"));
-	UAM_ASSERT(RunTestCommand("git clone " + ShellQuoteForTest(source.string()) + " " + ShellQuoteForTest(worktree.string())));
+	UAM_ASSERT(RunTestCommand("git clone " + ShellQuoteForTest(uam::paths::Utf8PathString(source)) + " " + ShellQuoteForTest(uam::paths::Utf8PathString(worktree))));
 	UAM_ASSERT(RunGitForTest(worktree, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(worktree, "config user.name UAM"));
 
@@ -3825,15 +3827,15 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	app.data_root = temp.root / "data";
 	ChatSession chat;
 	chat.id = "chat-vcs-worktree";
-	chat.workspace_directory = source.string();
+	chat.workspace_directory = uam::paths::Utf8PathString(source);
 	chat.workspace_isolation_kind = "gitWorktree";
-	chat.workspace_worktree_directory = worktree.string();
+	chat.workspace_worktree_directory = uam::paths::Utf8PathString(worktree);
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "worktree\n"));
 
 	uam::VcsCommitService service;
 	uam::VcsCommitStatus status = service.Status(app, chat);
 	UAM_ASSERT(status.available);
-	UAM_ASSERT_EQ(fs::path(status.workspace_directory), uam::paths::AbsolutePathNoThrow(worktree));
+	UAM_ASSERT_EQ(uam::paths::PathFromUtf8(status.workspace_directory), uam::paths::AbsolutePathNoThrow(worktree));
 	UAM_ASSERT_EQ(status.changed_files.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(status.changed_files.front().additions, 1);
 	UAM_ASSERT_EQ(status.changed_files.front().deletions, 1);
@@ -7493,7 +7495,7 @@ UAM_TEST(CefTrustedUiIndexResolutionTerminatesAndFindsBundle)
 UAM_TEST(CefTrustedUiUrlIgnoresFileUrlDecorationAndLocalhostAuthority)
 {
 	TempDir temp("uam-cef-trusted-url");
-	const fs::path index = temp.root / "UI-V2" / "dist" / "index.html";
+	const fs::path index = temp.root / uam::paths::PathFromUtf8("install-\xE2\x98\x83") / "UI-V2" / "dist" / "index.html";
 	fs::create_directories(index.parent_path());
 	UAM_ASSERT(uam::io::WriteTextFile(index, "<!doctype html>"));
 
@@ -8065,6 +8067,11 @@ UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 	MarkdownStoreService::Entry grouped_favorite;
 	UAM_ASSERT(MarkdownStoreService::SetFavorite(root, grouped->file_path.string(), false, &grouped_favorite, &error));
 	UAM_ASSERT_EQ(grouped_favorite.group, std::string("Workflows"));
+	const fs::path unicode_untitled = root / uam::paths::PathFromUtf8("skill-\xE2\x98\x83.uam");
+	UAM_ASSERT(uam::io::WriteTextFile(unicode_untitled, "---\nfavorite: true\n---\n\nAttached skill body.\n"));
+	entries = MarkdownStoreService::ListEntries(root, &error);
+	const auto unicode_entry = std::find_if(entries.begin(), entries.end(), [](const MarkdownStoreService::Entry& entry) { return entry.title == "skill-\xE2\x98\x83"; });
+	UAM_ASSERT(unicode_entry != entries.end());
 
 	fs::path normalized_file;
 	error = "stale";

@@ -200,7 +200,8 @@ void UamQueryHandler::HandlePreviewMarkdownStoreImports(CefRefPtr<CefBrowser> /*
 	{
 		for (const auto& value : *found)
 		{
-			if (value.is_string()) sources.push_back({"manual", value.get<std::string>()});
+			if (value.is_string())
+				sources.push_back({"manual", uam::paths::PathFromUtf8(value.get<std::string>())});
 		}
 	}
 	RunAsyncCefQuery(cb, [root, sources = std::move(sources)]()
@@ -223,7 +224,7 @@ void UamQueryHandler::HandleImportMarkdownStoreEntries(CefRefPtr<CefBrowser> bro
 		for (const auto& value : *found)
 		{
 			if (!value.is_object()) continue;
-			requests.push_back({value.value("sourceProvider", "manual"), value.value("sourcePath", ""), ParseConflictAction(value.value("conflictAction", "skip"))});
+			requests.push_back({value.value("sourceProvider", "manual"), uam::paths::PathFromUtf8(value.value("sourcePath", "")), ParseConflictAction(value.value("conflictAction", "skip"))});
 		}
 	}
 	std::string error;

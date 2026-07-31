@@ -376,7 +376,7 @@ namespace
 			}
 			if (attachment.name.empty())
 			{
-				attachment.name = std::filesystem::path(attachment.path).filename().string();
+				attachment.name = uam::paths::Utf8PathString(uam::paths::PathFromUtf8(attachment.path).filename());
 			}
 			if (attachment.kind.empty())
 			{
@@ -548,7 +548,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		{
 			attachment.id = AttachmentId();
 		}
-		const std::string fallback_name = source_path_text.empty() ? "attachment" : std::filesystem::path(source_path_text).filename().string();
+		const std::string fallback_name = source_path_text.empty() ? "attachment" : uam::paths::Utf8PathString(uam::paths::PathFromUtf8(source_path_text).filename());
 		attachment.name = SafeAttachmentName(uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(item, attachment_fields::kNameField), fallback_name), "attachment");
 		attachment.kind = attachment_kind;
 		attachment.mime_type = mime_type;

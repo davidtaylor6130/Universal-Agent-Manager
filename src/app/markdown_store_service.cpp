@@ -163,7 +163,7 @@ namespace
 		{
 			return uam::paths::PortablePathString(*relative);
 		}
-		return entry_path.filename().string();
+		return uam::paths::Utf8PathString(entry_path.filename());
 	}
 
 	std::string LegacyCommandName(const fs::path& path, std::string_view title)
@@ -198,7 +198,7 @@ namespace
 		}
 		if (out_entry.title.empty())
 		{
-			out_entry.title = path.stem().string();
+			out_entry.title = uam::paths::Utf8PathString(path.stem());
 		}
 		out_entry.maker = uam::strings::SafeLine(HeaderValue(parts.headers, "maker"), kMakerMaxChars, true);
 		out_entry.review = uam::strings::SafeLine(HeaderValue(parts.headers, "review"), kReviewMaxChars, true);
@@ -303,7 +303,7 @@ namespace
 
 	bool IsSupportedImportFile(const fs::path& path)
 	{
-		const std::string extension = uam::strings::ToLowerAscii(path.extension().string());
+		const std::string extension = uam::strings::ToLowerAscii(uam::paths::Utf8PathString(path.extension()));
 		return extension == ".md" || extension == ".markdown" || extension == ".uam";
 	}
 
@@ -342,7 +342,8 @@ namespace
 		MarkdownStoreService::Draft draft;
 		draft.title = uam::strings::SafeLine(HeaderValue(parts.headers, "title"), kTitleMaxChars, true);
 		if (draft.title.empty()) draft.title = FirstHeadingTitle(parts.body);
-		if (draft.title.empty()) draft.title = path.stem().string();
+		if (draft.title.empty())
+			draft.title = uam::paths::Utf8PathString(path.stem());
 		draft.maker = uam::strings::SafeLine(HeaderValue(parts.headers, "maker"), kMakerMaxChars, true);
 		draft.review = uam::strings::SafeLine(HeaderValue(parts.headers, "review"), kReviewMaxChars, true);
 		draft.body = uam::strings::Trim(parts.body);

@@ -9,7 +9,8 @@ radius, and kept here with its validation evidence.
 
 ## v4.5.1 release candidate
 
-- #188 — Fix GitHub Copilot provider failures on Windows.
+- #188 — Fix GitHub Copilot provider failures on Windows, including ACP default-mode
+  handling, Unicode launch/worktree/worker paths, and Unicode-safe atomic temp/backup writes.
 - #189 — Make notification bars dismissible.
 - #190 — Fix one-click collection collapsing on Windows.
 - #191 — Allow the dictation surface to exit after microphone policy errors.

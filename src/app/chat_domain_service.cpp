@@ -6,6 +6,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
+#include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
@@ -679,7 +680,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.memory_enabled = source.memory_enabled;
 	branch.small_model_mode = source.small_model_mode;
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
-	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::ResolveWorkspaceRootPath(app, source).string();
+	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
 	if (replacement_content.has_value())
 	{

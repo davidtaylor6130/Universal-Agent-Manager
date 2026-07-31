@@ -8,6 +8,7 @@
 #include "app/vcs_commit_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -84,7 +85,7 @@ namespace
 		nlohmann::json json;
 		json["status"] = SerializeGitWorktreeStatus(result.status);
 		json["message"] = result.message;
-		json["patchPath"] = result.patch_path.empty() ? "" : result.patch_path.string();
+		json["patchPath"] = result.patch_path.empty() ? "" : uam::paths::Utf8PathString(result.patch_path);
 		return json;
 	}
 
@@ -157,7 +158,7 @@ namespace
 				    std::string message = FailureDetailOrFallback(state->result.message, failure_fallback);
 				    if (!state->result.patch_path.empty())
 				    {
-					    message += "\nPatch saved at: " + state->result.patch_path.string();
+					    message += "\nPatch saved at: " + uam::paths::Utf8PathString(state->result.patch_path);
 				    }
 				    return AsyncFailure(400, std::move(message));
 			    }

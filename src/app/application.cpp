@@ -626,7 +626,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 	CefString exe_dir_str;
 	if (CefGetPath(PK_DIR_EXE, exe_dir_str))
 	{
-		const fs::path exe_dir(exe_dir_str.ToString());
+		const fs::path exe_dir = uam::paths::PathFromUtf8(exe_dir_str.ToString());
 
 #if defined(__APPLE__)
 		// On macOS, the helper app sits in Contents/Frameworks/ alongside the
@@ -642,8 +642,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// resolved automatically from the framework bundle.  No need to set
 		// resources_dir_path / locales_dir_path explicitly.
 #else
-		CefString(&settings.resources_dir_path) = exe_dir.string();
-		CefString(&settings.locales_dir_path) = (exe_dir / "locales").string();
+		CefString(&settings.resources_dir_path) = uam::paths::NormalizedNativePathString(exe_dir);
+		CefString(&settings.locales_dir_path) = uam::paths::NormalizedNativePathString(exe_dir / "locales");
 #endif
 	}
 

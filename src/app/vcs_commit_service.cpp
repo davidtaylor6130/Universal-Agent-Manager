@@ -72,17 +72,17 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(cwd.string()) + " " + args;
+			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
 		}
 
 		std::string BuildSvnCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "svn " + args + " " + uam::shell::EscapeArg(cwd.string());
+			return "svn " + args + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd));
 		}
 
 		std::string BuildSvnPathArgument(const std::filesystem::path& cwd, const std::string& path)
 		{
-			return uam::shell::EscapeArg(uam::paths::NormalizedNativePathString(cwd / path));
+			return uam::shell::EscapeArg(uam::paths::NormalizedNativePathString(cwd / uam::paths::PathFromUtf8(path)));
 		}
 
 		enum class CommandOutputMode
@@ -410,7 +410,7 @@ namespace uam
 				}
 				else if (file.status == "??")
 				{
-					if (const std::optional<int> lines = CountTextFileLines(uam::paths::LexicallyNormalPath(workspace / file.path)))
+					if (const std::optional<int> lines = CountTextFileLines(uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path))))
 					{
 						file.additions = *lines;
 					}
@@ -794,7 +794,7 @@ namespace uam
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		status.workspace_directory = workspace.string();
+		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 
 		PopulateAvailableVcsTypes(status, workspace);
 		if (!status.available)

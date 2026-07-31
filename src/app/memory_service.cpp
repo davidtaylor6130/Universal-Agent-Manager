@@ -979,7 +979,7 @@ namespace
 			{
 				continue;
 			}
-			files.push_back(item.path().filename().string());
+			files.push_back(uam::paths::Utf8PathString(item.path().filename()));
 		}
 		std::ranges::sort(files);
 		return files;
@@ -1046,7 +1046,7 @@ namespace
 		{
 			ChatSession worker_chat = chat;
 			worker_chat.provider_id = worker_provider->id;
-			worker_chat.workspace_directory = workspace_root.string();
+			worker_chat.workspace_directory = uam::paths::Utf8PathString(workspace_root);
 			task.native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, worker_chat);
 			task.native_history_files_before = SnapshotJsonFiles(task.native_history_chats_dir);
 		}
@@ -1196,7 +1196,7 @@ namespace
 			return;
 		}
 
-		const std::string key = uam::paths::NormalizeExistingPath(root).string();
+		const std::string key = uam::paths::Utf8PathString(uam::paths::NormalizeExistingPath(root));
 		if (seen.insert(key).second)
 		{
 			roots.push_back(std::move(root));

@@ -271,7 +271,7 @@ namespace uam_test
 
 	inline bool RunGitForTest(const fs::path& repo, const std::string& args)
 	{
-		return RunTestCommand("git -C " + ShellQuoteForTest(repo.string()) + " " + args);
+		return RunTestCommand("git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args);
 	}
 
 	struct ScopedEnvVar

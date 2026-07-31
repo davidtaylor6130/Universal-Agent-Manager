@@ -9,6 +9,7 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/models/app_models.h"
+#include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -169,7 +170,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	{
 		chat.title = title;
 	}
-	chat.workspace_directory = uam::paths::ResolveWorkspaceRootPath(m_app, chat).string();
+	chat.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, chat));
 	const nlohmann::json* payload_defaults = uam::nlohmann_json::FindObjectField(payload, "defaults");
 	uam::query_handler_internal::ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
 
