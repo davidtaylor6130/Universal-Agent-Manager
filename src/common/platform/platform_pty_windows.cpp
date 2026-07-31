@@ -292,6 +292,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 			if (err == ERROR_BROKEN_PIPE)
 			{
+				CloseInvalidHandleIfOpen(terminal.pipe_output);
 				return 0;
 			}
 
@@ -320,7 +321,8 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 		if (bytes_read == 0)
 		{
-			return -2;
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
+			return 0;
 		}
 
 		return static_cast<std::ptrdiff_t>(bytes_read);
@@ -338,7 +340,49 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return true;
 		}
 
-		return WaitForSingleObject(terminal.process_info.hProcess, 0) == WAIT_OBJECT_0;
+		if (WaitForSingleObject(terminal.process_info.hProcess, 0) != WAIT_OBJECT_0)
+		{
+			return false;
+		}
+
+		if (terminal.pipe_output == INVALID_HANDLE_VALUE)
+		{
+			return true;
+		}
+
+		if (terminal.pseudo_console != nullptr)
+		{
+			CloseInvalidHandleIfOpen(terminal.pipe_input);
+			if (terminal.job_object != nullptr)
+			{
+				CloseHandle(terminal.job_object);
+				terminal.job_object = nullptr;
+			}
+
+			const HPCON pseudo_console = terminal.pseudo_console;
+			terminal.pseudo_console = nullptr;
+			try
+			{
+				// ClosePseudoConsole can emit a final frame, so keep draining output concurrently.
+				std::thread([pseudo_console]() { ClosePseudoConsoleSafe(pseudo_console); }).detach();
+			}
+			catch (...)
+			{
+				CloseInvalidHandleIfOpen(terminal.pipe_output);
+				ClosePseudoConsoleSafe(pseudo_console);
+				return true;
+			}
+			return false;
+		}
+
+		DWORD available = 0;
+		if (!PeekNamedPipe(terminal.pipe_output, nullptr, 0, nullptr, &available, nullptr) && GetLastError() == ERROR_BROKEN_PIPE)
+		{
+			CloseInvalidHandleIfOpen(terminal.pipe_output);
+			return true;
+		}
+
+		return false;
 	}
 
 	bool SupportsAsyncNativeGeminiHistoryRefresh() const override

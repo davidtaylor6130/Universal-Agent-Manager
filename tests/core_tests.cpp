@@ -9104,7 +9104,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	uam::CliTerminalState terminal;
 	terminal.rows = uam::kCliTerminalDefaultRows;
 	terminal.cols = uam::kCliTerminalDefaultCols;
-	const std::string session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	const std::string session_id = "7b7f1032-0e41-4af2-9cd9-222222222222";
 	std::string error;
 	auto& terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 	UAM_ASSERT(terminal_runtime.StartCliTerminalProcess(terminal, temp.root, {"copilot", "--session-id", session_id}, &error));
@@ -9113,7 +9113,7 @@ UAM_TEST(WindowsTerminalLaunchesCopilotCmdShimFromUnicodePathWithSessionId)
 	std::string output;
 	std::array<char, 512> buffer{};
 	bool exited = false;
-	for (int attempt = 0; attempt < 200; ++attempt)
+	for (int attempt = 0; attempt < 500; ++attempt)
 	{
 		const std::ptrdiff_t bytes = terminal_runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
 		UAM_ASSERT(bytes >= -2);
