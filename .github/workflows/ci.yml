@@ -47,7 +47,7 @@ jobs:
       - name: Configure native Release tests (Windows x64)
         if: runner.os == 'Windows'
         run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON
-      - run: cmake --build Builds/tests --config Release
+      - run: cmake --build Builds/tests --config Release --parallel 4
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure
       - name: Package Windows review build
         if: runner.os == 'Windows'
