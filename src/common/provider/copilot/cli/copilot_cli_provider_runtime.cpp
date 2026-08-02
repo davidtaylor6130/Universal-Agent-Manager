@@ -1,12 +1,20 @@
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 
 #include "common/config/approval_modes.h"
+#include "common/chat/chat_ids.h"
+#include "common/paths/app_paths.h"
+#include "common/paths/path_utils.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
+#include "core/chat_import_utils.h"
 
 #include <array>
+#include <filesystem>
 #include <optional>
 #include <string_view>
 
@@ -31,12 +39,166 @@ namespace
 	void AppendCopilotModeArgs(std::vector<std::string>& argv, const ChatSession& chat)
 	{
 		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
+		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", NormalizeCopilotReasoningEffort(chat.reasoning_effort));
 
 		const std::string approval_mode = uam::strings::Trim(chat.approval_mode);
 		if (approval_mode == uam::approval_modes::kPlanApprovalMode)
 		{
 			argv.push_back("--plan");
 		}
+	}
+
+	std::string ParseCopilotWorkspaceValue(std::string_view value)
+	{
+		value = uam::strings::TrimAsciiView(value);
+		if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+		{
+			try
+			{
+				return nlohmann::json::parse(value).get<std::string>();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				return {};
+			}
+		}
+		if (value.size() >= 2 && value.front() == '\'' && value.back() == '\'')
+		{
+			std::string parsed(value.substr(1, value.size() - 2));
+			std::size_t escaped_quote = 0;
+			while ((escaped_quote = parsed.find("''", escaped_quote)) != std::string::npos)
+			{
+				parsed.replace(escaped_quote, 2, "'");
+				++escaped_quote;
+			}
+			return parsed;
+		}
+		return std::string(value);
+	}
+
+	std::string ReadCopilotWorkspaceDirectory(const std::filesystem::path& session_directory)
+	{
+		std::string workspace_directory;
+		uam::io::ForEachTextFileLine(
+		    session_directory / "workspace.yaml",
+		    [&](const std::string& line)
+		    {
+			    if (!uam::strings::StartsWith(line, "cwd:"))
+			    {
+				    return true;
+			    }
+			    workspace_directory = ParseCopilotWorkspaceValue(std::string_view(line).substr(4));
+			    return false;
+		    });
+		return uam::strings::Trim(workspace_directory);
+	}
+
+	std::optional<ChatSession> LoadCopilotSessionStateChat(
+	    const std::filesystem::path& session_directory,
+	    const std::filesystem::path& workspace_filter,
+	    const ProviderRuntimeHistoryLoadOptions& options)
+	{
+		const std::string session_id = session_directory.filename().string();
+		if (!uam::chat_ids::IsSafeStorageChatId(session_id))
+		{
+			return std::nullopt;
+		}
+
+		const std::string workspace_directory = ReadCopilotWorkspaceDirectory(session_directory);
+		if (workspace_directory.empty() ||
+		    (!workspace_filter.empty() && !FolderDirectoryMatches(workspace_directory, workspace_filter)))
+		{
+			return std::nullopt;
+		}
+
+		const std::filesystem::path events_file = session_directory / "events.jsonl";
+
+		ChatSession chat;
+		chat.id = session_id;
+		chat.native_session_id = session_id;
+		chat.branch_root_chat_id = session_id;
+		chat.provider_id = uam::provider_ids::kCopilotCli;
+		chat.workspace_directory = workspace_directory;
+		bool has_user_message = false;
+		bool is_subagent = false;
+
+		uam::io::ForEachTextFileLine(
+		    events_file,
+		    [&](const std::string& line)
+		    {
+			    try
+			    {
+				    const nlohmann::json record = nlohmann::json::parse(line);
+				    const std::string_view type = uam::nlohmann_json::TrimmedStringViewOrEmpty(record, "type");
+				    const auto data_it = record.find("data");
+				    if (data_it == record.end() || !data_it->is_object())
+				    {
+					    return true;
+				    }
+				    const nlohmann::json& data = *data_it;
+				    const std::string timestamp{uam::nlohmann_json::TrimmedStringViewOrEmpty(record, "timestamp")};
+
+				    if (type == "session.start")
+				    {
+					    const std::string_view parent_session =
+					        uam::nlohmann_json::TrimmedStringViewOrEmpty(data, "detachedFromSpawningParentSessionId");
+					    is_subagent = !parent_session.empty();
+					    chat.created_at = std::string{uam::nlohmann_json::TrimmedStringViewOrEmpty(data, "startTime")};
+					    if (chat.created_at.empty()) chat.created_at = timestamp;
+					    chat.updated_at = chat.created_at;
+					    chat.model_id = std::string{uam::nlohmann_json::TrimmedStringViewOrEmpty(data, "selectedModel")};
+					    return true;
+				    }
+
+				    if (type != "user.message" && type != "assistant.message")
+				    {
+					    return true;
+				    }
+				    if (type == "user.message" &&
+				        !uam::nlohmann_json::TrimmedStringViewOrEmpty(data, "parentAgentTaskId").empty())
+				    {
+					    is_subagent = true;
+					    return false;
+				    }
+				    const std::string content{uam::nlohmann_json::StringViewOrEmpty(data, "content")};
+				    if (uam::strings::TrimAsciiView(content).empty())
+				    {
+					    return true;
+				    }
+				    if (options.native_max_messages > 0 && chat.messages.size() >= options.native_max_messages)
+				    {
+					    return false;
+				    }
+
+				    Message message;
+				    message.role = type == "user.message" ? MessageRole::User : MessageRole::Assistant;
+				    message.content = content;
+				    message.created_at = timestamp;
+				    message.provider = uam::provider_ids::kCopilotCli;
+				    has_user_message = has_user_message || message.role == MessageRole::User;
+				    if (!timestamp.empty()) chat.updated_at = timestamp;
+				    if (message.role == MessageRole::Assistant)
+				    {
+					    const std::string model{uam::nlohmann_json::TrimmedStringViewOrEmpty(data, "model")};
+					    if (!model.empty()) chat.model_id = model;
+				    }
+				    chat.messages.push_back(std::move(message));
+			    }
+			    catch (const nlohmann::json::exception&)
+			    {
+				    // Active Copilot sessions can end with one incomplete append-only JSONL record.
+			    }
+			    return true;
+		    });
+
+		if (is_subagent || !has_user_message)
+		{
+			return std::nullopt;
+		}
+		if (chat.created_at.empty()) chat.created_at = chat.messages.front().created_at;
+		if (chat.updated_at.empty()) chat.updated_at = chat.created_at;
+		chat.title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
+		return chat;
 	}
 } // namespace
 
@@ -75,8 +237,12 @@ MessageRole CopilotCliProviderRuntime::RoleFromNativeType(const ProviderProfile&
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
-std::vector<ChatSession> CopilotCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
+std::vector<ChatSession> CopilotCliProviderRuntime::LoadHistory(const ProviderProfile&, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const
 {
+	if (!native_history_chats_dir.empty())
+	{
+		return LoadCopilotSessionStateChats(native_history_chats_dir, {}, options);
+	}
 	return uam::provider_runtime_internal::LoadLocalChats(data_root);
 }
 
@@ -105,8 +271,9 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildWorkerArgv(const Provid
 
 std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
-	(void)chat;
-	return {"copilot", "--acp", "--stdio"};
+	std::vector<std::string> argv = {"copilot", "--acp", "--stdio"};
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", NormalizeCopilotReasoningEffort(chat.reasoning_effort));
+	return argv;
 }
 
 std::string CopilotCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
@@ -132,4 +299,46 @@ const IProviderRuntime& GetCopilotCliProviderRuntime()
 {
 	static const CopilotCliProviderRuntime runtime;
 	return runtime;
+}
+
+std::filesystem::path CopilotSessionStatePath()
+{
+	if (const std::optional<std::filesystem::path> copilot_home = uam::env::GetTrimmedPath("COPILOT_HOME"))
+	{
+		return *copilot_home / "session-state";
+	}
+	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
+	{
+		return *home / ".copilot" / "session-state";
+	}
+	return uam::paths::CurrentPathOrDot() / ".copilot" / "session-state";
+}
+
+std::vector<ChatSession> LoadCopilotSessionStateChats(
+    const std::filesystem::path& session_state_root,
+    const std::filesystem::path& workspace_filter,
+    const ProviderRuntimeHistoryLoadOptions& options)
+{
+	std::vector<ChatSession> chats;
+	if (!uam::paths::IsDirectoryNoThrow(session_state_root))
+	{
+		return chats;
+	}
+
+	std::error_code error;
+	constexpr auto directory_options = std::filesystem::directory_options::skip_permission_denied;
+	for (std::filesystem::directory_iterator it(session_state_root, directory_options, error), end;
+	     !error && it != end;
+	     it.increment(error))
+	{
+		if (!uam::paths::IsDirectoryEntryNoThrow(*it))
+		{
+			continue;
+		}
+		if (std::optional<ChatSession> chat = LoadCopilotSessionStateChat(it->path(), workspace_filter, options))
+		{
+			chats.push_back(std::move(*chat));
+		}
+	}
+	return chats;
 }

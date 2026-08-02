@@ -206,8 +206,37 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	const bool defer_live_update = session != nullptr && AcpSessionBlocksModelChange(*session);
+	const bool is_copilot = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCopilotCli);
+	const uam::AcpModelState* selected_model = nullptr;
+	if (session != nullptr)
+	{
+		const auto found = std::ranges::find_if(session->available_models, [&model_id](const uam::AcpModelState& model) { return model.id == model_id; });
+		if (found != session->available_models.end())
+		{
+			selected_model = &*found;
+		}
+	}
+	std::string reasoning_effort = chat->reasoning_effort;
+	std::string service_tier = chat->service_tier;
+	if (selected_model != nullptr && !reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() &&
+	    !uam::ranges::Contains(selected_model->supported_reasoning_efforts, reasoning_effort))
+	{
+		reasoning_effort = uam::ranges::Contains(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort)
+		                       ? selected_model->default_reasoning_effort
+		                       : selected_model->supported_reasoning_efforts.front();
+	}
+	if (selected_model != nullptr && !service_tier.empty() && !uam::ranges::Contains(selected_model->additional_speed_tiers, service_tier))
+	{
+		service_tier.clear();
+	}
+	const bool copilot_effort_changed = is_copilot && chat->reasoning_effort != reasoning_effort;
+	if (defer_live_update && copilot_effort_changed)
+	{
+		cb->Failure(409, "Wait for the active Copilot request to finish before changing to a model with a different effort.");
+		return;
+	}
 
-	if (chat->model_id == model_id)
+	if (chat->model_id == model_id && chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
 	{
 		if (!defer_live_update && session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
 		{
@@ -219,18 +248,24 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			}
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
+		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
 		return;
 	}
 
 	const std::string previous_model_id = chat->model_id;
+	const std::string previous_reasoning_effort = chat->reasoning_effort;
+	const std::string previous_service_tier = chat->service_tier;
 	const std::string previous_updated_at = chat->updated_at;
 	chat->model_id = model_id;
+	chat->reasoning_effort = reasoning_effort;
+	chat->service_tier = service_tier;
 	chat->updated_at = uam::time::TimestampNow();
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
 	{
 		chat->model_id = previous_model_id;
+		chat->reasoning_effort = previous_reasoning_effort;
+		chat->service_tier = previous_service_tier;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
 		return;
@@ -239,10 +274,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
-		const bool live_updated = model_id.empty() ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error, previous_model_id);
+		const bool live_updated = model_id.empty() || copilot_effort_changed ? uam::StopAcpSession(m_app, chat->id) : uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error, previous_model_id);
 		if (!live_updated)
 		{
 			chat->model_id = previous_model_id;
+			chat->reasoning_effort = previous_reasoning_effort;
+			chat->service_tier = previous_service_tier;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
 			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
@@ -251,7 +288,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -275,9 +312,9 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
 	const bool is_copilot = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCopilotCli);
 	std::string reasoning_effort = is_copilot ? NormalizeCopilotReasoningEffort(requested_reasoning_effort) : uam::codex::NormalizeReasoningEffort(requested_reasoning_effort);
-	if (is_copilot && session != nullptr && uam::AcpSessionHasBlockingRuntimeWork(*session))
+	if (session != nullptr && uam::AcpSessionHasBlockingRuntimeWork(*session))
 	{
-		cb->Failure(409, "Wait for the active Copilot request to finish before changing reasoning effort.");
+		cb->Failure(409, "Wait for the active provider request to finish before changing model options.");
 		return;
 	}
 	const uam::AcpModelState* selected_model = nullptr;
@@ -293,32 +330,34 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 			}
 		}
 	}
-	if (is_copilot && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty() || !uam::ranges::Contains(selected_model->supported_reasoning_efforts, reasoning_effort)))
-	{
-		cb->Failure(409, "The selected Copilot model does not expose that reasoning-effort option.");
-		return;
-	}
 	if (!is_codex && !is_copilot && (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty()))
 	{
 		cb->Failure(409, "This provider model does not expose reasoning-effort options.");
 		return;
 	}
-	if (selected_model != nullptr && !selected_model->supported_reasoning_efforts.empty())
+	if (selected_model != nullptr && !reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty())
 	{
 		const auto requested = std::ranges::find(selected_model->supported_reasoning_efforts, reasoning_effort);
 		if (requested == selected_model->supported_reasoning_efforts.end())
 		{
-			reasoning_effort = selected_model->supported_reasoning_efforts.back();
+			reasoning_effort = uam::ranges::Contains(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort)
+			                       ? selected_model->default_reasoning_effort
+			                       : selected_model->supported_reasoning_efforts.front();
 		}
 	}
 	if (!is_codex)
 	{
 		service_tier.clear();
 	}
+	if (is_codex && selected_model != nullptr && !service_tier.empty() && !uam::ranges::Contains(selected_model->additional_speed_tiers, service_tier))
+	{
+		cb->Failure(409, "The selected model does not support that speed tier.");
+		return;
+	}
 	if (chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
+		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
 		return;
 	}
 
@@ -339,20 +378,11 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 	if (is_copilot && session != nullptr && session->running)
 	{
-		std::string acp_error;
-		if (!uam::SetAcpSessionReasoningEffort(m_app, chat->id, reasoning_effort, &acp_error, previous_reasoning_effort))
-		{
-			chat->reasoning_effort = previous_reasoning_effort;
-			chat->service_tier = previous_service_tier;
-			chat->updated_at = previous_updated_at;
-			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options reverted.", "Chat model options changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live Copilot reasoning effort."));
-			return;
-		}
+		(void)uam::StopAcpSession(m_app, chat->id);
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -516,8 +546,8 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	}
 
 	const std::string previous = chat->command_safety_tier;
+	const ChatSession previous_chat = *chat;
 	const std::string previous_updated_at = chat->updated_at;
-	const std::string previous_effective_mode = uam::approval_modes::EffectiveProviderMode(chat->approval_mode, previous);
 	chat->command_safety_tier = requested;
 	const std::string requested_effective_mode = uam::approval_modes::EffectiveProviderMode(chat->approval_mode, requested);
 	chat->updated_at = uam::time::TimestampNow();
@@ -530,7 +560,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	}
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && session->running && !AcpSessionBlocksModelChange(*session) &&
-	    previous_effective_mode != requested_effective_mode && session->current_mode_id != requested_effective_mode)
+	    CommandSafetyTierNeedsLiveUpdate(previous_chat, *chat))
 	{
 		std::string acp_error;
 		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error, std::nullopt, previous))

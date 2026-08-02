@@ -361,10 +361,14 @@ namespace
 		if (uam::paths::IsRegularFileNoThrow(source)) return {source};
 		std::vector<fs::path> files;
 		if (!uam::paths::IsDirectoryNoThrow(source)) return files;
+		const bool skills_directory = uam::strings::TrimAndLowerAscii(source.filename().string()) == "skills";
 		std::error_code ec;
 		for (fs::recursive_directory_iterator it(source, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
 		{
-			if (it->is_regular_file(ec) && !it->is_symlink(ec)) files.push_back(it->path());
+			if (it->is_regular_file(ec) && !it->is_symlink(ec) && (!skills_directory || uam::strings::TrimAndLowerAscii(it->path().filename().string()) == "skill.md"))
+			{
+				files.push_back(it->path());
+			}
 		}
 		std::ranges::sort(files);
 		return files;

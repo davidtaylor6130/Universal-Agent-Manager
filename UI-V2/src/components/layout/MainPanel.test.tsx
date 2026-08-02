@@ -25,7 +25,7 @@ vi.mock('@xterm/addon-fit', () => ({
 
 import { MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
-import { assignChatToPane } from '../../utils/chatGridStorage'
+import { assignChatToPane, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -266,6 +266,127 @@ describe('MainPanel', () => {
     expect(useAppStore.getState().activeSessionId).toBe('chat-2')
     expect(secondPane.dataset.focused).toBe('true')
     expect(secondPane.style.filter).toBe('')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('replaces a specific pane when a sidebar chat is dropped on it', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2, 3].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [] },
+    }))
+    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    const target = host.querySelector<HTMLElement>('[data-testid="pane-drop-target-2"]')
+    const transfer = {
+      dropEffect: 'none',
+      types: ['text/x-uam-chat-id'],
+      getData: (type: string) => type === 'text/x-uam-chat-id' ? 'chat-3' : '',
+    }
+    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
+
+    act(() => target?.dispatchEvent(dragOver))
+    expect(dragOver.defaultPrevented).toBe(true)
+    expect(transfer.dropEffect).toBe('copy')
+    expect(target?.dataset.dropTarget).toBe('true')
+    act(() => target?.dispatchEvent(drop))
+
+    expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeNull()
+    expect(readChatGridLayout()).toMatchObject({ activePane: 1, sessionIds: ['chat-1', 'chat-3'] })
+    expect(useAppStore.getState().activeSessionId).toBe('chat-3')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('refreshes a visible background pane once when its turn completes', () => {
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: [
+        state.sessions[0],
+        { ...state.sessions[0], id: 'chat-2', name: 'Background chat' },
+      ],
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' },
+      },
+      loadSessionMessages,
+    }))
+    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+    loadSessionMessages.mockClear()
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready' },
+      },
+    })))
+
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    expect(loadSessionMessages).toHaveBeenCalledWith('chat-2', true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('commits a visible background pane after an empty turn advances without going idle', () => {
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: [
+        state.sessions[0],
+        { ...state.sessions[0], id: 'chat-2', name: 'Background chat' },
+      ],
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': {
+          ...state.acpBindingBySessionId['chat-1'],
+          sessionId: 'native-2',
+          turnSerial: 1,
+          turnAssistantMessageIndex: -1,
+        },
+      },
+      loadSessionMessages,
+    }))
+    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+    loadSessionMessages.mockClear()
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': {
+          ...state.acpBindingBySessionId['chat-2'],
+          processing: true,
+          turnSerial: 2,
+          turnAssistantMessageIndex: -1,
+        },
+      },
+    })))
+
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    expect(loadSessionMessages).toHaveBeenCalledWith('chat-2')
 
     act(() => root.unmount())
     host.remove()

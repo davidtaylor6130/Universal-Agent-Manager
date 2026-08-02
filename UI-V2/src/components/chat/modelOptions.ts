@@ -8,6 +8,7 @@ import {
   providerRuntimeKindLabel,
   providerShortName,
   GEMINI_DEFAULT_MODEL_LABELS,
+  CODEX_REASONING_OPTIONS,
   CODEX_REASONING_LABELS,
   CODEX_SPEED_LABELS,
 } from '../../utils/providerMetadata'
@@ -63,7 +64,8 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
 
 export function selectedRuntimeModel(acp: AcpBinding | undefined, modelId: string): AcpModel | undefined {
   const models = acp?.availableModels ?? []
-  return models.find((model) => model.id === modelId) ?? models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
+  if (modelId) return models.find((model) => model.id === modelId)
+  return models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
 }
 
 export function buildModelOptions(
@@ -148,13 +150,11 @@ export function buildCodexReasoningOptions(
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
 	const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
 	if (runtimeModel && runtimeEfforts.length === 0 && fallbackEfforts === undefined) return []
-	const defaultFallbackEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-	if (/^gpt-5\.6(?:$|-)/i.test(modelId.trim())) defaultFallbackEfforts.push('ultra')
 	const base = runtimeEfforts.length > 0
 	  ? runtimeEfforts
-	  : fallbackEfforts ?? defaultFallbackEfforts
+	  : fallbackEfforts ?? CODEX_REASONING_OPTIONS.map((option) => option.id)
 	const ids = runtimeModel ? [...base] : ['', ...base]
-	if (!runtimeModel && selectedReasoningEffort && selectedReasoningEffort !== 'ultra' && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
+	if (!runtimeModel && selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
 	return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
 }
 
@@ -173,10 +173,15 @@ export function reasoningEffortForModel(
 	return supported.includes(defaultEffort) ? defaultEffort : supported[0]
 }
 
+export function serviceTierForModel(acp: AcpBinding | undefined, modelId: string, currentTier = '') {
+	const model = selectedRuntimeModel(acp, modelId)
+	if (!model || !currentTier) return currentTier
+	return (model.additionalSpeedTiers ?? []).includes(currentTier) ? currentTier : ''
+}
+
 export function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
-  const runtimeTiers = runtimeModel?.additionalSpeedTiers ?? []
-  const ids = ['', ...new Set([...runtimeTiers, 'fast', 'flex'])]
-  if (selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
+  const ids = ['', ...new Set(runtimeModel ? runtimeModel.additionalSpeedTiers ?? [] : ['fast', 'flex'])]
+  if (!runtimeModel && selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
   return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_SPEED_LABELS))
 }

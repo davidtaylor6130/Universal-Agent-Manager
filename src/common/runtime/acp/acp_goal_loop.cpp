@@ -359,6 +359,8 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	session.turn_started_time_s = 0.0;
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
+	session.reconnect_attempts = 0;
+	session.reconnect_not_before_time_s = 0.0;
 	session.goal_auto_resume_attempts = 0;
 	if (!continue_goal_loop)
 	{

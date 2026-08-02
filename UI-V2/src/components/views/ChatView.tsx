@@ -108,6 +108,7 @@ type SlashCommand = {
 }
 
 const INITIAL_RENDERED_MESSAGES = 200
+const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
 const STEERING_TIMEOUT_MS = 5000
@@ -164,6 +165,13 @@ function fileUriToPath(uri: string): string {
   } catch {
     return uri.replace(/^file:\/\//, '')
   }
+}
+
+function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === role) return index
+  }
+  return -1
 }
 
 export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
@@ -260,7 +268,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const attachMarkdownStoreEntry = useAppStore((s) => s.attachMarkdownStoreEntry)
   const markdownStoreAttachments = useAppStore(useShallow((s) => s.markdownStoreAttachedBySessionId[session.id] ?? []))
   const detachMarkdownStoreEntry = useAppStore((s) => s.detachMarkdownStoreEntry)
-  const goals = useAppStore((s) => s.goalsByChatId[session.id] ?? [])
+  const goals = useAppStore((s) => s.goalsByChatId[session.id] ?? EMPTY_GOALS)
   const activeGoalId = useAppStore((s) => s.activeGoalIdByChatId[session.id] ?? null)
   const setGoalStore = useAppStore((s) => s.setGoal)
   const updateGoalStatus = useAppStore((s) => s.updateGoalStatus)
@@ -310,6 +318,30 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
   const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
   const turnSerial = acp?.turnSerial ?? 0
+  const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
+  const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
+  const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const turnAssistantMessageMatches =
+    turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    turnAssistantMessageIndex === messages.length - 1 &&
+    messages[turnAssistantMessageIndex]?.role === 'assistant'
+  const turnUserMessageMatches =
+    turnUserMessageIndex >= earliestRenderedMessageIndex &&
+    turnUserMessageIndex === latestUserMessageIndex &&
+    messages[turnUserMessageIndex]?.role === 'user' &&
+    (turnUserMessageIndex === messages.length - 1 ||
+      (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
+  const completedTurnAssistantText = acp?.processing
+    ? ''
+    : turnEvents.reduce(
+        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
+        ''
+      ).trim()
+  const completedFallbackAlreadyPersisted =
+    !acp?.processing &&
+    completedTurnAssistantText.length > 0 &&
+    latestAssistantMessageIndex > latestUserMessageIndex &&
+    messages[latestAssistantMessageIndex]?.content.trim() === completedTurnAssistantText
   const turnWorkedSeconds = acp?.processing
     ? acp.processingStartedAtMs ? (Date.now() - acp.processingStartedAtMs) / 1000 : undefined
     : turnAssistantMessageIndex >= 0
@@ -317,15 +349,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       : undefined
   const renderTimelineAfterUser =
     turnEvents.length > 0 &&
-    turnUserMessageIndex >= 0 &&
-    turnUserMessageIndex < messages.length &&
-    (turnAssistantMessageIndex < 0 || turnAssistantMessageIndex >= messages.length || firstTurnEvent?.type !== 'assistant_text')
+    turnUserMessageMatches &&
+    (!turnAssistantMessageMatches || firstTurnEvent?.type !== 'assistant_text')
   const renderTimelineAtAssistant =
     turnEvents.length > 0 &&
     !renderTimelineAfterUser &&
-    turnAssistantMessageIndex >= 0 &&
-    turnAssistantMessageIndex < messages.length
-  const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
+    turnAssistantMessageMatches
   const visibleMessages = useMemo(
     () => messages.slice(earliestRenderedMessageIndex),
     [earliestRenderedMessageIndex, messages]
@@ -1014,6 +1043,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const runCodexOptionCommand = async (kind: 'reasoning' | 'speed', rawValue?: string) => {
     setDraft('')
     setSlashIndex(0)
+    if (runtimeBlocksControlChanges) {
+      setSlashMessage(`${currentProviderName} is still working.`)
+      return
+    }
     const options = kind === 'reasoning' ? reasoningOptions : speedOptions
     const label = kind === 'reasoning' ? 'Reasoning' : 'Speed'
     if (options.length === 0) {
@@ -1403,7 +1436,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               {visibleMessages.map((message, visibleIndex) => {
                 const index = earliestRenderedMessageIndex + visibleIndex
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
-                const shouldSkipAssistantMessage = renderTimelineAfterUser && index === turnAssistantMessageIndex
+                const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
                 const isUserMessage = message.role === 'user'
                 const isEditingMessage = editingMessageIndex === index
                 const branchParentId = session.parentChatId && session.branchFromMessageIndex === index
@@ -1575,7 +1608,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   {messageBranchError}
                 </div>
               )}
-              {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && (
+              {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && !completedFallbackAlreadyPersisted && (
                 <MessageFrame
                   key={`turn-${turnSerial}-fallback`}
                   role="assistant"

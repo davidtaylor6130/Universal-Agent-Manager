@@ -95,6 +95,25 @@ describe('SessionItem status icons', () => {
     })
   })
 
+  it('uses a precomputed branch family without rescanning the full session list', () => {
+    const sessions = new Proxy([makeSession()], {
+      get(target, property, receiver) {
+        if (property === 'filter') throw new Error('session list was rescanned')
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    useAppStore.setState({ sessions })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<SessionItem sessionId="chat-1" session={makeSession()} familySessionIds={['chat-1']} />))
+    expect(host.textContent).toContain('Chat 1')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows provider and shortened worktree context when enabled', () => {
     useAppStore.setState({
       sessions: [{
@@ -183,7 +202,7 @@ describe('SessionItem status icons', () => {
     const { host, root } = renderSessionItem()
 
     expect(host.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
-    expect(host.querySelector('[aria-label="Gemini running"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Agent running"]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -200,12 +219,38 @@ describe('SessionItem status icons', () => {
 
     const { host, root } = renderSessionItem()
 
-    expect(host.querySelector('[aria-label="Gemini running"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Agent running"]')).toBeTruthy()
     expect(host.querySelector('[aria-label="Done"]')).toBeNull()
 
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows terminal-fallback progress when a pending call becomes active', () => {
+    const { host, root } = renderSessionItem()
+    expect(host.querySelector('[aria-label="Agent running"]')).toBeNull()
+
+    act(() => useAppStore.setState({
+      cliBindingBySessionId: {
+        'chat-1': {
+          terminalId: 'terminal-1',
+          boundChatId: 'chat-1',
+          running: true,
+          lifecycleState: 'idle',
+          turnState: 'idle',
+          processing: true,
+          readySinceLastSelect: false,
+          active: true,
+          lastError: '',
+        },
+      },
+    }))
+
+    expect(host.querySelector('[aria-label="Agent running"]')).toBeTruthy()
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -226,7 +271,7 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
-  it('shows its pane colour and can move the chat from the context menu', () => {
+  it('shows its pane colour without legacy context-menu pane buttons', () => {
     writeChatGridLayout({
       ...defaultChatGridLayout,
       paneCount: 2,
@@ -240,16 +285,10 @@ describe('SessionItem status icons', () => {
     const sessionRow = host.querySelector('.cursor-pointer') as HTMLElement
     expect((sessionRow.querySelector('[data-testid="pane-indicator"]') as HTMLElement).style.background).toContain('rgb(249, 115, 22)')
     act(() => sessionRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const paneTwo = document.body.querySelector('button[aria-label="Show Chat 1 in pane 2"]') as HTMLButtonElement
-    expect(paneTwo).toBeTruthy()
-    expect(paneTwo.textContent).toBe('')
-    act(() => paneTwo.click())
-
-    expect(readChatGridLayout().activePane).toBe(1)
-    expect(readChatGridLayout().sessionIds).toEqual(['chat-2', 'chat-1'])
-    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
-    expect(host.querySelector('[role="img"][aria-label="Shown in pane 2"]')).toBeTruthy()
-    expect((sessionRow.querySelector('[data-testid="pane-indicator"]') as HTMLElement).style.background).toContain('rgb(236, 72, 153)')
+    const menu = document.body.querySelector('[data-viewport-menu]') as HTMLElement
+    expect(menu.textContent).not.toContain('Show in pane')
+    expect(menu.querySelector('button[aria-label^="Show Chat 1 in pane"]')).toBeNull()
+    expect(menu.textContent).toContain('Rename')
 
     act(() => root.unmount())
     host.remove()

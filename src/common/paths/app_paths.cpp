@@ -31,9 +31,10 @@ namespace
 
 	fs::path NormalizePathForCompare(const fs::path& path)
 	{
-		return PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(path)
-		           ? uam::paths::NormalizeExistingPath(path)
-		           : uam::paths::AbsolutePathNoThrow(path).lexically_normal();
+		const fs::path expanded = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::paths::PortablePathString(path));
+		return PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(expanded)
+		           ? uam::paths::NormalizeExistingPath(expanded)
+		           : uam::paths::AbsolutePathNoThrow(expanded).lexically_normal();
 	}
 
 	bool PathComponentEquals(const fs::path& lhs, const fs::path& rhs)

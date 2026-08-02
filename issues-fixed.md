@@ -36,12 +36,11 @@ Validation:
 
 ## v4.5.0 historical validation
 
-- Full frontend suite: 375/375 tests passed across 32/32 files.
+- Full frontend suite: 441/441 tests passed across 32/32 files.
 - Native CTest suite: 3/3 targets passed.
 - Frontend production TypeScript/Vite build passed.
-- Native Release build passed; the 4.5.0 macOS bundle is signed and verifies successfully.
-- All 34 previously failing frontend regressions and all 23 previously failing native
-  regressions now pass.
+- Native Debug build passed; the 4.5.2 macOS bundle is signed and verifies successfully.
+- All accepted fixed regressions in the current audit now pass.
 
 ## #186 — Make VCS filename regression tests portable on Windows
 
@@ -1406,3 +1405,670 @@ Validation:
   - Computer Use launched the exact rebuilt bundle and confirmed that the live Updates panel
     opens without a runtime error and resolves Homebrew-managed OpenCode to Homebrew 1.18.0
     instead of npm 1.18.5.
+
+## BUG-SWARM-001 — Preserve Copilot Max reasoning in provider defaults
+
+- Status: Fixed locally; targeted native regression passed.
+- Root cause: Shared defaults normalization validated Copilot through Codex's effort list.
+- Fix: Carry provider identity through defaults parsing, persistence, serialization, and chat
+  creation.
+- Regression: `NewCopilotChatPreservesMaxReasoningEffort`.
+
+## BUG-SWARM-002 — Protect pending Copilot options from stale native state
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Pending option reconciliation was restricted to Codex after the pending map had
+  been expanded to Copilot.
+- Fix: Reconcile pending values for both providers.
+- Regression: `keeps pending Copilot reasoning when CEF succeeds before a stale state push`.
+
+## BUG-SWARM-003 — Restore Small-model mode when provider switching fails
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: The optimistic provider switch applied `smallModelMode`, but rollback omitted it.
+- Fix: Restore the previous session value with the other provider defaults.
+
+## BUG-SWARM-004 — Roll back rejected settings writes
+
+- Status: Fixed locally; deterministic failure-path trace passed.
+- Root cause: Memory, provider defaults, editor, and Markdown Store handlers mutated settings
+  before disk persistence without restoring them on failure.
+- Fix: Snapshot and restore the affected settings in all four handlers.
+
+## BUG-SWARM-005 — Make provider-default menus keyboard operable
+
+- Status: Fixed locally; targeted accessibility regression passed.
+- Root cause: Settings used a bespoke click-only listbox.
+- Fix: Delete the bespoke menu and reuse the existing keyboard-capable `MenuSelect`.
+- Regression: `changes provider chat defaults with the keyboard`.
+
+## BUG-SWARM-006 — Enforce the active-runtime lock on every Speed mutation
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Only the Speed dropdown observed the runtime lock.
+- Fix: Apply the lock to chip clearing, slash commands, store mutation, and native persistence.
+- Regression: `blocks speed changes from chips and slash commands while Codex is processing`.
+
+## BUG-SWARM-007 — Surface and retry New Chat model-discovery failures
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: A started request was permanently treated as completed, and the existing native
+  error was not rendered.
+- Fix: Clear failed dedupe state and expose the error with Retry.
+- Regression: `surfaces failed model discovery and lets the user retry`.
+
+## BUG-SWARM-008 — Reshow repeated terminal errors after Retry
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Error dismissal was keyed only by message text.
+- Fix: Clear dismissal at the beginning of each explicit retry/steer attempt.
+- Regression: `shows the same terminal error again when a retry fails the same way`.
+
+## BUG-SWARM-009 — Update a live terminal's palette on theme changes
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: The theme effect resized xterm but never updated its palette.
+- Fix: Reuse one palette function for construction and live `options.theme` updates.
+- Regression: `updates the live terminal palette when the app theme changes`.
+
+## BUG-SWARM-010 — Complete generic ACP cancellation from the original response
+
+- Status: Fixed locally; targeted native regression passed.
+- Root cause: Generic cancellation erased the prompt request that carries its only completion
+  response.
+- Fix: Retain the original request identity and drain queued work when its cancelled result
+  arrives.
+- Regression: `GenericAcpCancelCompletesOnOriginalPromptResponseWithoutRestart`.
+
+## BUG-SWARM-011 — Require Copilot CLI 1.0.60 for ACP reasoning
+
+- Status: Fixed locally; compatibility regressions passed.
+- Root cause: The minimum version tracked earlier session support instead of UAM's current ACP
+  reasoning contract.
+- Fix: Raise the compatibility floor and install guidance from 1.0.51 to 1.0.60.
+
+## BUG-SWARM-012 — Clear sticky Codex Speed with an explicit null
+
+- Status: Fixed locally; targeted native request regression passed.
+- Root cause: Default Speed omitted `serviceTier`, which means “retain the prior override” to
+  Codex.
+- Fix: Always send the field and serialize Default as `null`.
+
+## BUG-SWARM-013 — Drive Speed from the selected model's catalog
+
+- Status: Fixed locally; targeted frontend and native regressions passed.
+- Root cause: Current catalog fields were discarded, static Fast/Flex choices were appended,
+  and native persistence did not validate the selected model.
+- Fix: Parse current/legacy tier fields, map `priority` to Fast, use model-advertised choices,
+  and reject or clear invalid tiers.
+- Regression: `uses selected model speed catalog instead of adding unsupported tiers`.
+
+## BUG-SWARM-014 — Preserve current Codex Max and Ultra reasoning
+
+- Status: Fixed locally; targeted parser and normalization regressions passed.
+- Root cause: A stale allowlist and old catalog aliases filtered valid current values.
+- Fix: Accept `max`/`ultra` for Codex and parse current snake-case metadata while keeping
+  Copilot validation provider-aware.
+- Regressions: `CodexOptionNormalizationUsesSharedAllowlists` and
+  `AcpModelJsonParserHandlesCodexModelAliasesAndVisibility`.
+
+## BUG-SWARM-015 — Pass Reasoning and Speed to Codex terminal fallback
+
+- Status: Fixed locally; targeted native argv regression passed.
+- Root cause: Interactive Codex argv contained the model but omitted the other visible
+  per-chat options.
+- Fix: Pass validated `model_reasoning_effort` and `service_tier` configuration for fresh and
+  resumed launches.
+- Regression: `CodexCliInteractiveArgvUsesResumeModelAndFlags`.
+
+## BUG-SWARM-016 — Preserve Small-model mode during native-history refresh
+
+- Status: Fixed locally; targeted native regression passed.
+- Root cause: The local-over-native provider-control overlay omitted `small_model_mode`.
+- Fix: Copy it with the adjacent model controls.
+- Regression: `NativeHistoryRefreshPreservesIndependentModelControls`.
+
+## BUG-SWARM-018 — Restart Copilot when a model change alters launch-time effort
+
+- Status: Fixed locally; frontend tuple regression and native lifecycle trace pass.
+- Root cause: Live model changes ignored that Copilot fixes `--effort` at ACP server launch.
+- Fix: Normalize the target tuple before persistence, reject it while busy, and restart an
+  idle Copilot server only when effective effort changes.
+
+## BUG-SWARM-019 — Use discovered catalogs in provider Chat Defaults
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Settings used static Model/Reasoning/Speed lists while the composer used runtime
+  metadata.
+- Fix: Reuse the existing model-specific option builders.
+- Regression: `uses discovered provider models and model-specific defaults options`.
+
+## BUG-SWARM-020 — Reconcile model, Reasoning, and Speed atomically
+
+- Status: Fixed locally; frontend regression and native boundary validation passed.
+- Root cause: Model changes left incompatible sibling options stored and launchable.
+- Fix: Save and roll back the compatible tuple at both frontend and native boundaries.
+- Regression: `reconciles reasoning and speed atomically when the selected model changes`.
+
+## BUG-SWARM-021 — Retry a failed terminal start in place
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: The terminal error banner had no startup retry action.
+- Fix: Add explicit Retry without treating terminal-identity hydration as another attempt.
+- Regression: `retries a transient terminal startup failure without remounting`.
+
+## BUG-SWARM-022 — Accept canonical native option results
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: An optimistic pending tuple could permanently mask a native-normalized tuple.
+- Fix: Return canonical values from native setters and apply them only to the latest request.
+- Regression: `uses canonical native options instead of permanently masking state`.
+
+## BUG-SWARM-023 — Protect in-flight model changes from stale pushes
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Pending reconciliation protected options but not model identity.
+- Fix: Protect the model/effort/tier tuple until the latest native request resolves.
+- Regression: `protects an in-flight model change and accepts the canonical native result`.
+
+## BUG-SWARM-024 — Wait for Codex turn completion after interrupt
+
+- Status: Fixed locally; native ordering regressions passed.
+- Root cause: Interrupt acknowledgement was treated as turn completion, and early cancellation
+  used a generic notification unsupported by the Codex app server.
+- Fix: Defer `turn/interrupt` until the turn ID exists and drain queued work only after
+  `turn/completed`.
+
+## BUG-SWARM-025 — Keep Default Reasoning unchanged on Speed-only updates
+
+- Status: Fixed locally; native prompt regression passed.
+- Root cause: Empty/provider-default effort was treated as invalid and replaced with the last
+  advertised effort.
+- Fix: Canonicalize only non-empty incompatible efforts.
+
+## BUG-SWARM-027 — Merge all model-catalog Speed aliases
+
+- Status: Fixed locally; native parser regression passed.
+- Root cause: Catalog alias parsing returned the first non-empty array.
+- Fix: Union normalized unique entries across current and legacy fields.
+- Regression: `AcpModelJsonParserHandlesCodexModelAliasesAndVisibility`.
+
+## BUG-SWARM-028 — Drain provider output before cancel timeout
+
+- Status: Fixed locally; native suite passed.
+- Root cause: The timeout restart ran before reading a buffered valid completion.
+- Fix: Drain stderr/stdout first, then restart only if cancellation remains pending.
+
+## BUG-SWARM-029 — Preserve runtime-advertised generic reasoning defaults
+
+- Status: Fixed locally; targeted frontend regression passed.
+- Root cause: Frontend settings validation ignored selected-model runtime capabilities.
+- Fix: Permit reasoning when either the provider or selected runtime model advertises it.
+- Regression: `preserves generic provider defaults advertised by the selected runtime model`.
+
+## BUG-SWARM-030 — Import only provider skill entrypoints
+
+- Status: Fixed locally; native import regression passed.
+- Root cause: Recursive skill import treated reference Markdown as standalone skills.
+- Fix: Under provider `skills` roots, import only `SKILL.md`; leave command/prompt scanning
+  unchanged.
+- Regression: `MarkdownStoreSkillImportExcludesReferenceMarkdown`.
+
+## BUG-SWARM-031 — Keep filtered Skills actions on the visible entry
+
+- Status: Fixed and verified.
+- Resolution: preview, edit, and attach selection now resolves from the filtered collection.
+- Validation: `keeps the preview and actions on the visible filtered entry` passes.
+
+## BUG-SWARM-032 — Make Skills child overlays accessible and focus-safe
+
+- Status: Fixed and verified.
+- Resolution: Create/Edit and Import are named modal dialogs with initial focus, topmost Escape
+  handling, and trigger-focus restoration.
+- Validation: editor and import focus/Escape regressions pass.
+
+## BUG-SWARM-033 — Bound long skill-import previews
+
+- Status: Fixed and verified.
+- Resolution: the dialog is viewport-bound and the candidate region scrolls independently.
+- Validation: the 40-entry import preview regression passes.
+
+## BUG-SWARM-034 — Show Skills errors inside the active child dialog
+
+- Status: Fixed and verified.
+- Resolution: editor/import failures render as alerts in the visible overlay.
+- Validation: rejected Save and preview paths remain visible and retryable.
+
+## BUG-SWARM-035 — Reveal completed all-skipped import results
+
+- Status: Fixed and verified.
+- Resolution: any non-empty import result closes the preview and exposes the status summary.
+- Validation: skipped-only import regression passes.
+
+## BUG-SWARM-036 — Surface Skills directory failures in Settings
+
+- Status: Fixed and verified.
+- Resolution: browse/save errors remain distinct from cancellation, render beside the labelled
+  input, and clear after success.
+- Validation: rejected-directory regression passes.
+
+## BUG-SWARM-037 — Exclude persistent permission grants from auto-approval
+
+- Status: Fixed and verified.
+- Resolution: ACP options with kind `always` are not candidates for automatic selection.
+- Validation: `AutoApproveOptionIdMatchesAcpOptionKindsAndCommonLabels` passes.
+
+## BUG-SWARM-038 — Apply the Copilot compatibility gate to ACP launch
+
+- Status: Fixed and verified.
+- Resolution: terminal and structured launch share the same 1.0.60 compatibility block reason.
+- Validation: `CopilotStructuredLaunchBlocksKnownUnsupportedVersion` passes.
+
+## BUG-SWARM-039 — Digest every transcript message
+
+- Status: Fixed and verified.
+- Resolution: message fingerprints cover every message and frontend-relevant nested state.
+- Validation: `StateSerializerMessageDigestTracksEarlierMessageChanges` passes.
+
+## BUG-SWARM-040 — Migrate chat workspaces with folder directory renames
+
+- Status: Fixed and verified.
+- Resolution: matching chat paths and folder metadata persist together with rollback; running
+  folder chats block directory changes.
+- Validation: `FolderLifecycleKeepsWorkspaceRootsMinimal` passes.
+
+## BUG-SWARM-041 — Persist immutable attached-skill prompt snapshots
+
+- Status: Fixed and verified.
+- Resolution: sent prompt blocks survive chat save/reload and are reused by Retry/Branch.
+- Validation: `MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt` passes.
+
+## BUG-SWARM-042 — Exhaust repeated ready-then-crash reconnects
+
+- Status: Fixed and verified.
+- Resolution: reconnect attempts reset only after successful turn completion.
+- Validation: ACP reconnect/setup regression passes.
+
+## BUG-SWARM-043 — Time out startup controls blocking queued prompts
+
+- Status: Fixed and verified.
+- Resolution: unanswered startup mode/model requests enter bounded recovery without dropping
+  the undelivered prompt.
+- Validation: `AcpStartupModelInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork` passes.
+
+## BUG-SWARM-044 — Map Claude structured permission modes to supported values
+
+- Status: Fixed and verified.
+- Resolution: Default omits the flag; safety tiers use `auto`; Yolo uses
+  `bypassPermissions`; Plan/Accept Edits remain explicit.
+- Validation: `ClaudeStructuredArgvMapsOnlySupportedPermissionModes` passes.
+
+## BUG-SWARM-045 — Load folders from a backup-only crash state
+
+- Status: Fixed and verified.
+- Resolution: missing primary storage no longer bypasses `.bak` recovery.
+- Validation: `ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback` passes.
+
+## BUG-SWARM-046 — Preserve Unicode in Windows atomic helper paths
+
+- Status: Fixed; Windows CI validation required.
+- Resolution: temporary and backup suffixes append directly to `std::filesystem::path`.
+- Validation: Unicode path invariants pass on macOS; the Windows-specific execution path was
+  not available on this host.
+
+## BUG-SWARM-047 — Keep Settings open when Skills handles Escape
+
+- Status: Fixed and verified.
+- Resolution: the Settings listener ignores Escape while its Skills child is open.
+- Validation: `leaves Settings open when Escape belongs to the Skills modal` passes.
+
+## BUG-SWARM-048 — Clear stale Skills workflow errors
+
+- Status: Fixed and verified.
+- Resolution: new/cancelled child workflows and successful browsing clear the shared error.
+- Validation: `clears a previous workflow error before creating another skill` passes.
+
+## BUG-SWARM-049 — Restart Claude for launch-only permission changes
+
+- Status: Fixed and verified.
+- Resolution: live-update decisions compare provider structured argv as well as generic ACP mode.
+- Validation: the Claude Yolo-to-Default launch-decision regression passes.
+
+## BUG-SWARM-050 — Preserve local message metadata during native overlay
+
+- Status: Fixed and verified.
+- Resolution: equivalent native messages receive local skill snapshots, file identities, and
+  attachment records.
+- Validation: `NativeHistoryRefreshPreservesLocalMessageAttachmentsAndSkillSnapshots` passes.
+
+## BUG-SWARM-051 — Expand tilde before folder-path comparison
+
+- Status: Fixed and verified.
+- Resolution: the shared path comparator expands `~/…` before normalizing both operands.
+- Validation: `FolderDirectoryMatchesNormalizesEquivalentPathShapes` passes.
+
+## BUG-SWARM-052 — Time out idle ACP control requests
+
+- Status: Fixed and verified.
+- Resolution: all pending model/mode controls use the inactivity timeout, starting from request
+  submission.
+- Validation: `AcpIdleControlInactivityTimeoutStopsAndReconnects` passes.
+
+## BUG-SWARM-054 — Dismiss the Move-to-collection submenu
+
+- Status: Fixed and verified.
+- Resolution: the parent trigger and portal submenu share a delayed close boundary; nested-menu
+  arrow/Escape/Enter/Space focus behaviour is implemented.
+- Validation: pointer-leave and keyboard submenu regressions pass.
+
+## BUG-SWARM-056 — Import Copilot chats during workspace rescan
+
+- Status: Fixed and verified.
+- Resolution: rescan reads Copilot `workspace.yaml` and append-only `events.jsonl`, matches the
+  workspace, excludes subagents, and tolerates malformed trailing records.
+- Validation: `ImportProviderChatsForFolderIncludesCopilotSessionState` passes.
+
+## BUG-SWARM-057 — Preserve live messages during rescan
+
+- Status: Fixed and verified.
+- Resolution: newly persisted imports are merged into the sidebar without replacing hydrated or
+  live in-memory chats.
+- Validation: the Copilot import regression preserves an unsaved streaming tail.
+
+## BUG-SWARM-060 — Hydrate delete targets before rollback can be needed
+
+- Status: Fixed and verified.
+- Resolution: summary-only targets are hydrated before any batch write/delete; preparation failure
+  stops the operation before mutation.
+- Validation: `RemoveChatByIdRollbackPreservesUnloadedMessages` passes.
+
+## BUG-SWARM-061 — Delete chat recovery backups and summaries
+
+- Status: Fixed and verified.
+- Resolution: primary, backup, summary, summary backup, and legacy storage are all deleted and all
+  deletion errors are reported.
+- Validation: backup-resurrection and summary-error regressions pass.
+
+## BUG-SWARM-062 — Tombstone deleted external imports
+
+- Status: Fixed and verified.
+- Resolution: deleted Copilot/Codex native identities are persisted in
+  `native-import-tombstones.json`; their external source history is left untouched.
+- Validation: delete/rescan/restart regression passes.
+
+## BUG-SWARM-063 — Remove forced Settings transition delays
+
+- Status: Fixed and verified.
+- Resolution: the 150–180 ms overlay/dialog/section entrance animations were removed while actual
+  running-operation feedback remains animated.
+- Validation: `opens and switches sections without a forced animation or duplicate theme refresh`
+  passes.
+
+## BUG-SWARM-064 — Keep one owner for custom-theme startup refresh
+
+- Status: Fixed and verified.
+- Resolution: Settings no longer starts the AppShell-owned theme refresh again on mount.
+- Validation: the Settings open/switch regression passes.
+
+## BUG-SWARM-065 — Build sidebar branch families once
+
+- Status: Fixed and verified.
+- Resolution: FolderTree computes one family map and passes the relevant IDs to each SessionItem.
+- Validation: `uses a precomputed branch family without rescanning the full session list` passes;
+  the 2,000-chat benchmark improved from 46.17 ms to 0.64 ms.
+
+## BUG-SWARM-066 — Subscribe to runtime bindings only for status filtering
+
+- Status: Fixed and verified.
+- Resolution: inactive status filtering uses stable empty binding maps, avoiding full regroup/sort
+  work for each streaming runtime patch.
+- Validation: search/status regressions and the full frontend suite pass.
+
+## BUG-SWARM-067 — Reconcile Shift selection with visible rows
+
+- Status: Fixed and verified.
+- Resolution: selected IDs and their anchor are pruned when workspace, collection, Unsorted, or
+  search visibility hides their rows.
+- Validation: `clears selected chats when their workspace is collapsed` passes.
+
+## BUG-SWARM-068 — Keep chat-grid active pane visible after deletion
+
+- Status: Fixed and verified.
+- Resolution: fallback selection is restricted to the current one/two/four visible panes.
+- Validation: `keeps the active pane inside the visible grid when deleted chats leave only a hidden
+  slot` passes.
+
+## BUG-SWARM-069 — Share keyed-state cleanup across single and batch deletion
+
+- Status: Fixed and verified.
+- Resolution: messages, attachments, goals, runtime bindings, and pane assignments now use the same
+  successful-delete cleanup path.
+- Validation: `deletes a selected chat batch with one backend request and clears keyed state` and
+  full store tests pass.
+
+## BUG-SWARM-070 — Stream Copilot histories larger than Gemini's file cap
+
+- Status: Fixed and verified.
+- Resolution: Copilot's line-streaming loader no longer rejects the whole append-only file by byte
+  size; the existing message bound remains.
+- Validation: a one-byte configured whole-file limit no longer hides a valid Copilot session.
+
+## BUG-SWARM-071 — Fail closed when native-import tombstones are corrupt
+
+- Status: Fixed and verified.
+- Resolution: missing storage is a valid empty set, a malformed/wrong-schema primary uses a valid
+  atomic-write backup, and invalid primary plus backup blocks imports and native tombstone writes
+  without blocking purely local deletion.
+- Validation: primary/backup/fail-closed paths pass in the Copilot import regression.
+
+## BUG-SWARM-072 — Block deletion during ACP control work
+
+- Status: Fixed and verified.
+- Resolution: chat and folder deletion use the complete ACP blocking-work predicate, including
+  initialize/setup/model/mode/cancel requests.
+- Validation: `RemoveChatsByIdsBlocksPendingAcpControlRequests` passes.
+
+## BUG-SWARM-073 — Restore Gemini-native deletion in the batch service
+
+- Status: Fixed and verified.
+- Resolution: the shared delete transaction removes Gemini-native history only after local
+  deletion is safely committed. Cleanup failure is reported without fabricating a lossy provider
+  transcript during rollback.
+- Validation: `RemoveChatByIdDeletesGeminiNativeHistory` passes.
+
+## BUG-SWARM-074 — Tombstone external chats deleted with a workspace
+
+- Status: Fixed and verified.
+- Resolution: folder deletion writes the same durable native-identity guards as chat deletion and
+  removes newly added guards on rollback.
+- Validation: `DeleteFolderTombstonesCopilotHistoryThatCannotBeDeleted` passes.
+
+## BUG-SWARM-075 — Report summary and summary-backup deletion failures
+
+- Status: Fixed and verified.
+- Resolution: both errors participate in `ChatStorageDeleteResult::Failed()`.
+- Validation: `ChatRepositoryReportsSummaryDeleteFailures` passes.
+
+## BUG-SWARM-076 — Reject an empty bulk-delete request at the API boundary
+
+- Status: Fixed and verified.
+- Resolution: `chatIds: []` returns HTTP 400 instead of reaching lifecycle conflict handling.
+- Validation: native build and complete handler/core suite pass.
+
+## BUG-SWARM-077 — Make Auto Decide labels match its approval policy
+
+- Status: Fixed and verified.
+- Resolution: Low warns more, Medium warns a moderate amount, and High warns only for highest-risk
+  commands. High no longer falls through to Medium's non-VCS warning rule, and icons follow the
+  same direction.
+- Validation: command-safety matrix and composer regressions pass.
+
+## BUG-SWARM-081 — Stop idle runtimes before folder storage deletion
+
+- Status: Fixed and verified.
+- Resolution: folder deletion stops idle ACP/terminal runtimes after rollback-capable local/folder
+  persistence succeeds and immediately before provider-native cleanup.
+- Validation: complete native lifecycle/core suite passes.
+
+## BUG-SWARM-082 — Keep live state patches below CEF's script limit
+
+- Status: Fixed and verified.
+- Resolution: live state patches no longer embed the selected chat's complete transcript. Streamed
+  tokens and compact runtime summaries stay on the push channel, and the active transcript is
+  fetched once through the existing message query when ACP processing completes.
+- Validation: the greater-than-2 MiB native regression, active-completion refresh regression, and
+  focused chat/store suite pass.
+
+## BUG-SWARM-083 — Show terminal-fallback work in sidebar progress
+
+- Status: Fixed and verified.
+- Resolution: sidebar progress now honours the terminal binding's explicit `processing` flag even
+  while its lifecycle remains `idle`, and uses the provider-neutral label “Agent running”.
+- Validation: `shows terminal-fallback progress when a pending call becomes active` passes.
+
+## BUG-SWARM-084 — Keep chat drags out of draggable workspace ancestors
+
+- Status: Fixed and verified.
+- Resolution: chat `dragstart` stops propagation, so the workspace row cannot replace its copy
+  operation or add folder MIME types.
+- Validation: the nested-source drag regression fails before the guard and passes after it.
+
+## BUG-SWARM-085 — Force authoritative transcript hydration on completion
+
+- Status: Fixed and verified.
+- Resolution: message queries use a separately tracked browser-loaded digest instead of the newest
+  summary digest; completion refresh still forces an authoritative response.
+- Validation: completion and newer-summary regressions restore the full transcript and repeat loads
+  use the adopted digest for a cheap `unchanged` response.
+
+## BUG-SWARM-086 — Give each newly sent turn its own streaming message
+
+- Status: Fixed and verified.
+- Resolution: a successfully sent idle CEF prompt inserts its user message locally, and streamed
+  output reuses an assistant only when the current turn index proves ownership. Continuous queued,
+  goal, steer, and Ultra turns hydrate the committed prior turn before using a new bubble.
+- Validation: idle and continuous-turn regressions preserve `First`/`First tail` while the next turn
+  owns a distinct `Second` response.
+
+## BUG-SWARM-087 — Refresh completed visible background panes
+
+- Status: Fixed and verified.
+- Resolution: MainPanel detects both processing-to-ready completion and processing-to-processing
+  turn-serial advances for visible non-active panes.
+- Validation: the two-pane regressions observe one load for the affected completed or continuously
+  advancing background chat.
+
+## BUG-SWARM-088 — Persist current Codex collaboration tool items
+
+- Status: Fixed and verified.
+- Resolution: `collabAgentToolCall` is recognised as a Codex tool item, titled from its tool,
+  normalised from `inProgress`, retained as structured content, and marked with receiver-thread
+  sub-agent metadata.
+- Validation: Codex 0.145's generated local schema was checked and the started/completed native
+  regression persists one spawn-agent tool block.
+
+## BUG-SWARM-089 — Suppress revision-only live patches
+
+- Status: Fixed and verified.
+- Resolution: a throttled selected-chat summary remains deferred without posting an otherwise empty
+  CEF patch; frontend fallback handling preserves unchanged session and goal collection identities.
+- Validation: native deferred-summary and frontend identity regressions pass.
+
+## BUG-SWARM-090 — Replace corrupt browser history on forced refresh
+
+- Status: Fixed and verified.
+- Resolution: forced full responses may replace a longer ghost/duplicate frontend list; ordinary
+  live reconciliation remains conservative, and rejected responses never advance the loaded digest.
+- Validation: the red-first shorter-authoritative-history regression restores the missing middle
+  message and removes two ghosts.
+
+## BUG-SWARM-091 — Keep reasoning deltas out of answer-token streaming
+
+- Status: Fixed and verified.
+- Resolution: generic, Codex, and Claude thought deltas use the typed timeline/persisted thought
+  path only; assistant answer text remains on the fast token path.
+- Validation: the complete ACP/core test binary passes and no thought handler calls
+  `PushStreamToken`.
+
+## BUG-SWARM-092 — Distinguish ordered replay, cumulative replay, and live repeated replies
+
+- Status: Fixed and verified.
+- Resolution: replay filtering consumes the next expected event. A mismatched assistant update can
+  switch to cumulative replay only when it carries a distinctive known long prefix; otherwise
+  filtering ends and the update stays live.
+- Validation: production-like prompt-start regressions suppress a long Gemini assistant-first replay
+  while preserving its new suffix and a genuinely repeated short `OK`; the full native suite passes.
+
+## BUG-SWARM-093 — Require current visible tail anchors before replacing a message frame
+
+- Status: Fixed and verified.
+- Resolution: ChatView uses indexed timeline placement only for the latest visible user and final
+  assistant. Role-inverted, older same-role, and off-window anchors use the fallback instead.
+- Validation: three stale-index regressions preserve all persisted bubbles and one live timeline.
+
+## BUG-SWARM-094 — Deduplicate an already-persisted completed fallback
+
+- Status: Fixed and verified.
+- Resolution: a completed fallback is suppressed only when its assistant-text events exactly match
+  the latest persisted assistant after the latest user. Active processing always remains visible.
+- Validation: completed matching text renders once and matching in-flight text retains its fallback.
+
+## BUG-SWARM-095 — Reject stale forced hydration after newer message work
+
+- Status: Fixed and verified.
+- Resolution: forced transcript requests capture the message-array identity and discard their full
+  response and digest updates if streaming or other message work changed that chat before arrival.
+- Validation: a delayed boundary response no longer removes a newer streamed assistant token.
+
+## BUG-SWARM-096 — Hydrate chained turns even when the prior turn has no assistant
+
+- Status: Fixed and verified.
+- Resolution: processing-to-processing turn-serial advancement is sufficient to hydrate a chained
+  turn; active and visible-background paths no longer require a previous assistant index.
+- Validation: active and background empty-turn regressions load the queued user's transcript once.
+
+## UX-005 — Strengthen default-theme text-selection contrast
+
+- Status: Fixed and visually verified.
+- Resolution: selected text uses a 65% accent/background mix instead of the 9% accent tint.
+- Validation: isolated browser preview confirms the default theme renders a distinct warm accent
+  block with light foreground text; the production frontend build passes.
+
+## IMPROVEMENT-001 — Collapse the visual Unsorted group
+
+- Status: Implemented and verified.
+- Resolution: Unsorted behaves like a collapsible pseudo-folder without changing chat ownership;
+  search temporarily reveals matching rows while preserving the preference.
+- Validation: `collapses Unsorted visually but reveals matching chats while searching` passes.
+
+## IMPROVEMENT-002 — Shift-select and delete a visible chat range
+
+- Status: Implemented and verified.
+- Resolution: plain click sets the anchor, Shift-click selects the exact visible range, and one
+  confirmation sends one transactional backend request.
+- Validation: frontend range/batch regression plus native all-or-nothing regressions pass.
+
+## IMPROVEMENT-003 — Drag a sidebar chat onto a grid pane
+
+- Status: Implemented and verified.
+- Resolution: each visible or empty pane accepts the existing UAM chat drag type, outlines the
+  target, and reuses persisted pane assignment/swap behaviour.
+- Validation: `replaces a specific pane when a sidebar chat is dropped on it` passes.
+
+## IMPROVEMENT-004 — Rebuild workspace folders from Unsorted chats
+
+- Status: Implemented and verified.
+- Resolution: Unsorted exposes the same recovery action through right-click and an accessible
+  overflow menu. A preview reuses matching folders, creates top-level folders named from available
+  recorded locations, uses source locations for worktrees, and leaves missing/inaccessible/unknown
+  chats unchanged by default. Missing and inaccessible chats reuse the existing destructive-delete
+  confirmation when explicitly selected. No collection references are created.
+- Validation: focused recovery UI tests, native success and rollback persistence regressions,
+  production frontend build, signed native build, and CTest 3/3 pass.
+
+## IMPROVEMENT-005 — Replace pane colour actions with drag/drop
+
+- Status: Implemented and verified.
+- Resolution: the legacy right-click “Show in pane” colour buttons were removed after the actual
+  nested sidebar drag source was made reliable. Read-only pane colour indicators remain.
+- Validation: nested chat drag and multi-pane context-menu regressions pass.

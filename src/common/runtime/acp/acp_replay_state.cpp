@@ -193,6 +193,35 @@ bool ReplayTextUpdateMatches(const AcpReplayUpdateState& expected, const std::st
 	return false;
 }
 
+namespace
+{
+
+bool TryConsumeLongAssistantReplayPrefix(const AcpSessionState& session, const std::string& update_type, const std::string& incoming_text, std::string& live_text)
+{
+	if (update_type != uam::acp_stream_types::kSessionUpdateAgentMessageChunk || incoming_text.empty())
+	{
+		return false;
+	}
+
+	// Some providers begin replay with a cumulative assistant snapshot. Only a
+	// distinctive prior prefix can switch from ordered replay to that phase;
+	// short identical replies must remain eligible as new live answers.
+	for (const std::string& prefix : session.assistant_replay_prefixes)
+	{
+		if (prefix.size() < kMinAssistantReplayPrefixBytes || !uam::strings::StartsWith(incoming_text, prefix))
+		{
+			continue;
+		}
+
+		live_text = StripLeadingLineBreaks(incoming_text.substr(prefix.size()));
+		return true;
+	}
+
+	return false;
+}
+
+} // anonymous namespace
+
 bool TryConsumeLoadHistoryReplayUpdate(AcpSessionState& session, const nlohmann::json& update, const std::string& update_type, const std::string& incoming_text, std::string& live_text)
 {
 	live_text = incoming_text;
@@ -201,49 +230,59 @@ bool TryConsumeLoadHistoryReplayUpdate(AcpSessionState& session, const nlohmann:
 		return false;
 	}
 
-	for (std::size_t i = 0; i < session.load_history_replay_updates.size(); ++i)
+	AcpReplayUpdateState& expected = session.load_history_replay_updates.front();
+	if (!ReplayUpdateTypesCompatible(expected.session_update, update_type))
 	{
-		AcpReplayUpdateState& expected = session.load_history_replay_updates[i];
-		if (!ReplayUpdateTypesCompatible(expected.session_update, update_type))
+		if (TryConsumeLongAssistantReplayPrefix(session, update_type, incoming_text, live_text))
 		{
-			continue;
-		}
-
-		if (uam::acp_stream_types::IsToolSessionUpdateType(update_type))
-		{
-			if (!ReplayToolUpdateMatches(expected, update, update_type))
-			{
-				continue;
-			}
-			session.load_history_replay_updates.erase(session.load_history_replay_updates.begin(), session.load_history_replay_updates.begin() + static_cast<std::ptrdiff_t>(i) + 1);
-			live_text.clear();
+			session.load_history_replay_updates.clear();
 			return true;
 		}
+		session.load_history_replay_updates.clear();
+		session.assistant_replay_prefixes.clear();
+		return false;
+	}
 
-		std::string suffix;
-		if (!ReplayTextUpdateMatches(expected, update_type, incoming_text, suffix))
+	if (uam::acp_stream_types::IsToolSessionUpdateType(update_type))
+	{
+		if (!ReplayToolUpdateMatches(expected, update, update_type))
 		{
-			continue;
+			session.load_history_replay_updates.clear();
+			session.assistant_replay_prefixes.clear();
+			return false;
 		}
-
-		if (uam::strings::StartsWith(expected.text, incoming_text) && expected.text != incoming_text)
-		{
-			expected.text = StripLeadingLineBreaks(expected.text.substr(incoming_text.size()));
-			const std::ptrdiff_t erase_count = static_cast<std::ptrdiff_t>(i) + (expected.text.empty() ? 1 : 0);
-			if (erase_count > 0)
-			{
-				session.load_history_replay_updates.erase(session.load_history_replay_updates.begin(), session.load_history_replay_updates.begin() + erase_count);
-			}
-			live_text.clear();
-			return true;
-		}
-
-		session.load_history_replay_updates.erase(session.load_history_replay_updates.begin(), session.load_history_replay_updates.begin() + static_cast<std::ptrdiff_t>(i) + 1);
-		live_text = suffix;
+		session.load_history_replay_updates.erase(session.load_history_replay_updates.begin());
+		live_text.clear();
 		return true;
 	}
 
-	return false;
+	std::string suffix;
+	if (!ReplayTextUpdateMatches(expected, update_type, incoming_text, suffix))
+	{
+		if (TryConsumeLongAssistantReplayPrefix(session, update_type, incoming_text, live_text))
+		{
+			session.load_history_replay_updates.clear();
+			return true;
+		}
+		session.load_history_replay_updates.clear();
+		session.assistant_replay_prefixes.clear();
+		return false;
+	}
+
+	if (uam::strings::StartsWith(expected.text, incoming_text) && expected.text != incoming_text)
+	{
+		expected.text = StripLeadingLineBreaks(expected.text.substr(incoming_text.size()));
+		if (expected.text.empty())
+		{
+			session.load_history_replay_updates.erase(session.load_history_replay_updates.begin());
+		}
+		live_text.clear();
+		return true;
+	}
+
+	session.load_history_replay_updates.erase(session.load_history_replay_updates.begin());
+	live_text = suffix;
+	return true;
 }
 
 std::string JsonRpcIdToStableString(const nlohmann::json& id)

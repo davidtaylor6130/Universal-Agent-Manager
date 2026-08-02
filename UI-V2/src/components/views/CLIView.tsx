@@ -61,6 +61,32 @@ function lifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
   return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
 }
 
+function terminalTheme(isDark: boolean) {
+  return {
+    background:   isDark ? '#0b0b0e' : '#f0f0f5',
+    foreground:   isDark ? '#e6e6ef' : '#111118',
+    cursor:       '#f97316',
+    cursorAccent: isDark ? '#0b0b0e' : '#f0f0f5',
+    selectionBackground: 'rgba(249,115,22,0.30)',
+    black:        isDark ? '#1a1a24' : '#2a2a3a',
+    red:          '#f87171',
+    green:        isDark ? '#4ade80' : '#16a34a',
+    yellow:       '#facc15',
+    blue:         '#60a5fa',
+    magenta:      '#c084fc',
+    cyan:         '#22d3ee',
+    white:        isDark ? '#e6e6ef' : '#111118',
+    brightBlack:  '#6b6b88',
+    brightRed:    '#fb923c',
+    brightGreen:  isDark ? '#86efac' : '#15803d',
+    brightYellow: '#fde047',
+    brightBlue:   '#93c5fd',
+    brightMagenta:'#d8b4fe',
+    brightCyan:   '#67e8f9',
+    brightWhite:  isDark ? '#ffffff' : '#000000',
+  }
+}
+
 // Mock data for dev mode only
 const MOCK_WELCOME = [
   '\x1b[38;5;208m┌─────────────────────────────────────────┐\x1b[0m',
@@ -139,6 +165,7 @@ export function CLIView({ session }: CLIViewProps) {
     const text = steerDraft.trim()
     if (!text || steerInFlightRef.current || !isCefContext()) return
     const sourceSessionId = session.id
+    setDismissedTerminalError('')
     steerInFlightRef.current = true
     setSteerSubmitting(true)
     try {
@@ -180,29 +207,7 @@ export function CLIView({ session }: CLIViewProps) {
       lineHeight: 1.5,
       cursorBlink: true,
       cursorStyle: 'block',
-      theme: {
-        background:   isDark ? '#0b0b0e' : '#f0f0f5',
-        foreground:   isDark ? '#e6e6ef' : '#111118',
-        cursor:       '#f97316',
-        cursorAccent: isDark ? '#0b0b0e' : '#f0f0f5',
-        selectionBackground: 'rgba(249,115,22,0.30)',
-        black:        isDark ? '#1a1a24' : '#2a2a3a',
-        red:          '#f87171',
-        green:        isDark ? '#4ade80' : '#16a34a',
-        yellow:       '#facc15',
-        blue:         '#60a5fa',
-        magenta:      '#c084fc',
-        cyan:         '#22d3ee',
-        white:        isDark ? '#e6e6ef' : '#111118',
-        brightBlack:  '#6b6b88',
-        brightRed:    '#fb923c',
-        brightGreen:  isDark ? '#86efac' : '#15803d',
-        brightYellow: '#fde047',
-        brightBlue:   '#93c5fd',
-        brightMagenta:'#d8b4fe',
-        brightCyan:   '#67e8f9',
-        brightWhite:  isDark ? '#ffffff' : '#000000',
-      },
+      theme: terminalTheme(isDark),
       allowTransparency: true,
       convertEol: true,
       scrollback: 5000,
@@ -452,10 +457,13 @@ export function CLIView({ session }: CLIViewProps) {
       resizeObserver.disconnect()
       term.dispose()
     }
-  }, [currentProviderId, effectiveTerminalId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session/terminal identity, provider, support, and explicit retry
+  }, [currentProviderId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session, provider, support, and explicit retry
 
-  // Refit on theme change
+  // Refit and recolor the live terminal on theme change.
   useEffect(() => {
+    if (termInstanceRef.current?.options) {
+      termInstanceRef.current.options.theme = terminalTheme(document.documentElement.getAttribute('data-theme') !== 'light')
+    }
     requestAnimationFrame(() => fitAddonRef.current?.fit())
   }, [theme])
 
@@ -490,6 +498,21 @@ export function CLIView({ session }: CLIViewProps) {
         >
           <div className="flex items-start gap-2">
             <span className="min-w-0 flex-1">{visibleTerminalError}</span>
+            {!cliBinding?.running && (
+              <button
+                type="button"
+                aria-label="Retry terminal start"
+                onClick={() => {
+                  setDismissedTerminalError('')
+                  setCliBinding(session.id, { lastError: '' })
+                  setTerminalStartAttempt((attempt) => attempt + 1)
+                }}
+                className="rounded px-2 py-0.5 font-medium"
+                style={{ color: 'inherit', border: '1px solid currentColor' }}
+              >
+                Retry
+              </button>
+            )}
             <button
               type="button"
               aria-label="Dismiss terminal error"

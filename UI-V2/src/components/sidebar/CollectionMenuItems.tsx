@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronRight, Library } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { ViewportMenu } from '../ui'
@@ -43,6 +44,49 @@ export function CollectionMenuItems({
   const collections = useAppStore((state) => state.resourceCollections)
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const submenuRef = useRef<HTMLDivElement>(null)
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const focusSubmenuOnOpenRef = useRef(false)
+
+  const cancelClose = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+    closeTimerRef.current = null
+  }
+  const openSubmenu = (focusFirstItem = false) => {
+    cancelClose()
+    focusSubmenuOnOpenRef.current = focusFirstItem
+    setOpen(true)
+  }
+  const closeSubmenu = (restoreFocus = false) => {
+    cancelClose()
+    setOpen(false)
+    if (restoreFocus) triggerRef.current?.focus()
+  }
+  const scheduleClose = () => {
+    cancelClose()
+    closeTimerRef.current = setTimeout(() => setOpen(false), 120)
+  }
+  const onTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'ArrowRight' && event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    event.stopPropagation()
+    openSubmenu(true)
+  }
+  const onSubmenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    closeSubmenu(true)
+  }
+
+  useEffect(() => {
+    if (open && focusSubmenuOnOpenRef.current) {
+      focusSubmenuOnOpenRef.current = false
+      submenuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    }
+  }, [open])
+
+  useEffect(() => () => cancelClose(), [])
 
   if (collections.length === 0) return null
 
@@ -61,8 +105,10 @@ export function CollectionMenuItems({
         aria-expanded={open}
         className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
         style={{ border: 'none', color: 'var(--text-2)', fontFamily: 'inherit' }}
-        onClick={() => setOpen((value) => !value)}
-        onMouseEnter={() => setOpen(true)}
+        onClick={() => open ? closeSubmenu() : openSubmenu(true)}
+        onKeyDown={onTriggerKeyDown}
+        onMouseEnter={() => openSubmenu()}
+        onMouseLeave={scheduleClose}
       >
         <Library size={13} aria-hidden />
         <span className="flex-1">Move to collection</span>
@@ -70,12 +116,16 @@ export function CollectionMenuItems({
       </button>
       {open && (
         <ViewportMenu
+          ref={submenuRef}
           anchorRef={triggerRef}
           side="right"
           role="menu"
           aria-label="Move to collection"
           className="rounded-md py-1 animate-fade-in"
           style={{ minWidth: 168, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+          onKeyDown={onSubmenuKeyDown}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
         >
           {memberships.length > 0 && (
             <button

@@ -139,6 +139,12 @@ std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
 		{
 			continue;
 		}
+		if (TextContainsAnyCaseInsensitive(id, {"always"}) ||
+		    TextContainsAnyCaseInsensitive(name, {"always"}) ||
+		    TextContainsAnyCaseInsensitive(kind, {"always"}))
+		{
+			continue;
+		}
 		if (IsAcceptPermissionOption(id, name, kind))
 		{
 			return option.id;

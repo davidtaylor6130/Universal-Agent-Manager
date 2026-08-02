@@ -18,6 +18,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_session_index.h"
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #endif
@@ -52,6 +53,61 @@ namespace
 
 	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
 	constexpr const char* kMemoryWorkerPromptPrefix = "You are a non-interactive memory extraction function.";
+	constexpr const char* kNativeImportTombstonesFile = "native-import-tombstones.json";
+
+	struct NativeImportTombstones
+	{
+		bool available = false;
+		std::unordered_set<std::string> keys;
+	};
+
+	bool ParseNativeImportTombstones(const fs::path& path, std::unordered_set<std::string>& keys)
+	{
+		std::string text;
+		if (!uam::io::TryReadTextFile(path, text)) return false;
+		const nlohmann::json values = nlohmann::json::parse(text, nullptr, false);
+		if (!values.is_array())
+		{
+			return false;
+		}
+		for (const nlohmann::json& value : values)
+		{
+			if (!value.is_string() || uam::strings::IsBlank(value.get_ref<const std::string&>()))
+			{
+				keys.clear();
+				return false;
+			}
+			keys.insert(value.get<std::string>());
+		}
+		return true;
+	}
+
+	NativeImportTombstones LoadNativeImportTombstones(const fs::path& data_root)
+	{
+		NativeImportTombstones result;
+		const fs::path path = data_root / kNativeImportTombstonesFile;
+		const fs::path backup_path = uam::io::MakeBackupPath(path);
+		if (!uam::paths::PathExistsNoThrow(path) && !uam::paths::PathExistsNoThrow(backup_path))
+		{
+			result.available = true;
+			return result;
+		}
+		result.available = ParseNativeImportTombstones(path, result.keys);
+		if (!result.available)
+		{
+			result.keys.clear();
+			result.available = ParseNativeImportTombstones(backup_path, result.keys);
+		}
+		return result;
+	}
+
+	bool SaveNativeImportTombstones(const fs::path& data_root, const std::unordered_set<std::string>& keys)
+	{
+		std::vector<std::string> ordered(keys.begin(), keys.end());
+		std::ranges::sort(ordered);
+		const fs::path path = data_root / kNativeImportTombstonesFile;
+		return uam::io::WriteTextFile(path, nlohmann::json(ordered).dump(2));
+	}
 
 	fs::path NormalizeWorkspacePathForComparison(const std::string& workspace_directory)
 	{
@@ -103,12 +159,17 @@ namespace
 	{
 		std::unordered_set<std::string> existing_ids;
 		std::unordered_map<std::string, std::string> existing_id_by_native_key;
+		bool tombstones_available = false;
+		std::unordered_set<std::string> tombstoned_native_keys;
 	};
 
 	NativeImportIndex LoadNativeImportIndex(const fs::path& data_root)
 	{
 		std::vector<ChatSession> local_chats = ChatRepository::LoadLocalChatSummaries(data_root);
 		NativeImportIndex import_index;
+		NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+		import_index.tombstones_available = tombstones.available;
+		import_index.tombstoned_native_keys = std::move(tombstones.keys);
 		import_index.existing_ids.reserve(local_chats.size());
 		import_index.existing_id_by_native_key.reserve(local_chats.size());
 
@@ -158,7 +219,15 @@ namespace
 
 	std::optional<std::string> PrepareNativeChatForImport(NativeImportIndex& import_index, ChatSession& native_chat, const std::string& target_chat_id)
 	{
+		if (!import_index.tombstones_available)
+		{
+			return std::nullopt;
+		}
 		const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(native_chat);
+		if (import_index.tombstoned_native_keys.contains(native_key))
+		{
+			return std::nullopt;
+		}
 		const auto existing_id_it = import_index.existing_id_by_native_key.find(native_key);
 		const bool existing_same_native_identity = existing_id_it != import_index.existing_id_by_native_key.end();
 
@@ -549,6 +618,7 @@ namespace
 		native.model_id = local.model_id;
 		native.reasoning_effort = local.reasoning_effort;
 		native.service_tier = local.service_tier;
+		native.small_model_mode = local.small_model_mode;
 		native.extra_flags = local.extra_flags;
 		native.memory_enabled = local.memory_enabled;
 		native.memory_level = local.memory_level;
@@ -900,6 +970,63 @@ fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const uam::
 	return chats_dir ? *chats_dir : fs::path{};
 }
 
+bool ChatHistorySyncService::AddNativeImportTombstones(
+    const fs::path& data_root,
+    const std::vector<ChatSession>& chats,
+    std::vector<std::string>& added_keys) const
+{
+	added_keys.clear();
+	std::unordered_set<std::string> candidate_keys;
+	for (const ChatSession& chat : chats)
+	{
+		if (!uam::strings::IsBlank(chat.native_session_id))
+		{
+			candidate_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+		}
+	}
+	if (candidate_keys.empty())
+	{
+		return true;
+	}
+	NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	if (!tombstones.available)
+	{
+		return false;
+	}
+	std::unordered_set<std::string>& keys = tombstones.keys;
+	for (const std::string& key : candidate_keys)
+	{
+		if (keys.insert(key).second)
+		{
+			added_keys.push_back(key);
+		}
+	}
+	if (added_keys.empty() || SaveNativeImportTombstones(data_root, keys))
+	{
+		return true;
+	}
+	added_keys.clear();
+	return false;
+}
+
+bool ChatHistorySyncService::RemoveNativeImportTombstones(
+    const fs::path& data_root,
+    const std::vector<std::string>& keys_to_remove) const
+{
+	if (keys_to_remove.empty())
+	{
+		return true;
+	}
+	NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	if (!tombstones.available) return false;
+	std::unordered_set<std::string>& keys = tombstones.keys;
+	for (const std::string& key : keys_to_remove)
+	{
+		keys.erase(key);
+	}
+	return SaveNativeImportTombstones(data_root, keys);
+}
+
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id) const
 {
 	ImportResult result;
@@ -992,11 +1119,81 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 	return result;
 }
 
+ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const
+{
+	ImportResult result = ImportCodexRolloutChatsForFolder(app, folder_id);
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(app, uam::strings::Trim(folder_id));
+	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory))
+	{
+		return result;
+	}
+	const ChatFolder folder = *matched_folder;
+	ProviderRuntimeHistoryLoadOptions options;
+	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+	std::vector<ChatSession> copilot_chats = LoadCopilotSessionStateChats(
+	    CopilotSessionStatePath(),
+	    folder.directory,
+	    options);
+	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+
+	for (ChatSession& chat : copilot_chats)
+	{
+		++result.total_count;
+		chat.folder_id = folder.id;
+		chat.workspace_directory = folder.directory;
+		const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, chat, "");
+		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, CopilotSessionStatePath(), false))
+		{
+			++result.imported_count;
+		}
+	}
+#else
+	(void)app;
+	(void)folder_id;
+#endif
+	return result;
+}
+
 void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const
 {
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
 	NormalizeLegacyOpenCodeChatsForSidebar(app, chats);
+	ReplaceAppChatsWithNormalized(app, std::move(chats));
+	if (!warning.empty())
+	{
+		app.status_line = warning;
+	}
+}
+
+void ChatHistorySyncService::MergeSidebarChatsPreservingCurrent(uam::AppState& app) const
+{
+	std::unordered_map<std::string, ChatSession> current_by_id;
+	current_by_id.reserve(app.chats.size());
+	for (ChatSession& chat : app.chats)
+	{
+		current_by_id.emplace(chat.id, std::move(chat));
+	}
+
+	std::string warning;
+	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
+	for (ChatSession& chat : chats)
+	{
+		const auto current = current_by_id.find(chat.id);
+		if (current == current_by_id.end())
+		{
+			continue;
+		}
+		chat = std::move(current->second);
+		current_by_id.erase(current);
+	}
+	for (auto& [id, chat] : current_by_id)
+	{
+		(void)id;
+		chats.push_back(std::move(chat));
+	}
 	ReplaceAppChatsWithNormalized(app, std::move(chats));
 	if (!warning.empty())
 	{
@@ -1847,7 +2044,10 @@ void ChatHistorySyncService::ApplyLocalOverrides(uam::AppState& app, std::vector
 		OverlayLocalChatState(local_chat, native_chat);
 
 		bool should_copy_local_messages = LocalMessagesShouldOverrideNative(local_chat, native_chat);
-		if (should_copy_local_messages && !local_chat.messages_loaded)
+		const bool matching_loaded_transcript = native_chat.messages_loaded &&
+		    EffectiveMessageCount(local_chat) > 0 &&
+		    EffectiveMessageCount(local_chat) == EffectiveMessageCount(native_chat);
+		if ((should_copy_local_messages || matching_loaded_transcript) && !local_chat.messages_loaded)
 		{
 			ChatRepository::HydrateChatMessages(app.data_root, local_chat);
 			should_copy_local_messages = LocalMessagesShouldOverrideNative(local_chat, native_chat);
@@ -1869,9 +2069,18 @@ void ChatHistorySyncService::ApplyLocalOverrides(uam::AppState& app, std::vector
 			}
 		}
 		else if (local_chat.messages_loaded && native_chat.messages_loaded &&
-		         MessagesEquivalent(local_chat.messages, native_chat.messages) && local_update_is_newer)
+		         MessagesEquivalent(local_chat.messages, native_chat.messages))
 		{
-			native_chat.updated_at = local_chat.updated_at;
+			for (std::size_t i = 0; i < local_chat.messages.size(); ++i)
+			{
+				native_chat.messages[i].markdown_store_files = local_chat.messages[i].markdown_store_files;
+				native_chat.messages[i].markdown_store_prompt_blocks = local_chat.messages[i].markdown_store_prompt_blocks;
+				native_chat.messages[i].attachments = local_chat.messages[i].attachments;
+			}
+			if (local_update_is_newer)
+			{
+				native_chat.updated_at = local_chat.updated_at;
+			}
 		}
 	}
 

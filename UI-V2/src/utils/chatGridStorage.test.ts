@@ -3,6 +3,7 @@ import {
   assignChatToPane,
   defaultChatGridLayout,
   readChatGridLayout,
+  removeChatsFromGrid,
   subscribeChatGridLayout,
   writeChatGridLayout,
 } from './chatGridStorage'
@@ -55,5 +56,19 @@ describe('chat grid storage', () => {
     expect(layout.sessionIds).toEqual(['three', 'two', 'one', 'four'])
     expect(listener).toHaveBeenCalledWith(layout)
     unsubscribe()
+  })
+
+  it('keeps the active pane inside the visible grid when deleted chats leave only a hidden slot', () => {
+    writeChatGridLayout({
+      ...defaultChatGridLayout,
+      paneCount: 2,
+      activePane: 0,
+      sessionIds: ['delete-one', 'delete-two', '', 'hidden-chat'],
+    })
+
+    const layout = removeChatsFromGrid(['delete-one', 'delete-two'])
+
+    expect(layout.activePane).toBe(0)
+    expect(layout.sessionIds).toEqual(['', '', '', 'hidden-chat'])
   })
 })

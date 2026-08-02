@@ -120,10 +120,16 @@ export function NewChatModal() {
 	      providerId === COPILOT_CLI_PROVIDER_ID ? capabilities.reasoningOptions.map((option) => option.id) : undefined
 	    )
 	  : []
+  const requestModelDiscovery = () => {
+    if (!discoverySession) return
+    discoveryRequestedRef.current.add(providerId)
+    void discoverProviderModels(discoverySession.id).then((started) => {
+      if (!started) discoveryRequestedRef.current.delete(providerId)
+    })
+  }
   useEffect(() => {
     if (!discoverySession || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(providerId)) return
-    discoveryRequestedRef.current.add(providerId)
-    void discoverProviderModels(discoverySession.id)
+    requestModelDiscovery()
   }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId])
   const canCreate = selectedFolder !== null
 
@@ -263,8 +269,17 @@ export function NewChatModal() {
 			  onChange={(nextModelId) => {
 				setModelId(nextModelId)
 				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
-			  }}
+              }}
             />
+            {cachedAcp?.modelRefreshError && (
+              <div role="alert" className="mt-2 flex items-center justify-between gap-2 text-xs" style={{ color: 'var(--red)' }}>
+                <span>{cachedAcp.modelRefreshError}</span>
+                <Button variant="secondary" size="sm" onClick={() => {
+                  discoveryRequestedRef.current.delete(providerId)
+                  requestModelDiscovery()
+                }}>Retry</Button>
+              </div>
+            )}
           </div>
 		  {reasoningOptions.length > 0 && (
 			<div>

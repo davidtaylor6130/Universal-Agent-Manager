@@ -76,6 +76,7 @@ void UamQueryHandler::HandleBrowseMarkdownStoreDirectory(CefRefPtr<CefBrowser> /
 
 void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const std::string previous_directory = m_app.settings.markdown_store_directory;
 	const std::string directory = uam::strings::Trim(payload.value("directory", ""));
 	if (!directory.empty())
 	{
@@ -95,6 +96,7 @@ void UamQueryHandler::HandleSetMarkdownStoreDirectory(CefRefPtr<CefBrowser> brow
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		m_app.settings.markdown_store_directory = previous_directory;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Markdown Store directory."));
 		return;
 	}

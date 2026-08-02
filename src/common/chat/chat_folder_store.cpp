@@ -89,13 +89,13 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 {
 	std::vector<ChatFolder> folders;
 	const fs::path file = FolderFilePath(data_root);
+	const fs::path backup = uam::io::MakeBackupPath(file);
 
-	if (!uam::paths::PathExistsNoThrow(file))
+	if (!uam::paths::PathExistsNoThrow(file) && !uam::paths::PathExistsNoThrow(backup))
 	{
 		return folders;
 	}
 
-	const fs::path backup = uam::io::MakeBackupPath(file);
 	const std::string primary_text = uam::io::ReadTextFile(file);
 	const std::string text = (CountFolderEntries(primary_text) > 0 || !uam::paths::PathExistsNoThrow(backup)) ? primary_text : uam::io::ReadTextFile(backup);
 	std::istringstream lines(text);

@@ -1,4 +1,4 @@
-import type { Folder } from '../../types/session'
+import type { Folder, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
@@ -38,6 +38,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     markdownStoreAttachedBySessionId: {} as Record<string, MarkdownStoreEntry[]>,
     shellActions: [] as ShellAction[],
     shellActionNotification: '',
+    workspaceFolderRecoveryError: '',
 
     addFolder: (name: string, _parentId: string | null, directory: string) => {
       if (isCefContext()) {
@@ -164,6 +165,34 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return response.ok
     },
 
+    previewUnsortedWorkspaceFolders: async (): Promise<WorkspaceFolderRecoveryPreview | null> => {
+      if (!isCefContext()) {
+        set({ workspaceFolderRecoveryError: 'Workspace recovery is available in the desktop app.' })
+        return null
+      }
+      set({ workspaceFolderRecoveryError: '' })
+      const response = await sendToCEF<WorkspaceFolderRecoveryPreview>({ action: 'previewUnsortedWorkspaceFolders' })
+      if (!response.ok || !response.data) {
+        set({ workspaceFolderRecoveryError: response.error ?? 'Could not inspect Unsorted chats.' })
+        return null
+      }
+      return response.data
+    },
+
+    rebuildUnsortedWorkspaceFolders: async (): Promise<boolean> => {
+      if (!isCefContext()) {
+        set({ workspaceFolderRecoveryError: 'Workspace recovery is available in the desktop app.' })
+        return false
+      }
+      set({ workspaceFolderRecoveryError: '' })
+      const response = await sendToCEF({ action: 'rebuildUnsortedWorkspaceFolders' })
+      if (!response.ok) {
+        set({ workspaceFolderRecoveryError: response.error ?? 'Could not rebuild workspace folders.' })
+        return false
+      }
+      return true
+    },
+
     renameFolder: (id: string, name: string, directory: string) => {
       if (isCefContext()) {
         const previousFolder = get().folders.find((folder) => folder.id === id)
@@ -281,7 +310,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         payload: { currentValue },
       })
 
-      const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
+      if (!response.ok) {
+        set({ markdownStoreError: response.error ?? 'Failed to choose Skills directory.' })
+        return null
+      }
+      set({ markdownStoreError: '' })
+      const selectedPath = response.data?.selectedPath?.trim() ?? ''
       return selectedPath.length > 0 ? selectedPath : null
     },
 
@@ -348,6 +382,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       markdownStoreLoading: false,
       markdownStoreError: '',
     }),
+
+    clearMarkdownStoreError: () => set({ markdownStoreError: '' }),
 
     refreshMarkdownStore: async () => {
       if (isCefContext()) {

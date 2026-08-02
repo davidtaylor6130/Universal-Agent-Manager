@@ -14,6 +14,7 @@ export function MarkdownStoreModal() {
   const entries = useAppStore(useShallow((s) => s.markdownStoreEntries))
   const loading = useAppStore((s) => s.markdownStoreLoading)
   const error = useAppStore((s) => s.markdownStoreError)
+  const clearError = useAppStore((s) => s.clearMarkdownStoreError)
   const close = useAppStore((s) => s.closeMarkdownStore)
   const refresh = useAppStore((s) => s.refreshMarkdownStore)
   const browseDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
@@ -42,12 +43,38 @@ export function MarkdownStoreModal() {
   const [importing, setImporting] = useState(false)
   const importingRef = useRef(false)
   const importPreviewRequestRef = useRef(0)
+  const editorTriggerRef = useRef<HTMLElement | null>(null)
+  const importTriggerRef = useRef<HTMLElement | null>(null)
+  const editorDialogRef = useRef<HTMLDivElement | null>(null)
+  const importDialogRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    const handler = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    if (editing) editorDialogRef.current?.focus()
+    else if (imports.length > 0) importDialogRef.current?.focus()
+  }, [editing, imports.length])
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (editing) {
+        clearError()
+        setEditing(null)
+        setDraft(EMPTY_DRAFT)
+        setShowEditorPreview(false)
+        editorTriggerRef.current?.focus()
+        return
+      }
+      if (imports.length > 0) {
+        clearError()
+        setImports([])
+        importTriggerRef.current?.focus()
+        return
+      }
+      close()
+    }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [close])
+  }, [clearError, close, editing, imports.length])
 
   useEffect(() => {
     if (selectedPath && !entries.some((entry) => entry.filePath === selectedPath)) setSelectedPath('')
@@ -65,16 +92,18 @@ export function MarkdownStoreModal() {
         .some((value) => value.toLowerCase().includes(query))
     })
   }, [entries, filter, search])
-  const selected = entries.find((entry) => entry.filePath === selectedPath) ?? filtered[0] ?? null
+  const selected = filtered.find((entry) => entry.filePath === selectedPath) ?? filtered[0] ?? null
 
-  const beginNew = () => { setDraft(EMPTY_DRAFT); setEditing('new'); setShowEditorPreview(false) }
+  const beginNew = () => { editorTriggerRef.current = document.activeElement as HTMLElement | null; clearError(); setDraft(EMPTY_DRAFT); setEditing('new'); setShowEditorPreview(false) }
   const beginEdit = (entry: MarkdownStoreEntry) => {
+    editorTriggerRef.current = document.activeElement as HTMLElement | null
+    clearError()
     setSelectedPath(entry.filePath)
     setDraft({ title: entry.title, maker: entry.maker, review: entry.review, body: entry.body ?? entry.preview, group: entry.group ?? '' })
     setEditing('existing')
     setShowEditorPreview(false)
   }
-  const cancelEdit = () => { setEditing(null); setDraft(EMPTY_DRAFT); setShowEditorPreview(false) }
+  const cancelEdit = () => { clearError(); setEditing(null); setDraft(EMPTY_DRAFT); setShowEditorPreview(false); editorTriggerRef.current?.focus() }
   const saveDraft = async () => {
     if (submittingRef.current || !draft.title.trim() || !draft.body.trim()) return
     submittingRef.current = true
@@ -99,6 +128,8 @@ export function MarkdownStoreModal() {
     if (chosen && await setDirectory(chosen)) await refresh()
   }
   const loadImports = async (options: { includeProviders?: boolean; paths?: string[] }) => {
+    importTriggerRef.current = document.activeElement as HTMLElement | null
+    clearError()
     const requestId = ++importPreviewRequestRef.current
     const candidates = await previewImports(options)
     if (requestId !== importPreviewRequestRef.current) return
@@ -128,7 +159,7 @@ export function MarkdownStoreModal() {
       setImporting(false)
     }
     setImportResults(results)
-    if (results.some((result) => result.status === 'imported')) setImports([])
+    if (results.length > 0) setImports([])
   }
 
   return (
@@ -161,8 +192,9 @@ export function MarkdownStoreModal() {
         {error && <div className="mx-5 mt-3 text-xs" style={{ color: 'var(--red)' }}>{error}</div>}
 
         <div className="relative flex-1 min-h-0 overflow-hidden px-5 py-4">
-          {editing && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)', backdropFilter: 'blur(3px)' }}><div className="grid w-full max-w-3xl gap-3 rounded-xl p-4 animate-slide-in" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}>
+          {editing && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)', backdropFilter: 'blur(3px)' }}><div ref={editorDialogRef} role="dialog" aria-modal="true" aria-label={editing === 'new' ? 'Create skill' : 'Edit skill'} tabIndex={-1} className="grid max-h-[calc(100vh-2rem)] w-full max-w-3xl gap-3 overflow-y-auto rounded-xl p-4 animate-slide-in" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}>
             <div className="flex items-center justify-between"><strong className="text-sm" style={{ color: 'var(--text)' }}>{editing === 'new' ? 'New entry' : 'Edit entry'}</strong><Button variant="secondary" size="sm" onClick={() => setShowEditorPreview((value) => !value)}>{showEditorPreview ? 'Edit Markdown' : 'Preview Markdown'}</Button></div>
+            {error && <div role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</div>}
             <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group, for example Coding / Safety" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /></div>
             <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
@@ -170,14 +202,15 @@ export function MarkdownStoreModal() {
             <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button><Button variant="primary" size="sm" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</Button></div>
           </div></div>}
 
-          {imports.length > 0 && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)', backdropFilter: 'blur(3px)' }}><div className="grid w-full max-w-3xl gap-2 rounded-xl p-4 animate-slide-in" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}>
+          {imports.length > 0 && <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)', backdropFilter: 'blur(3px)' }}><div ref={importDialogRef} role="dialog" aria-modal="true" aria-label="Import skills" tabIndex={-1} className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col gap-2 rounded-xl p-4 animate-slide-in" style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}>
             <div className="flex items-center justify-between"><strong className="text-sm" style={{ color: 'var(--text)' }}>Import preview</strong><span className="text-xs" style={{ color: 'var(--text-3)' }}>Sources are read only; selected items are copied as .uam files.</span></div>
-            {imports.map((candidate) => <label key={candidate.id} className="flex items-start gap-2 rounded-md p-2 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+            {error && <div role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</div>}
+            <div data-import-candidates className="grid min-h-0 gap-2 overflow-y-auto">{imports.map((candidate) => <label key={candidate.id} className="flex items-start gap-2 rounded-md p-2 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
               <input type="checkbox" disabled={!candidate.supported} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
               <span className="min-w-0 flex-1"><strong style={{ color: 'var(--text)' }}>{candidate.title || candidate.sourcePath.split(/[\\/]/).pop()}</strong> · {candidate.sourceProvider}<span className="block truncate" style={{ color: 'var(--text-3)' }}>{candidate.sourcePath}</span>{candidate.validationError && <span className="block" style={{ color: 'var(--red)' }}>{candidate.validationError}</span>}</span>
               {candidate.collisionPath && <select aria-label={`Collision action for ${candidate.title}`} value={conflicts[candidate.id] ?? 'skip'} onChange={(event) => setConflicts({ ...conflicts, [candidate.id]: event.target.value as MarkdownStoreConflictAction })} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: 4 }}><option value="skip">Skip existing</option><option value="replace">Replace existing</option><option value="separate">Keep separate</option></select>}
-            </label>)}
-            <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => setImports([])}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || selectedImports.size === 0} onClick={() => void runImport()}>Import selected</Button></div>
+            </label>)}</div>
+            <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => { clearError(); setImports([]); importTriggerRef.current?.focus() }}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || selectedImports.size === 0} onClick={() => void runImport()}>Import selected</Button></div>
           </div></div>}
           {importResults.length > 0 && <div role="status" className="mb-3 flex items-start gap-2 rounded-md p-2 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface-up)' }}><div className="min-w-0 flex-1">{importResults.map((result) => <div key={`${result.sourcePath}-${result.status}`}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>}
 

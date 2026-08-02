@@ -448,10 +448,10 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   return {
     folders,
     resourceCollections,
-    sessions: sessionsWithPendingCodexOptions,
+    sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
-    goalsByChatId,
-    activeGoalIdByChatId,
+    goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
+    activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
     providers,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
@@ -547,10 +547,12 @@ export const useAppStore = create<AppState>((set, get) => {
       for (const [chatId, token] of entries) {
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
+        const currentAssistantIndex = state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
+        const lastMessageIsCurrentAssistant = currentAssistantIndex === existingMessages.length - 1
 
         if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming && !state.acpBindingBySessionId[chatId]?.processing) continue
 
-        if (!lastMessage || lastMessage.role !== 'assistant') {
+        if (!lastMessage || lastMessage.role !== 'assistant' || (!lastMessage.isStreaming && !lastMessageIsCurrentAssistant)) {
           const placeholder: Message = {
             id: `stream-${chatId}-${Date.now()}`,
             sessionId: chatId,
@@ -705,11 +707,28 @@ export const useAppStore = create<AppState>((set, get) => {
                 pendingStreamTokensByChatId.delete(chatId)
               }
             }
-            const next = applyStatePatch(msg.data, get())
+            const current = get()
+            const activeChatId = current.activeSessionId
+            const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
+            const next = applyStatePatch(msg.data, current)
             if (next) {
               set(next)
               if (next.theme) {
                 persistTheme(next.theme, get().customThemes)
+              }
+              const activeBindingAfter = activeChatId ? get().acpBindingBySessionId[activeChatId] : undefined
+              const completedActiveTurn = Boolean(activeBindingBefore?.processing && !activeBindingAfter?.processing)
+              const advancedContinuousTurn = Boolean(
+                activeBindingBefore?.processing &&
+                activeBindingAfter?.processing &&
+                (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
+              )
+              if (
+                activeChatId &&
+                activeChatId === get().activeSessionId &&
+                (completedActiveTurn || advancedContinuousTurn)
+              ) {
+                get().loadSessionMessages(activeChatId, true)
               }
             }
           }

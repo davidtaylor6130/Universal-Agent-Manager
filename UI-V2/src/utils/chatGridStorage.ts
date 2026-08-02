@@ -75,3 +75,15 @@ export function assignChatToPane(sessionId: string, paneIndex: number): ChatGrid
   writeChatGridLayout(next)
   return next
 }
+
+export function removeChatsFromGrid(sessionIdsToRemove: Iterable<string>): ChatGridLayout {
+  const removed = new Set(sessionIdsToRemove)
+  const layout = readChatGridLayout()
+  const sessionIds = layout.sessionIds.map((id) => removed.has(id) ? '' : id)
+  const activePane = sessionIds[layout.activePane]
+    ? layout.activePane
+    : Math.max(0, sessionIds.slice(0, layout.paneCount).findIndex(Boolean))
+  const next = { ...layout, activePane, sessionIds }
+  writeChatGridLayout(next)
+  return next
+}

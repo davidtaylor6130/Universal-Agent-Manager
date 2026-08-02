@@ -1,0 +1,224 @@
+---
+uamVersion: 1
+title: Bug Find Swarm
+maker: Codex
+review: Bounded evidence-first bug bash covering UI, state, runtime, recovery, fixes, and verification.
+dateCreated: 2026-07-31T00:00:00Z
+dateUpdated: 2026-07-31T00:00:00Z
+favorite: true
+sourceProvider: codex
+commandName: bug-find-swarm
+group: Audit
+---
+
+# Bug Find Swarm
+
+Find evidence, not suspicions. Prove each bug before changing production code. Fix the
+smallest shared root cause, then verify the complete product.
+
+## Operating rules
+
+- Preserve user changes. Read repository instructions and `git status` before editing.
+- Do not publish, commit, push, create issues, delete data, or change external state unless
+  the user explicitly requests it.
+- Treat existing issue lists as leads, not the audit boundary. Search for unreported bugs too.
+- Keep discovery agents read-only. Let the coordinator own integration unless file ownership
+  is explicitly divided with no overlap.
+- Never claim a bug is fixed while its regression, full suite, or required build is failing.
+- Never claim “no bugs exist.” Say “no confirmed in-scope bugs remain” only after the exit
+  gate passes.
+- State a human-approval blocker once, then wait. Do not repeat it on resumed turns.
+
+## 1. Establish ground truth
+
+1. Read `AGENTS.md`, contributor instructions, build scripts, package manifests, and test
+   commands.
+2. Record the dirty worktree without cleaning it.
+3. Run the smallest reliable baseline:
+   - existing focused tests for the reported area;
+   - the full test suite when practical;
+   - the normal build or typecheck.
+4. Record exact pass, fail, skip, and total counts. Baseline failures remain failures; do not
+   hide them or attribute them to new work without evidence.
+5. Identify user hotspots, recent changes, error logs, TODO/FIXME/HACK markers, and existing
+   tracked issues.
+
+## 2. Map data flow with blast radius two
+
+Before proposing a fix, trace two hops in both directions:
+
+`input/caller → shared state/service → persistence/runtime → serializer/transport → UI/output`
+
+For the failing value or event, identify:
+
+- where it is created;
+- its first two consumers;
+- its first two producers or upstream callers;
+- normalization, caching, persistence, retry, cancellation, and reload boundaries;
+- sibling callers that share the same function;
+- tests that already cover adjacent behaviour.
+
+Prefer one fix in the shared invariant over guards in every caller.
+
+## 3. Launch the swarm
+
+Use one coordinator plus at most three concurrent agents by default. Give each agent a
+concrete, bounded, non-overlapping scope.
+
+Only the coordinator may spawn agents. Discovery workers must not spawn more agents, edit
+files, or run the full suite; they must inspect their assigned scope and return directly.
+
+Recommended discovery roles:
+
+1. **UI and interaction** — rendering, accessibility, responsive density, empty/loading/error
+   states, keyboard behaviour, visual regressions.
+2. **State and data flow** — stores, serializers, persistence, identity, deduplication,
+   ordering, stale state, reload behaviour.
+3. **Runtime and recovery** — CLI/backend processes, resume, steer, retry, cancel, timeouts,
+   partial failures, concurrency, cleanup.
+
+Replace a role when the repository needs security, performance, platform, or test-pollution
+specialists.
+
+Give discovery agents this contract:
+
+```text
+Read only. Inspect [exact scope]. Reproduce or trace real defects; do not edit.
+Return at most 5 findings using the required finding card. Include exact files,
+symbols, evidence, two-hop blast radius, and the smallest regression test.
+Reject guesses that you cannot support.
+```
+
+If subagents are unavailable, run the same roles serially. Keep separate notes and do not
+claim parallel or independent validation.
+
+## 4. Require finding cards
+
+Accept a finding only in this form:
+
+```text
+ID:
+Severity: P0 | P1 | P2 | P3
+Symptom:
+Reproduction:
+Evidence:
+Root cause:
+Two-hop blast radius:
+Regression test:
+Smallest shared fix:
+Confidence: high | medium | low
+```
+
+Reject or defer findings that are:
+
+- preferences presented as correctness bugs;
+- duplicates of the same root cause;
+- unsupported by code, logs, a deterministic reproduction, or a visual artifact;
+- outside the user’s scope or authority;
+- speculative refactors without a failing behaviour.
+
+Prioritize data loss, security, broken recovery, incorrect state, crashes, and user-blocking
+flows before polish.
+
+## 5. Prove the bug before fixing it
+
+For each accepted bug:
+
+1. Add the smallest regression at the closest stable boundary.
+2. Run it before production edits.
+3. Confirm it fails for the intended reason, not setup, environment, or an unrelated baseline
+   failure.
+4. For visual defects, capture the current UI to a file inside the workspace and inspect the
+   saved image with an image-reading tool. Do not claim what a screenshot shows without
+   opening it.
+5. Record the red result.
+
+If a useful automated test is impossible, state why and define a deterministic manual check.
+Do not create brittle tests merely to satisfy the sequence.
+
+## 6. Implement the root-cause fix
+
+1. Re-read every caller of the shared function being changed.
+2. Reuse existing helpers, types, and native platform features.
+3. Make the smallest fix that restores the invariant across sibling callers.
+4. Preserve user data, selection, unsent input, runtime identity, and recovery paths when
+   reloading or reconciling state.
+5. Avoid new dependencies, frameworks, wrappers, factories, or speculative abstractions.
+6. Keep unrelated dirty files untouched.
+
+For independent fixes, assign explicit file ownership to implementation agents. Never let two
+agents edit the same file concurrently.
+
+## 7. Verify in widening rings
+
+Run checks in this order:
+
+1. the new regression;
+2. neighbouring component or service tests;
+3. the full repository test suite;
+4. typecheck, lint, build, and package commands required by the repository;
+5. a real launch and visual journey when UI or packaging changed;
+6. `git diff --check` and a scoped diff review.
+
+Compare final test totals with the expected baseline plus intentional additions. Any
+unexpected missing, skipped, failed, crashed, or timed-out test blocks completion.
+
+For UI work:
+
+- capture representative states and sizes to workspace files;
+- inspect the actual images;
+- verify loading, empty, error, success, keyboard, reduced-motion, and dense-content states
+  relevant to the change;
+- check the real packaged app when the package can differ from development.
+
+## 8. Maintain `issues-fixed.md`
+
+Create the file if absent. Append one entry per confirmed and fixed root cause:
+
+```markdown
+## BUG-NNN — Short title
+
+- Status: Fixed locally and validated
+- Found from: User report | swarm audit | data-flow review | visual pass
+- Symptom:
+- Root cause:
+- Data flow reviewed:
+  `producer → shared boundary → consumer`
+- Fix:
+- Regression:
+- Validation:
+- Residual risk:
+```
+
+Do not list guesses as fixed. Combine multiple symptoms caused by one invariant into one
+entry. Record build-integration defects discovered during verification too.
+
+## 9. Repeat discovery
+
+After fixes pass focused checks, run a second discovery wave over affected siblings and
+recovery paths. Stop when:
+
+- all accepted findings are fixed or explicitly deferred;
+- no new P0–P2 finding is confirmed in the second wave;
+- the exit gate passes.
+
+Do not loop forever over cosmetic P3 ideas. Report them as optional follow-up unless the user
+asked for exhaustive polish.
+
+## Exit gate
+
+Do not declare completion until every required item is true:
+
+- new regressions pass;
+- neighbouring tests pass;
+- full suite passes with expected counts;
+- required build/package passes;
+- real UI or runtime check passes when applicable;
+- saved screenshots were actually inspected when visual claims are made;
+- `git diff --check` passes;
+- `issues-fixed.md` matches the work;
+- no accepted in-scope finding remains unresolved;
+- no unrequested external action occurred.
+
+Report the exact tests and build results, deferred findings, residual risk, and changed
+artifacts. If any gate fails, report “not complete” and continue or state the single blocker.

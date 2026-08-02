@@ -10,7 +10,7 @@ Universal Agent Manager runs a React/Vite UI inside CEF (Chromium Embedded Frame
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
 [![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
 [![UI](https://img.shields.io/badge/UI-React%20%2B%20CEF-61dafb)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
-[![License](https://img.shields.io/badge/license-UAML%20v1.0-orange)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
 ## Screenshots
 
@@ -286,7 +286,7 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the current development and release line is `v4.5.1`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the current development and release line is `v4.5.2`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.
@@ -294,10 +294,4 @@ This is an actively developed project; the current development and release line 
 
 ## License
 
-This project is licensed under the Universal Agent Manager License (UAML) v1.0.
-See [LICENSE](LICENSE) for full terms.
-
-- Copyright remains with David Taylor (davidtaylor6130)
-- Free to use and modify
-- Cannot be sold as-is
-- Redistribution requires attribution
+This project is licensed under the [MIT License](LICENSE).

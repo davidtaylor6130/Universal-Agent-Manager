@@ -367,49 +367,64 @@ namespace uam
 
 			FingerprintHashString(hash, std::to_string(session.messages.size()));
 
-			if (!session.messages.empty())
+			for (const Message& message : session.messages)
 			{
-				const Message& last_message = session.messages.back();
-				FingerprintHashString(hash, RoleStr(last_message.role));
-				FingerprintHashString(hash, last_message.created_at);
-				FingerprintHashString(hash, last_message.provider);
-				FingerprintHashString(hash, last_message.content);
-				FingerprintHashString(hash, std::to_string(last_message.tool_calls.size()));
-				for (const ToolCall& tool_call : last_message.tool_calls)
+				FingerprintHashString(hash, RoleStr(message.role));
+				FingerprintHashString(hash, message.created_at);
+				FingerprintHashString(hash, message.provider);
+				FingerprintHashString(hash, message.content);
+				FingerprintHashString(hash, std::to_string(message.processing_time_ms));
+				FingerprintHashString(hash, message.thoughts);
+				FingerprintHashString(hash, message.plan_summary);
+				FingerprintHashString(hash, std::to_string(message.tool_calls.size()));
+				for (const ToolCall& tool_call : message.tool_calls)
 				{
 					FingerprintHashString(hash, tool_call.id);
 					FingerprintHashString(hash, tool_call.name);
 					FingerprintHashString(hash, tool_call.status);
 					FingerprintHashString(hash, std::to_string(tool_call.args_json.size()));
 					FingerprintHashString(hash, std::to_string(tool_call.result_text.size()));
+					FingerprintHashBool(hash, tool_call.is_sub_agent);
+					FingerprintHashString(hash, tool_call.sub_agent_id);
+					FingerprintHashString(hash, tool_call.sub_agent_title);
 				}
-				FingerprintHashString(hash, std::to_string(last_message.thoughts.size()));
-				FingerprintHashString(hash, std::to_string(last_message.plan_summary.size()));
-				FingerprintHashString(hash, std::to_string(last_message.plan_entries.size()));
-				for (const MessagePlanEntry& entry : last_message.plan_entries)
+				FingerprintHashString(hash, std::to_string(message.plan_entries.size()));
+				for (const MessagePlanEntry& entry : message.plan_entries)
 				{
 					FingerprintHashString(hash, entry.content);
 					FingerprintHashString(hash, entry.priority);
 					FingerprintHashString(hash, entry.status);
 				}
-				FingerprintHashString(hash, std::to_string(last_message.blocks.size()));
-				for (const MessageBlock& block : last_message.blocks)
+				FingerprintHashString(hash, std::to_string(message.blocks.size()));
+				for (const MessageBlock& block : message.blocks)
 				{
 					FingerprintHashString(hash, block.type);
 					FingerprintHashString(hash, block.text);
 					FingerprintHashString(hash, block.tool_call_id);
 					FingerprintHashString(hash, block.request_id_json);
 				}
-				FingerprintHashString(hash, std::to_string(last_message.attachments.size()));
-				for (const MessageAttachment& attachment : last_message.attachments)
+				FingerprintHashString(hash, std::to_string(message.markdown_store_files.size()));
+				for (const std::string& file : message.markdown_store_files)
+				{
+					FingerprintHashString(hash, file);
+				}
+				FingerprintHashString(hash, std::to_string(message.markdown_store_prompt_blocks.size()));
+				for (const std::string& prompt_block : message.markdown_store_prompt_blocks)
+				{
+					FingerprintHashString(hash, prompt_block);
+				}
+				FingerprintHashString(hash, std::to_string(message.attachments.size()));
+				for (const MessageAttachment& attachment : message.attachments)
 				{
 					FingerprintHashString(hash, attachment.id);
+					FingerprintHashString(hash, attachment.name);
 					FingerprintHashString(hash, attachment.kind);
+					FingerprintHashString(hash, attachment.mime_type);
 					FingerprintHashString(hash, attachment.path);
 					FingerprintHashString(hash, std::to_string(attachment.size_bytes));
 					FingerprintHashBool(hash, attachment.copied);
 				}
-				FingerprintHashBool(hash, last_message.interrupted);
+				FingerprintHashBool(hash, message.interrupted);
 			}
 
 			return FingerprintHashHex(hash);

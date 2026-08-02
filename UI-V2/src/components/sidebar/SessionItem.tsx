@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, memo } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
-  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert,
+  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -9,7 +10,6 @@ import type { Session } from '../../types/session'
 import { Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
-  assignChatToPane,
   chatPaneColors,
   readChatGridLayout,
   subscribeChatGridLayout,
@@ -62,6 +62,9 @@ export function formatSidebarWorktreePath(path: string): string {
 interface SessionItemProps {
   sessionId: string
   session?: Session
+  familySessionIds?: string[]
+  selected?: boolean
+  onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
 type SidebarStatus =
@@ -95,7 +98,7 @@ function sidebarStatusIcon(kind: AcpAttentionKind) {
   }
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -122,7 +125,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session }: Ses
   const isPinned = sessionSummary.isPinned
   const showProviderIcon = useAppStore((s) => s.showProviderIconsInSidebar)
   const showWorktreePath = useAppStore((s) => s.showWorktreePathInSidebar)
-  const familySessionIds = useAppStore(useShallow((s) => s.sessions
+  const familySessionIds = useAppStore(useShallow((s) => providedFamilySessionIds ?? s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
   const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
@@ -131,7 +134,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session }: Ses
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
     const attention = acpBindings.find((binding) => binding.attentionKind)?.attentionKind
     if (attention) return { type: 'attention', kind: attention, label: ATTENTION_LABELS[attention] }
-    if (acpBindings.some((binding) => binding.processing || binding.lifecycleState === 'waitingPermission') || cliBindings.some((binding) => binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown')) return { type: 'processing', label: 'Gemini running' }
+    if (acpBindings.some((binding) => binding.processing || binding.lifecycleState === 'waitingPermission') || cliBindings.some((binding) => binding.processing || binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown')) return { type: 'processing', label: 'Agent running' }
     return acpBindings.some((binding) => binding.readySinceLastSelect) || cliBindings.some((binding) => binding.readySinceLastSelect) ? { type: 'idle', label: 'Done' } : null
   }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
@@ -198,31 +201,43 @@ export const SessionItem = memo(function SessionItem({ sessionId, session }: Ses
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
+        event.stopPropagation()
       }}
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
         data-testid={`session-row-${sessionId}`}
+        data-session-id={sessionId}
+        data-selected={selected}
         className="relative flex min-h-[26px] items-center gap-1.5 px-2.5 py-1 rounded-md mx-1 cursor-pointer transition-all duration-100"
         style={{
-          background: isActive ? 'var(--sidebar-item-active)' : 'transparent',
+          background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
+          boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
         }}
-        onClick={() => !editing && !isActive && setActiveSession(sessionId)}
+        onClick={(event) => {
+          if (editing || onSessionClick?.(sessionId, event)) return
+          if (!isActive) setActiveSession(sessionId)
+        }}
         onDoubleClick={() => {
           setEditing(true)
           setEditValue(sessionName)
         }}
         onMouseEnter={(e) => {
-          if (!isActive) e.currentTarget.style.background = 'var(--sidebar-item-hover)'
+          if (!isActive && !selected) e.currentTarget.style.background = 'var(--sidebar-item-hover)'
         }}
         onMouseLeave={(e) => {
-          if (!isActive) e.currentTarget.style.background = 'transparent'
+          if (!isActive && !selected) e.currentTarget.style.background = 'transparent'
         }}
         onContextMenu={(e) => {
           e.preventDefault()
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
+        {selected && (
+          <span role="img" aria-label="Selected for bulk actions" className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
+            <Check size={12} aria-hidden />
+          </span>
+        )}
         {gridLayout.paneCount > 1 && paneIndexes.length > 0 && (
           <span role="img" aria-label={paneLabel} className="inline-flex shrink-0 items-center gap-0.5">
             {paneIndexes.map((paneIndex) => (
@@ -386,27 +401,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session }: Ses
             boxShadow: 'var(--elev-2)',
           }}
         >
-          {gridLayout.paneCount > 1 && (
-            <>
-              <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>Show in pane</div>
-              <div className="flex gap-1 px-3 pb-2">
-                {Array.from({ length: gridLayout.paneCount }, (_, paneIndex) => (
-                  <button
-                    key={paneIndex}
-                    type="button"
-                    aria-label={`Show ${sessionName} in pane ${paneIndex + 1}`}
-                    className="h-7 w-7 rounded"
-                    style={{ background: chatPaneColors[paneIndex], border: 'none' }}
-                    onClick={() => {
-                      assignChatToPane(sessionId, paneIndex)
-                      setActiveSession(sessionId)
-                      setMenuPos(null)
-                    }}
-                  />
-                ))}
-              </div>
-            </>
-          )}
           <button
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}

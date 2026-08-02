@@ -61,7 +61,7 @@ import {
   rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import { pendingCodexOptionsByChatId, pendingRequestIdsByKey } from '../push/pushBuffers'
+import { pendingCodexOptionsByChatId, pendingModelByChatId, pendingRequestIdsByKey } from '../push/pushBuffers'
 import type {
   AcpBinding,
   AcpLifecycleState,
@@ -89,6 +89,7 @@ import type {
   VoiceInputMode,
 } from '../cpp/types'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
+import { removeChatsFromGrid } from '../../utils/chatGridStorage'
 
 const initialFolders = [
   {
@@ -130,6 +131,31 @@ function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
 }
 
+function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
+  return Object.fromEntries(Object.entries(values).filter(([id]) => !deletedIds.has(id)))
+}
+
+function deleteSessionsFromState(state: AppState, deletedIds: Set<string>, selectedChatId?: string | null): Partial<AppState> {
+  const sessions = state.sessions.filter((session) => !deletedIds.has(session.id))
+  return {
+    sessions,
+    messages: withoutDeletedKeys(state.messages, deletedIds),
+    goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
+    activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
+    goalModeByChatId: withoutDeletedKeys(state.goalModeByChatId, deletedIds),
+    defaultGoalTokenBudgetByChatId: withoutDeletedKeys(state.defaultGoalTokenBudgetByChatId, deletedIds),
+    cliBindingBySessionId: withoutDeletedKeys(state.cliBindingBySessionId, deletedIds),
+    acpBindingBySessionId: withoutDeletedKeys(state.acpBindingBySessionId, deletedIds),
+    cliTranscriptBySessionId: withoutDeletedKeys(state.cliTranscriptBySessionId, deletedIds),
+    markdownStoreAttachedBySessionId: withoutDeletedKeys(state.markdownStoreAttachedBySessionId, deletedIds),
+    activeSessionId: selectedChatId !== undefined
+      ? selectedChatId
+      : state.activeSessionId && deletedIds.has(state.activeSessionId)
+        ? (sessions[0]?.id ?? null)
+        : state.activeSessionId,
+  }
+}
+
 export let pendingProviderChatDefaults: {
   requestId: string
   defaultNewChatProviderId: string
@@ -144,11 +170,12 @@ function clearPendingProviderChatDefaults(requestId?: string) {
 
 export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
   let intentionalSelectionRevision = 0
+  const loadedMessagesDigestByChatId = new Map<string, string>()
 
-  const requestChatMessagesFromCef = (chatId: string) => {
+  const requestChatMessagesFromCef = (chatId: string, force = false) => {
     if (!isCefContext() || !chatId) return
     const current = get()
-    const session = current.sessions.find((candidate) => candidate.id === chatId)
+    const messagesAtRequestStart = current.messages[chatId]
     const requestKey = `getChatMessages:${chatId}`
     const requestId = createRequestId('getChatMessages')
     rememberPendingRequest(requestKey, requestId)
@@ -156,7 +183,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       action: 'getChatMessages',
       payload: {
         chatId,
-        messagesDigest: session?.messagesDigest ?? '',
+        messagesDigest: force || current.messages[chatId] === undefined
+          ? ''
+          : loadedMessagesDigestByChatId.get(chatId) ?? '',
       },
       requestId,
     }).then((response) => {
@@ -170,7 +199,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!Array.isArray(data.messages)) return
 
       set((state) => {
-        const nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [])
+        if (force && state.messages[chatId] !== messagesAtRequestStart) return state
+        const nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [], force)
+        if (nextMessages.length === data.messages!.length && !nextMessages.some((message) => message.isStreaming)) {
+          loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
+        }
         const messagesChanged = nextMessages !== state.messages[chatId]
         const nextDigest = data.messagesDigest ?? ''
         const sessions = nextDigest
@@ -212,7 +245,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.5.1',
+    appVersion: 'V4.5.2',
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
@@ -868,6 +901,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               autoApproveCommands: previousSession.autoApproveCommands,
               memoryLevel: previousSession.memoryLevel,
               memoryEnabled: previousSession.memoryEnabled,
+              smallModelMode: previousSession.smallModelMode,
               updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
             } : s),
           }))
@@ -895,11 +929,31 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
       const optimisticUpdatedAt = new Date()
+      const targetModel = get().acpBindingBySessionId[id]?.availableModels.find((model) => model.id === requestedModelId)
+      const targetReasoningEfforts = targetModel?.supportedReasoningEfforts ?? []
+      const targetSpeedTiers = targetModel?.additionalSpeedTiers ?? []
+      const currentReasoningEffort = previousSession.reasoningEffort ?? ''
+      const targetDefaultReasoningEffort = targetModel?.defaultReasoningEffort ?? ''
+      const requestedReasoningEffort = targetModel && currentReasoningEffort && !targetReasoningEfforts.includes(currentReasoningEffort)
+        ? targetReasoningEfforts.includes(targetDefaultReasoningEffort)
+          ? targetDefaultReasoningEffort
+          : targetReasoningEfforts[0] ?? ''
+        : currentReasoningEffort
+      const currentServiceTier = previousSession.serviceTier ?? ''
+      const requestedServiceTier = targetModel && currentServiceTier && !targetSpeedTiers.includes(currentServiceTier)
+        ? ''
+        : currentServiceTier
 
       const applyModel = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-			s.id === id ? { ...s, modelId: requestedModelId, updatedAt: optimisticUpdatedAt } : s
+			s.id === id ? {
+			  ...s,
+			  modelId: requestedModelId,
+			  reasoningEffort: requestedReasoningEffort,
+			  serviceTier: requestedServiceTier,
+			  updatedAt: optimisticUpdatedAt,
+			} : s
           ),
         }))
       }
@@ -908,15 +962,34 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionModel:${id}`
         const requestId = createRequestId('setSessionModel')
         rememberPendingRequest(requestKey, requestId)
+        pendingModelByChatId.set(id, {
+          requestId,
+          modelId: requestedModelId,
+          reasoningEffort: requestedReasoningEffort,
+          serviceTier: requestedServiceTier,
+        })
         applyModel()
-        const response = await sendToCEF({
+        const response = await sendToCEF<{ modelId?: string; reasoningEffort?: string; serviceTier?: string }>({
           action: 'setChatModel',
           payload: { chatId: id, modelId: requestedModelId },
           requestId,
         })
 
         if (response.ok) {
-          clearPendingRequest(requestKey, response.requestId)
+          if (isLatestPendingRequest(requestKey, response.requestId)) {
+            const canonicalModelId = response.data?.modelId
+            const canonicalReasoningEffort = response.data?.reasoningEffort
+            const canonicalServiceTier = response.data?.serviceTier
+            if (typeof canonicalModelId === 'string' && typeof canonicalReasoningEffort === 'string' && typeof canonicalServiceTier === 'string') {
+              set((state) => ({
+                sessions: state.sessions.map((session) => session.id === id
+                  ? { ...session, modelId: canonicalModelId, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier }
+                  : session),
+              }))
+              pendingModelByChatId.delete(id)
+            }
+            clearPendingRequest(requestKey, response.requestId)
+          }
           return true
         }
 
@@ -925,10 +998,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             sessions: state.sessions.map((s) => s.id === id ? {
               ...s,
               modelId: previousSession.modelId,
+              reasoningEffort: previousSession.reasoningEffort,
+              serviceTier: previousSession.serviceTier,
               updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          if (pendingModelByChatId.get(id)?.requestId === response.requestId) pendingModelByChatId.delete(id)
         }
 
         return false
@@ -943,18 +1019,23 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	  if (!previousSession) {
         return false
       }
+	  const acp = get().acpBindingBySessionId[id]
+	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
 	  const providerId = previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
+	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
 	  const runtimeModel = get().acpBindingBySessionId[id]?.availableModels.find((model) => model.id === (previousSession.modelId ?? ''))
 	  const supportedEfforts = runtimeModel?.supportedReasoningEfforts ?? []
-	  if (!codexProvider && supportedEfforts.length === 0) return false
+	  const supportedServiceTiers = runtimeModel?.additionalSpeedTiers ?? []
+	  if (!codexProvider && !copilotProvider && supportedEfforts.length === 0) return false
 	  const normalizedEffort = options.reasoningEffort === undefined ? previousSession.reasoningEffort ?? '' : normalizeCodexReasoningEffort(options.reasoningEffort)
 	  const requestedReasoningEffort = options.reasoningEffort === undefined
 	    ? normalizedEffort
 	    : supportedEfforts.length > 0
 	    ? supportedEfforts.includes(normalizedEffort) ? normalizedEffort : supportedEfforts[supportedEfforts.length - 1]
 	    : normalizedEffort
-	  const requestedServiceTier = options.serviceTier === undefined ? previousSession.serviceTier ?? '' : codexProvider ? normalizeCodexServiceTier(options.serviceTier) : ''
+	  const normalizedServiceTier = options.serviceTier === undefined ? previousSession.serviceTier ?? '' : codexProvider ? normalizeCodexServiceTier(options.serviceTier) : ''
+	  const requestedServiceTier = runtimeModel && normalizedServiceTier && !supportedServiceTiers.includes(normalizedServiceTier) ? '' : normalizedServiceTier
       if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {
         return true
       }
@@ -977,14 +1058,26 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           serviceTier: requestedServiceTier,
         })
         applyOptions()
-        const response = await sendToCEF({
+        const response = await sendToCEF<{ reasoningEffort?: string; serviceTier?: string }>({
           action: 'setChatCodexOptions',
           payload: { chatId: id, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier },
           requestId,
         })
 
         if (response.ok) {
-          clearPendingRequest(requestKey, response.requestId)
+          if (isLatestPendingRequest(requestKey, response.requestId)) {
+            const canonicalReasoningEffort = response.data?.reasoningEffort
+            const canonicalServiceTier = response.data?.serviceTier
+            if (typeof canonicalReasoningEffort === 'string' && typeof canonicalServiceTier === 'string') {
+              set((state) => ({
+                sessions: state.sessions.map((session) => session.id === id
+                  ? { ...session, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier }
+                  : session),
+              }))
+              pendingCodexOptionsByChatId.delete(id)
+            }
+            clearPendingRequest(requestKey, response.requestId)
+          }
           return true
         }
 
@@ -1419,10 +1512,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ...previous.providerChatDefaults,
         ...sanitizeProviderChatDefaultsMap(settings.providerChatDefaults),
       }
+      const current = get()
       for (const [providerId, defaults] of Object.entries(nextDefaults)) {
         const sanitized = sanitizeProviderChatDefaults(defaults)
         const caps = providerCapabilities(providerId)
-        if (!caps.hasReasoningEffort) {
+        const providerSession = current.sessions.find((session) => session.providerId === providerId)
+        const models = providerSession ? current.acpBindingBySessionId[providerSession.id]?.availableModels ?? [] : []
+        const selectedModel = models.find((model) => model.id === sanitized.modelId) ?? (!sanitized.modelId ? models[0] : undefined)
+        if (!caps.hasReasoningEffort && !(selectedModel?.supportedReasoningEfforts?.length)) {
           sanitized.reasoningEffort = ''
         }
         if (!caps.hasServiceTier) {
@@ -1564,6 +1661,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         sendToCEF({ action: 'deleteSession', payload: { chatId: id }, requestId }).then((resp) => {
           if (resp.ok) {
+            const deletedIds = new Set([id])
+            set((state) => deleteSessionsFromState(state, deletedIds))
+            removeChatsFromGrid(deletedIds)
             clearPendingRequest(requestKey, resp.requestId)
             return
           }
@@ -1608,22 +1708,30 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return
       }
 
-      set((state) => {
-        const remaining = state.sessions.filter((s) => s.id !== id)
-        const { [id]: _, ...msgs } = state.messages
-        const { [id]: __, ...bindings } = state.cliBindingBySessionId
-        const { [id]: ___, ...acpBindings } = state.acpBindingBySessionId
-        const { [id]: ____, ...transcripts } = state.cliTranscriptBySessionId
-        return {
-          sessions: remaining,
-          messages: msgs,
-          cliBindingBySessionId: bindings,
-          acpBindingBySessionId: acpBindings,
-          cliTranscriptBySessionId: transcripts,
-          activeSessionId:
-            state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
-        }
-      })
+      const deletedIds = new Set([id])
+      set((state) => deleteSessionsFromState(state, deletedIds))
+      removeChatsFromGrid(deletedIds)
+    },
+
+    deleteSessions: async (ids: string[]) => {
+      const existingIds = new Set(get().sessions.map((session) => session.id))
+      const chatIds = [...new Set(ids.map((id) => id.trim()).filter((id) => id && existingIds.has(id)))]
+      if (chatIds.length === 0) return false
+
+      let selectedChatId: string | null | undefined
+      if (isCefContext()) {
+        const response = await sendToCEF<{ selectedChatId?: string | null }>({
+          action: 'deleteSessions',
+          payload: { chatIds },
+        })
+        if (!response.ok) return false
+        selectedChatId = response.data?.selectedChatId
+      }
+
+      const deletedIds = new Set(chatIds)
+      set((state) => deleteSessionsFromState(state, deletedIds, selectedChatId))
+      removeChatsFromGrid(deletedIds)
+      return true
     },
 
     setCliBinding: (sessionId: string, binding: Partial<CliBinding>) =>
@@ -1713,6 +1821,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
       const state = get()
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
+      const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
 
       if (isCefContext()) {
         const response = await sendToCEF({
@@ -1773,12 +1882,39 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           }))
           return false
         }
-        set((state) => ({
-          markdownStoreAttachedBySessionId: {
-            ...state.markdownStoreAttachedBySessionId,
-            [sessionId]: [],
-          },
-        }))
+        set((state) => {
+          const existing = state.messages[sessionId] ?? []
+          const alreadyHydrated = existing[existing.length - 1]?.role === 'user' && existing[existing.length - 1]?.content === prompt
+          const messages = appendUserMessage && !alreadyHydrated
+            ? {
+                ...state.messages,
+                [sessionId]: [...existing, {
+                  id: `sent-user-${Date.now()}`,
+                  sessionId,
+                  role: 'user' as const,
+                  content: prompt,
+                  attachments: [
+                    ...markdownStoreFiles.map((filePath) => ({
+                      id: filePath,
+                      name: filePath.split(/[\\/]/).pop() || filePath,
+                      type: 'markdown-store',
+                      size: 0,
+                      path: filePath,
+                    })),
+                    ...attachments,
+                  ],
+                  createdAt: new Date(),
+                }],
+              }
+            : state.messages
+          return {
+            messages,
+            markdownStoreAttachedBySessionId: {
+              ...state.markdownStoreAttachedBySessionId,
+              [sessionId]: [],
+            },
+          }
+        })
         return true
       }
 
@@ -1905,8 +2041,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     discoverProviderModels: async (sessionId: string): Promise<boolean> => {
       if (!isCefContext()) return false
+      set((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelRefreshError: '' },
+        },
+      }))
       const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({ action: 'discoverProviderModels', payload: { chatId: sessionId } })
-      if (!response.ok) return false
+      if (!response.ok) {
+        set((state) => ({
+          acpBindingBySessionId: {
+            ...state.acpBindingBySessionId,
+            [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: false, modelRefreshError: response.error ?? 'Model discovery failed.' },
+          },
+        }))
+        return false
+      }
       if (response.data?.pending) set((state) => ({
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,

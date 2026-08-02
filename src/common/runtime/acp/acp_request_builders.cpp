@@ -209,10 +209,7 @@ nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thr
 	{
 		params["effort"] = reasoning_effort;
 	}
-	if (!service_tier.empty())
-	{
-		params["serviceTier"] = service_tier;
-	}
+	params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
 
 	const std::string app_mode_id = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
 	const std::string requested_mode_id = app_mode_id == uam::approval_modes::kPlanApprovalMode ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;

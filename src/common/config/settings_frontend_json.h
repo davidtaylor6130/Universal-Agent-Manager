@@ -4,6 +4,7 @@
 
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/voice_input_settings.h"
 #include "common/models/app_models.h"
@@ -57,7 +58,7 @@ namespace uam::settings_frontend_json
 			    {"autoApproveCommands", entry.second.auto_approve_commands},
 			    {"memoryEnabled", entry.second.memory_enabled},
 			    {"memoryLevel", uam::memory_levels::Normalize(entry.second.memory_level, entry.second.memory_enabled)},
-			    {"reasoningEffort", uam::codex::NormalizeReasoningEffort(entry.second.reasoning_effort)},
+			    {"reasoningEffort", uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, entry.second.reasoning_effort)},
 			    {"serviceTier", uam::codex::NormalizeServiceTier(entry.second.service_tier)},
 			    {"smallModelMode", entry.second.small_model_mode},
 			};

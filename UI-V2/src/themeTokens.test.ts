@@ -26,4 +26,12 @@ describe('theme token contract', () => {
     expect(styles).toMatch(/\[data-theme="focus"\]\s*\{[^}]*--yellow:\s*#fbbf24/s)
     expect(source('./App.tsx')).toContain('applyDocumentTheme(theme, customThemes)')
   })
+
+  it('keeps default text selection visibly distinct from the page surface', () => {
+    const selectionRule = styles.match(/::selection\s*\{([^}]*)\}/s)?.[1] ?? ''
+    const accentStrength = Number(selectionRule.match(/background:\s*color-mix\(in srgb,\s*var\(--accent\)\s+(\d+)%/)?.[1])
+
+    expect(accentStrength).toBeGreaterThanOrEqual(50)
+    expect(selectionRule).toMatch(/color:\s*var\(--text\)/)
+  })
 })

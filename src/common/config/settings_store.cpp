@@ -3,6 +3,7 @@
 #include "common/config/editor_file_associations.h"
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/voice_input_settings.h"
 #include "common/memory/memory_levels.h"
@@ -212,11 +213,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		bindings = std::move(normalized);
 	}
 
-	ProviderChatDefaults NormalizeProviderChatDefaults(ProviderChatDefaults defaults)
+	ProviderChatDefaults NormalizeProviderChatDefaults(ProviderChatDefaults defaults, std::string_view provider_id)
 	{
 		defaults.model_id = uam::strings::Trim(defaults.model_id);
 		defaults.approval_mode = uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(defaults.approval_mode);
-		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
+		defaults.reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
 		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
@@ -234,7 +235,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			return false;
 		}
 
-		normalized_defaults = NormalizeProviderChatDefaults(defaults);
+		normalized_defaults = NormalizeProviderChatDefaults(defaults, normalized_provider_id);
 		return true;
 	}
 
@@ -392,7 +393,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			return;
 		}
 
-		settings.provider_chat_defaults[provider_key] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_key]);
+		settings.provider_chat_defaults[provider_key] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_key], provider_key);
 	}
 
 	void ClampSettings(AppSettings& settings)

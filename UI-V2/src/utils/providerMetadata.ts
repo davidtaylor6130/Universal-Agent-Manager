@@ -50,8 +50,8 @@ export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel:
   medium: { label: 'Medium', shortLabel: 'Medium', detail: 'Balanced reasoning' },
   high: { label: 'High', shortLabel: 'High', detail: 'Deeper reasoning' },
   xhigh: { label: 'Extra High', shortLabel: 'XHigh', detail: 'Very deep reasoning' },
-  ultra: { label: 'Ultra', shortLabel: 'Ultra', detail: 'Maximum reasoning' },
   max: { label: 'Max', shortLabel: 'Max', detail: 'Maximum available reasoning' },
+  ultra: { label: 'Ultra', shortLabel: 'Ultra', detail: 'Maximum reasoning with automatic delegation' },
 }
 
 export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
@@ -67,6 +67,19 @@ export const CODEX_REASONING_OPTIONS = [
   { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
   { id: 'high', label: 'High', detail: 'Deeper reasoning' },
   { id: 'xhigh', label: 'Extra High', detail: 'Very deep reasoning' },
+  { id: 'max', label: 'Max', detail: 'Maximum available reasoning' },
+  { id: 'ultra', label: 'Ultra', detail: 'Maximum reasoning with automatic delegation' },
+]
+
+export const COPILOT_REASONING_OPTIONS = [
+  { id: '', label: 'Default', detail: 'Use Copilot default reasoning' },
+  { id: 'none', label: 'None', detail: 'No extra reasoning' },
+  { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
+  { id: 'low', label: 'Low', detail: 'Faster responses' },
+  { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
+  { id: 'high', label: 'High', detail: 'Deeper reasoning' },
+  { id: 'xhigh', label: 'XHigh', detail: 'Very deep reasoning' },
+  { id: 'max', label: 'Max', detail: 'Maximum available reasoning' },
 ]
 
 export const CODEX_SPEED_OPTIONS = [
@@ -205,7 +218,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'Copilot ACP + CLI',
     npmPackage: '@github/copilot',
     capabilities: {
-      hasReasoningEffort: false,
+      hasReasoningEffort: true,
       hasServiceTier: false,
       hasAcceptEditsMode: false,
       usesFriendlyModelLabels: false,
@@ -217,7 +230,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
       memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
       memoryModelDefaultId: '',
       claudePlanPrompt: false,
-      reasoningOptions: [],
+      reasoningOptions: COPILOT_REASONING_OPTIONS,
       speedOptions: [],
     },
   },

@@ -27,7 +27,17 @@ namespace uam::provider_chat_defaults
 		});
 	}
 
-	inline ProviderChatDefaults Normalize(ProviderChatDefaults defaults)
+	inline std::string NormalizeReasoningEffort(std::string_view provider_id, std::string_view value)
+	{
+		const std::string normalized = uam::codex::NormalizeReasoningEffort(value);
+		if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCopilotCli))
+		{
+			return normalized;
+		}
+		return normalized == "ultra" ? "" : normalized;
+	}
+
+	inline ProviderChatDefaults Normalize(ProviderChatDefaults defaults, std::string_view provider_id)
 	{
 		defaults.model_id = uam::strings::Trim(defaults.model_id);
 		if (!IsAllowedModelId(defaults.model_id))
@@ -39,7 +49,7 @@ namespace uam::provider_chat_defaults
 		{
 			defaults.approval_mode = uam::approval_modes::kDefaultApprovalMode;
 		}
-		defaults.reasoning_effort = uam::codex::NormalizeReasoningEffort(defaults.reasoning_effort);
+		defaults.reasoning_effort = NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
 		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
@@ -52,13 +62,14 @@ namespace uam::provider_chat_defaults
 		const auto found = settings.provider_chat_defaults.find(normalized_provider_id);
 		if (found != settings.provider_chat_defaults.end())
 		{
-			return Normalize(found->second);
+			return Normalize(found->second, normalized_provider_id);
 		}
 		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
 	}
 
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
 	{
+		defaults = Normalize(defaults, chat.provider_id);
 		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
 		{
 			defaults.service_tier.clear();

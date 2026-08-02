@@ -2,6 +2,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
 
 export function trapModalTab(event: KeyboardEvent) {
   if (event.key !== 'Tab' || event.defaultPrevented) return
+  if ((document.activeElement as HTMLElement | null)?.closest('[data-viewport-menu]')) return
 
   const dialogs = document.querySelectorAll<HTMLElement>('[aria-modal="true"]')
   const dialog = dialogs.item(dialogs.length - 1)

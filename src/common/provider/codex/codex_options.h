@@ -17,6 +17,7 @@ namespace uam::codex
 	    "medium",
 	    "high",
 	    "xhigh",
+	    "max",
 	    "ultra",
 	});
 

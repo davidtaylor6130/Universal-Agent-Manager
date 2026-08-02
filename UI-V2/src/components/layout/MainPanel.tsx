@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Columns2, Grid2X2, MessageSquare, Square, SquareTerminal } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
@@ -10,6 +10,7 @@ import type { Session } from '../../types/session'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
+  assignChatToPane,
   chatPaneColors,
   readChatGridLayout,
   subscribeChatGridLayout,
@@ -220,9 +221,15 @@ export function MainPanel() {
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const [layout, setLayout] = useState<ChatGridLayout>(readChatGridLayout)
+  const [dropTargetPane, setDropTargetPane] = useState<number | null>(null)
 
   const visibleIds = layout.sessionIds.slice(0, layout.paneCount)
   const visibleSessions = visibleIds.map((id) => sessions.find((session) => session.id === id) ?? null)
+  const visibleAcpSignatures = useAppStore(useShallow((s) => visibleIds.map((id) => {
+    const binding = id ? s.acpBindingBySessionId[id] : undefined
+    return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
+  })))
+  const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
 
   useEffect(() => writeChatGridLayout(layout), [layout])
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
@@ -244,6 +251,29 @@ export function MainPanel() {
       if (id) loadSessionMessages(id)
     }
   }, [loadSessionMessages, visibleIds.join('|')])
+
+  useEffect(() => {
+    const previous = previousVisibleAcp.current
+    const current = new Map<string, { processing: boolean; turnSerial: number }>()
+    for (const id of visibleIds) {
+      if (!id) continue
+      const binding = useAppStore.getState().acpBindingBySessionId[id]
+      const snapshot = {
+        processing: Boolean(binding?.processing),
+        turnSerial: binding?.turnSerial ?? 0,
+      }
+      const prior = previous.get(id)
+      if (id !== activeSessionId && prior?.processing) {
+        if (!snapshot.processing) {
+          loadSessionMessages(id, true)
+        } else if (snapshot.turnSerial > prior.turnSerial) {
+          loadSessionMessages(id)
+        }
+      }
+      current.set(id, snapshot)
+    }
+    previousVisibleAcp.current = current
+  }, [activeSessionId, loadSessionMessages, visibleIds.join('|'), visibleAcpSignatures.join('|')])
 
   const selectPane = useCallback((index: number, sessionId?: string) => {
     setLayout((current) => ({ ...current, activePane: index }))
@@ -267,6 +297,35 @@ export function MainPanel() {
       : <EmptyPane active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} />
   }
 
+  const paneDropTarget = (index: number) => (
+    <div
+      className="h-full"
+      data-testid={`pane-drop-target-${index + 1}`}
+      data-drop-target={dropTargetPane === index}
+      style={{ outline: dropTargetPane === index ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
+      onDragOver={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        setDropTargetPane(index)
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetPane(null)
+      }}
+      onDrop={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
+        event.preventDefault()
+        const sessionId = event.dataTransfer.getData('text/x-uam-chat-id').trim()
+        setDropTargetPane(null)
+        if (!sessions.some((session) => session.id === sessionId)) return
+        setLayout(assignChatToPane(sessionId, index))
+        setActiveSession(sessionId)
+      }}
+    >
+      {pane(index)}
+    </div>
+  )
+
   const verticalHandle = <PanelResizeHandle style={{ width: 1 }} />
   const horizontalHandle = <PanelResizeHandle style={{ height: 1 }} />
 
@@ -285,29 +344,29 @@ export function MainPanel() {
       </div>
 
       <div className="min-h-0 flex-1" data-testid={`chat-grid-${layout.paneCount}`}>
-        {layout.paneCount === 1 && pane(0)}
+        {layout.paneCount === 1 && paneDropTarget(0)}
         {layout.paneCount === 2 && (
           <PanelGroup direction="horizontal" onLayout={(columnSizes) => setLayout((current) => ({ ...current, columnSizes }))}>
-            <Panel defaultSize={layout.columnSizes[0]} minSize={20}>{pane(0)}</Panel>
+            <Panel defaultSize={layout.columnSizes[0]} minSize={20}>{paneDropTarget(0)}</Panel>
             {verticalHandle}
-            <Panel defaultSize={layout.columnSizes[1]} minSize={20}>{pane(1)}</Panel>
+            <Panel defaultSize={layout.columnSizes[1]} minSize={20}>{paneDropTarget(1)}</Panel>
           </PanelGroup>
         )}
         {layout.paneCount === 4 && (
           <PanelGroup direction="horizontal" onLayout={(columnSizes) => setLayout((current) => ({ ...current, columnSizes }))}>
             <Panel defaultSize={layout.columnSizes[0]} minSize={20}>
               <PanelGroup direction="vertical" onLayout={(rowSizes) => setLayout((current) => ({ ...current, rowSizes }))}>
-                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{pane(0)}</Panel>
+                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{paneDropTarget(0)}</Panel>
                 {horizontalHandle}
-                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{pane(2)}</Panel>
+                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{paneDropTarget(2)}</Panel>
               </PanelGroup>
             </Panel>
             {verticalHandle}
             <Panel defaultSize={layout.columnSizes[1]} minSize={20}>
               <PanelGroup direction="vertical" onLayout={(rowSizes) => setLayout((current) => ({ ...current, rowSizes }))}>
-                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{pane(1)}</Panel>
+                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{paneDropTarget(1)}</Panel>
                 {horizontalHandle}
-                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{pane(3)}</Panel>
+                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{paneDropTarget(3)}</Panel>
               </PanelGroup>
             </Panel>
           </PanelGroup>
