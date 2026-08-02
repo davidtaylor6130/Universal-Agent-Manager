@@ -3883,7 +3883,11 @@ UAM_TEST(RelativePathIfInsideRootUsesPathSegments)
 UAM_TEST(FolderDirectoryMatchesNormalizesEquivalentPathShapes)
 {
 	TempDir temp("uam-folder-path-match");
+#if defined(_WIN32)
+	ScopedEnvVar home("USERPROFILE", temp.root.string());
+#else
 	ScopedEnvVar home("HOME", temp.root.string());
+#endif
 	const fs::path workspace = temp.root / "workspace";
 	const fs::path child = workspace / "child";
 	fs::create_directories(child);
