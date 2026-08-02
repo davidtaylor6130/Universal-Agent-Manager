@@ -143,9 +143,11 @@ namespace uam
 
 		bool HandleAcpSetupInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
 		{
+			const bool initial_setup_pending = !session.session_ready && session.lifecycle_state == kAcpLifecycleStarting;
+			const bool control_request_pending = session.session_ready &&
+			    (session.startup_model_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0);
 			if (!session.running ||
-			    session.session_ready ||
-			    session.lifecycle_state != kAcpLifecycleStarting ||
+			    (!initial_setup_pending && !control_request_pending) ||
 			    uam::AcpSessionIsWaitingForInput(session) ||
 			    now_seconds - session.last_runtime_activity_time_s < kAcpSetupInactivityTimeoutSeconds)
 			{
@@ -350,6 +352,7 @@ namespace uam
 				analytics.provider = MessageProviderId(session);
 				ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
 				chat.messages.back().markdown_store_files = queued.markdown_store_files;
+				chat.messages.back().markdown_store_prompt_blocks = queued.markdown_store_prompt_blocks;
 				chat.messages.back().attachments = queued.attachments;
 				for (const MessageAttachment& attachment : queued.attachments)
 				{
@@ -378,11 +381,15 @@ namespace uam
 			}
 			const std::string selected_model_id = uam::strings::NonEmptyOrFallback(chat.model_id, session.current_model_id);
 			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
-			if (selected_model != session.available_models.end() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
+			if (selected_model != session.available_models.end() && !chat.reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
 			{
 				chat.reasoning_effort = uam::ranges::Contains(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort)
 				                            ? selected_model->default_reasoning_effort
 				                            : selected_model->supported_reasoning_efforts.front();
+			}
+			if (selected_model != session.available_models.end() && !chat.service_tier.empty() && !uam::ranges::Contains(selected_model->additional_speed_tiers, chat.service_tier))
+			{
+				chat.service_tier.clear();
 			}
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
@@ -875,6 +882,7 @@ namespace uam
 			queued.text = message.content;
 		}
 		queued.markdown_store_files = message.markdown_store_files;
+		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
 		queued.attachments = message.attachments;
 		queued.append_user_message = false;
 
@@ -918,11 +926,6 @@ namespace uam
 		}
 
 		session->queued_prompt.clear();
-		if (session->prompt_request_id != 0)
-		{
-			session->pending_request_methods.erase(session->prompt_request_id);
-			session->prompt_request_id = 0;
-		}
 		session->processing = false;
 		session->cancel_requested = true;
 		session->cancel_requested_time_s = GetAppTimeSeconds();
@@ -950,10 +953,19 @@ namespace uam
 		nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
 		if (cancel_msg.is_null() || cancel_msg.empty())
 		{
+			if (std::strcmp(cancel_runtime.AcpProtocolKind(), "codex-app-server") == 0)
+			{
+				return true;
+			}
 			return StopAcpSession(app, chat_id);
 		}
 		if (!cancel_method.empty())
 		{
+			if (session->prompt_request_id != 0)
+			{
+				session->pending_request_methods.erase(session->prompt_request_id);
+				session->prompt_request_id = 0;
+			}
 			session->pending_request_methods[cancel_id] = cancel_method;
 			session->cancel_request_id = cancel_id;
 		}
@@ -1092,6 +1104,7 @@ namespace uam
 				return false;
 			}
 			session->current_mode_id = mode_id;
+			session->last_runtime_activity_time_s = GetAppTimeSeconds();
 			return true;
 		}
 	}
@@ -1225,6 +1238,7 @@ namespace uam
 				return false;
 			}
 			session->current_model_id = model_id;
+			session->last_runtime_activity_time_s = GetAppTimeSeconds();
 			return true;
 		}
 	}
@@ -1379,6 +1393,12 @@ namespace uam
 
 			ChatSession& chat = *chat_ptr;
 			const double now_seconds = GetAppTimeSeconds();
+			changed = DrainStderr(session) || changed;
+			changed = DrainStdout(app, session, chat, browser) || changed;
+			if (!session.running)
+			{
+				continue;
+			}
 			if (uam::AcpSessionHasPendingCancel(session) && session.cancel_requested_time_s > 0.0 && now_seconds - session.cancel_requested_time_s >= kAcpCancelTimeoutSeconds)
 			{
 				std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
@@ -1392,23 +1412,11 @@ namespace uam
 				changed = true;
 				continue;
 			}
-			changed = DrainStderr(session) || changed;
-			changed = DrainStdout(app, session, chat, browser) || changed;
-			if (!session.running)
-			{
-				continue;
-			}
 			if (HandleAcpSetupInactivityTimeout(app, session, chat, now_seconds))
 			{
 				changed = true;
 				continue;
 			}
-			if (session.session_ready && session.reconnect_attempts > 0)
-			{
-				session.reconnect_attempts = 0;
-				session.reconnect_not_before_time_s = 0.0;
-			}
-
 			if (SendSessionSetupIfReady(app, session, chat))
 			{
 				changed = true;

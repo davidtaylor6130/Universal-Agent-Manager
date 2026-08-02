@@ -207,6 +207,80 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
+  it('surfaces failed model discovery and lets the user retry', async () => {
+    let discoveryCalls = 0
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      if (JSON.parse(request).action !== 'discoverProviderModels') {
+        onSuccess('{}')
+        return
+      }
+      discoveryCalls += 1
+      if (discoveryCalls === 1) onFailure(500, 'Model discovery failed.')
+      else onSuccess(JSON.stringify({ started: true, pending: true }))
+    }
+    useAppStore.setState({
+      sessions: [{
+        id: 'gemini-existing',
+        name: 'Gemini',
+        viewMode: 'chat',
+        folderId: 'project',
+        providerId: 'gemini-cli',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      acpBindingBySessionId: {
+        'gemini-existing': {
+          sessionId: 'native-gemini',
+          providerId: 'gemini-cli',
+          protocolKind: 'gemini-acp',
+          running: false,
+          lifecycleState: 'stopped',
+          processing: false,
+          processingStartedAtMs: null,
+          readySinceLastSelect: false,
+          lastError: '',
+          recentStderr: '',
+          lastExitCode: null,
+          diagnostics: [],
+          toolCalls: [],
+          planEntries: [],
+          availableModes: [],
+          currentModeId: 'default',
+          availableModels: [],
+          currentModelId: '',
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          turnSerial: 0,
+          pendingPermission: null,
+          pendingUserInput: null,
+          agentInfo: null,
+          modelsLoading: false,
+          modelRefreshError: '',
+        },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<NewChatModal />)
+      await Promise.resolve()
+    })
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model discovery failed.')
+    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')
+    await act(async () => {
+      retry?.click()
+      await Promise.resolve()
+    })
+    expect(discoveryCalls).toBe(2)
+
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+  })
+
   it('blocks chat creation and offers to create a workspace when none exists', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
     const addFolder = vi.fn().mockResolvedValue(true)

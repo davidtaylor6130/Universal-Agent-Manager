@@ -7,8 +7,8 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
-#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/string_utils.h"
 
@@ -170,7 +170,6 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	{
 		return true;
 	}
-
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
 	{
@@ -181,8 +180,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 			session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 			session.lifecycle_state = kAcpLifecycleError;
 			session.last_error = compatibility_error;
+			AppendAcpDiagnostic(session, "process_launch", "version_blocked", "", "", false, 0, compatibility_error);
 			if (error_out != nullptr)
+			{
 				*error_out = compatibility_error;
+			}
 			return false;
 		}
 	}
@@ -350,7 +352,6 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 		SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
-
 	return true;
 }
 

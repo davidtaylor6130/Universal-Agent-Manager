@@ -52,6 +52,9 @@ describe('FolderTree', () => {
       newChatFolderId: null,
       openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
       rescanFolderChats: vi.fn(() => Promise.resolve(true)),
+      previewUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(null)),
+      rebuildUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(true)),
+      workspaceFolderRecoveryError: '',
     })
   })
 
@@ -95,6 +98,33 @@ describe('FolderTree', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('does not reclassify a workspace chat drag as a folder drag', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const data = new Map<string, string>()
+    const transfer = {
+      effectAllowed: '',
+      get types() { return [...data.keys()] },
+      getData: (type: string) => data.get(type) ?? '',
+      setData: (type: string, value: string) => { data.set(type, value) },
+    }
+    const dragStart = new Event('dragstart', { bubbles: true, cancelable: true })
+    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
+
+    act(() => host.querySelector('[data-testid="session-row-chat-1"]')?.dispatchEvent(dragStart))
+
+    expect(transfer.effectAllowed).toBe('copy')
+    expect(data.get('text/x-uam-chat-id')).toBe('chat-1')
+    expect(data.has('text/x-uam-folder-id')).toBe(false)
+    expect(data.has('text/x-uam-folder-resource-id')).toBe(false)
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -289,6 +319,74 @@ describe('FolderTree', () => {
     expect(useAppStore.getState().sessions).toHaveLength(7)
     expect(host.querySelector('[data-testid="folder-collection-work"] [data-testid="folder-row-project"]')).toBeNull()
     expect(host.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes the collection submenu after the pointer leaves both menu surfaces', () => {
+    vi.useFakeTimers()
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const folderHeader = host.querySelector('[data-testid="folder-header-project"]')
+    act(() => folderHeader?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const move = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      button.textContent?.includes('Move to collection')
+    ) as HTMLButtonElement
+    act(() => move.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    const submenu = document.body.querySelector('[role="menu"][aria-label="Move to collection"]') as HTMLElement
+    expect(submenu).toBeTruthy()
+
+    act(() => {
+      move.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: submenu }))
+      submenu.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: move }))
+      submenu.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+      vi.advanceTimersByTime(200)
+    })
+
+    expect(document.body.querySelector('[role="menu"][aria-label="Move to collection"]')).toBeNull()
+    expect(document.body.querySelector('[data-viewport-menu]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('opens and closes the collection submenu with nested-menu keyboard controls', () => {
+    useAppStore.setState({
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const folderHeader = host.querySelector('[data-testid="folder-header-project"]')
+    act(() => folderHeader?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const move = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      button.textContent?.includes('Move to collection')
+    ) as HTMLButtonElement
+    for (const [openKey, closeKey] of [['ArrowRight', 'ArrowLeft'], ['Enter', 'Escape'], [' ', 'ArrowLeft']]) {
+      act(() => {
+        move.focus()
+        move.dispatchEvent(new KeyboardEvent('keydown', { key: openKey, bubbles: true }))
+      })
+
+      const submenu = document.body.querySelector('[role="menu"][aria-label="Move to collection"]') as HTMLElement
+      expect(submenu).toBeTruthy()
+      expect(submenu.contains(document.activeElement)).toBe(true)
+
+      act(() => submenu.dispatchEvent(new KeyboardEvent('keydown', { key: closeKey, bubbles: true })))
+      expect(document.body.querySelector('[role="menu"][aria-label="Move to collection"]')).toBeNull()
+      expect(document.activeElement).toBe(move)
+      expect(document.body.querySelector('[data-viewport-menu]')).toBeTruthy()
+    }
 
     act(() => root.unmount())
     host.remove()
@@ -528,6 +626,33 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('does not rerender for runtime binding updates while status filtering is off', () => {
+    let filterReads = 0
+    const filters = {
+      providerIds: [],
+      get statusIds() {
+        filterReads++
+        return []
+      },
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<FolderTree searchQuery="" filters={filters} />)
+    })
+    filterReads = 0
+
+    act(() => useAppStore.getState().setCliBinding('chat-1', { processing: true }))
+    act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': {} as never } }))
+
+    expect(filterReads).toBe(0)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders pinned chats above folders and pin clicks do not select chats', () => {
     useAppStore.setState((state) => ({
       activeSessionId: 'chat-3',
@@ -634,6 +759,186 @@ describe('FolderTree', () => {
     act(() => rescan?.click())
 
     expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('collapses Unsorted visually but reveals matching chats while searching', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.slice(0, 2).map((session) => ({ ...session, folderId: null })),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-label="Collapse Unsorted"]')
+    const children = host.querySelector<HTMLElement>('#unsorted-chat-list')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle?.textContent).toContain('Unsorted')
+    expect(toggle?.textContent).toContain('2')
+    expect(children?.getAttribute('aria-hidden')).toBe('false')
+    expect(host.textContent).toContain('Chat 1')
+    expect(host.textContent).toContain('Chat 2')
+
+    act(() => toggle?.click())
+    expect(host.querySelector('button[aria-label="Expand Unsorted"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(children?.getAttribute('aria-hidden')).toBe('true')
+    expect(children?.hasAttribute('inert')).toBe(true)
+
+    act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+    expect(host.querySelector('button[aria-label="Collapse Unsorted"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(children?.getAttribute('aria-hidden')).toBe('false')
+    expect(children?.hasAttribute('inert')).toBe(false)
+    expect(host.textContent).toContain('Chat 1')
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelector('button[aria-label="Expand Unsorted"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(children?.getAttribute('aria-hidden')).toBe('true')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('previews and applies workspace recovery from the Unsorted context menu', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    const previewUnsortedWorkspaceFolders = vi.fn(async () => ({
+      groups: [
+        { title: 'Alpha', directory: '/tmp/Alpha', existingFolderId: '', chatIds: ['chat-1', 'chat-2'] },
+        { title: 'Project', directory: '/tmp/project', existingFolderId: 'project', chatIds: ['chat-3'] },
+      ],
+      missing: [{ id: 'chat-4', title: 'Chat 4', directory: '/missing/workspace', reason: 'Folder not found' }],
+      unavailable: [],
+      noLocation: [{ id: 'chat-5', title: 'Chat 5', directory: '', reason: 'No workspace location recorded' }],
+    }))
+    const rebuildUnsortedWorkspaceFolders = vi.fn(async () => true)
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.slice(0, 5).map((session) => ({ ...session, folderId: null })),
+      previewUnsortedWorkspaceFolders,
+      rebuildUnsortedWorkspaceFolders,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector('button[aria-label="Collapse Unsorted"]')?.parentElement
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 50 })))
+    const menu = document.body.querySelector('[role="menu"][aria-label="Unsorted actions"]')
+    expect(menu?.textContent).toContain('Rebuild workspace folders')
+    const rebuild = menu?.querySelector('button') as HTMLButtonElement
+    await act(async () => { rebuild.click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(previewUnsortedWorkspaceFolders).toHaveBeenCalledTimes(1)
+    const dialog = document.body.querySelector('[role="dialog"][aria-label="Rebuild workspace folders"]') as HTMLElement
+    expect(dialog).toBeTruthy()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(dialog.textContent).toContain('Ready · 3 chats')
+    expect(dialog.textContent).toContain('Alpha')
+    expect(dialog.textContent).toContain('Create · 2')
+    expect(dialog.textContent).toContain('Use existing · 1')
+    expect(dialog.textContent).toContain('Location not found · 1')
+    expect(dialog.textContent).toContain('No saved location · 1')
+    expect(rebuildUnsortedWorkspaceFolders).not.toHaveBeenCalled()
+
+    const apply = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent?.includes('Create 1 folder and organise 3 chats'))
+    await act(async () => { apply?.click(); await Promise.resolve(); await Promise.resolve() })
+    expect(rebuildUnsortedWorkspaceFolders).toHaveBeenCalledTimes(1)
+    expect(document.body.querySelector('[aria-label="Rebuild workspace folders"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps unavailable chats by default and reuses bulk confirmation before deletion', async () => {
+    const deleteSessions = vi.fn(async () => true)
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.slice(0, 3).map((session) => ({ ...session, folderId: null })),
+      deleteSessions,
+      previewUnsortedWorkspaceFolders: vi.fn(async () => ({
+        groups: [],
+        missing: [{ id: 'chat-1', title: 'Chat 1', directory: '/missing/one', reason: 'Folder not found' }],
+        unavailable: [{ id: 'chat-2', title: 'Chat 2', directory: '/blocked/two', reason: 'Permission denied' }],
+        noLocation: [{ id: 'chat-3', title: 'Chat 3', directory: '', reason: 'No workspace location recorded' }],
+      })),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Actions for Unsorted"]')?.click())
+    const recoveryAction = document.body.querySelector<HTMLButtonElement>('[role="menu"][aria-label="Unsorted actions"] button')
+    await act(async () => { recoveryAction?.click(); await Promise.resolve(); await Promise.resolve() })
+    const dialog = document.body.querySelector('[role="dialog"][aria-label="Rebuild workspace folders"]') as HTMLElement
+    expect(dialog.textContent).toContain('stay in Unsorted unless you explicitly delete')
+    expect(deleteSessions).not.toHaveBeenCalled()
+
+    const deleteUnavailable = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent?.includes('Delete 2 unavailable'))
+    act(() => deleteUnavailable?.click())
+    expect(deleteSessions).not.toHaveBeenCalled()
+    const confirmation = document.body.querySelector('[role="alertdialog"][aria-label="Delete 2 selected chats"]') as HTMLElement
+    expect(confirmation.textContent).toContain('This cannot be undone')
+    const confirm = Array.from(confirmation.querySelectorAll('button')).find((button) => button.textContent === 'Delete chats')
+    await act(async () => confirm?.click())
+    expect(deleteSessions).toHaveBeenCalledWith(['chat-1', 'chat-2'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('selects a visible Shift-click range and confirms one bulk delete', async () => {
+    const deleteSessions = vi.fn(async () => true)
+    useAppStore.setState({ deleteSessions })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')?.click())
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-4"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+
+    expect(Array.from(host.querySelectorAll('[data-testid^="session-row-"][data-selected="true"]'))
+      .map((row) => row.getAttribute('data-session-id'))).toEqual(['chat-1', 'chat-2', 'chat-3', 'chat-4'])
+    const bulkDelete = host.querySelector<HTMLButtonElement>('button[aria-label="Delete 4 selected chats"]')
+    expect(bulkDelete).toBeTruthy()
+    act(() => bulkDelete?.click())
+    expect(deleteSessions).not.toHaveBeenCalled()
+
+    const dialog = document.body.querySelector('[role="alertdialog"][aria-label="Delete 4 selected chats"]')
+    expect(dialog?.textContent).toContain('This cannot be undone')
+    const confirm = Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Delete chats')
+    await act(async () => confirm?.click())
+
+    expect(deleteSessions).toHaveBeenCalledTimes(1)
+    expect(deleteSessions).toHaveBeenCalledWith(['chat-1', 'chat-2', 'chat-3', 'chat-4'])
+    expect(host.querySelector('[aria-label="Delete 4 selected chats"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('clears selected chats when their workspace is collapsed', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')?.click())
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-2"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(host.textContent).toContain('2 selected')
+
+    await act(async () => {
+      host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')?.click()
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).not.toContain('selected')
+    expect(host.querySelectorAll('[data-selected="true"]')).toHaveLength(0)
 
     act(() => root.unmount())
     host.remove()

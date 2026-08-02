@@ -8,6 +8,7 @@ const xtermState = vi.hoisted(() => ({
   constructCount: 0,
   disposeCount: 0,
   writesByInstance: [] as Array<Array<string | Uint8Array>>,
+  optionsByInstance: [] as Array<{ theme?: { background?: string } }>,
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -15,9 +16,12 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24
     cols = 80
     index: number
-    constructor() {
+    options: { theme?: { background?: string } }
+    constructor(options: { theme?: { background?: string } }) {
       this.index = xtermState.constructCount++
       xtermState.writesByInstance[this.index] = []
+      this.options = options
+      xtermState.optionsByInstance[this.index] = options
     }
     loadAddon() {}
     open() {}
@@ -77,6 +81,7 @@ describe('CLIView', () => {
     xtermState.constructCount = 0
     xtermState.disposeCount = 0
     xtermState.writesByInstance = []
+    xtermState.optionsByInstance = []
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0)
@@ -343,6 +348,69 @@ describe('CLIView', () => {
     host.remove()
   })
 
+  it('retries a transient terminal startup failure without remounting', async () => {
+    let startCalls = 0
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action !== 'startCliTerminal') {
+        onSuccess('{}')
+        return
+      }
+      startCalls += 1
+      if (startCalls === 1) onFailure(500, 'Provider failed to start.')
+      else onSuccess(JSON.stringify({ terminalId: 'term-2', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle', turnState: 'idle', lastError: '' }))
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    expect(host.textContent).toContain('Provider failed to start.')
+    const retry = host.querySelector<HTMLButtonElement>('button[aria-label="Retry terminal start"]')
+    expect(retry).toBeTruthy()
+    await act(async () => { retry?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(startCalls).toBe(2)
+    expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({ running: true, terminalId: 'term-2' })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the same terminal error again when a retry fails the same way', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'startCliTerminal') {
+        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: true, lastError: 'Steer timed out.' }))
+      } else if (parsed.action === 'steerCliTerminal') {
+        onFailure(1, 'Steer timed out.')
+      } else onSuccess('{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss terminal error"]')?.click())
+    expect(host.textContent).not.toContain('Steer timed out.')
+    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Try again')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[aria-label="Retry terminal steer"]')?.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(host.textContent).toContain('Steer timed out.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('surfaces a terminal steer request failure', async () => {
     ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request)
@@ -427,6 +495,37 @@ describe('CLIView', () => {
     expect(requests.filter((request) => request.action === 'startCliTerminal')).toHaveLength(1)
     expect(requests.filter((request) => request.action === 'stopCliTerminal')).toHaveLength(0)
     expect(xtermState.constructCount).toBe(1)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('updates the live terminal palette when the app theme changes', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'startCliTerminal') {
+        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle', turnState: 'idle', lastError: '' }))
+      } else onSuccess('{}')
+    }
+    document.documentElement.setAttribute('data-theme', 'dark')
+    useAppStore.setState({
+      theme: 'dark',
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
+    })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const liveTerminalIndex = xtermState.constructCount - 1
+    expect(xtermState.optionsByInstance[liveTerminalIndex].theme?.background).toBe('#0b0b0e')
+
+    document.documentElement.setAttribute('data-theme', 'light')
+    await act(async () => {
+      useAppStore.setState({ theme: 'light' })
+      await Promise.resolve()
+    })
+    expect(xtermState.optionsByInstance[liveTerminalIndex].theme?.background).toBe('#f0f0f5')
 
     act(() => root.unmount())
     host.remove()

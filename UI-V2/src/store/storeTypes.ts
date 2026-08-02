@@ -1,4 +1,4 @@
-import type { Session, Folder } from '../types/session'
+import type { Session, Folder, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
@@ -79,6 +79,7 @@ export interface AppState {
   editorFileAssociations: EditorFileAssociation[]
   shellActions: ShellAction[]
   shellActionNotification: string
+  workspaceFolderRecoveryError: string
 
   // UI
   theme: StoredTheme
@@ -114,7 +115,7 @@ export interface AppState {
 
   // Session actions
   setActiveSession: (id: string) => void
-  loadSessionMessages: (id: string) => void
+  loadSessionMessages: (id: string, force?: boolean) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
@@ -142,6 +143,7 @@ export interface AppState {
   setMarkdownStoreDirectory: (directory: string) => Promise<boolean>
   openMarkdownStore: () => Promise<boolean>
   closeMarkdownStore: () => void
+  clearMarkdownStoreError: () => void
   refreshMarkdownStore: () => Promise<boolean>
   createMarkdownStoreEntry: (draft: MarkdownStoreDraft) => Promise<boolean>
   updateMarkdownStoreEntry: (entry: MarkdownStoreEntry, draft: MarkdownStoreDraft) => Promise<boolean>
@@ -166,6 +168,7 @@ export interface AppState {
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
   deleteSession: (id: string) => void
+  deleteSessions: (ids: string[]) => Promise<boolean>
 
   // Goal actions
 	setGoal: (chatId: string, objective: string, tokenBudget?: number, executionOwner?: 'uam' | 'provider') => Promise<string | null>
@@ -181,6 +184,8 @@ export interface AppState {
   toggleFolder: (id: string) => void
   reorderFolders: (folderIds: string[]) => Promise<boolean>
   rescanFolderChats: (id: string) => Promise<boolean>
+  previewUnsortedWorkspaceFolders: () => Promise<WorkspaceFolderRecoveryPreview | null>
+  rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => void
   deleteFolder: (id: string) => void
   browseFolderDirectory: (currentValue: string) => Promise<string | null>

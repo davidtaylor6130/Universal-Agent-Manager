@@ -1001,6 +1001,9 @@ describe('ChatView', () => {
     expect(safety.textContent).toContain('Medium')
     expect(host.querySelector('select')).toBeNull()
     act(() => safety.click())
+    expect(document.body.textContent).toContain('Warn about more potentially risky commands.')
+    expect(document.body.textContent).toContain('Warn about a moderate number of potentially risky commands.')
+    expect(document.body.textContent).toContain('Warn only about the highest-risk commands.')
     const low = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
     await act(async () => { low.click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
@@ -1347,6 +1350,58 @@ describe('ChatView', () => {
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex' })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks speed changes from chips and slash commands while Codex is processing', async () => {
+    const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', serviceTier: 'flex' }
+        : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'processing',
+          processing: true,
+          pendingPermission: null,
+          availableModels: [{
+            id: 'gpt-5.4',
+            name: 'gpt-5.4',
+            description: 'Latest Codex model.',
+            additionalSpeedTiers: ['fast', 'flex'],
+          }],
+          currentModelId: 'gpt-5.4',
+        },
+      },
+      setSessionCodexOptions,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const clearSpeed = host.querySelector<HTMLButtonElement>('button[aria-label="Disable Speed: Flex"]')
+    expect(clearSpeed).toBeNull()
+    expect(host.querySelector('[data-mode-chip="Speed: Flex"]')).toBeTruthy()
+    act(() => clearSpeed?.click())
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/speed fast')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(setSessionCodexOptions).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Codex is still working.')
 
     act(() => root.unmount())
     host.remove()
@@ -3231,6 +3286,193 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('falls back without hiding persisted bubbles when turn indexes no longer match their roles', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          turnEvents: [{ type: 'assistant_text', text: 'Current live answer.' }],
+          turnUserMessageIndex: 1,
+          turnAssistantMessageIndex: 0,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent).toContain('Please inspect the workspace')
+    expect(host.textContent).toContain('Before tool. After tool.')
+    expect(host.textContent).toContain('Current live answer.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('falls back when stale turn indexes still point to an older user and assistant pair', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          ...(state.messages['chat-1'] ?? []),
+          {
+            id: 'm-3',
+            sessionId: 'chat-1',
+            role: 'user',
+            content: 'Current request',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+          },
+          {
+            id: 'm-4',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: 'Current persisted placeholder.',
+            createdAt: new Date('2026-01-01T00:00:03.000Z'),
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          pendingPermission: null,
+          turnEvents: [{ type: 'assistant_text', text: 'Current live answer.' }],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent).toContain('Before tool. After tool.')
+    expect(host.textContent).toContain('Current persisted placeholder.')
+    expect(host.textContent).toContain('Current live answer.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('falls back when otherwise matching turn anchors are outside the rendered history window', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          ...(state.messages['chat-1'] ?? []),
+          ...Array.from({ length: 201 }, (_, index) => ({
+            id: `system-${index}`,
+            sessionId: 'chat-1',
+            role: 'system' as const,
+            content: `Archived system event ${index}`,
+            createdAt: new Date(1_767_225_602_000 + index),
+          })),
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          pendingPermission: null,
+          turnEvents: [{ type: 'assistant_text', text: 'Visible fallback answer.' }],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent).toContain('Show earlier messages')
+    expect(host.textContent).toContain('Visible fallback answer.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not duplicate a completed fallback already represented by persisted assistant text', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': (state.messages['chat-1'] ?? []).map((message) =>
+          message.role === 'assistant' ? { ...message, content: 'Final response text.' } : message
+        ),
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [{ type: 'assistant_text', text: 'Final response text.' }],
+          turnUserMessageIndex: 1,
+          turnAssistantMessageIndex: 0,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent?.match(/Final response text\./g)).toHaveLength(1)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the fallback visible while processing even when persisted text matches', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': (state.messages['chat-1'] ?? []).map((message) =>
+          message.role === 'assistant' ? { ...message, content: 'In-flight response.' } : message
+        ),
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          pendingPermission: null,
+          turnEvents: [{ type: 'assistant_text', text: 'In-flight response.' }],
+          turnUserMessageIndex: 1,
+          turnAssistantMessageIndex: 0,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent?.match(/In-flight response\./g)).toHaveLength(2)
+
+    act(() => root.unmount())
     host.remove()
   })
 

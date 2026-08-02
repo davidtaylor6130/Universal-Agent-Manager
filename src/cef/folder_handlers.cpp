@@ -32,6 +32,42 @@ namespace
 
 		return 400;
 	}
+
+	nlohmann::json RecoveryChatJson(const uam::WorkspaceFolderRecoveryChat& chat)
+	{
+		return {
+		    {"id", chat.id},
+		    {"title", chat.title},
+		    {"directory", chat.directory},
+		    {"reason", chat.reason},
+		};
+	}
+
+	nlohmann::json RecoveryPreviewJson(const uam::WorkspaceFolderRecoveryPreview& preview)
+	{
+		nlohmann::json groups = nlohmann::json::array();
+		for (const uam::WorkspaceFolderRecoveryGroup& group : preview.groups)
+		{
+			groups.push_back({
+			    {"title", group.title},
+			    {"directory", group.directory},
+			    {"existingFolderId", group.existing_folder_id},
+			    {"chatIds", group.chat_ids},
+			});
+		}
+		const auto chats_json = [](const std::vector<uam::WorkspaceFolderRecoveryChat>& chats)
+		{
+			nlohmann::json result = nlohmann::json::array();
+			for (const uam::WorkspaceFolderRecoveryChat& chat : chats) result.push_back(RecoveryChatJson(chat));
+			return result;
+		};
+		return {
+		    {"groups", std::move(groups)},
+		    {"missing", chats_json(preview.missing)},
+		    {"unavailable", chats_json(preview.unavailable)},
+		    {"noLocation", chats_json(preview.no_location)},
+		};
+	}
 } // namespace
 
 void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -197,18 +233,40 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
 	const std::string composer_text = m_app.composer_text;
 	const ChatHistorySyncService::ImportResult result =
-	    ChatHistorySyncService().ImportCodexRolloutChatsForFolder(m_app, folder_id);
-	ChatHistorySyncService().LoadSidebarChats(m_app);
+	    ChatHistorySyncService().ImportProviderChatsForFolder(m_app, folder_id);
+	ChatHistorySyncService().MergeSidebarChatsPreservingCurrent(m_app);
 	if (!selected_chat_id.empty())
 	{
 		ChatDomainService().SelectChatById(m_app, selected_chat_id);
 		m_app.composer_text = composer_text;
 	}
 	m_app.status_line = result.imported_count == 0
-	                        ? "No new Codex chats found."
-	                        : "Imported " + std::to_string(result.imported_count) + " Codex chat" +
+	                        ? "No new chats found."
+	                        : "Imported " + std::to_string(result.imported_count) + " chat" +
 	                              (result.imported_count == 1 ? "." : "s.");
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
+}
+
+void UamQueryHandler::HandlePreviewUnsortedWorkspaceFolders(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+{
+	cb->Success(RecoveryPreviewJson(uam::PreviewUnsortedWorkspaceFolders(m_app)).dump());
+}
+
+void UamQueryHandler::HandleRebuildUnsortedWorkspaceFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+{
+	uam::WorkspaceFolderRecoveryResult result;
+	if (!uam::RebuildUnsortedWorkspaceFolders(m_app, &result))
+	{
+		cb->Failure(409, m_app.status_line);
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{
+	                {"organizedChatCount", result.organized_chat_count},
+	                {"createdFolderCount", result.created_folder_count},
+	                {"reusedFolderCount", result.reused_folder_count},
+	            }
+	                .dump());
 }

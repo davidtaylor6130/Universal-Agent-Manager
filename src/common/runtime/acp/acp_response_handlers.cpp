@@ -22,6 +22,33 @@
 namespace uam::acp_detail
 {
 
+bool SendDeferredCodexInterruptIfReady(AcpSessionState& session)
+{
+	if (!session.cancel_requested || session.cancel_request_id != 0 || session.session_id.empty() || session.codex_turn_id.empty())
+	{
+		return false;
+	}
+
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const int request_id = session.next_request_id++;
+	std::string method;
+	const nlohmann::json message = runtime.OnAcpBuildCancel(session, request_id, method);
+	if (message.is_null() || message.empty() || method != uam::acp_methods::kTurnInterrupt)
+	{
+		return false;
+	}
+
+	session.pending_request_methods[request_id] = method;
+	session.cancel_request_id = request_id;
+	if (!WriteAcpMessage(session, message))
+	{
+		session.pending_request_methods.erase(request_id);
+		session.cancel_request_id = 0;
+		return false;
+	}
+	return true;
+}
+
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	(void)app;
@@ -295,6 +322,15 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (session.prompt_request_id != 0 && id == session.prompt_request_id)
 	{
 		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
+	}
+	if (session.cancel_requested && method == uam::acp_methods::kSessionPrompt)
+	{
+		session.prompt_request_id = 0;
+		session.cancel_requested = false;
+		session.cancel_requested_time_s = 0.0;
+		session.lifecycle_state = session.session_ready ? kAcpLifecycleReady : kAcpLifecycleStopped;
+		(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
+		return;
 	}
 
 	if (const nlohmann::json* error_ptr = uam::nlohmann_json::FindField(message, "error"))
@@ -591,6 +627,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				session.codex_turn_id = JsonDiagnosticStringValueOr(turn, "id", session.codex_turn_id);
 			}
 		}
+		(void)SendDeferredCodexInterruptIfReady(session);
 		session.lifecycle_state = kAcpLifecycleProcessing;
 		return;
 	}
@@ -682,11 +719,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 
 	if (method == uam::acp_methods::kTurnInterrupt)
 	{
-		session.cancel_requested = false;
-		session.cancel_requested_time_s = 0.0;
 		session.cancel_request_id = 0;
-		session.codex_turn_id.clear();
-		(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
 		return;
 	}
 

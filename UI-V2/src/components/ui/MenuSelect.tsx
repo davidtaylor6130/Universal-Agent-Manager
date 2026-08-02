@@ -58,6 +58,10 @@ export function MenuSelect({
       close()
       return
     }
+    if (event.key === 'Tab') {
+      close()
+      return
+    }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
     if (event.key === 'Home') setFocusIndex(0)
@@ -71,6 +75,7 @@ export function MenuSelect({
         ref={triggerRef}
         type="button"
         role="combobox"
+        title={label}
         aria-label={label}
         aria-controls={listId}
         aria-expanded={open}

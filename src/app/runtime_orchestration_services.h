@@ -20,7 +20,10 @@ class ChatHistorySyncService
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	ImportResult ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
+	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys) const;
+	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
 	void RefreshChatHistory(uam::AppState& app) const;
 	bool SaveChatWithStatus(uam::AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) const;
 	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const;
@@ -29,6 +32,7 @@ class ChatHistorySyncService
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& app, const ChatSession& chat) const;
 	void ReconcileUnresolvedDraftLinksByDiscovery(uam::AppState& app) const;
 	void LoadSidebarChats(uam::AppState& app) const;
+	void MergeSidebarChatsPreservingCurrent(uam::AppState& app) const;
 	void LoadSidebarChatsByDiscovery(uam::AppState& app) const;
 	void RefreshNativeSessionDirectory(uam::AppState& app) const;
 	bool StartAsyncNativeChatLoad(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir) const;

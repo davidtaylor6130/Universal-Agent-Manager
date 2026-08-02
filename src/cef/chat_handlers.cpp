@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Chat lifecycle handlers (session CRUD + select)
@@ -313,4 +314,24 @@ void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser> browser, const n
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::vector<std::string> chat_ids;
+	const std::string validation_error = uam::query_handler_internal::ParseDeleteChatIds(payload, chat_ids);
+	if (!validation_error.empty())
+	{
+		cb->Failure(400, validation_error);
+		return;
+	}
+	if (!RemoveChatsByIds(m_app, chat_ids))
+	{
+		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to delete selected chats."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	cb->Success(nlohmann::json{{"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)}}.dump());
 }

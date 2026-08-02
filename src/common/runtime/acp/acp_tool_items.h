@@ -13,6 +13,7 @@ namespace uam::acp_tool_items
 	inline constexpr const char* kFileChange = "fileChange";
 	inline constexpr const char* kMcpToolCall = "mcpToolCall";
 	inline constexpr const char* kDynamicToolCall = "dynamicToolCall";
+	inline constexpr const char* kCollabAgentToolCall = "collabAgentToolCall";
 	inline constexpr const char* kAgentMessage = "agentMessage";
 	inline constexpr const char* kReasoning = "reasoning";
 	inline constexpr const char* kPlan = "plan";
@@ -23,12 +24,14 @@ namespace uam::acp_tool_items
 	    kFileChange,
 	    kMcpToolCall,
 	    kDynamicToolCall,
+	    kCollabAgentToolCall,
 	});
 
 	inline constexpr auto kWholeItemContentTypes = std::to_array<std::string_view>({
 	    kFileChange,
 	    kMcpToolCall,
 	    kDynamicToolCall,
+	    kCollabAgentToolCall,
 	});
 
 	inline bool IsCodexToolItemType(std::string_view type)

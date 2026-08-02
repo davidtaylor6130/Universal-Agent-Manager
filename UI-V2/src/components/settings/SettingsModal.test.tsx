@@ -94,6 +94,8 @@ describe('SettingsModal memory settings', () => {
         },
       ],
       markdownStoreDirectory: '/tmp/markdown-store',
+      markdownStoreError: '',
+      isMarkdownStoreOpen: false,
       setSettingsOpen: vi.fn(),
       setMemorySettings: vi.fn(() => Promise.resolve(true)),
       setProviderChatDefaults: vi.fn(() => Promise.resolve(true)),
@@ -154,6 +156,20 @@ describe('SettingsModal memory settings', () => {
       memorySectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
   }
+
+  it('opens and switches sections without a forced animation or duplicate theme refresh', () => {
+    const { host, root } = renderModal()
+    const dialog = host.querySelector<HTMLElement>('[role="dialog"][aria-label="Settings"]')
+    expect(dialog?.className).not.toContain('animate-slide-in')
+    expect(dialog?.parentElement?.className).not.toContain('animate-fade-in')
+    expect(useAppStore.getState().refreshCustomThemes).not.toHaveBeenCalled()
+
+    openEditorsSection(host)
+    expect(host.querySelector('.animate-fade-in')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
 
   function openMemoryStoreSection(host: HTMLElement) {
     const memoryStoreSectionButton = Array.from(host.querySelectorAll('button')).find(
@@ -446,6 +462,110 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('changes provider chat defaults with the keyboard', async () => {
+    const { host, root } = renderModal()
+    const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+    )
+    act(() => defaultsSectionButton?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
+
+    const speed = host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')!
+    await act(async () => {
+      speed.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const selected = document.body.querySelector<HTMLButtonElement>(
+      '[role="listbox"][aria-label="Codex default speed"] [role="option"][aria-selected="true"]'
+    )
+    expect(document.activeElement).toBe(selected)
+    act(() => selected?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
+    expect(document.body.querySelector('[role="listbox"][aria-label="Codex default speed"]')).toBeNull()
+
+    act(() => speed.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    const reopenedSelected = document.body.querySelector<HTMLButtonElement>(
+      '[role="listbox"][aria-label="Codex default speed"] [role="option"][aria-selected="true"]'
+    )
+    act(() => reopenedSelected?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    act(() => (document.activeElement as HTMLButtonElement).click())
+    expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
+      providerChatDefaults: expect.objectContaining({
+        'codex-cli': expect.objectContaining({ serviceTier: 'fast' }),
+      }),
+    }))
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('uses discovered provider models and model-specific defaults options', () => {
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'copilot-cli', name: 'GitHub Copilot CLI', shortName: 'Copilot', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'copilot-acp' },
+      ],
+      sessions: [
+        { ...state.sessions[0], id: 'chat-codex-catalog', providerId: 'codex-cli' },
+        { ...state.sessions[0], id: 'chat-copilot-catalog', providerId: 'copilot-cli' },
+      ],
+      providerChatDefaults: {
+        'codex-cli': { modelId: 'gpt-runtime-fast', reasoningEffort: 'ultra', serviceTier: 'flex', approvalMode: 'default', memoryLevel: 'off', memoryEnabled: false, autoApproveCommands: false, smallModelMode: false },
+        'copilot-cli': { modelId: '', reasoningEffort: '', serviceTier: '', approvalMode: 'default', memoryLevel: 'off', memoryEnabled: false, autoApproveCommands: false, smallModelMode: false },
+      },
+      acpBindingBySessionId: {
+        'chat-codex-catalog': {
+          ...state.acpBindingBySessionId[state.sessions[0]?.id],
+          availableModels: [{
+            id: 'gpt-runtime-fast',
+            name: 'Runtime Fast',
+            description: 'Discovered Codex model',
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+            additionalSpeedTiers: ['fast'],
+          }],
+        },
+        'chat-copilot-catalog': {
+          ...state.acpBindingBySessionId[state.sessions[0]?.id],
+          availableModels: [{
+            id: 'copilot-runtime-model',
+            name: 'Copilot Runtime',
+            description: 'Discovered Copilot model',
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: ['low', 'medium', 'max'],
+            additionalSpeedTiers: [],
+          }],
+        },
+      },
+    }))
+
+    const { host, root } = renderModal()
+    act(() => Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+    )?.click())
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')?.click())
+    let listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Codex default speed"]')!
+    expect(listbox.textContent).toContain('Fast')
+    expect(listbox.textContent).not.toContain('Use flexible service tier')
+    act(() => document.body.querySelector<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+    act(() => host.querySelector<HTMLButtonElement>('button[title="Codex default reasoning"]')?.click())
+    listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Codex default reasoning"]')!
+    expect(listbox.textContent).toContain('High')
+    expect(listbox.textContent).not.toContain('Maximum reasoning with automatic delegation')
+    act(() => document.body.querySelector<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Copilot chat defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[title="Copilot default model"]')?.click())
+    listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Copilot default model"]')!
+    expect(listbox.textContent).toContain('Copilot Runtime')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('refreshes cached provider models manually and surfaces refresh failures', () => {
     const discoverProviderModels = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
@@ -496,7 +616,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.5.1')
+    expect(host.textContent).toContain('V4.5.2')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {
@@ -773,6 +893,87 @@ describe('SettingsModal memory settings', () => {
 
     expect(saveButton.disabled).toBe(true)
     expect(openStoreButton).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('leaves Settings open when Escape belongs to the Skills modal', () => {
+    useAppStore.setState({ isMarkdownStoreOpen: true })
+    const { host, root } = renderModal()
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows a rejected Skills directory without discarding the typed path', async () => {
+    useAppStore.setState({
+      setMarkdownStoreDirectory: vi.fn(async () => {
+        useAppStore.setState({ markdownStoreError: 'That directory cannot be used.' })
+        return false
+      }),
+    })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+
+    const input = host.querySelector('input[placeholder="Skills directory"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '/tmp/rejected-store')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      (host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    expect((host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement | null)?.value).toBe('/tmp/rejected-store')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That directory cannot be used.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('distinguishes failed and cancelled Skills browsing while retaining the typed path', async () => {
+    const browse = vi.fn<() => Promise<string | null>>()
+      .mockImplementationOnce(async () => {
+        useAppStore.setState({ markdownStoreError: 'Folder picker failed.' })
+        return null
+      })
+      .mockImplementationOnce(async () => {
+        useAppStore.setState({ markdownStoreError: '' })
+        return null
+      })
+      .mockImplementationOnce(async () => {
+        useAppStore.setState({ markdownStoreError: '' })
+        return '/tmp/chosen-store'
+      })
+    useAppStore.setState({ browseMarkdownStoreDirectory: browse })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+
+    const input = host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement
+    const browseButton = host.querySelector('button[aria-label="Browse for Skills directory"]') as HTMLButtonElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '/tmp/typed-store')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    await act(async () => { browseButton.click(); await Promise.resolve() })
+    expect(input.value).toBe('/tmp/typed-store')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Folder picker failed.')
+
+    await act(async () => { browseButton.click(); await Promise.resolve() })
+    expect(input.value).toBe('/tmp/typed-store')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    act(() => useAppStore.setState({ markdownStoreError: 'Stale picker error.' }))
+    await act(async () => { browseButton.click(); await Promise.resolve() })
+    expect(input.value).toBe('/tmp/chosen-store')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()

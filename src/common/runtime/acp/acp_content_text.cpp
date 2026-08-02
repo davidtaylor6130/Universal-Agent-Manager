@@ -67,7 +67,7 @@ std::string ContentTextFromJson(const nlohmann::json& content)
 	return "";
 }
 
-std::string ToolCallContentTextFromJson(const nlohmann::json& tool_call)
+	std::string ToolCallContentTextFromJson(const nlohmann::json& tool_call)
 {
 	for (const char* field : {"content", "rawOutput", "rawInput"})
 	{

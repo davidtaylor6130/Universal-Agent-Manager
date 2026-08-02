@@ -1,0 +1,50 @@
+---
+uamVersion: 1
+title: Workflow Creation
+maker: Codex
+review: "Creates the smallest reliable workflow for a requested process, including its trigger, inputs, steps, failure handling, implementation, and validation."
+dateCreated: 2026-07-31T00:00:00Z
+dateUpdated: 2026-07-31T00:00:00Z
+favorite: false
+sourceProvider: codex
+commandName: workflow-creation
+group: Codex Skills
+---
+
+# Workflow Creation
+
+Create the smallest reliable workflow that achieves the user's goal.
+
+## Process
+
+1. Inspect the selected files, repository, or existing workflow before proposing changes.
+2. Confirm only details that materially change the result:
+   - goal and success condition
+   - trigger
+   - inputs and outputs
+   - destination platform or format
+   - credentials, permissions, and destructive actions
+3. Reuse existing project patterns and native platform features before adding dependencies or custom infrastructure.
+4. Describe the workflow as:
+
+   `Trigger → Validate → Transform/Decide → Act → Verify → Report`
+
+5. Implement it when the requested platform and required access are available. Never invent credentials, IDs, schemas, paths, or API responses.
+6. Add failure handling only where recovery is useful:
+   - validate untrusted input
+   - retry transient failures with a limit
+   - make repeated runs safe when practical
+   - stop before destructive or externally visible actions that lack approval
+   - report the failed step and useful diagnostic detail
+7. Validate with one representative success case and one important failure case. For visual or node-based workflows, also inspect the final structure for disconnected or misconfigured steps.
+
+## Deliverable
+
+Return:
+
+- the implemented workflow or exact artifact path
+- its trigger, inputs, outputs, and side effects
+- validation performed and result
+- any credential or deployment step the user must complete
+
+Do not add queues, databases, frameworks, abstractions, monitoring, or parallel branches unless the workflow actually needs them.

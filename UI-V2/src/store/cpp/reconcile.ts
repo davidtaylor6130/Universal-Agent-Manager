@@ -9,6 +9,7 @@ import type { Provider } from '../../types/provider'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
 } from '../../utils/providerMetadata'
 import {
@@ -22,6 +23,7 @@ import {
 } from './sanitizers'
 import {
   pendingCodexOptionsByChatId,
+  pendingModelByChatId,
   pendingRequestIdsByKey,
 } from '../push/pushBuffers'
 import type {
@@ -684,17 +686,18 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
 export function reconcileCppMessages(
   chatId: string,
   existingMessages: Message[] | undefined,
-  cppMessages: CppMessage[]
+  cppMessages: CppMessage[],
+  authoritative = false
 ): Message[] {
   const existing = existingMessages ?? []
   const existingRealMessages = existing.filter((message) => !message.isStreaming)
   const hasStreamingPlaceholder = existing.some((message) => message.isStreaming)
 
-  if (hasStreamingPlaceholder && cppMessages.length <= existingRealMessages.length) {
+  if (!authoritative && hasStreamingPlaceholder && cppMessages.length <= existingRealMessages.length) {
     return existing
   }
 
-  if (cppMessages.length < existingRealMessages.length) {
+  if (!authoritative && cppMessages.length < existingRealMessages.length) {
     return existing
   }
 
@@ -797,20 +800,40 @@ export function clearPendingCodexOptions(chatId: string, requestId?: string) {
 }
 
 export function applyPendingCodexOptions(sessions: Session[]): Session[] {
-  if (pendingCodexOptionsByChatId.size === 0) return sessions
+  if (pendingCodexOptionsByChatId.size === 0 && pendingModelByChatId.size === 0) return sessions
   let changed = false
   const nextSessions = sessions.map((session) => {
+    let nextSession = session
+    const pendingModel = pendingModelByChatId.get(session.id)
+    if (pendingModel) {
+      if (
+        (session.modelId ?? '') === pendingModel.modelId &&
+        (session.reasoningEffort ?? '') === pendingModel.reasoningEffort &&
+        (session.serviceTier ?? '') === pendingModel.serviceTier
+      ) {
+        pendingModelByChatId.delete(session.id)
+      } else {
+        changed = true
+        nextSession = {
+          ...nextSession,
+          modelId: pendingModel.modelId,
+          reasoningEffort: pendingModel.reasoningEffort,
+          serviceTier: pendingModel.serviceTier,
+        }
+      }
+    }
     const pending = pendingCodexOptionsByChatId.get(session.id)
-    if (!pending || (session.providerId ?? GEMINI_CLI_PROVIDER_ID) !== CODEX_CLI_PROVIDER_ID) {
-      return session
+    const providerId = session.providerId ?? GEMINI_CLI_PROVIDER_ID
+    if (!pending || (providerId !== CODEX_CLI_PROVIDER_ID && providerId !== COPILOT_CLI_PROVIDER_ID)) {
+      return nextSession
     }
     if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
       pendingCodexOptionsByChatId.delete(session.id)
-      return session
+      return nextSession
     }
     changed = true
     return {
-      ...session,
+      ...nextSession,
       reasoningEffort: pending.reasoningEffort,
       serviceTier: pending.serviceTier,
     }

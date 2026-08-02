@@ -33,7 +33,7 @@ import {
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
-import { buildCodexReasoningOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
 
 interface MemoryModelOption {
   id: string
@@ -257,7 +257,6 @@ export function SettingsModal() {
   const updateChecksEnabled = useAppStore((s) => s.updateChecksEnabled)
   const setUpdateSettings = useAppStore((s) => s.setUpdateSettings)
   const customThemes = useAppStore(useShallow((s) => s.customThemes))
-  const refreshCustomThemes = useAppStore((s) => s.refreshCustomThemes)
   const saveCustomTheme = useAppStore((s) => s.saveCustomTheme)
   const deleteCustomTheme = useAppStore((s) => s.deleteCustomTheme)
   const memoryWorkerBindings = useAppStore(useShallow((s) => s.memoryWorkerBindings))
@@ -265,6 +264,8 @@ export function SettingsModal() {
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
+  const markdownStoreError = useAppStore((s) => s.markdownStoreError)
+  const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const savedVoiceMode = useAppStore((s) => s.voiceInputMode)
   const savedVoiceServerBaseUrl = useAppStore((s) => s.voiceInputServerBaseUrl)
   const savedVoiceServerEndpoint = useAppStore((s) => s.voiceInputServerEndpoint)
@@ -289,7 +290,6 @@ export function SettingsModal() {
   const { theme, setTheme } = useTheme()
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
-  const [openDefaultsMenu, setOpenDefaultsMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
   const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
   const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
@@ -311,14 +311,9 @@ export function SettingsModal() {
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
-  const defaultsMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
   const popupAnchorsRef = useRef(new Map<string, HTMLButtonElement>())
   const themeImportRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    void refreshCustomThemes()
-  }, [refreshCustomThemes])
 
   useEffect(() => {
     if (!themeDraft) return
@@ -342,16 +337,13 @@ export function SettingsModal() {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (e.defaultPrevented) return
+      if (isMarkdownStoreOpen) return
       if (openMemoryMenu) {
         setOpenMemoryMenu(null)
         return
       }
       if (openEditorMenu) {
         setOpenEditorMenu(null)
-        return
-      }
-      if (openDefaultsMenu) {
-        setOpenDefaultsMenu(null)
         return
       }
       if (openCliVersionMenu) {
@@ -362,7 +354,7 @@ export function SettingsModal() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [openCliVersionMenu, openDefaultsMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
+  }, [isMarkdownStoreOpen, openCliVersionMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -371,7 +363,6 @@ export function SettingsModal() {
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
       if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
-      if (!defaultsMenuRef.current?.contains(target)) setOpenDefaultsMenu(null)
       if (!cliVersionMenuRef.current?.contains(target)) setOpenCliVersionMenu(null)
     }
     document.addEventListener('mousedown', handler)
@@ -431,7 +422,6 @@ export function SettingsModal() {
   }
 
   const toggleDefaultProvider = (providerId: string) => {
-    setOpenDefaultsMenu(null)
     setExpandedDefaultProviders((current) => ({
       ...current,
       [providerId]: !(current[providerId] ?? false),
@@ -455,85 +445,25 @@ export function SettingsModal() {
   }
 
   const renderDefaultsMenu = (
-    menuId: string,
+    _menuId: string,
     value: string,
     label: string,
     options: MemoryModelOption[],
     onSelect: (value: string) => void,
     renderOptionIcon?: (option: MemoryModelOption) => ReactNode
   ) => {
-    const selectedOption = options.find((option) => option.id === value) ?? options[0]
     return (
-      <div className="relative">
-        <button
-          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
-          type="button"
-          title={label}
-          aria-haspopup="listbox"
-          aria-expanded={openDefaultsMenu === menuId}
-          onClick={() => setOpenDefaultsMenu(openDefaultsMenu === menuId ? null : menuId)}
-          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left"
-          style={{
-            color: 'var(--text)',
-            borderRadius: 8,
-            padding: '8px 10px',
-          }}
-        >
-          <span className="inline-flex items-center gap-2 min-w-0">
-            {selectedOption ? renderOptionIcon?.(selectedOption) : null}
-            <span className="truncate">{selectedOption?.label ?? titleFromModelId(value)}</span>
-          </span>
-          <ChevronDown className={openDefaultsMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-        </button>
-        {openDefaultsMenu === menuId && (
-          <ViewportMenu
-            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
-            role="listbox"
-            aria-label={label}
-            className="animate-fade-in"
-            style={{
-              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 10,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            {options.map((option) => {
-              const selected = option.id === value
-              return (
-                <button
-                  key={option.id || 'default'}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onSelect(option.id)
-                    setOpenDefaultsMenu(null)
-                  }}
-                  className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                  style={{
-                    borderRadius: 6,
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                  }}
-                >
-                  {renderOptionIcon?.(option)}
-                  <span className="flex-1 min-w-0">
-                    <span className="block truncate">{option.label}</span>
-                    {option.detail && (
-                      <span className="block truncate text-[11px]" style={{ color: 'var(--text-3)' }}>
-                        {option.detail}
-                      </span>
-                    )}
-                  </span>
-                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
-                </button>
-              )
-            })}
-          </ViewportMenu>
-        )}
-      </div>
+      <MenuSelect
+        label={label}
+        value={value}
+        options={options.map((option) => ({
+          value: option.id,
+          label: option.label,
+          description: option.detail,
+          icon: renderOptionIcon?.(option),
+        }))}
+        onChange={onSelect}
+      />
     )
   }
 
@@ -935,7 +865,7 @@ export function SettingsModal() {
             title="New Chat Defaults"
             description="Choose the provider preselected for new chats and the defaults each provider applies."
           >
-            <div ref={defaultsMenuRef} className="grid gap-4">
+            <div className="grid gap-4">
               <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <div>Default provider</div>
                 {renderDefaultsMenu(
@@ -955,21 +885,22 @@ export function SettingsModal() {
               <div className="space-y-3">
                 {providers.map((provider) => {
                   const defaults = defaultsForProvider(provider)
-                  const modelOptions = memoryModelOptions(provider, provider.id, defaults.modelId)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
                   const providerSession = sessions.find((session) => session.providerId === provider.id)
                   const providerAcp = providerSession ? acpBindings[providerSession.id] : undefined
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
+                  const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
                   const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, defaults.modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
                   const liveReasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
-                    ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort)
+                    ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort, caps.reasoningOptions.map((option) => option.id))
                     : []
                   const defaultReasoningOption = caps.reasoningOptions.find((option) => !option.id)
                   const reasoningOptions = defaultReasoningOption && !liveReasoningOptions.some((option) => !option.id)
                     ? [defaultReasoningOption, ...liveReasoningOptions]
                     : liveReasoningOptions
+                  const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier)
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
@@ -1011,7 +942,7 @@ export function SettingsModal() {
                               (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
                           </div>
-                          {reasoningOptions.length > 0 && (
+                          {(caps.hasReasoningEffort || runtimeSupportsReasoning) && (
                             <div className="grid gap-1">
                               <div>Reasoning</div>
                               {renderDefaultsMenu(
@@ -1030,7 +961,7 @@ export function SettingsModal() {
                                 `${provider.id}:speed`,
                                 defaults.serviceTier,
                                 `${providerName} default speed`,
-                                caps.speedOptions,
+                                speedOptions,
                                 (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
                               )}
                             </div>
@@ -1603,10 +1534,11 @@ export function SettingsModal() {
         <SectionCard title="Skills" description="Publish and attach reusable `.uam` files from one shared directory.">
           <div className="grid gap-3">
             <div className="flex items-center gap-2">
-              <input value={markdownStoreDraftDirectory} onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }} />
+              <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }} />
               <IconButton icon={<FolderOpen size={15} />} label="Browse for Skills directory" onClick={() => { void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => { if (selected) setMarkdownStoreDraftDirectory(selected) }) }} />
               <IconButton variant="solid" icon={<Save size={15} />} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)} />
             </div>
+            {markdownStoreError && <div role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{markdownStoreError}</div>}
             <div className="flex items-center justify-between gap-4">
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>Favorite entries become composer slash commands; other entries can be attached from the store.</span>
               <Button variant="primary" size="sm" leadingIcon={<BookOpen size={14} />} onClick={() => void openMarkdownStore()}>Open store</Button>
@@ -1783,7 +1715,7 @@ export function SettingsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false) }}
     >
@@ -1792,7 +1724,7 @@ export function SettingsModal() {
         aria-modal="true"
         aria-label="Settings"
         tabIndex={-1}
-        className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 animate-slide-in overflow-hidden flex flex-col"
+        className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 overflow-hidden flex flex-col"
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border-bright)',
@@ -1838,7 +1770,6 @@ export function SettingsModal() {
                       setSelectedSection(section.id)
                       setOpenMemoryMenu(null)
                       setOpenEditorMenu(null)
-                      setOpenDefaultsMenu(null)
                       setOpenCliVersionMenu(null)
                     }}
                     className="uam-choice-button w-full text-left px-3 py-2.5 rounded-xl"
@@ -1867,7 +1798,7 @@ export function SettingsModal() {
                 {SETTINGS_SECTIONS.find((section) => section.id === selectedSection)?.detail}
               </div>
             </div>
-            <div key={selectedSection} className="animate-fade-in">
+            <div key={selectedSection}>
               {renderSectionContent()}
             </div>
           </div>

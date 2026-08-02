@@ -30,12 +30,6 @@ namespace
 	constexpr const char* kPushTypeDictation = "dictation";
 	constexpr long long kStatePatchSlowSerializationMs = 8;
 	constexpr std::size_t kStatePatchLargeMessageBytes = 64 * 1024;
-	// While a turn streams, the selected chat's messagesDigest changes on nearly
-	// every 16ms poll tick; re-serializing and re-pushing the full message array
-	// at that rate stalls both the serializer and the React message list. Live
-	// text still arrives instantly via streamToken pushes, so the heavyweight
-	// message-array patch only needs to keep up at a coarse interval.
-	constexpr std::chrono::milliseconds kSelectedChatMessagesMinPushInterval{250};
 	// The selected chat's summary carries the live turn timeline (turnEvents),
 	// which grows on nearly every tick during a turn; 10 updates per second is
 	// plenty for streamed text and tool-call progress. Summaries that introduce
@@ -44,10 +38,8 @@ namespace
 	constexpr std::chrono::milliseconds kSelectedChatSummaryMinPushInterval{100};
 
 	std::string g_last_pushed_state_fingerprint;
-	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_messages_push_time_by_chat_id;
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
-	bool g_messages_push_deferred = false;
-	std::unordered_map<std::string, std::string> g_last_pushed_message_digests_by_chat_id;
+	bool g_state_push_deferred = false;
 	std::unordered_map<std::string, std::string> g_last_pushed_chat_summaries_by_chat_id;
 	std::string g_last_pushed_folders_fingerprint;
 	std::string g_last_pushed_resource_collections_fingerprint;
@@ -97,11 +89,9 @@ namespace
 		g_last_pushed_shell_actions_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions").dump();
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
-		g_last_pushed_message_digests_by_chat_id.clear();
 		g_last_pushed_chat_summaries_by_chat_id.clear();
-		g_last_messages_push_time_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
-		g_messages_push_deferred = false;
+		g_state_push_deferred = false;
 
 		const nlohmann::json chats = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "chats");
 
@@ -119,7 +109,6 @@ namespace
 			}
 
 			g_last_pushed_chat_summaries_by_chat_id[chat_id] = chat.dump();
-			g_last_pushed_message_digests_by_chat_id[chat_id] = uam::nlohmann_json::TrimmedStringValue(chat, {"messagesDigest"});
 		}
 	}
 
@@ -160,10 +149,8 @@ namespace
 	struct ChatPatchDiff
 	{
 		nlohmann::json changed_chats = nlohmann::json::array();
-		nlohmann::json messages_by_chat_id = nlohmann::json::object();
 		nlohmann::json removed_chat_ids = nlohmann::json::array();
 		std::unordered_map<std::string, std::string> next_chat_summaries;
-		std::unordered_map<std::string, std::string> next_message_digests;
 
 		bool HasChatListChange() const
 		{
@@ -197,20 +184,10 @@ namespace
 		return chat_order;
 	}
 
-	nlohmann::json SelectedChatMessagesForPatch(const uam::AppState& app, const std::string& chat_id)
-	{
-		const ChatSession* app_chat = ChatDomainService().FindChatById(app, chat_id);
-		if (app_chat == nullptr || !app_chat->messages_loaded)
-		{
-			return nullptr;
-		}
-		return uam::nlohmann_json::ArrayFieldOrEmpty(uam::StateSerializer::SerializeSession(*app_chat), "messages");
-	}
-
 	ChatPatchDiff BuildChatPatchDiff(const uam::AppState& app, const nlohmann::json& fingerprint_state, const std::string& selected_chat_id)
 	{
 		ChatPatchDiff diff;
-		g_messages_push_deferred = false;
+		g_state_push_deferred = false;
 		std::unordered_set<std::string> current_chat_ids;
 
 		const nlohmann::json chats = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "chats");
@@ -230,9 +207,7 @@ namespace
 			current_chat_ids.insert(chat_id);
 
 			const std::string chat_fingerprint = chat.dump();
-			const std::string message_digest = uam::nlohmann_json::TrimmedStringValue(chat, {"messagesDigest"});
 			diff.next_chat_summaries[chat_id] = chat_fingerprint;
-			diff.next_message_digests[chat_id] = message_digest;
 
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
 			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat_fingerprint)
@@ -255,45 +230,12 @@ namespace
 					{
 						diff.next_chat_summaries.erase(chat_id);
 					}
-					g_messages_push_deferred = true;
+					g_state_push_deferred = true;
 				}
 				else
 				{
 					diff.changed_chats.push_back(chat);
 					g_last_summary_push_time_by_chat_id[chat_id] = now;
-				}
-			}
-
-			const auto previous_digest_it = g_last_pushed_message_digests_by_chat_id.find(chat_id);
-			const bool selected_chat = chat_id == selected_chat_id;
-			const bool messages_changed = previous_digest_it == g_last_pushed_message_digests_by_chat_id.end() || previous_digest_it->second != message_digest;
-			if (selected_chat && messages_changed)
-			{
-				const auto now = std::chrono::steady_clock::now();
-				const auto last_push_it = g_last_messages_push_time_by_chat_id.find(chat_id);
-				const bool throttled = last_push_it != g_last_messages_push_time_by_chat_id.end() && now - last_push_it->second < kSelectedChatMessagesMinPushInterval;
-				if (throttled)
-				{
-					// Keep the previous digest baseline so the deferred change is
-					// retried on a later tick instead of silently dropped.
-					if (previous_digest_it != g_last_pushed_message_digests_by_chat_id.end())
-					{
-						diff.next_message_digests[chat_id] = previous_digest_it->second;
-					}
-					else
-					{
-						diff.next_message_digests.erase(chat_id);
-					}
-					g_messages_push_deferred = true;
-				}
-				else
-				{
-					const nlohmann::json messages = SelectedChatMessagesForPatch(app, chat_id);
-					if (!messages.is_null())
-					{
-						diff.messages_by_chat_id[chat_id] = messages;
-						g_last_messages_push_time_by_chat_id[chat_id] = now;
-					}
 				}
 			}
 		}
@@ -316,10 +258,6 @@ namespace
 		{
 			data["chats"] = std::move(diff.changed_chats);
 		}
-		if (!diff.messages_by_chat_id.empty())
-		{
-			data["messagesByChatId"] = std::move(diff.messages_by_chat_id);
-		}
 		if (!diff.removed_chat_ids.empty())
 		{
 			data["removedChatIds"] = std::move(diff.removed_chat_ids);
@@ -330,10 +268,9 @@ namespace
 		}
 
 		g_last_pushed_chat_summaries_by_chat_id = std::move(diff.next_chat_summaries);
-		g_last_pushed_message_digests_by_chat_id = std::move(diff.next_message_digests);
 	}
 
-	std::string BuildStatePatchMessage(const uam::AppState& app, const nlohmann::json& fingerprint_state)
+	std::string BuildStatePatchMessage(const uam::AppState& app, const nlohmann::json& fingerprint_state, bool* has_payload = nullptr)
 	{
 		const auto started = std::chrono::steady_clock::now();
 		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -376,6 +313,10 @@ namespace
 		}
 
 		ApplyChatPatchDiff(data, app, BuildChatPatchDiff(app, fingerprint_state, selected_chat_id));
+		if (has_payload != nullptr)
+		{
+			*has_payload = data.size() > 1;
+		}
 
 		nlohmann::json msg = PushMessage(kPushTypeStatePatch);
 		msg["data"] = std::move(data);
@@ -475,22 +416,26 @@ namespace uam
 
 	bool HasDeferredStatePush()
 	{
-		return g_messages_push_deferred;
+		return g_state_push_deferred;
 	}
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
 		const std::string fingerprint = BuildStateFingerprintFromState(fingerprint_state);
-		// A deferred (throttled) selected-chat messages payload must still be
-		// flushed even if no further state changes arrive after streaming ends.
-		if (fingerprint == g_last_pushed_state_fingerprint && !g_messages_push_deferred)
+		// A throttled summary must still be flushed if no further state changes arrive.
+		if (fingerprint == g_last_pushed_state_fingerprint && !g_state_push_deferred)
 		{
 			return false;
 		}
 
 		BumpStateRevision(app);
-		const std::string message = BuildStatePatchMessage(app, fingerprint_state);
+		bool has_payload = false;
+		const std::string message = BuildStatePatchMessage(app, fingerprint_state, &has_payload);
+		if (!has_payload)
+		{
+			return false;
+		}
 		g_last_pushed_state_fingerprint = fingerprint;
 		PostPush(browser, message);
 		return true;

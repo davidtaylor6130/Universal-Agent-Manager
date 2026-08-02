@@ -27,9 +27,9 @@ export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | '
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
 export const COMMAND_SAFETY_TIERS = [
-  { id: 'low', label: 'Low', detail: 'Warn about a smaller set of risky commands.' },
-  { id: 'medium', label: 'Medium', detail: 'Balanced command warnings.' },
-  { id: 'high', label: 'High', detail: 'Warn before more potentially risky commands.' },
+  { id: 'low', label: 'Low', detail: 'Warn about more potentially risky commands.' },
+  { id: 'medium', label: 'Medium', detail: 'Warn about a moderate number of potentially risky commands.' },
+  { id: 'high', label: 'High', detail: 'Warn only about the highest-risk commands.' },
 ] as const
 
 export const PERMISSION_MODES = [
@@ -454,7 +454,7 @@ export function ComposerToolbar({
                   value: tier.id,
                   label: tier.label,
                   description: tier.detail,
-                  icon: tier.id === 'low' ? <Shield size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />,
+                  icon: tier.id === 'low' ? <ShieldAlert size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <Shield size={14} />,
                 }))}
               />
             )}
@@ -528,7 +528,7 @@ export function ComposerToolbar({
         {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} compactLabel={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
         {smallModelMode && <ActiveModeChip label="Small-model workflow" compactLabel="Small model" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} compactLabel={currentReasoning.label} icon={<Cpu size={12} aria-hidden />} />}
-        {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={() => onSelectSpeed('')} />}
+        {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={modelDisabled ? undefined : () => onSelectSpeed('')} />}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <div ref={modelMenuRef} className="relative">

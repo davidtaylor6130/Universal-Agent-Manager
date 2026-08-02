@@ -26,7 +26,7 @@ namespace
 {
 	constexpr const char* kCodexPreferredVersion = "0.124.0";
 	constexpr const char* kCodexFallbackVersion = "0.123.0";
-	constexpr const char* kCopilotMinimumVersion = "1.0.69";
+	constexpr const char* kCopilotMinimumVersion = "1.0.60";
 	constexpr const char* kLatestVersion = "latest";
 	constexpr const char* kDefaultProviderCliPolicyId = uam::provider_ids::kGeminiCli;
 	constexpr const char* kCommandFailurePrefix = "Failed to run command: ";
@@ -797,10 +797,10 @@ bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(std::string_
 			return uam::IsSupportedGeminiCliVersion(trimmed_version);
 		case CliVersionPolicy::FixedPreferredAndFallback:
 			return VersionMatchesFixedProviderPolicy(resolved.policy, trimmed_version);
-	    case CliVersionPolicy::MinimumSemver:
-		    return trimmed_version == kLatestVersion || (resolved.policy.minimum_version != nullptr && SemverAtLeast(trimmed_version, resolved.policy.minimum_version));
-	    case CliVersionPolicy::AnySafeToken:
-		    return true;
+	case CliVersionPolicy::MinimumSemver:
+		return trimmed_version == kLatestVersion || (resolved.policy.minimum_version != nullptr && SemverAtLeast(trimmed_version, resolved.policy.minimum_version));
+	case CliVersionPolicy::AnySafeToken:
+		return true;
 	}
 	return false;
 }
@@ -824,7 +824,7 @@ std::string CopilotLaunchBlockReason(const uam::AppState& app)
 	}
 	if (!state.installed_version.empty())
 	{
-		return "GitHub Copilot CLI 1.0.69 or newer is required (installed " + state.installed_version + "). Update it in Settings.";
+		return "GitHub Copilot CLI 1.0.60 or newer is required (installed " + state.installed_version + "). Update it in Settings.";
 	}
 	return uam::strings::NonEmptyOrFallback(state.message, "GitHub Copilot CLI is not installed or its version could not be determined.") + " Open Settings to check or update it.";
 }

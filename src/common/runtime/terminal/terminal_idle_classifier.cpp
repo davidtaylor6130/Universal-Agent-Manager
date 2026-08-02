@@ -230,7 +230,7 @@ bool CodexCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
 	return uam::strings::ContainsAny(stripped, kCodexPromptMarkers) && uam::strings::ContainsAny(stripped, kCodexPromptCueTexts);
 }
 
-bool CopilotCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
+	bool CopilotCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
 {
 	const std::string stripped = RecentTerminalPromptScanText(recent_output);
 	return uam::strings::Contains(stripped, "\xE2\x9D\xAF") && uam::strings::ContainsAny(stripped, kCopilotPromptCueTexts);

@@ -63,10 +63,6 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			if (!thought.empty())
 			{
 				changed = AppendThoughtChunk(chat, session, thought) || changed;
-				if (browser)
-				{
-					uam::PushStreamToken(browser, chat.id, thought);
-				}
 			}
 			continue;
 		}

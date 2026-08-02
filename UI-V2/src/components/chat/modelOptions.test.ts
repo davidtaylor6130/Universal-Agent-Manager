@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildCodexReasoningOptions, buildModelOptions, reasoningEffortForModel } from './modelOptions'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel } from './modelOptions'
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {
@@ -25,21 +25,32 @@ describe('reasoningEffortForModel', () => {
     expect(options[0]).toMatchObject({ id: '', label: 'Default' })
   })
 
-  it('offers ultra reasoning when live model metadata is unavailable', () => {
-    expect(buildCodexReasoningOptions(undefined, 'gpt-5.6').at(-1)).toMatchObject({
-      id: 'ultra',
-      label: 'Ultra',
-    })
-    expect(buildCodexReasoningOptions(undefined, 'gpt-5.4').some((option) => option.id === 'ultra')).toBe(false)
-    expect(reasoningEffortForModel(undefined, 'gpt-5.4', 'ultra')).toBe('')
-  })
-
-  it('does not invent Copilot reasoning choices when ACP omits them', () => {
+  it('keeps Copilot launch-time reasoning when ACP omits per-model efforts', () => {
     const acp = {
       availableModels: [{ id: 'gpt-5.1', name: 'GPT-5.1', supportedReasoningEfforts: [] }],
     } as AcpBinding
+    const fallbackEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 
-    expect(buildCodexReasoningOptions(acp, 'gpt-5.1', 'max', [])).toEqual([])
-    expect(reasoningEffortForModel(acp, 'gpt-5.1', 'max')).toBe('')
+    expect(buildCodexReasoningOptions(acp, 'gpt-5.1', 'max', fallbackEfforts).map((option) => option.id))
+      .toEqual(fallbackEfforts)
+    expect(reasoningEffortForModel(acp, 'gpt-5.1', 'max', true)).toBe('max')
+  })
+
+  it('uses the selected model speed catalog instead of global Fast and Flex choices', () => {
+    const acp = {
+      availableModels: [
+        { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', additionalSpeedTiers: ['fast'] },
+        { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', additionalSpeedTiers: [] },
+      ],
+    } as AcpBinding
+
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.6-sol').map((option) => option.id)).toEqual(['', 'fast'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini', 'flex').map((option) => option.id)).toEqual([''])
+    expect(buildCodexSpeedOptions(undefined, '').map((option) => option.id)).toEqual(['', 'fast', 'flex'])
+  })
+
+  it('keeps current Codex efforts in the offline fallback catalog', () => {
+    expect(buildCodexReasoningOptions(undefined, '', '').map((option) => option.id))
+      .toEqual(['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
   })
 })

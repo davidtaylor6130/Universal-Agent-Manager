@@ -22,3 +22,8 @@ class CopilotCliProviderRuntime final : public IProviderRuntime
 
 const IProviderRuntime& GetCopilotCliProviderRuntime();
 std::string NormalizeCopilotReasoningEffort(std::string_view value);
+std::filesystem::path CopilotSessionStatePath();
+std::vector<ChatSession> LoadCopilotSessionStateChats(
+    const std::filesystem::path& session_state_root,
+    const std::filesystem::path& workspace_filter = {},
+    const ProviderRuntimeHistoryLoadOptions& options = {});

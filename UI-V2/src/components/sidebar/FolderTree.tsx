@@ -1,6 +1,6 @@
-import { memo, useEffect, useRef, useState, useMemo } from 'react'
-import type { ReactNode } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,7 +13,7 @@ import {
   buildChatSearchSessionGroups,
   tokenizeChatSearchQuery,
 } from './chatSearch'
-import type { Folder, Session } from '../../types/session'
+import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -26,6 +26,7 @@ interface FolderTreeProps {
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
+const EMPTY_BINDING_INDEX = {}
 type FolderDropEdge = 'before' | 'after'
 
 function moveId(ids: string[], sourceId: string, targetId: string, edge: FolderDropEdge) {
@@ -60,11 +61,12 @@ function reorderCollectionFolderReferences(
 }
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
+  const hasStatusFilters = (filters?.statusIds.length ?? 0) > 0
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const cliBindingBySessionId = useAppStore(useShallow((s) => s.cliBindingBySessionId))
-  const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
+  const cliBindingBySessionId = useAppStore(useShallow((s) => hasStatusFilters ? s.cliBindingBySessionId : EMPTY_BINDING_INDEX))
+  const acpBindingBySessionId = useAppStore(useShallow((s) => hasStatusFilters ? s.acpBindingBySessionId : EMPTY_BINDING_INDEX))
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -76,6 +78,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const reorderFolders = useAppStore((s) => s.reorderFolders)
   const reorderResourceReferences = useAppStore((s) => s.reorderResourceReferences)
   const createResourceCollection = useAppStore((s) => s.createResourceCollection)
+  const deleteSessions = useAppStore((s) => s.deleteSessions)
+  const previewUnsortedWorkspaceFolders = useAppStore((s) => s.previewUnsortedWorkspaceFolders)
+  const rebuildUnsortedWorkspaceFolders = useAppStore((s) => s.rebuildUnsortedWorkspaceFolders)
+  const workspaceFolderRecoveryError = useAppStore((s) => s.workspaceFolderRecoveryError)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [addingCollection, setAddingCollection] = useState(false)
@@ -86,12 +92,60 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
+  const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
+  const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[] | null>(null)
+  const [bulkDeleteFailed, setBulkDeleteFailed] = useState(false)
+  const [unsortedMenuPoint, setUnsortedMenuPoint] = useState<{ x: number; y: number } | null>(null)
+  const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false)
+  const [recoveryPreview, setRecoveryPreview] = useState<WorkspaceFolderRecoveryPreview | null>(null)
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
+  const [recoveryApplying, setRecoveryApplying] = useState(false)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
   const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
   const addControlsRef = useRef<HTMLDivElement>(null)
+  const treeRef = useRef<HTMLDivElement>(null)
+  const unsortedMenuTriggerRef = useRef<HTMLButtonElement>(null)
+  const unsortedMenuRef = useRef<HTMLDivElement>(null)
+  const recoveryDialogRef = useRef<HTMLDivElement>(null)
+  const recoveryRequestRef = useRef(0)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+
+  useEffect(() => {
+    if (!unsortedMenuPoint) return
+    unsortedMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const dismiss = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!unsortedMenuRef.current?.contains(target) && !unsortedMenuTriggerRef.current?.contains(target)) setUnsortedMenuPoint(null)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setUnsortedMenuPoint(null)
+      unsortedMenuTriggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', dismiss)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [unsortedMenuPoint])
+
+  useEffect(() => {
+    if (!recoveryDialogOpen) return
+    recoveryDialogRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || recoveryApplying) return
+      recoveryRequestRef.current++
+      setRecoveryDialogOpen(false)
+      unsortedMenuTriggerRef.current?.focus()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [recoveryApplying, recoveryDialogOpen])
 
   useEffect(() => {
     if (addingFolder || addingCollection) {
@@ -137,6 +191,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions]
   )
+  const familySessionIdsByRootId = useMemo(() => {
+    const families = new Map<string, string[]>()
+    for (const session of sessions) {
+      const rootId = session.branchRootChatId || session.parentChatId || session.id
+      const family = families.get(rootId)
+      if (family) family.push(session.id)
+      else families.set(rootId, [session.id])
+    }
+    return families
+  }, [sessions])
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
     [folders, pendingDeleteFolderId]
@@ -145,6 +209,97 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     () => sessions.filter((session) => session.folderId === pendingDeleteFolderId).length,
     [sessions, pendingDeleteFolderId]
   )
+  const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
+
+  const visibleSessionIds = useCallback(() => Array.from(
+    treeRef.current?.querySelectorAll<HTMLElement>('[data-session-id]') ?? []
+  ).filter((row) => !row.closest('[inert]')).map((row) => row.dataset.sessionId ?? '').filter(Boolean), [])
+
+  const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!event.shiftKey) {
+      setSelectionAnchorId(sessionId)
+      setSelectedSessionIds(new Set())
+      return false
+    }
+
+    event.preventDefault()
+    const ids = visibleSessionIds()
+    const anchorIndex = selectionAnchorId ? ids.indexOf(selectionAnchorId) : -1
+    const targetIndex = ids.indexOf(sessionId)
+    if (anchorIndex < 0 || targetIndex < 0) {
+      setSelectionAnchorId(sessionId)
+      setSelectedSessionIds(new Set([sessionId]))
+      return true
+    }
+
+    const start = Math.min(anchorIndex, targetIndex)
+    const end = Math.max(anchorIndex, targetIndex)
+    setSelectedSessionIds(new Set(ids.slice(start, end + 1)))
+    return true
+  }, [selectionAnchorId, visibleSessionIds])
+
+  const clearBulkSelection = useCallback(() => {
+    setSelectedSessionIds(new Set())
+    setSelectionAnchorId(null)
+    setPendingBulkDeleteIds(null)
+    setBulkDeleteFailed(false)
+  }, [])
+
+  const openWorkspaceRecovery = useCallback(() => {
+    const requestId = ++recoveryRequestRef.current
+    setUnsortedMenuPoint(null)
+    setRecoveryDialogOpen(true)
+    setRecoveryPreview(null)
+    setRecoveryLoading(true)
+    void previewUnsortedWorkspaceFolders().then((preview) => {
+      if (recoveryRequestRef.current === requestId) setRecoveryPreview(preview)
+    }).finally(() => {
+      if (recoveryRequestRef.current === requestId) setRecoveryLoading(false)
+    })
+  }, [previewUnsortedWorkspaceFolders])
+
+  const closeWorkspaceRecovery = useCallback(() => {
+    if (recoveryApplying) return
+    recoveryRequestRef.current++
+    setRecoveryDialogOpen(false)
+    unsortedMenuTriggerRef.current?.focus()
+  }, [recoveryApplying])
+
+  const applyWorkspaceRecovery = useCallback(() => {
+    setRecoveryApplying(true)
+    void rebuildUnsortedWorkspaceFolders().then((rebuilt) => {
+      if (rebuilt) {
+        setRecoveryDialogOpen(false)
+        unsortedMenuTriggerRef.current?.focus()
+      }
+    }).finally(() => setRecoveryApplying(false))
+  }, [rebuildUnsortedWorkspaceFolders])
+
+  useEffect(() => {
+    if (selectedSessionIds.size === 0) return
+    const clearOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') clearBulkSelection()
+    }
+    document.addEventListener('keydown', clearOnEscape)
+    return () => document.removeEventListener('keydown', clearOnEscape)
+  }, [clearBulkSelection, selectedSessionIds.size])
+
+  useEffect(() => {
+    const root = treeRef.current
+    if (!root) return
+    const keepVisibleSelection = () => {
+      const visible = new Set(visibleSessionIds())
+      setSelectedSessionIds((current) => {
+        const next = new Set([...current].filter((id) => visible.has(id)))
+        return next.size === current.size ? current : next
+      })
+      setSelectionAnchorId((current) => current && visible.has(current) ? current : null)
+    }
+    const observer = new MutationObserver(keepVisibleSelection)
+    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['inert'] })
+    keepVisibleSelection()
+    return () => observer.disconnect()
+  }, [visibleSessionIds])
 
   useEffect(() => {
     if (pendingDeleteFolderId !== null && !pendingDeleteFolder) {
@@ -279,6 +434,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onCreateChat={() => setNewChatModalOpen(true, folder.id)}
       onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
       sessionsById={sessionsById}
+      familySessionIdsByRootId={familySessionIdsByRootId}
+      selectedSessionIds={selectedSessionIds}
+      onSessionClick={handleSessionClick}
       draggable={!searchModel.isSearching}
       dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
       onDragStart={() => setDraggedFolderId(folder.id)}
@@ -294,7 +452,28 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   )
 
   return (
-    <div className="select-none">
+    <div ref={treeRef} className="select-none">
+      {selectedSessionIds.size > 0 && (
+        <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+          <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
+          <Button size="sm" variant="ghost" onClick={clearBulkSelection}>Clear</Button>
+          <Button
+            size="sm"
+            variant="danger"
+            aria-label={`Delete ${selectedSessionIds.size} selected chats`}
+            onClick={() => {
+              const visible = new Set(visibleSessionIds())
+              const ids = [...selectedSessionIds].filter((id) => visible.has(id))
+              if (ids.length > 0) {
+                setBulkDeleteFailed(false)
+                setPendingBulkDeleteIds(ids)
+              }
+            }}
+          >
+            Delete
+          </Button>
+        </div>
+      )}
       {searchModel.pinnedSessionIds.length > 0 && (
         <div className="mb-0.5">
           <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
@@ -303,7 +482,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </span>
           </div>
           {searchModel.pinnedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
+            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
           ))}
         </div>
       )}
@@ -339,14 +518,92 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       {/* Unfoldered sessions */}
       {searchModel.unfolderedSessionIds.length > 0 && (
         <div className="mt-0.5">
-          <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
-            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
-              Unsorted
-            </span>
+          <div
+            className="mx-1 flex w-[calc(100%-0.5rem)] items-center rounded-md"
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setUnsortedMenuPoint({ x: event.clientX, y: event.clientY })
+            }}
+          >
+            <button
+              type="button"
+              aria-label={`${unsortedExpanded ? 'Collapse' : 'Expand'} Unsorted`}
+              aria-expanded={unsortedExpanded}
+              aria-controls="unsorted-chat-list"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2.5 py-0.5 text-left"
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
+              onClick={() => setUnsortedCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronRight
+                size={14}
+                className="transition-transform duration-200 ease-out motion-reduce:transition-none"
+                style={{ flexShrink: 0, color: 'var(--text-3)', transform: unsortedExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                aria-hidden
+              />
+              {unsortedExpanded
+                ? <FolderOpenIcon size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
+                : <FolderIcon size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />}
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">Unsorted</span>
+              <span className="rounded px-1 text-[10px]" style={{ background: 'var(--surface-high)', color: 'var(--text-3)' }}>
+                {searchModel.unfolderedSessionIds.length}
+              </span>
+            </button>
+            <Tooltip label="Unsorted actions">
+              <button
+                ref={unsortedMenuTriggerRef}
+                type="button"
+                aria-label="Actions for Unsorted"
+                aria-haspopup="menu"
+                aria-expanded={unsortedMenuPoint !== null}
+                className="mr-1 flex h-[22px] w-[22px] items-center justify-center rounded"
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
+                onClick={(event) => {
+                  if (unsortedMenuPoint) {
+                    setUnsortedMenuPoint(null)
+                    return
+                  }
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  setUnsortedMenuPoint({ x: rect.right, y: rect.bottom + 4 })
+                }}
+              >
+                <MoreHorizontal size={14} aria-hidden />
+              </button>
+            </Tooltip>
           </div>
-          {searchModel.unfolderedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
-          ))}
+          {unsortedMenuPoint && (
+            <ViewportMenu
+              ref={unsortedMenuRef}
+              point={unsortedMenuPoint}
+              role="menu"
+              aria-label="Unsorted actions"
+              align="end"
+              className="rounded-md py-1 animate-fade-in"
+              style={{ minWidth: 220, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                style={{ color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+                onClick={openWorkspaceRecovery}
+              >
+                <FolderSync size={14} aria-hidden />
+                Rebuild workspace folders…
+              </button>
+            </ViewportMenu>
+          )}
+          <div
+            id="unsorted-chat-list"
+            aria-hidden={!unsortedExpanded}
+            {...(!unsortedExpanded ? { inert: '' } : {})}
+            className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${unsortedExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+          >
+            <div className="min-h-0 overflow-hidden">
+              {searchModel.unfolderedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -356,6 +613,45 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           <div className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>No chats match this search</div>
           <div className="text-[11px]">Try another term or clear the filters.</div>
         </div>
+      )}
+
+      {pendingBulkDeleteIds && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingBulkDeleteIds(null) }}>
+          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingBulkDeleteIds.length} selected chats`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete selected chats?</div>
+            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              {pendingBulkDeleteIds.length} chats will be permanently deleted. This cannot be undone.
+              {bulkDeleteFailed && <div className="mt-2" role="alert" style={{ color: 'var(--red)' }}>The chats could not be deleted. A chat may still be running.</div>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <Button size="sm" onClick={() => setPendingBulkDeleteIds(null)}>Cancel</Button>
+              <Button size="sm" variant="danger" onClick={() => {
+                void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
+                  if (deleted) clearBulkSelection()
+                  else setBulkDeleteFailed(true)
+                })
+              }}>Delete chats</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {recoveryDialogOpen && (
+        <WorkspaceFolderRecoveryModal
+          dialogRef={recoveryDialogRef}
+          preview={recoveryPreview}
+          loading={recoveryLoading}
+          applying={recoveryApplying}
+          error={workspaceFolderRecoveryError}
+          onCancel={closeWorkspaceRecovery}
+          onApply={applyWorkspaceRecovery}
+          onDeleteUnavailable={(ids) => {
+            recoveryRequestRef.current++
+            setRecoveryDialogOpen(false)
+            setBulkDeleteFailed(false)
+            setPendingBulkDeleteIds(ids)
+          }}
+        />
       )}
 
       {/* Add folder */}
@@ -704,6 +1000,138 @@ interface DeleteFolderModalProps {
   onConfirm: () => void
 }
 
+interface WorkspaceFolderRecoveryModalProps {
+  dialogRef: RefObject<HTMLDivElement>
+  preview: WorkspaceFolderRecoveryPreview | null
+  loading: boolean
+  applying: boolean
+  error: string
+  onCancel: () => void
+  onApply: () => void
+  onDeleteUnavailable: (ids: string[]) => void
+}
+
+function WorkspaceFolderRecoveryModal({
+  dialogRef,
+  preview,
+  loading,
+  applying,
+  error,
+  onCancel,
+  onApply,
+  onDeleteUnavailable,
+}: WorkspaceFolderRecoveryModalProps) {
+  const readyChatCount = preview?.groups.reduce((count, group) => count + group.chatIds.length, 0) ?? 0
+  const newFolderCount = preview?.groups.filter((group) => !group.existingFolderId).length ?? 0
+  const unavailableChats = [...(preview?.missing ?? []), ...(preview?.unavailable ?? [])]
+  const unavailableIds = Array.from(new Set(unavailableChats.map((chat) => chat.id)))
+  const attentionSections = preview ? [
+    { title: 'Location not found', chats: preview.missing },
+    { title: 'Location unavailable', chats: preview.unavailable },
+    { title: 'No saved location', chats: preview.noLocation },
+  ].filter((section) => section.chats.length > 0) : []
+  const hasResults = (preview?.groups.length ?? 0) > 0 || attentionSections.length > 0
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-fade-in"
+      style={{ background: 'rgba(0,0,0,.55)' }}
+      onClick={(event) => { if (event.target === event.currentTarget && !applying) onCancel() }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rebuild workspace folders"
+        tabIndex={-1}
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl animate-slide-in"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
+      >
+        <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Rebuild workspace folders</div>
+            <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>Review what will change before organising Unsorted chats.</div>
+          </div>
+          <IconButton icon={<X size={16} />} label="Close workspace recovery" disabled={applying} onClick={onCancel} />
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {loading && (
+            <div role="status" className="flex items-center gap-2 rounded-md p-3 text-sm" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <FolderSync size={16} className="animate-spin" aria-hidden />
+              Checking saved workspace locations…
+            </div>
+          )}
+          {error && <div role="alert" className="rounded-md p-3 text-sm" style={{ color: 'var(--red)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>{error}</div>}
+          {!loading && preview && (
+            <div className="grid gap-4">
+              {preview.groups.length > 0 && (
+                <section aria-label="Ready workspace folders">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Check size={15} style={{ color: 'var(--green)' }} aria-hidden />
+                    <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Ready · {readyChatCount} chat{readyChatCount === 1 ? '' : 's'}</h3>
+                  </div>
+                  <div className="grid gap-2">
+                    {preview.groups.map((group) => (
+                      <div key={group.directory} className="rounded-md px-3 py-2" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <strong className="truncate" style={{ color: 'var(--text)' }}>{group.title}</strong>
+                          <span className="shrink-0" style={{ color: 'var(--text-3)' }}>{group.existingFolderId ? 'Use existing' : 'Create'} · {group.chatIds.length}</span>
+                        </div>
+                        <div className="mt-1 truncate text-[11px]" title={group.directory} style={{ color: 'var(--text-3)' }}>{group.directory}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {attentionSections.length > 0 && (
+                <section aria-label="Chats needing attention">
+                  <div className="mb-2 flex items-center gap-2">
+                    <TriangleAlert size={15} style={{ color: 'var(--yellow)' }} aria-hidden />
+                    <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Needs attention</h3>
+                  </div>
+                  <div className="grid gap-2">
+                    {attentionSections.map((section) => (
+                      <div key={section.title} className="rounded-md px-3 py-2" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                        <div className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>{section.title} · {section.chats.length}</div>
+                        {section.chats.map((chat) => (
+                          <div key={chat.id} className="mt-1 min-w-0 text-[11px]" style={{ color: 'var(--text-3)' }}>
+                            <span style={{ color: 'var(--text-2)' }}>{chat.title}</span>
+                            {chat.directory && <span className="block truncate" title={chat.directory}>{chat.directory}</span>}
+                            <span className="block">{chat.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs" style={{ color: 'var(--text-3)' }}>These chats stay in Unsorted unless you explicitly delete the unavailable ones.</p>
+                </section>
+              )}
+
+              {!hasResults && <div className="rounded-md p-4 text-center text-sm" style={{ color: 'var(--text-3)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>No Unsorted chats need workspace recovery.</div>}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+          {unavailableIds.length > 0 && (
+            <Button variant="danger" size="sm" disabled={applying} onClick={() => onDeleteUnavailable(unavailableIds)}>
+              Delete {unavailableIds.length} unavailable…
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" disabled={applying} onClick={onCancel}>Keep unchanged</Button>
+          <Button variant="primary" size="sm" loading={applying} disabled={loading || readyChatCount === 0} onClick={onApply}>
+            {newFolderCount > 0
+              ? `Create ${newFolderCount} folder${newFolderCount === 1 ? '' : 's'} and organise ${readyChatCount} chat${readyChatCount === 1 ? '' : 's'}`
+              : `Organise ${readyChatCount} chat${readyChatCount === 1 ? '' : 's'}`}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DeleteFolderModal({
   folder,
   chatCount,
@@ -845,6 +1273,9 @@ interface FolderRowProps {
   onCreateChat: () => void
   onOpenMemory: () => void
   sessionsById: Map<string, Session>
+  familySessionIdsByRootId: Map<string, string[]>
+  selectedSessionIds: Set<string>
+  onSessionClick: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   draggable: boolean
   dropEdge: FolderDropEdge | null
   onDragStart: () => void
@@ -875,6 +1306,9 @@ const FolderRow = memo(function FolderRow({
   onCreateChat,
   onOpenMemory,
   sessionsById,
+  familySessionIdsByRootId,
+  selectedSessionIds,
+  onSessionClick,
   draggable,
   dropEdge,
   onDragStart,
@@ -1119,7 +1553,7 @@ const FolderRow = memo(function FolderRow({
             </div>
           ) : (
             visibleSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} />
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
             ))
           )}
           {shouldLimitSessions && (

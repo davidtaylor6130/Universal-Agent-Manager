@@ -130,7 +130,6 @@ describe('resource collection state', () => {
 
     expect(useAppStore.getState().resourceCollections[0].collapsed).toBe(true)
   })
-
   it('does not leave a resource in two collections when a move fails', async () => {
     useAppStore.setState({
       resourceCollections: [

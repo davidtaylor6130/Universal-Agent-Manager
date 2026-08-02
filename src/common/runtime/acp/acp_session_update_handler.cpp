@@ -103,10 +103,6 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 
 		if (AppendThoughtChunk(chat, session, live_text))
 		{
-			if (browser)
-			{
-				uam::PushStreamToken(browser, chat.id, live_text);
-			}
 			ScheduleChatSave(app, chat, 0.5);
 		}
 		return;

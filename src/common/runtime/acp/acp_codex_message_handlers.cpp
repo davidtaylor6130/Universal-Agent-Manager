@@ -41,6 +41,10 @@ std::string CodexItemTitle(const nlohmann::json& item)
 	{
 		return JsonDiagnosticStringValueOr(item, "tool", "Tool");
 	}
+	if (type == uam::acp_tool_items::kCollabAgentToolCall)
+	{
+		return JsonDiagnosticStringValueOr(item, "tool", "Agent");
+	}
 	return type;
 }
 
@@ -308,12 +312,25 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	tool_call.title = CodexItemTitle(item);
 	tool_call.kind = type;
 	tool_call.status = JsonDiagnosticStringValueOr(item, "status", uam::acp_statuses::ExistingOrPending(tool_call.status));
+	if (tool_call.status == "inProgress")
+	{
+		tool_call.status = uam::acp_statuses::kInProgress;
+	}
 	const std::string content = CodexItemContent(item);
 	if (!content.empty())
 	{
 		tool_call.content = content;
 	}
 	ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
+	if (type == uam::acp_tool_items::kCollabAgentToolCall)
+	{
+		tool_call.is_sub_agent = true;
+		const nlohmann::json receiver_ids = JsonArrayValue(item, "receiverThreadIds");
+		if (!receiver_ids.empty() && receiver_ids.front().is_string())
+		{
+			tool_call.sub_agent_id = receiver_ids.front().get<std::string>();
+		}
+	}
 	AppendToolTurnEventIfNeeded(session, item_id);
 	(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
 }
@@ -505,6 +522,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			session.codex_turn_id = JsonDiagnosticStringValueOr(turn, "id", session.codex_turn_id);
 		}
+		(void)SendDeferredCodexInterruptIfReady(session);
 		session.lifecycle_state = kAcpLifecycleProcessing;
 		return;
 	}
@@ -576,10 +594,6 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Reasoning", delta, JsonIntValueOr(params, "contentIndex", -1), true))
 		{
-			if (browser && !delta.empty())
-			{
-				uam::PushStreamToken(browser, chat.id, delta);
-			}
 			ScheduleChatSave(app, chat, 0.5);
 		}
 		return;
@@ -589,10 +603,6 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Summary", delta, JsonIntValueOr(params, "summaryIndex", -1), true))
 		{
-			if (browser && !delta.empty())
-			{
-				uam::PushStreamToken(browser, chat.id, delta);
-			}
 			ScheduleChatSave(app, chat, 0.5);
 		}
 		return;

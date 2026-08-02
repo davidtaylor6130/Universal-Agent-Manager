@@ -1081,7 +1081,7 @@ summary,
 
 /* ── Selection ────────────────────────────────────────────── */
 ::selection {
-  background: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 65%, var(--bg));
   color: var(--text);
 }
 

@@ -1,0 +1,361 @@
+---
+uamVersion: 1
+title: De-vibe Design
+maker: Codex
+review: Audit, redesign, or build websites and application interfaces so they feel intentional, visually balanced, product-specific, and professionally designed instead of AI-generated or "vibe coded." Use for UI/UX work, visual polish, layout balance, dashboard or SaaS cleanup, design-system creation, interface simplification
+dateCreated: 2026-07-31T00:00:00Z
+dateUpdated: 2026-07-31T00:00:00Z
+favorite: false
+sourceProvider: codex
+commandName: de-vibe-design
+group: Codex Skills
+---
+
+# De-vibe Design
+
+Design the user’s task before styling the screen. Treat AI output as a first draft that must earn every element.
+
+## Required workflow
+
+1. Identify the audience, their real task, the input, the decision, and the irreversible outcome.
+2. Inspect the current interface end to end. Use screenshots at representative desktop and mobile sizes when browser tools are available.
+3. Write the shortest successful journey in verbs, for example: `add documents → review exceptions → decide`.
+4. Audit the interface against the anti-pattern checklist below. Mark each applicable issue before editing.
+5. Delete marketing sections, wrappers, decorative furniture, repeated copy, and equal-weight blocks that do not advance the journey.
+6. Choose a product-specific visual direction from the audience and category. Never request or accept merely “clean, modern SaaS.”
+7. Build the semantic structure first: form, list, table, document, task detail, or decision view. Add a container only when it communicates a real boundary or interaction.
+8. Apply restrained typography, spacing, color, borders, and motion after the information architecture works.
+9. Implement complete loading, empty, error, disabled, focus, selected, success, and recovery states.
+10. Test the actual journey and visual balance with sparse and long content, errors, keyboard navigation, reduced motion, and desktop, tablet, and mobile widths.
+11. Re-run the anti-pattern audit. Iterate until the task is obvious within five seconds and no decoration competes with it.
+
+Use the source catalogue below only when explaining or revising the skill.
+
+## Non-negotiable rules
+
+### Product before presentation
+
+- Make application screens look and behave like tools, not product landing pages.
+- Start on the real task. Do not add a hero, slogan, benefit grid, fake metric, testimonial, or sample gallery inside a functional product.
+- Show one primary action per view. Demote utilities and admin material through menus or progressive disclosure.
+- Use real domain language and realistic content. Generic copy is a design failure.
+- Preserve user context and make back, cancel, retry, replace, and recovery paths explicit.
+
+### Containers must earn their border
+
+- Do not put every section in a card, panel, tile, pill, or rounded rectangle.
+- Prefer headings, whitespace, alignment, rules, lists, tables, and background changes for grouping.
+- Allow at most one visible container boundary around a content region unless an inner element is independently interactive or layered.
+- Do not combine a hairline border, soft shadow, large radius, and colored side stripe on the same surface.
+- Use cards only for independently actionable, movable, selectable, or repeatable items.
+
+### Icons or text — choose one
+
+- Never place a decorative icon beside a visible text label in the same button, menu item, tab, or status.
+- Use icon-only controls for familiar compact actions such as close, download, search, previous, next, or overflow. Add an accessible name, focus state, and delayed tooltip.
+- Use text-only controls for unfamiliar, consequential, or domain-specific actions such as “Record decision” or “Send for legal review.”
+- Use one coherent icon set. Do not put icons in decorative rounded squares.
+- Use text labels, not unexplained colored dots, for status.
+
+### Hierarchy and density
+
+- Rank content by the current decision: primary task, supporting evidence, metadata.
+- Use a small, deliberate type scale with visibly distinct steps. Avoid giant display headlines in tools and tiny helper copy.
+- Keep text measures readable and align related labels and values.
+- Use a 4/8-based spacing system, but choose density from the task. Enterprise work often needs calm compactness, not oversized padding.
+- Reserve color for actions and status. Neutrals should carry most of the interface.
+
+### Visual balance follows importance
+
+- Balance optical weight, not box dimensions. Let the primary task occupy more space and visual emphasis than supporting evidence or metadata.
+- Establish shared alignment axes, consistent gutters, and deliberate outer margins. Remove accidental dead zones, orphaned controls, and ragged edges.
+- Distribute dense text, controls, color, and whitespace so no region feels unintentionally heavy. Never add filler, cards, or decoration merely to counterweight empty space.
+- Size columns and controls from content and task importance; do not force equal widths or symmetry when the workflow is asymmetric.
+- Keep action groups anchored predictably and preserve their relationship to the content they affect.
+- Recheck balance at desktop, tablet, and mobile widths with empty, typical, and worst-case content. Collapse or reorder secondary regions before the primary task becomes cramped.
+
+### Micro-interactions communicate change
+
+- Give every interactive control hover, active, focus-visible, disabled, and loading feedback.
+- Use 120–200ms transitions for press, selection, disclosure, focus movement, progress, and state changes.
+- Animate only properties that explain cause and effect. Avoid entrance choreography, floating cards, ambient pulses, bounce, parallax, glow, or hover lift used as decoration.
+- Keep controls spatially stable. Motion must not delay reading or action.
+- Respect `prefers-reduced-motion` and never make motion the only status signal.
+
+### Progressive disclosure and checks
+
+- Show the next decision and its evidence first. Hide audit data, raw JSON, history, advanced settings, and complete-document views until requested.
+- Explain checks in user language: what was checked, how it was checked, the result, and what the user must do.
+- Separate deterministic facts from probabilistic interpretation.
+- Do not show a confidence score without a validated meaning and action threshold.
+- Keep AI assistance subordinate to the user’s workflow. Cite source material and preserve human control.
+
+### Accessibility and trust
+
+- Use native semantic elements before custom controls.
+- Maintain keyboard order, visible focus, sufficient contrast, descriptive labels, and appropriate live regions.
+- Do not rely on color, icon, position, or animation alone.
+- Put errors next to the action or field that caused them and say how to recover.
+- Match interruption level to consequence. Use inline feedback for routine state and dialogs only for focused or consequential tasks.
+- Never hide uncertainty, automatic actions, data transmission, or irreversible consequences.
+
+## Visual system
+
+- Derive tokens from an existing product or explicit design direction when one exists.
+- Otherwise choose one neutral family, one action color, semantic status colors, one proportional UI typeface, and an optional document/editorial typeface.
+- Use one border radius family: typically 0–8px for serious tools. Pills are for compact tags only.
+- Prefer a defined border for resting surfaces and a shadow only for true overlays.
+- Use no gradients, glass, glow, blur, decorative blobs, or texture unless the product identity specifically requires them.
+- Avoid Inter-plus-Lucide-plus-rounded-cards as an unmodified default combination. A library is implementation, not identity.
+
+## Output discipline
+
+When implementing, make the smallest structural change that fixes the journey, then verify it in the browser.
+
+Before finishing, inspect the full page at each representative width. Confirm that visual weight matches task priority, spacing and alignment are coherent, no accidental void dominates the composition, and responsive reflow preserves the hierarchy.
+
+When reporting an audit, use:
+
+`[priority] [screen/element] — [user problem] → [specific deletion or change]`
+
+Lead with flow and information architecture. Mention visual polish only after task failures.
+
+## Anti-pattern checklist
+
+Use this as a detection list, not a recipe. One pattern may be justified; clusters without product-specific reasoning indicate AI-default design.
+
+### Surface and styling
+
+1. Purple-to-blue or cyan gradient used as default identity.
+2. Aurora, mesh, radial, or glowing background with no functional meaning.
+3. Glassmorphism on ordinary content surfaces.
+4. Backdrop blur used where a solid surface would be clearer.
+5. Hairline border combined with a wide diffuse shadow.
+6. Colored side stripe on a rounded alert or summary card.
+7. Large border radius applied to every surface.
+8. Pill shape applied to buttons, inputs, tabs, headings, and statuses indiscriminately.
+9. Nested rounded rectangles more than one level deep.
+10. Decorative icon inside a tinted rounded square.
+11. Icon container larger or louder than the content it introduces.
+12. Soft pastel surface assigned to every content category.
+13. Five or more semantic-looking colors with no stable meaning.
+14. Accent color used on headings, icons, buttons, borders, and backgrounds at once.
+15. Repeating gradient stripe or grid texture used as filler.
+16. Dark mode selected for “premium” rather than audience or environment.
+17. Neon-on-dark colors that make all states equally loud.
+18. Drop shadow on every card, field, button, and header.
+19. Hover lift on static or non-selectable content.
+20. Decorative divider, dot, sparkle, or badge added to fill empty space.
+
+### Containers and layout
+
+21. Every section placed in a card.
+22. Cards nested inside cards.
+23. A card wrapping a single heading and paragraph.
+24. A full-width outer container added around an already bounded layout.
+25. Three equal feature cards used without three independent actions.
+26. Bento grid forced onto linear or hierarchical content.
+27. Dashboard metrics added because empty space exists.
+28. Fake chart or graph with no decision attached.
+29. Four stat tiles repeating facts already in the heading.
+30. Centered hero above an application task.
+31. Marketing headline inside a logged-in or task product.
+32. Sample-case gallery competing with the real upload or create action.
+33. Excessive whitespace that pushes the next action below the fold.
+34. Oversized padding used to imply quality.
+35. Every region given equal width and visual weight.
+36. Symmetrical three-column layout despite asymmetric task importance.
+37. Arbitrary asymmetry, uneven gutters, or unbalanced whitespace added only to look custom.
+38. Sticky panels that consume space without preserving necessary context.
+39. Multiple sidebars for data that belongs behind disclosure.
+40. Modal used for information that belongs inline.
+41. Deep modal workflow that hides navigation and recovery.
+42. Floating toolbar with no relationship to selected content.
+43. Multiple borders used where whitespace or alignment would group better.
+44. Unrelated controls placed close together to fill a row.
+45. Related labels and values separated across the viewport.
+
+### Typography and copy
+
+46. Inter used unchanged as the entire visual identity.
+47. Giant display headline in a utility application.
+48. Gradient text used for emphasis.
+49. Eyebrow label above nearly every heading.
+50. Uppercase micro-labels repeated throughout the page.
+51. Heading, subheading, and body sizes too similar to scan.
+52. Tiny helper text used to compensate for unclear controls.
+53. Excessive font weights creating noisy hierarchy.
+54. Generic “Transform your workflow” style product copy.
+55. “Powerful,” “seamless,” “intelligent,” or “revolutionary” without a specific fact.
+56. Label, sublabel, hint, and caption repeating the same meaning.
+57. Technical implementation language exposed to non-technical users.
+58. Status communicated as a number or score with no action meaning.
+59. AI capability described before the user problem.
+60. Long prose where a short task label would work.
+
+### Controls, icons, and motion
+
+61. Visible icon and visible text repeating each other in one control.
+62. Emoji used as product iconography.
+63. Mixed icon packs or inconsistent stroke weights.
+64. Unfamiliar icon-only control without tooltip or accessible name.
+65. Familiar compact action rendered as a large labeled button everywhere.
+66. Consequential action reduced to an ambiguous icon.
+67. Colored dot used as unexplained status.
+68. Badge used where plain text is clearer.
+69. Decorative sparkles used to label every AI feature.
+70. Primary button in every section.
+71. Multiple primary buttons visible at once.
+72. Disabled button with no explanation of what is missing.
+73. Hover state applied to non-interactive content.
+74. Missing active, selected, focus, disabled, loading, or error state.
+75. Entrance fade or slide on every section.
+76. Staggered list animation delaying access to content.
+77. Bounce, pulse, glow, parallax, or floating motion with no state meaning.
+78. Card scale or lift on hover that changes surrounding layout.
+79. Spinner used when determinate progress is available.
+80. Toast used for a critical or recoverable error.
+
+### Flow, function, and trust
+
+81. Product opens on a sales pitch instead of the user’s task.
+82. No single obvious next action within five seconds.
+83. All details shown before the user asks for them.
+84. Advanced settings mixed into the normal task path.
+85. Raw model output presented as a decision.
+86. AI summary separated from the exact source evidence.
+87. Confidence percentage shown without calibration or threshold.
+88. “Passed” result used where human confirmation is still required.
+89. Checks named by implementation instead of user meaning.
+90. Check result omits what was checked or what to do next.
+91. Deterministic fact and AI interpretation visually conflated.
+92. Every finding shown at once instead of one decision at a time.
+93. Repeated summaries force the user to reconcile competing statements.
+94. Important exception buried among matched or successful items.
+95. No back, cancel, replace, retry, or undo path.
+96. Error clears the user’s previous input.
+97. Loading state hides what the system is doing.
+98. Sample or placeholder data looks like a real result.
+99. Edge cases, long names, empty data, and mobile layouts are untested.
+100. Visual polish is complete while the actual workflow remains confusing.
+
+## Source synthesis
+
+This reference records the 100-source research base used to create the skill. Sources include direct critiques of AI-default UI, practitioner discussions, peer-reviewed HCI work, public design systems, accessibility guidance, and legal-review workflows.
+
+### Consensus
+
+Across the sources, the repeated visual tells are gradients, glass, excessive radius, card grids, icon tiles, generic typography, decorative motion, and stock SaaS structure. The deeper consensus is more important: AI-looking work lacks product judgment. It gives every block equal weight, uses containers instead of information architecture, presents plausible polish before real edge cases, and optimizes the screenshot rather than the task.
+
+The strongest counter-pattern is to begin with the user’s workflow, delete what does not advance it, use semantic structures such as forms/lists/tables/documents, disclose detail progressively, keep status explicit, preserve source evidence, implement recovery and accessibility states, and iterate with real content in a browser.
+
+### 100 sources reviewed
+
+#### AI-default and vibe-coded interface analysis
+
+1. Fountain Institute — https://www.thefountaininstitute.com/blog/signs-vibe-coded-ui
+2. Impeccable, “Slop” — https://impeccable.style/slop/
+3. SmoothUI — https://smoothui.dev/blog/ai-design-slop
+4. The Crit — https://thecrit.co/resources/vibe-coding-design-guide
+5. VibeMole — https://vibemole.com/resources/avoid-vibecoded-app-design
+6. Joshua Snoddy — https://www.joshuasnoddy.com/blog/why-ai-websites-look-the-same/
+7. Shuffle — https://shuffle.dev/blog/2026/01/why-do-most-ai-generated-websites-look-the-same/
+8. Differ — https://blog.getdiffer.com/design-tips-vibe-coded-project
+9. Antigravity Lab — https://antigravitylab.net/en/articles/ai-tools/ai-generated-ui-why-it-feels-off
+10. NewWebsite.ai — https://www.newwebsite.ai/blog/10-signs-a-website-was-designed-by-ai
+11. Managed Code — https://www.managed-code.com/blog-post/why-ai-websites-look-the-same
+12. Dualite — https://dualite.dev/blogs/the-vibe-coders-playbook
+13. PromptWebsites — https://prowebsitetemplates.com/blog/why-ai-websites-look-generic
+14. Creative Bloq — https://www.creativebloq.com/ai/everything-looks-the-same-now-what
+15. “Interrogating Design Homogenization in Web Vibe Coding” — https://donghoon.io/assets/pdf/arxiv2026_design-homogenization_paper.pdf
+16. Vibe Coder Blog, design systems — https://blog.vibecoder.me/design-systems-vibe-coded-apps-deep-dive
+17. Prince Jain — https://princejain.me/blogs/picking-the-right-ui-for-vibe-coding/
+18. Medium, “The Secret to Tasteful AI-Generated Interfaces” — https://vibecode.medium.com/the-secret-to-tasteful-ai-generated-interfaces-4b6007b2c21b
+19. Figma, “What is Vibe Coding?” — https://www.figma.com/resource-library/what-is-vibe-coding/
+20. TypeUI Bento skill — https://www.typeui.sh/design-skills/bento
+21. Vibe Coder’s Handbook — https://vibecodershandbook.pages.dev/TheVibeCodersHandbook.pdf
+22. HTC Global Services, “Beyond Vibe Coding” — https://www.htcinc.com/wp-content/uploads/2026/04/Beyond-Vibe-Coding-The-Blueprint-for-AI-Assisted-Digital-Engineering_Digital_HTC-Global-Services_Whitepaper.pdf
+23. Design Council, “The Centaur and the Minotaur” — https://www.designcouncil.org.uk/fileadmin/uploads/dc/Documents/The_Centaur_and_the_Minotaur_by_Ben_Ramalingam_Mat_Hunter_and_Cat_Drew.pdf
+24. European Journal of AI study — https://pinnaclepubs.com/index.php/EJACI/article/download/380/382/1148
+25. Reddit UXDesign practitioner discussion — https://www.reddit.com/r/UXDesign/comments/1tvt03p/aigenerated_ui_proves_people_value_design_but_not/
+26. Reddit UI Design detection discussion — https://www.reddit.com/r/UI_Design/comments/1uchh8o/how_can_you_tell_a_design_is_ai/
+27. Reddit Web Design anti-slop discussion — https://www.reddit.com/r/webdesign/comments/1uhuovu/preventing_the_ai_slop_look/
+28. Reddit Agency homogenization discussion — https://www.reddit.com/r/agency/comments/1skbxo0/an_entitled_rant_about_homogenous_aigenerated/
+29. Reddit UI Design fatigue discussion — https://www.reddit.com/r/UI_Design/comments/1tvb91q/ai_fatigue_from_seeing_same_designs/
+30. Reddit Vibe Coding anti-slop discussion — https://www.reddit.com/r/vibecoding/comments/1uwajeo/how_do_you_make_aigenerated_ui_not_look_like_ai/
+31. Reddit Claude Code pattern discussion — https://www.reddit.com/r/ClaudeCode/comments/1p9srut/finally_figured_out_why_claudes_ui_generations/
+32. Reddit VibeCodersNest guide — https://www.reddit.com/r/VibeCodersNest/comments/1ox605g/vibe_coding_101_how_to_vibe_code_an_app_that/
+33. Reddit Design Systems discussion — https://www.reddit.com/r/DesignSystems/comments/1teuxxc/aigenerated_ui_is_making_strong_design_systems/
+34. Reddit Artificial Intelligence recognizability discussion — https://www.reddit.com/r/ArtificialNtelligence/comments/1upxlx3/the_problem_with_ai_ui_isnt_that_its_ugly_its/
+35. Reddit Micro SaaS anti-slop discussion — https://www.reddit.com/r/micro_saas/comments/1skltqv/stop_making_vibecoded_sites_that_look_like_ai_slop/
+36. Reddit ClaudeAI sameness discussion — https://www.reddit.com/r/ClaudeAI/comments/1p9srou/finally_figured_out_why_claudes_ui_generations/
+37. Reddit Lovable polish discussion — https://www.reddit.com/r/lovable/comments/1naz1n5/how_to_make_your_vibecoded_stuff_beautiful_and/
+38. Reddit VibeCodeDevs anti-slop discussion — https://www.reddit.com/r/VibeCodeDevs/comments/1tw35ms/how_to_stop_designing_ai_slop/
+39. Reddit Vibe Coding toolkit discussion — https://www.reddit.com/r/vibecoding/comments/1rra44v/whats_your_toolkit_for_leveling_up_design_taste/
+40. Reddit cross-community visual-tells analysis — https://www.reddit.com/r/ClaudeCode/comments/1u7g0z5/i_scanned_3200000_posts_across_47_ai_and_saas/
+
+#### UX, accessibility, and interaction standards
+
+41. Nielsen Norman Group heuristic summary — https://media.nngroup.com/media/articles/attachments/Heuristic_Summary_A4_compressed.pdf
+42. Nielsen Norman Group application design showcase — https://media.nngroup.com/media/reports/free/Application_Design_Showcase_2nd_edition.pdf
+43. W3C WCAG guidance — https://www.w3.org/WAI/standards-guidelines/wcag/
+44. Apple design principles — https://developer.apple.com/design/human-interface-guidelines/design-principles
+45. Apple layout guidance — https://developer.apple.com/design/human-interface-guidelines/layout
+46. Apple disclosure controls — https://developer.apple.com/design/human-interface-guidelines/disclosure-controls
+47. Apple feedback guidance — https://developer.apple.com/design/human-interface-guidelines/feedback
+48. Apple progress indicators — https://developer.apple.com/design/human-interface-guidelines/progress-indicators
+49. Apple lists and tables — https://developer.apple.com/design/human-interface-guidelines/lists-and-tables
+50. Apple machine learning guidance — https://developer.apple.com/design/human-interface-guidelines/machine-learning
+51. Apple materials guidance — https://developer.apple.com/design/human-interface-guidelines/materials
+52. IBM Carbon status indicators — https://carbondesignsystem.com/patterns/status-indicator-pattern/
+53. IBM Carbon loading — https://carbondesignsystem.com/patterns/loading-pattern/
+54. IBM Carbon progress indicator — https://carbondesignsystem.com/components/progress-indicator/usage/
+55. IBM Carbon dialog pattern — https://carbondesignsystem.com/patterns/dialog-pattern/
+56. IBM Carbon notification pattern — https://carbondesignsystem.com/patterns/notification-pattern/
+57. IBM Carbon filtering pattern — https://carbondesignsystem.com/patterns/filtering/
+58. Atlassian design foundations — https://atlassian.design/foundations
+59. GOV.UK task list — https://design-system.service.gov.uk/components/task-list/
+60. GOV.UK question pages — https://design-system.service.gov.uk/patterns/question-pages/
+61. GOV.UK file upload — https://design-system.service.gov.uk/components/file-upload/
+62. GOV.UK check answers — https://design-system.service.gov.uk/patterns/check-answers/
+63. GOV.UK validation recovery — https://design-system.service.gov.uk/patterns/validation/
+64. GOV.UK error message — https://design-system.service.gov.uk/components/error-message/
+65. GOV.UK component guidance — https://design-system.service.gov.uk/components/
+66. U.S. Web Design System components — https://designsystem.digital.gov/components/overview/
+67. U.S. Web Design System step indicator — https://designsystem.digital.gov/components/step-indicator/
+68. U.S. Web Design System file input — https://designsystem.digital.gov/components/file-input/
+69. Microsoft Fluent motion — https://fluent2.microsoft.design/motion
+70. Apple Human Interface Guidelines overview — https://developer.apple.com/design/human-interface-guidelines
+71. IBM Carbon design system — https://carbondesignsystem.com/
+72. GOV.UK design patterns — https://design-system.service.gov.uk/patterns/
+73. U.S. Web Design System design principles — https://designsystem.digital.gov/design-principles/
+74. W3C accessible animations — https://www.w3.org/WAI/WCAG21/Understanding/animation-from-interactions.html
+75. W3C focus appearance — https://www.w3.org/WAI/WCAG22/Understanding/focus-appearance.html
+
+#### Legal-review and workflow evidence
+
+76. Redline construction document review — https://www.redlinebuild.com/
+77. Legal Redliner — https://legalredliner.com/
+78. RedlineAI — https://red-line-ai.com/
+79. Redline contract-review workflow — https://redlineapp.net/blog/ai-contract-review
+80. LegalRedline AI — https://www.legalredlineai.com/
+81. GitLaw review — https://git.law/features/review
+82. Scrutr — https://scrutr.ai/
+83. Glean playbook workflow — https://www.glean.com/perspectives/how-ai-compares-contracts-to-playbooks-in-one-workflow
+84. Redliner AI — https://www.redlinerai.com/marketing
+85. Mixus AI Redline — https://www.mixus.com/ai-redline
+86. LAW.co contract review — https://law.co/contract-review-automation
+87. Contract Lucidity — https://contractlucidity.com/
+88. DocuSign CLM datasheet — https://www.docusign.com/sites/default/files/resource_event_files/Contract-Lifecycle-Management-Datasheet.pdf
+89. “Interface Design to Support Legal Reading and Writing” — https://arxiv.org/abs/2509.24854
+90. “An Uncommon Task: Participatory Design in Legal AI” — https://arxiv.org/abs/2203.06246
+91. “A Framework for Explainable Text Classification in Legal Document Review” — https://arxiv.org/abs/1912.09501
+92. “Explainable Predictive Coding” — https://arxiv.org/abs/1904.01721
+93. Deloitte Legal CLM selection guide — https://www.deloittelegal.de/content/dam/assets-zone6/dl/de/docs/services/legal/2025/lli-how-to-select-the-right-clm-platform-2021.pdf
+94. Legal Data Intelligence CLM use case — https://legaldataintelligence.org/sites/legaldataintelligence/assets/usecases/Legal-Data-Intelligence-Contract-Lifecycle-Management.pdf
+95. UIA guidelines for lawyers using AI — https://www.uianet.org/sites/default/files/uia_guidelines_use_ai_systems_by_lawyers_en_final.pdf
+96. DocuSign CLM evaluation checklist — https://www.docusign.com/sites/default/files/resource_event_files/clm_evaluation_checklist.pdf
+97. TechRadar, workflow-first AI — https://www.techradar.com/pro/ai-only-creates-value-when-it-fixes-the-workflow
+98. Axios / LexisNexis legal AI workflow — https://www.axios.com/sponsored/legal-teams-need-ai-they-can-trust
+99. Document comparison overview — https://en.wikipedia.org/wiki/Document_comparison
+100. Legal design overview — https://en.wikipedia.org/wiki/Legal_Design

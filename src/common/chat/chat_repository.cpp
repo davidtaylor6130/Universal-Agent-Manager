@@ -58,6 +58,7 @@ namespace
 	constexpr std::string_view kMessageToolCallsField = "tool_calls";
 	constexpr std::string_view kMessageBlocksField = "blocks";
 	constexpr std::string_view kMessageMarkdownStoreFilesField = "markdown_store_files";
+	constexpr std::string_view kMessageMarkdownStorePromptBlocksField = "markdown_store_prompt_blocks";
 	constexpr std::string_view kMessageAttachmentsField = "attachments";
 
 	constexpr std::string_view kPlanEntryPriorityField = "priority";
@@ -301,6 +302,21 @@ namespace
 		{
 			uam::json::SetValue(obj, kMessageMarkdownStoreFilesField, StringArrayToJson(msg.markdown_store_files));
 		}
+		if (!msg.markdown_store_prompt_blocks.empty())
+		{
+			JsonValue prompt_blocks = uam::json::Array();
+			for (const std::string& prompt_block : msg.markdown_store_prompt_blocks)
+			{
+				if (!prompt_block.empty())
+				{
+					uam::json::PushValue(prompt_blocks, uam::json::String(prompt_block));
+				}
+			}
+			if (!prompt_blocks.array_value.empty())
+			{
+				uam::json::SetValue(obj, kMessageMarkdownStorePromptBlocksField, std::move(prompt_blocks));
+			}
+		}
 		if (!msg.attachments.empty())
 		{
 			JsonValue attachments = uam::json::Array();
@@ -403,6 +419,16 @@ namespace
 		}
 
 		msg.markdown_store_files = JsonStringArrayOrEmpty(obj.Find(kMessageMarkdownStoreFilesField));
+		if (const JsonValue* prompt_blocks = uam::json::ArrayOrNull(obj.Find(kMessageMarkdownStorePromptBlocksField)); prompt_blocks != nullptr)
+		{
+			for (const JsonValue& prompt_block : prompt_blocks->array_value)
+			{
+				if (prompt_block.type == JsonValue::Type::String && !prompt_block.string_value.empty())
+				{
+					msg.markdown_store_prompt_blocks.push_back(prompt_block.string_value);
+				}
+			}
+		}
 
 		if (const JsonValue* attachments = uam::json::ArrayOrNull(obj.Find(kMessageAttachmentsField)); attachments != nullptr)
 		{
@@ -520,7 +546,8 @@ namespace
 
 	bool MessageMarkdownStoreFilesEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.markdown_store_files == rhs.markdown_store_files;
+		return lhs.markdown_store_files == rhs.markdown_store_files &&
+		       lhs.markdown_store_prompt_blocks == rhs.markdown_store_prompt_blocks;
 	}
 
 	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -1081,9 +1108,12 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 	}
 
 	uam::paths::RemoveAllNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
-	uam::paths::RemoveFileNoThrow(AppPaths::UamChatFilePath(data_root, chat_id), &result.metadata_file_error);
-	std::error_code ignored_summary_error;
-	uam::paths::RemoveFileNoThrow(AppPaths::UamChatSummaryFilePath(data_root, chat_id), &ignored_summary_error);
+	const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
+	uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
+	uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
+	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
 	return result;
 }
 

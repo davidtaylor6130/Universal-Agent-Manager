@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.5.1 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.5.2 LANGUAGES C CXX)
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -661,7 +661,10 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_UI_DIST_SRC}"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
     COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/skill-builder.uam"
@@ -680,7 +683,10 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_UI_DIST_SRC}"
       "$<TARGET_FILE_DIR:universal_agent_manager>/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store"
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
     COMMAND ${CMAKE_COMMAND} -E rm -f
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/skill-builder.uam"

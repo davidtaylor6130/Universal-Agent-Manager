@@ -62,16 +62,49 @@ inline std::string AcpPromptGoalIdFromPayload(const nlohmann::json& payload)
 	return uam::nlohmann_json::TrimmedStringValue(payload, {"goalId"});
 }
 
+inline std::string ParseDeleteChatIds(const nlohmann::json& payload, std::vector<std::string>& chat_ids)
+{
+	chat_ids.clear();
+	const auto chat_ids_it = payload.find("chatIds");
+	if (chat_ids_it == payload.end() || !chat_ids_it->is_array())
+	{
+		return "chatIds must be an array.";
+	}
+	for (const nlohmann::json& value : *chat_ids_it)
+	{
+		if (!value.is_string())
+		{
+			chat_ids.clear();
+			return "Every chat id must be a string.";
+		}
+		chat_ids.push_back(value.get<std::string>());
+	}
+	return chat_ids.empty() ? "chatIds must contain at least one chat id." : "";
+}
+
 using uam::provider_chat_defaults::IsAllowedModelId;
+
+inline bool CommandSafetyTierNeedsLiveUpdate(const ChatSession& previous, const ChatSession& requested)
+{
+	if (uam::approval_modes::EffectiveProviderMode(previous.approval_mode, previous.command_safety_tier) !=
+	    uam::approval_modes::EffectiveProviderMode(requested.approval_mode, requested.command_safety_tier))
+	{
+		return true;
+	}
+	ProviderProfile provider;
+	provider.id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(requested.provider_id);
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider.id);
+	return runtime.BuildStructuredLaunchArgv(provider, previous) != runtime.BuildStructuredLaunchArgv(provider, requested);
+}
 
 // ---- Provider chat defaults helpers ----------
 
-inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback)
+inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback, std::string_view provider_id)
 {
 	ProviderChatDefaults defaults = fallback;
 	if (!value.is_object())
 	{
-		return uam::provider_chat_defaults::Normalize(defaults);
+		return uam::provider_chat_defaults::Normalize(defaults, provider_id);
 	}
 	defaults.model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "modelId", defaults.model_id);
 	defaults.approval_mode = uam::nlohmann_json::TrimmedStringValueOr(value, "approvalMode", defaults.approval_mode);
@@ -90,7 +123,7 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	defaults.memory_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
 	defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
 	defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
-	return uam::provider_chat_defaults::Normalize(defaults);
+	return uam::provider_chat_defaults::Normalize(defaults, provider_id);
 }
 
 inline ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, const std::string& provider_id)
@@ -98,12 +131,22 @@ inline ProviderChatDefaults DefaultsForProvider(const AppSettings& settings, con
 	return uam::provider_chat_defaults::ForProvider(settings, provider_id);
 }
 
+inline ProviderChatDefaults ProviderDefaultsFromSettingsPayload(const nlohmann::json& value, const ProviderChatDefaults& fallback, std::string_view provider_id)
+{
+	ProviderChatDefaults defaults = DefaultsFromPayload(value, fallback, provider_id);
+	if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli))
+	{
+		defaults.service_tier.clear();
+	}
+	return defaults;
+}
+
 inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
 {
 	ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
 	if (payload_defaults != nullptr)
 	{
-		defaults = DefaultsFromPayload(*payload_defaults, defaults);
+		defaults = DefaultsFromPayload(*payload_defaults, defaults, chat.provider_id);
 	}
 	uam::provider_chat_defaults::ApplyToChat(chat, std::move(defaults));
 }

@@ -151,8 +151,8 @@ inline bool RequiresApproval(Tier tier, RiskLevel risk, bool version_controlled_
 {
 	if (tier == Tier::Off || tier == Tier::AcceptEdits || tier == Tier::Yolo) return false;
 	if (risk == RiskLevel::Allowed) return false;
-	if (risk == RiskLevel::WarnHigh || tier == Tier::High)
-		return true;
+	if (risk == RiskLevel::WarnHigh || tier == Tier::Low) return true;
+	if (tier == Tier::High) return false;
 	// ponytail: workspace-level VCS detection; parse individual command targets if cross-root writes become common.
 	return tier == Tier::Medium && !version_controlled_workspace;
 }

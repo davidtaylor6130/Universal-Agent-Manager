@@ -6,6 +6,7 @@
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <vector>
@@ -34,7 +35,7 @@ namespace uam::acp_models
 		}
 		if (item.is_object())
 		{
-			return uam::nlohmann_json::TrimmedStringValue(item, {"reasoningEffort", "reasoning_effort", "id"});
+			return uam::nlohmann_json::TrimmedStringValue(item, {"reasoningEffort", "reasoning_effort", "effort", "id"});
 		}
 
 		return {};
@@ -58,6 +59,25 @@ namespace uam::acp_models
 		return values;
 	}
 
+	template <typename NormalizeValue> inline std::vector<std::string> UniqueStringArrayValue(const nlohmann::json& object, std::initializer_list<const char*> keys, NormalizeValue normalize_value)
+	{
+		std::vector<std::string> merged;
+		for (const char* key : keys)
+		{
+			for (const std::string& value : UniqueStringArrayValue(object, key, normalize_value))
+			{
+				uam::ranges::PushUniqueNonEmptyString(merged, value);
+			}
+		}
+		return merged;
+	}
+
+	inline std::string NormalizeModelServiceTier(std::string_view value)
+	{
+		const std::string normalized = uam::codex::NormalizeServiceTier(value);
+		return !normalized.empty() ? normalized : uam::strings::TrimmedEqualsIgnoreCase(value, "priority") ? "fast" : "";
+	}
+
 	inline std::optional<AcpModelState> ParseAcpModelState(const nlohmann::json& model)
 	{
 		if (!model.is_object())
@@ -78,9 +98,9 @@ namespace uam::acp_models
 			parsed.name = parsed.id;
 		}
 		parsed.description = uam::nlohmann_json::TrimmedStringValue(model, {"description"});
-		parsed.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort"}));
-		parsed.supported_reasoning_efforts = UniqueStringArrayValue(model, "supportedReasoningEfforts", uam::codex::NormalizeReasoningEffort);
-		parsed.additional_speed_tiers = UniqueStringArrayValue(model, "additionalSpeedTiers", uam::codex::NormalizeServiceTier);
+		parsed.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort", "defaultReasoningLevel", "default_reasoning_level"}));
+		parsed.supported_reasoning_efforts = UniqueStringArrayValue(model, {"supportedReasoningEfforts", "supported_reasoning_levels"}, uam::codex::NormalizeReasoningEffort);
+		parsed.additional_speed_tiers = UniqueStringArrayValue(model, {"additionalSpeedTiers", "additional_speed_tiers", "serviceTiers", "service_tiers"}, NormalizeModelServiceTier);
 		return parsed;
 	}
 
@@ -117,9 +137,9 @@ namespace uam::acp_models
 			parsed.model.name = parsed.model.id;
 		}
 		parsed.model.description = uam::nlohmann_json::TrimmedStringValue(model, {"description"});
-		parsed.model.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort"}));
-		parsed.model.supported_reasoning_efforts = UniqueStringArrayValue(model, "supportedReasoningEfforts", uam::codex::NormalizeReasoningEffort);
-		parsed.model.additional_speed_tiers = UniqueStringArrayValue(model, "additionalSpeedTiers", uam::codex::NormalizeServiceTier);
+		parsed.model.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort", "defaultReasoningLevel", "default_reasoning_level"}));
+		parsed.model.supported_reasoning_efforts = UniqueStringArrayValue(model, {"supportedReasoningEfforts", "supported_reasoning_levels"}, uam::codex::NormalizeReasoningEffort);
+		parsed.model.additional_speed_tiers = UniqueStringArrayValue(model, {"additionalSpeedTiers", "additional_speed_tiers", "serviceTiers", "service_tiers"}, NormalizeModelServiceTier);
 		return parsed;
 	}
 } // namespace uam::acp_models

@@ -46,3 +46,24 @@ export interface Folder {
   missing?: boolean
   createdAt: Date
 }
+
+export interface WorkspaceFolderRecoveryChat {
+  id: string
+  title: string
+  directory: string
+  reason: string
+}
+
+export interface WorkspaceFolderRecoveryGroup {
+  title: string
+  directory: string
+  existingFolderId: string
+  chatIds: string[]
+}
+
+export interface WorkspaceFolderRecoveryPreview {
+  groups: WorkspaceFolderRecoveryGroup[]
+  missing: WorkspaceFolderRecoveryChat[]
+  unavailable: WorkspaceFolderRecoveryChat[]
+  noLocation: WorkspaceFolderRecoveryChat[]
+}

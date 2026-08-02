@@ -84,6 +84,7 @@ struct Message
 	std::vector<MessagePlanEntry> plan_entries;
 	std::vector<MessageBlock> blocks;
 	std::vector<std::string> markdown_store_files;
+	std::vector<std::string> markdown_store_prompt_blocks;
 	std::vector<MessageAttachment> attachments;
 };
 

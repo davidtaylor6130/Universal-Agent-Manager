@@ -13,6 +13,7 @@
 namespace
 {
 	constexpr const char* kClaudeDangerouslySkipPermissionsFlag = "--dangerously-skip-permissions";
+	constexpr const char* kClaudeBypassPermissionsMode = "bypassPermissions";
 
 	constexpr auto kClaudeProviderPermissionModes = std::to_array<std::string_view>({
 	    uam::approval_modes::kDefaultApprovalMode,
@@ -28,6 +29,29 @@ namespace
 	bool ShouldPassClaudePermissionMode(std::string_view approval_mode)
 	{
 		return uam::ranges::Contains(kClaudeProviderPermissionModes, approval_mode);
+	}
+
+	std::string ClaudeStructuredPermissionMode(const ChatSession& chat)
+	{
+		if (uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode)
+		{
+			return uam::approval_modes::kPlanApprovalMode;
+		}
+
+		const std::string_view permission_tier = uam::strings::TrimAsciiView(chat.command_safety_tier);
+		if (permission_tier == uam::approval_modes::kAcceptEditsApprovalMode)
+		{
+			return uam::approval_modes::kAcceptEditsApprovalMode;
+		}
+		if (permission_tier == uam::approval_modes::kLegacyYoloApprovalMode)
+		{
+			return kClaudeBypassPermissionsMode;
+		}
+		if (permission_tier == "low" || permission_tier == "medium" || permission_tier == "high")
+		{
+			return uam::approval_modes::kProviderAutoApprovalMode;
+		}
+		return {};
 	}
 
 	void AppendClaudeModeArgs(std::vector<std::string>& argv, const ChatSession& chat, const AppSettings& settings)
@@ -104,7 +128,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
 	std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
-	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier));
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", ClaudeStructuredPermissionMode(chat));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	return argv;

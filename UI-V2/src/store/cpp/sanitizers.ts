@@ -175,7 +175,7 @@ export function isAllowedAcpModelId(modelId: string): boolean {
 
 export function normalizeCodexReasoningEffort(value: unknown): string {
   const effort = stringOr(value).trim().toLowerCase()
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'].includes(effort) ? effort : ''
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort) ? effort : ''
 }
 
 export function normalizeCodexServiceTier(value: unknown): string {

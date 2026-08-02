@@ -102,6 +102,7 @@ namespace
 
 void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const AppSettings previous = m_app.settings;
 	if (const std::optional<bool> enabled_default = uam::nlohmann_json::BoolFieldStrict(payload, "enabledDefault"))
 	{
 		m_app.settings.memory_enabled_default = *enabled_default;
@@ -143,6 +144,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist memory settings."));
 		return;
 	}
@@ -185,6 +187,7 @@ void UamQueryHandler::HandleSetVoiceInputSettings(CefRefPtr<CefBrowser> browser,
 
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const AppSettings previous = m_app.settings;
 	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
 	if (!requested_default_provider_id.empty())
 	{
@@ -208,18 +211,14 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 				continue;
 			}
 			const ProviderChatDefaults fallback = DefaultsForProvider(m_app.settings, provider->id);
-			ProviderChatDefaults defaults = DefaultsFromPayload(it.value(), fallback);
-			if (!uam::provider_ids::IsCliProviderAliasOf(provider->id, uam::provider_ids::kCodexCli))
-			{
-				defaults.reasoning_effort.clear();
-				defaults.service_tier.clear();
-			}
+			ProviderChatDefaults defaults = ProviderDefaultsFromSettingsPayload(it.value(), fallback, provider->id);
 			m_app.settings.provider_chat_defaults[provider->id] = defaults;
 		}
 	}
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist provider chat defaults."));
 		return;
 	}
@@ -290,6 +289,7 @@ void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const AppSettings previous = m_app.settings;
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
 	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);
 
@@ -303,6 +303,7 @@ void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, con
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist editor settings."));
 		return;
 	}
