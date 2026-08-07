@@ -312,6 +312,59 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('keeps multi-pane assignments unchanged when a sidebar chat is selected', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2, 3].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [] },
+    }))
+    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-3' }))
+    expect(readChatGridLayout()).toMatchObject({ activePane: 0, sessionIds: ['chat-1', 'chat-2'] })
+    expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeNull()
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+    expect(readChatGridLayout()).toMatchObject({ activePane: 1, sessionIds: ['chat-1', 'chat-2'] })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes the focused chat without deleting it and leaves its pane empty', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [] },
+    }))
+    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => (host.querySelector('button[aria-label="Close Chat 1"]') as HTMLButtonElement).click())
+
+    expect(useAppStore.getState().sessions).toHaveLength(2)
+    expect(useAppStore.getState().activeSessionId).toBeNull()
+    expect(readChatGridLayout()).toMatchObject({ activePane: 0, sessionIds: ['', 'chat-2'] })
+    expect(host.querySelector('[data-testid="chat-pane-chat-1"]')).toBeNull()
+    expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('refreshes a visible background pane once when its turn completes', () => {
     const loadSessionMessages = vi.fn()
     useAppStore.setState((state) => ({

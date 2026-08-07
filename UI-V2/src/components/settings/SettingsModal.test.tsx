@@ -616,7 +616,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.5.2')
+    expect(host.textContent).toContain('V4.5.3')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {

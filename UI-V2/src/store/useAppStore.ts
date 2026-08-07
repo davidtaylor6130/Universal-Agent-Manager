@@ -196,7 +196,9 @@ function deserializeState(
     existing.activeSessionId && sessions.some((s) => s.id === existing.activeSessionId)
       ? existing.activeSessionId
       : null
-  const effectiveActiveSessionId = selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
+  const effectiveActiveSessionId = cpp.selectedChatId === null
+    ? null
+    : selectedByBackend ?? selectedFromCurrent ?? sessions[0]?.id ?? null
   const existingBindings = existing.cliBindingBySessionId
   const nextCliBindingBySessionId = Object.fromEntries(
     cpp.chats.flatMap((chat) => {
@@ -438,10 +440,12 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     patch.selectedChatId !== undefined
       ? patch.selectedChatId && sessions.some((session) => session.id === patch.selectedChatId)
         ? patch.selectedChatId
-        : sessions[0]?.id ?? null
-      : current.activeSessionId && sessions.some((session) => session.id === current.activeSessionId)
-        ? current.activeSessionId
-        : sessions[0]?.id ?? null
+        : null
+      : current.activeSessionId === null
+        ? null
+        : sessions.some((session) => session.id === current.activeSessionId)
+          ? current.activeSessionId
+          : sessions[0]?.id ?? null
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 

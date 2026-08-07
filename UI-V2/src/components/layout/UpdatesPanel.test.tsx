@@ -66,6 +66,8 @@ describe('UpdatesPanel', () => {
     const state = monitor({ updates: [] })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Everything is up to date')
+    expect(host.querySelector('header button[aria-label="Check for updates"]')).toBeTruthy()
+    expect(host.querySelector('footer button[aria-label="Check for updates"]')).toBeNull()
     await act(async () => {
       ;(host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click()
     })

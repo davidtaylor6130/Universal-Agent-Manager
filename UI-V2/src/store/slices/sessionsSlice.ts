@@ -245,7 +245,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.5.2',
+    appVersion: 'V4.5.3',
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
@@ -268,7 +268,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       server: { supported: false, reason: 'Unavailable.' },
     } as VoiceInputCapabilities,
 
-    setActiveSession: (id: string) => {
+    setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
@@ -276,17 +276,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestId = createRequestId('selectSession')
         rememberPendingRequest(requestKey, requestId)
         const openedAt = new Date()
-        const previousSession = get().sessions.find((s) => s.id === id)
+        const previousSession = id ? get().sessions.find((s) => s.id === id) : undefined
         set((state) => ({
           activeSessionId: id,
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, lastOpenedAt: openedAt } : s
+            id && s.id === id ? { ...s, lastOpenedAt: openedAt } : s
           ),
         }))
-        sendToCEF({ action: 'selectSession', payload: { chatId: id }, requestId }).then((resp) => {
+        sendToCEF({ action: 'selectSession', payload: { chatId: id ?? '' }, requestId }).then((resp) => {
           if (resp.ok) {
             clearPendingRequest(requestKey, resp.requestId)
-            requestChatMessagesFromCef(id)
+            if (id) requestChatMessagesFromCef(id)
             return
           }
 
@@ -298,7 +298,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             activeSessionId: previousActiveSessionId,
             sessions: previousSession
               ? state.sessions.map((s) =>
-                  s.id === id ? { ...s, lastOpenedAt: previousSession.lastOpenedAt } : s
+                  id && s.id === id ? { ...s, lastOpenedAt: previousSession.lastOpenedAt } : s
                 )
               : state.sessions,
           }))
@@ -312,7 +312,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return {
           activeSessionId: id,
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, lastOpenedAt: openedAt } : s
+            id && s.id === id ? { ...s, lastOpenedAt: openedAt } : s
           ),
         }
       })

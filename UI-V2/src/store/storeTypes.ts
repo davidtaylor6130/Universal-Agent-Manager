@@ -114,7 +114,7 @@ export interface AppState {
   uiBuildId: string
 
   // Session actions
-  setActiveSession: (id: string) => void
+  setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>

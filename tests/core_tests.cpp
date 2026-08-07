@@ -3583,6 +3583,10 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	ChatDomainService().SelectChatById(app, " chat-second ");
 	UAM_ASSERT_EQ(app.selected_chat_index, 1);
 	UAM_ASSERT_EQ(app.composer_text, std::string("keep draft"));
+
+	ChatDomainService().SelectChatById(app, "");
+	UAM_ASSERT_EQ(app.selected_chat_index, -1);
+	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
 UAM_TEST(FinalizeChatSyncSelectionPrunesMissingChatReferenceSets)
