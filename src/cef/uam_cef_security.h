@@ -165,6 +165,16 @@ namespace uam::cef
 		return uam::ranges::Contains(kExternalUrlSchemes, scheme);
 	}
 
+	template <typename ExternalOpener>
+	inline bool CancelPopupAndOpenExternally(const std::string& url, ExternalOpener opener)
+	{
+		if (ShouldOpenExternally(url))
+		{
+			(void)opener(url);
+		}
+		return true;
+	}
+
 	inline bool OpenUrlExternally(const std::string& url, std::string* error_out = nullptr)
 	{
 #if defined(_WIN32)

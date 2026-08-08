@@ -37,6 +37,7 @@ import type {
   AcpPendingPermission,
   AcpPendingUserInput,
   AcpPlanEntry,
+  AcpProviderUsage,
   AcpToolCall,
   AcpTurnEvent,
   CliBinding,
@@ -359,6 +360,10 @@ function agentInfoEquivalent(existing: AcpAgentInfo | null, next: AcpAgentInfo |
   return existing.name === next.name && existing.title === next.title && existing.version === next.version
 }
 
+function providerUsageEquivalent(existing: AcpProviderUsage | null | undefined, next: AcpProviderUsage | null | undefined) {
+  return existing === next || JSON.stringify(existing) === JSON.stringify(next)
+}
+
 function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next: AcpPendingPermission | null) {
   if (existing === next) return true
   if (!existing || !next) return false
@@ -444,7 +449,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.waitSeconds === next.waitSeconds &&
     pendingPermissionEquivalent(existing.pendingPermission, next.pendingPermission) &&
     pendingUserInputEquivalent(existing.pendingUserInput, next.pendingUserInput) &&
-    agentInfoEquivalent(existing.agentInfo, next.agentInfo)
+    agentInfoEquivalent(existing.agentInfo, next.agentInfo) &&
+    providerUsageEquivalent(existing.providerUsage, next.providerUsage)
   )
 }
 
@@ -542,6 +548,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
     pendingPermission: acp?.pendingPermission ?? null,
     pendingUserInput: acp?.pendingUserInput ?? null,
+    providerUsage: acp?.providerUsage ?? null,
     agentInfo: acp?.agentInfo
       ? {
           name: acp.agentInfo.name ?? '',

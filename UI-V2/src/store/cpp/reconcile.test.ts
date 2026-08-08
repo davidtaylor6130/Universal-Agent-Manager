@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
 import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppMessage, sanitizeCppProvider } from './sanitizers'
+import { sanitizeCppAcpSession, sanitizeCppMessage, sanitizeCppProvider } from './sanitizers'
 
 const message: CppMessage = {
   role: 'user',
@@ -114,5 +114,55 @@ describe('backend state reconciliation', () => {
 
     expect(next).not.toBe(previous)
     expect(next.pendingPermission?.safetyRisk).toBe('warn_high')
+  })
+
+  it('sanitizes and reconciles provider usage updates', () => {
+    const usage = {
+      tokenUsage: {
+        updatedAt: 1000,
+        total: { totalTokens: 12345 },
+        last: { totalTokens: 1234 },
+        modelContextWindow: 200000,
+      },
+      rateLimits: {
+        updatedAt: 1000,
+        limitId: 'codex',
+        limitName: 'Codex',
+        primary: { usedPercent: 42, resetsAt: 1786118400, windowDurationMinutes: 300 },
+        secondary: null,
+      },
+    }
+    const chat: CppChat = {
+      id: 'chat-usage',
+      title: 'Usage',
+      folderId: '',
+      providerId: 'codex-cli',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      acpSession: sanitizeCppAcpSession({ providerUsage: usage }),
+    }
+
+    const previous = acpBindingFromCppChat(chat, undefined)
+    expect(previous.providerUsage?.tokenUsage?.total.totalTokens).toBe(12345)
+    expect(previous.providerUsage?.rateLimits?.primary?.usedPercent).toBe(42)
+
+    const next = acpBindingFromCppChat({
+      ...chat,
+      acpSession: sanitizeCppAcpSession({
+        providerUsage: {
+          ...usage,
+          rateLimits: { ...usage.rateLimits, primary: { ...usage.rateLimits.primary, usedPercent: 43 } },
+        },
+      }),
+    }, previous)
+    expect(next).not.toBe(previous)
+    expect(next.providerUsage?.rateLimits?.primary?.usedPercent).toBe(43)
+
+    expect(sanitizeCppAcpSession({
+      providerUsage: {
+        tokenUsage: { updatedAt: 1000, total: { totalTokens: -1 }, last: { totalTokens: 0 } },
+        rateLimits: { updatedAt: 1000, primary: { usedPercent: 101 } },
+      },
+    })?.providerUsage).toBeNull()
   })
 })

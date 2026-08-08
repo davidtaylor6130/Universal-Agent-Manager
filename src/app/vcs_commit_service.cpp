@@ -8,6 +8,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/parse_utils.h"
 #include "common/utils/range_utils.h"
@@ -368,6 +369,50 @@ namespace uam
 			return lines;
 		}
 
+		std::string ContentFingerprint(const std::filesystem::path& path)
+		{
+			std::error_code ec;
+			const std::filesystem::file_status status = std::filesystem::symlink_status(path, ec);
+			std::uint64_t fingerprint = uam::hashing::kFnv1a64OffsetBasis;
+			if (!ec && std::filesystem::is_symlink(status))
+			{
+				const std::string target = uam::paths::Utf8PathString(std::filesystem::read_symlink(path, ec));
+				if (ec)
+				{
+					return "";
+				}
+				uam::hashing::UpdateFnv1a64WithSeparator(fingerprint, "L");
+				uam::hashing::UpdateFnv1a64(fingerprint, target);
+			}
+			else if (!ec && std::filesystem::is_regular_file(status))
+			{
+				uam::hashing::UpdateFnv1a64WithSeparator(fingerprint, "F");
+				if (!uam::io::ForEachBinaryFileByte(path, [&fingerprint](const char value)
+				                                    {
+					                                    const unsigned char byte = static_cast<unsigned char>(value);
+					                                    uam::hashing::UpdateFnv1a64(fingerprint, &byte, 1);
+					                                    return true;
+				                                    }))
+				{
+					return "";
+				}
+			}
+			else
+			{
+				return ec || !std::filesystem::exists(status) ? "missing" : "other";
+			}
+
+			return uam::hashing::Hex64Padded(fingerprint);
+		}
+
+		void ApplyContentFingerprints(const std::filesystem::path& workspace, std::vector<VcsChangedFile>& files)
+		{
+			for (VcsChangedFile& file : files)
+			{
+				file.content_fingerprint = ContentFingerprint(uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path)));
+			}
+		}
+
 		LineStats ParseUnifiedDiffLineStats(const std::string& diff);
 
 		void ApplyGitLineStats(const std::filesystem::path& workspace, std::vector<VcsChangedFile>& files)
@@ -520,12 +565,16 @@ namespace uam
 			result.message = CommandOutputOrFallback(commit_result, fallback_message);
 		}
 
-		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace)
+		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root)
 		{
-			std::string git_root;
-			if (GitAvailable(workspace, &git_root))
+			std::string root;
+			if (GitAvailable(workspace, &root))
 			{
 				status.vcs_types.push_back(VcsType::Git);
+				if (!root.empty())
+				{
+					git_root = uam::paths::PathFromUtf8(root);
+				}
 			}
 			if (SvnAvailable(workspace))
 			{
@@ -549,7 +598,7 @@ namespace uam
 			}
 		}
 
-		void PopulateGitStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats)
+		void PopulateGitStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, const std::filesystem::path& git_root, bool include_line_stats)
 		{
 			std::string output;
 			std::string error;
@@ -561,12 +610,13 @@ namespace uam
 			{
 				status.branch_or_revision = output;
 			}
-			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain=v1 -z"), &output, &error))
+			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain=v1 -z --untracked-files=all"), &output, &error))
 			{
 				status.changed_files = ParseGitStatus(output);
 				if (include_line_stats)
 				{
-					ApplyGitLineStats(workspace, status.changed_files);
+					ApplyGitLineStats(git_root, status.changed_files);
+					ApplyContentFingerprints(git_root, status.changed_files);
 				}
 				return;
 			}
@@ -588,6 +638,7 @@ namespace uam
 				if (include_line_stats)
 				{
 					ApplySvnLineStats(workspace, status.changed_files);
+					ApplyContentFingerprints(workspace, status.changed_files);
 				}
 				return;
 			}
@@ -795,8 +846,9 @@ namespace uam
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
+		std::filesystem::path git_root = workspace;
 
-		PopulateAvailableVcsTypes(status, workspace);
+		PopulateAvailableVcsTypes(status, workspace, git_root);
 		if (!status.available)
 		{
 			status.warning = "No Git or SVN repository detected for this workspace.";
@@ -806,7 +858,7 @@ namespace uam
 		SelectActiveVcsType(status, requested_type);
 		if (status.active_vcs_type == VcsType::Git)
 		{
-			PopulateGitStatusDetails(status, workspace, include_line_stats);
+			PopulateGitStatusDetails(status, workspace, git_root, include_line_stats);
 		}
 		else
 		{

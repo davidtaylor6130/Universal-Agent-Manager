@@ -1250,6 +1250,10 @@ fs::path MemoryService::CategoryPath(const fs::path& root, const std::string& ca
 bool MemoryService::EnsureMemoryLayout(const fs::path& root)
 {
 	std::error_code ec;
+	if (root.filename() == ".UAM" && !PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(root, &ec))
+	{
+		return false;
+	}
 	for (const std::string& category : uam::memory::SupportedCategories())
 	{
 		if (!uam::paths::CreateDirectoriesNoThrow(CategoryPath(root, category), &ec))

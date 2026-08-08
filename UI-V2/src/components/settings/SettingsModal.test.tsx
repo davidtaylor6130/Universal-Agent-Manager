@@ -462,6 +462,102 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('shows the freshest provider usage independently of chat activity', () => {
+    useAppStore.setState((state) => ({
+      sessions: [
+        {
+          ...state.sessions[0],
+          id: 'chat-codex-usage-old',
+          providerId: 'codex-cli',
+          updatedAt: new Date('2026-08-08T12:00:00Z'),
+        },
+        {
+          ...state.sessions[0],
+          id: 'chat-codex-usage-new',
+          providerId: 'codex-cli',
+          updatedAt: new Date('2026-08-06T12:00:00Z'),
+        },
+        {
+          ...state.sessions[0],
+          id: 'chat-gemini-usage',
+          providerId: 'gemini-cli',
+          updatedAt: new Date('2026-08-07T11:00:00Z'),
+        },
+        {
+          ...state.sessions[0],
+          id: 'chat-codex-without-usage',
+          providerId: 'codex-cli',
+          updatedAt: new Date('2026-08-09T13:00:00Z'),
+        },
+      ],
+      acpBindingBySessionId: {
+        'chat-codex-usage-old': {
+          ...state.acpBindingBySessionId[state.sessions[0]?.id],
+          running: false,
+          providerUsage: {
+            tokenUsage: {
+              updatedAt: 1000,
+              total: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 111 },
+              last: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 11 },
+              modelContextWindow: 1000,
+            },
+            rateLimits: null,
+          },
+        },
+        'chat-codex-usage-new': {
+          ...state.acpBindingBySessionId[state.sessions[0]?.id],
+          running: true,
+          providerUsage: {
+            tokenUsage: {
+              updatedAt: 3000,
+              total: { inputTokens: 10000, cachedInputTokens: 2000, cacheWriteInputTokens: 100, outputTokens: 2000, reasoningOutputTokens: 345, totalTokens: 12345 },
+              last: { inputTokens: 900, cachedInputTokens: 200, cacheWriteInputTokens: 10, outputTokens: 250, reasoningOutputTokens: 84, totalTokens: 1234 },
+              modelContextWindow: 200000,
+            },
+            rateLimits: {
+              updatedAt: 4000,
+              limitId: 'codex',
+              limitName: 'Codex',
+              primary: { usedPercent: 42, resetsAt: 1786118400, windowDurationMinutes: 300 },
+              secondary: { usedPercent: 20, resetsAt: 1786723200, windowDurationMinutes: 10080 },
+              credits: { hasCredits: true, unlimited: false, balance: '12.50' },
+              individualLimit: { limit: '100.00', used: '75.00', remainingPercent: 25, resetsAt: 1786723200 },
+              spendControlReached: true,
+              planType: 'pro',
+              rateLimitReachedType: 'workspace_member_usage_limit_reached',
+            },
+          },
+        },
+      },
+    }))
+
+    const { host, root } = renderModal()
+    const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+    )
+    act(() => defaultsSectionButton?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Gemini chat defaults"]')?.click())
+
+    const codexUsage = host.querySelector('[aria-label="Codex provider usage"]')
+    expect(codexUsage?.getAttribute('role')).toBe('region')
+    expect(codexUsage?.textContent).toContain('12,345 total')
+    expect(codexUsage?.textContent).toContain('1,234 last turn')
+    expect(codexUsage?.textContent).toContain('200,000 tokens')
+    expect(codexUsage?.textContent).toContain('42% used')
+    expect(codexUsage?.textContent).toContain('58% window remaining')
+    expect(codexUsage?.textContent).toContain('20% used')
+    expect(codexUsage?.textContent).toContain('Spend control reached')
+    expect(codexUsage?.textContent).toContain('12.50 available')
+    expect(codexUsage?.textContent).toContain('25% remaining')
+    expect(codexUsage?.textContent).toContain('workspace member usage limit reached')
+    expect(codexUsage?.textContent).not.toContain('111')
+    expect(host.querySelector('[aria-label="Gemini provider usage"]')?.textContent).toContain('Not reported by provider')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('changes provider chat defaults with the keyboard', async () => {
     const { host, root } = renderModal()
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
@@ -616,7 +712,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.5.3')
+    expect(host.textContent).toContain('V4.5.4')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {

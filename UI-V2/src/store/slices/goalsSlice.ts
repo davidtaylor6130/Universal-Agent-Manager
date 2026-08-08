@@ -94,6 +94,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
     },
 
     removeGoal: async (goalId: string): Promise<boolean> => {
+	  if (Object.values(get().goalsByChatId).some((goals) => goals.some((goal) => goal.id === goalId && goal.status === 'complete'))) return false
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'removeGoal',

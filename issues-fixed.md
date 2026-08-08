@@ -2072,3 +2072,99 @@ Validation:
 - Resolution: the legacy right-click “Show in pane” colour buttons were removed after the actual
   nested sidebar drag source was made reliable. Read-only pane colour indicators remain.
 - Validation: nested chat drag and multi-pane context-menu regressions pass.
+
+## BUG-SWARM-097 — Queue overlapping ACP permission requests
+
+- Status: Fixed and verified.
+- Resolution: parallel Copilot tool approvals now stay in a FIFO queue instead of replacing the
+  single visible request and orphaning the earlier provider promise. Resolution, cancellation, and
+  runtime reset all advance or clear the same queue.
+- Validation: the red-first parallel-permission regression resolves both requests in order, and the
+  complete native suite passes.
+
+## BUG-SWARM-098 — Bridge standard desktop edit shortcuts
+
+- Status: Fixed and verified.
+- Resolution: CEF maps Ctrl/Cmd+A, C, V, and X through its existing edit-command path while leaving
+  Alt chords and key-up events alone.
+- Validation: the retained native shortcut matrix and production CEF object build pass.
+
+## BUG-SWARM-099 — Jump to the latest chat message
+
+- Status: Fixed and verified.
+- Resolution: each chat pane reuses its existing near-bottom calculation to show one accessible
+  jump button only while the transcript is above the latest message.
+- Validation: the red-first UI regression covers appearance, automatic hiding, and smooth jump.
+
+## BUG-SWARM-100 — Keep completed goals in history
+
+- Status: Fixed and verified.
+- Resolution: the shared goal service rejects completed-goal removal, the browser fallback follows
+  the same invariant, and completed goal banners expose no mutable actions.
+- Validation: retained native and UI regressions prove the goal remains stored and has no
+  resume/delete controls.
+
+## BUG-SWARM-101 — Retain provider-reported Codex usage
+
+- Status: Fixed and verified.
+- Resolution: UAM requests Codex account limits, merges validated sparse updates, and carries
+  thread usage, credits, spend controls, reset windows, and reached-limit state through to provider
+  settings. Providers without a reporting API show an explicit unsupported fallback.
+- Validation: red-first native serialization, thread-replacement, state-bridge, latest-session, and
+  provider-settings regressions pass; malformed or absent data is never presented as a quota.
+
+## BUG-SWARM-102 — Reject ambiguous Codex terminal sessions
+
+- Status: Fixed and verified.
+- Resolution: terminal fallback binds a newly discovered Codex session only when exactly one new
+  session belongs to the workspace, preventing concurrent tasks from inheriting each other's chat.
+- Validation: the red-first native regression covers ambiguous, unique, and absent candidates.
+
+## BUG-SWARM-103 — Hide workspace UAM data on Windows
+
+- Status: Fixed and verified.
+- Resolution: both memory and attachment creation now route the workspace `.UAM` directory through
+  one platform path operation that preserves dot hiding on macOS/Linux and applies Windows' hidden
+  attribute, including to an existing visible directory.
+- Validation: the red-first platform regression verifies directory creation and the Windows hidden
+  attribute while retaining native coverage of both workspace-data producers.
+
+## BUG-SWARM-104 — Separate close chat from the view selector
+
+- Status: Fixed and verified.
+- Resolution: the close action is now an independent icon button beside the two-option Chat/Terminal
+  selector instead of a third selector segment.
+- Validation: the retained UI regression asserts the selector contains only Chat and Terminal while
+  the close action remains separately accessible.
+
+## BUG-SWARM-105 — Keep user data stable across app rebuilds and updates
+
+- Status: Fixed and verified.
+- Resolution: after an explicit `UAM_DATA_DIR`, stable OS user storage is authoritative and
+  build-local directories are fallback-only. Legacy data is deliberately not copied or migrated.
+- Validation: the retained native regression fixes that priority order and confirms a saved
+  Markdown Store directory round-trips through the same settings file.
+
+## BUG-SWARM-106 — Cancel embedded Chromium popups
+
+- Status: Fixed and verified.
+- Resolution: the shared CEF popup boundary now opens approved external URLs in the default browser
+  and always cancels the embedded popup, preventing grey child windows and shutdown on their close.
+- Validation: the retained native regression covers approved and rejected URL schemes and requires
+  UAM's own popup lifecycle override.
+
+## BUG-SWARM-107 — Summarise repository changes after completed turns
+
+- Status: Fixed and verified.
+- Resolution: chat sessions capture a repository baseline before sending and reuse the existing
+  Git/SVN status bridge on completion to show only the session delta at the conversation tail.
+- Validation: the retained UI regression excludes unchanged pre-existing work, reports attributable
+  line-count deltas, and proves reopening an old chat does not query today's repository state.
+
+## BUG-SWARM-108 — Keep the jump-to-bottom control above chat text
+
+- Status: Fixed and verified.
+- Resolution: the transcript now owns an explicit lower stacking layer while the existing floating
+  jump control remains on its higher overlay layer.
+- Validation: the retained UI regression asserts both sides of that stacking invariant alongside
+  the existing show, hide, and smooth-scroll behaviour.

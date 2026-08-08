@@ -126,7 +126,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
       )}
 
       {/* All goal actions consolidated into one overflow menu */}
-      <div ref={menuRef} className="relative flex-shrink-0">
+      {goal.status !== 'complete' && <div ref={menuRef} className="relative flex-shrink-0">
         <Tooltip label="Goal actions">
           <button
             ref={triggerRef}
@@ -159,7 +159,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
             <MenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
           </ViewportMenu>
         )}
-      </div>
+      </div>}
     </div>
   )
 }

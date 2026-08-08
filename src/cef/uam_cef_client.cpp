@@ -58,6 +58,26 @@ bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) co
 // CefLifeSpanHandler
 // ---------------------------------------------------------------------------
 
+bool UamCefClient::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/,
+                                  CefRefPtr<CefFrame> /*frame*/,
+                                  int /*popup_id*/,
+                                  const CefString& target_url,
+                                  const CefString& /*target_frame_name*/,
+                                  WindowOpenDisposition /*target_disposition*/,
+                                  bool /*user_gesture*/,
+                                  const CefPopupFeatures& /*popup_features*/,
+                                  CefWindowInfo& /*window_info*/,
+                                  CefRefPtr<CefClient>& /*client*/,
+                                  CefBrowserSettings& /*settings*/,
+                                  CefRefPtr<CefDictionaryValue>& /*extra_info*/,
+                                  bool* /*no_javascript_access*/)
+{
+	CEF_REQUIRE_UI_THREAD();
+	return uam::cef::CancelPopupAndOpenExternally(target_url.ToString(), [](const std::string& url) {
+		return uam::cef::OpenUrlExternally(url);
+	});
+}
+
 void UamCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -212,7 +232,7 @@ bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browse
 }
 
 // ---------------------------------------------------------------------------
-// CefKeyboardHandler — block DevTools/view-source shortcuts and bridge paste
+// CefKeyboardHandler — block DevTools/view-source shortcuts and bridge standard edits
 // ---------------------------------------------------------------------------
 
 bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> browser,
@@ -242,19 +262,10 @@ bool UamCefClient::OnKeyEvent(CefRefPtr<CefBrowser> browser,
 			return true;
 		}
 
-		const bool pasteModifier =
-			(event.modifiers & EVENTFLAG_CONTROL_DOWN) ||
-			(event.modifiers & EVENTFLAG_COMMAND_DOWN);
-		if (pasteModifier &&
-		    !(event.modifiers & EVENTFLAG_ALT_DOWN) &&
-		    event.windows_key_code == 'V')
+		CefRefPtr<CefFrame> frame = browser ? browser->GetFocusedFrame() : nullptr;
+		if (frame && uam::cef::DispatchEditCommandForKeyEvent(event, *frame))
 		{
-			CefRefPtr<CefFrame> frame = browser ? browser->GetFocusedFrame() : nullptr;
-			if (frame)
-			{
-				frame->Paste();
-				return true;
-			}
+			return true;
 		}
 	}
 	return false;

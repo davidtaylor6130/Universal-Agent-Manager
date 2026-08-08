@@ -131,6 +131,20 @@ UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Complete);
 }
 
+UAM_TEST(GoalServiceKeepsCompletedGoalsInHistory)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-completed-goal-history";
+	app.chats.push_back(chat);
+
+	std::string completed_goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Keep the completed goal.", 0, &completed_goal_id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, completed_goal_id, GoalStatus::Complete));
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, completed_goal_id));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, completed_goal_id) != nullptr);
+}
+
 UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
 {
 	uam::AppState app;

@@ -360,6 +360,10 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& goal_id)
 		                       [&goal_id](const Goal& g) { return g.id == goal_id; });
 		if (it != chat.goals.end())
 		{
+			if (it->status == GoalStatus::Complete)
+			{
+				return false;
+			}
 			// If this was the active goal, clear it
 			if (chat.active_goal_id == goal_id)
 			{

@@ -8,6 +8,7 @@
 #include "common/runtime/terminal/terminal_dimensions.h"
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -137,6 +138,72 @@ namespace uam
 		std::string text;
 		std::string tool_call_id;
 		std::string title;
+	};
+
+	struct AcpTokenUsageBreakdownState
+	{
+		std::int64_t input_tokens = 0;
+		std::int64_t cached_input_tokens = 0;
+		std::int64_t cache_write_input_tokens = 0;
+		std::int64_t output_tokens = 0;
+		std::int64_t reasoning_output_tokens = 0;
+		std::int64_t total_tokens = 0;
+	};
+
+	struct AcpTokenUsageState
+	{
+		bool available = false;
+		std::int64_t updated_at_ms = 0;
+		AcpTokenUsageBreakdownState total;
+		AcpTokenUsageBreakdownState last;
+		std::int64_t model_context_window = 0;
+	};
+
+	struct AcpRateLimitWindowState
+	{
+		bool available = false;
+		int used_percent = 0;
+		std::int64_t resets_at = 0;
+		std::int64_t window_duration_minutes = 0;
+	};
+
+	struct AcpCreditsState
+	{
+		bool available = false;
+		bool has_credits = false;
+		bool unlimited = false;
+		std::string balance;
+	};
+
+	struct AcpSpendControlLimitState
+	{
+		bool available = false;
+		std::string limit;
+		std::string used;
+		int remaining_percent = 0;
+		std::int64_t resets_at = 0;
+	};
+
+	struct AcpRateLimitsState
+	{
+		bool available = false;
+		std::int64_t updated_at_ms = 0;
+		std::string limit_id;
+		std::string limit_name;
+		AcpRateLimitWindowState primary;
+		AcpRateLimitWindowState secondary;
+		AcpCreditsState credits;
+		AcpSpendControlLimitState individual_limit;
+		bool spend_control_reached_available = false;
+		bool spend_control_reached = false;
+		std::string plan_type;
+		std::string rate_limit_reached_type;
+	};
+
+	struct AcpProviderUsageState
+	{
+		AcpTokenUsageState token_usage;
+		AcpRateLimitsState rate_limits;
 	};
 
 	struct AcpDiagnosticEntryState
@@ -307,6 +374,7 @@ namespace uam
 		std::string mode_change_requested_id;
 		std::vector<AcpModelState> available_models;
 		std::string current_model_id;
+		AcpProviderUsageState provider_usage;
 		std::string pending_startup_model_id;
 		std::string reasoning_change_previous_id;
 		std::optional<std::string> reasoning_change_previous_chat_id;
@@ -316,6 +384,7 @@ namespace uam
 		std::string model_change_requested_id;
 		std::vector<AcpTurnEventState> turn_events;
 		AcpPendingPermissionState pending_permission;
+		std::deque<AcpPendingPermissionState> queued_permissions;
 		AcpPendingUserInputState pending_user_input;
 		double wait_started_time_s = 0.0;
 		double last_runtime_activity_time_s = 0.0;

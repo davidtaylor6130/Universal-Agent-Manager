@@ -15,6 +15,7 @@ import {
   type AcpUserInputAnswers,
   type ChatAttachmentInput,
   type DictationPushMessage,
+  type VcsCommitStatus,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
@@ -88,7 +89,7 @@ import {
   type DictationState,
 } from '../chat/Composer'
 import { ViewportMenu } from '../ui'
-import { Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
@@ -174,6 +175,22 @@ function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
   return -1
 }
 
+function repositoryChangesSince(baseline: VcsCommitStatus, current: VcsCommitStatus): VcsCommitStatus | null {
+  if (baseline.workspaceDirectory !== current.workspaceDirectory || baseline.activeVcsType !== current.activeVcsType) return null
+
+  const beforeByPath = new Map(baseline.changedFiles.map((file) => [file.path, file]))
+  const changedFiles = current.changedFiles.flatMap((file) => {
+    const before = beforeByPath.get(file.path)
+    if (!before) return [file]
+
+    const additions = Math.max(0, file.additions - before.additions) + Math.max(0, before.deletions - file.deletions)
+    const deletions = Math.max(0, file.deletions - before.deletions) + Math.max(0, before.additions - file.additions)
+    if (additions === 0 && deletions === 0 && file.status === before.status && file.staged === before.staged && file.binary === before.binary && file.contentFingerprint === before.contentFingerprint) return []
+    return [{ ...file, additions, deletions }]
+  })
+  return { ...current, changedFiles }
+}
+
 export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -204,6 +221,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
+  const [repositoryChanges, setRepositoryChanges] = useState<VcsCommitStatus | null>(null)
+  const repositoryBaselineRef = useRef<{ sessionId: string; status: VcsCommitStatus } | null>(null)
+  const repositoryBaselineRequestRef = useRef<{ sessionId: string; promise: Promise<VcsCommitStatus | null> } | null>(null)
+  const repositorySummaryArmedRef = useRef('')
   const steerTurnSerialRef = useRef(0)
   const steeringTimeoutRef = useRef<number | null>(null)
   const appModalOpen = useAppStore((s) =>
@@ -228,12 +249,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
+  const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
-  const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
+  const sendAcpPromptNative = useAppStore((s) => s.sendAcpPrompt)
+  const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
   const branchFromMessage = useAppStore((s) => s.branchFromMessage)
@@ -279,6 +302,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -295,9 +319,44 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   useEffect(() => {
     currentSessionIdRef.current = session.id
+    isNearBottomRef.current = true
+    setShowScrollToBottom(false)
     submitInFlightRef.current = false
     setSubmitting(false)
+    repositoryBaselineRef.current = null
+    repositoryBaselineRequestRef.current = null
+    repositorySummaryArmedRef.current = ''
+    setRepositoryChanges(null)
   }, [session.id])
+
+  const captureRepositoryBaseline = async () => {
+    if (!workspaceDirectory) return null
+    if (repositoryBaselineRef.current?.sessionId === session.id) return repositoryBaselineRef.current.status
+    if (repositoryBaselineRequestRef.current?.sessionId === session.id) return repositoryBaselineRequestRef.current.promise
+
+    const promise = getVcsCommitStatus(session.id, 'git', {
+      includeLineStats: true,
+      requestId: `chat-summary-baseline:${session.id}`,
+    })
+    repositoryBaselineRequestRef.current = { sessionId: session.id, promise }
+    const status = await promise
+    if (repositoryBaselineRequestRef.current?.promise === promise) repositoryBaselineRequestRef.current = null
+    if (status?.available) repositoryBaselineRef.current = { sessionId: session.id, status }
+    return status?.available ? status : null
+  }
+
+  const sendAcpPrompt = async (...args: Parameters<typeof sendAcpPromptNative>) => {
+    const hadBaseline = repositoryBaselineRef.current?.sessionId === session.id
+    const baseline = await captureRepositoryBaseline()
+    repositorySummaryArmedRef.current = baseline ? session.id : ''
+    setRepositoryChanges(null)
+    const sent = await sendAcpPromptNative(...args)
+    if (!sent) {
+      repositorySummaryArmedRef.current = ''
+      if (!hadBaseline) repositoryBaselineRef.current = null
+    }
+    return sent
+  }
 
   const selectedToolCall = useMemo(
     () => {
@@ -377,12 +436,21 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     turnEvents[turnEvents.length - 1]?.text,
     turnSerial,
     acp?.lastError,
+    repositoryChanges?.changedFiles.length,
   ])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
+    isNearBottomRef.current = isNearBottom
+    setShowScrollToBottom(!isNearBottom)
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    isNearBottomRef.current = true
+    setShowScrollToBottom(false)
+    bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
   }, [])
 
   useEffect(() => {
@@ -749,7 +817,25 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   const pendingPermission = acp?.pendingPermission
   const pendingUserInput = acp?.pendingUserInput
-  const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const latestAssistantMessage = latestAssistantMessageIndex >= 0 ? messages[latestAssistantMessageIndex] : undefined
+  const completedTurnKey = !acp?.processing && !cli?.processing && latestAssistantMessageIndex > latestUserMessageIndex
+    ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
+    : ''
+  useEffect(() => {
+    let cancelled = false
+    const baseline = repositoryBaselineRef.current
+    if (!completedTurnKey || !workspaceDirectory || repositorySummaryArmedRef.current !== session.id || baseline?.sessionId !== session.id) return
+
+    void getVcsCommitStatus(session.id, 'git', {
+      includeLineStats: true,
+      requestId: `chat-summary:${session.id}:${completedTurnKey}`,
+    }).then((status) => {
+      if (cancelled || !status?.available) return
+      const changes = repositoryChangesSince(baseline.status, status)
+      setRepositoryChanges(changes && changes.changedFiles.length > 0 ? changes : null)
+    })
+    return () => { cancelled = true }
+  }, [completedTurnKey, getVcsCommitStatus, session.id, workspaceDirectory])
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
   const workspaceActionsDisabled = workspaceActionBusy || Boolean(
@@ -1123,7 +1209,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       void updateGoalStatus(activeGoal.id, 'paused')
       return
     }
-    if (displayedGoal && displayedGoal.status !== 'active') {
+    if (displayedGoal && (displayedGoal.status === 'paused' || displayedGoal.status === 'blocked')) {
       void handleResumeGoal()
       return
     }
@@ -1419,9 +1505,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         />
       )}
       <div className="flex-1 flex flex-col min-w-0">
-        <div ref={scrollRef} className="uam-chat-transcript flex-1 overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-          <div className="uam-chat-content w-full py-4">
-            <div className="uam-message-list space-y-1.5">
+        <div className="relative flex-1 min-h-0">
+          <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
+            <div className="uam-chat-content w-full py-4">
+              <div className="uam-message-list space-y-1.5">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
                   <Button
@@ -1643,9 +1730,47 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   />
                 </MessageFrame>
               )}
+              {repositoryChanges && (
+                <section
+                  aria-label="Repository changes"
+                  className="mx-4 overflow-hidden rounded-md text-xs"
+                  style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+                >
+                  <div className="flex items-center justify-between gap-3 px-3 py-2 font-medium" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>
+                    <span>Repository changes</span>
+                    <span style={{ color: 'var(--text-3)' }}>{repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {repositoryChanges.changedFiles.map((file) => (
+                      <div key={file.path} className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                        <span className="w-6 shrink-0 text-center font-mono" style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
+                        <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
+                        {file.binary ? (
+                          <span className="shrink-0 font-mono" style={{ color: 'var(--text-3)' }}>BIN</span>
+                        ) : (
+                          <span className="flex shrink-0 gap-2 font-mono"><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
               <div ref={bottomRef} />
+              </div>
             </div>
           </div>
+          {showScrollToBottom && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+              <IconButton
+                icon={<ArrowDown size={16} />}
+                label="Scroll to bottom"
+                tooltip="Jump to the latest message"
+                variant="solid"
+                className="pointer-events-auto shadow-md"
+                onClick={scrollToBottom}
+              />
+            </div>
+          )}
         </div>
 
         {goalError && (

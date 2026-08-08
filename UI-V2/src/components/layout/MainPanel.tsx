@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { StatusDot, Tooltip } from '../ui'
+import { IconButton, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -159,19 +159,16 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
               <SquareTerminal size={14} aria-hidden />
             </button>
           </Tooltip>
-          <Tooltip label="Close chat" side="bottom">
-            <button
-              type="button"
-              aria-label={`Close ${session.name}`}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => onClose(paneIndex, session.id)}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{ borderRadius: 5, color: 'var(--text-2)', background: 'transparent' }}
-            >
-              <X size={14} aria-hidden />
-            </button>
-          </Tooltip>
         </div>
+        <IconButton
+          icon={<X size={14} aria-hidden />}
+          label={`Close ${session.name}`}
+          tooltip="Close chat"
+          tooltipSide="bottom"
+          size="sm"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={() => onClose(paneIndex, session.id)}
+        />
 
       </div>
 

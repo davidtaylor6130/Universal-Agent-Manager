@@ -10,6 +10,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace uam
@@ -119,6 +120,7 @@ class IPlatformPathService
 	virtual std::optional<std::filesystem::path> ResolveUserHomePath() const = 0;
 	virtual std::filesystem::path ExpandLeadingTildePath(const std::string& raw_path) const = 0;
 	virtual bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path& path) const = 0;
+	virtual bool EnsureHiddenDirectory(const std::filesystem::path& path, std::error_code* error_out = nullptr) const = 0;
 };
 
 enum class DictationEventType

@@ -1,14 +1,56 @@
 #include "test_harness.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/persistence_coordinator.h"
+#include "cef/uam_cef_client.h"
 #include "cef/uam_query_handler_internal.h"
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
+
+#include <type_traits>
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 using namespace uam_test;
+
+UAM_TEST(CefEditShortcutsReachFocusedFrameCommands)
+{
+	struct EditTargetProbe
+	{
+		int command = 0;
+		void SelectAll() { command = MENU_ID_SELECT_ALL; }
+		void Copy() { command = MENU_ID_COPY; }
+		void Paste() { command = MENU_ID_PASTE; }
+		void Cut() { command = MENU_ID_CUT; }
+	};
+
+	CefKeyEvent event{};
+	event.type = KEYEVENT_RAWKEYDOWN;
+	EditTargetProbe target;
+	const auto assert_dispatch = [&](int key, int expected)
+	{
+		event.windows_key_code = key;
+		target.command = 0;
+		UAM_ASSERT(uam::cef::DispatchEditCommandForKeyEvent(event, target));
+		UAM_ASSERT_EQ(target.command, expected);
+	};
+
+	for (const uint32_t modifier : {static_cast<uint32_t>(EVENTFLAG_CONTROL_DOWN), static_cast<uint32_t>(EVENTFLAG_COMMAND_DOWN)})
+	{
+		event.modifiers = modifier;
+		assert_dispatch('A', MENU_ID_SELECT_ALL);
+		assert_dispatch('C', MENU_ID_COPY);
+		assert_dispatch('V', MENU_ID_PASTE);
+		assert_dispatch('X', MENU_ID_CUT);
+	}
+
+	event.windows_key_code = 'A';
+	event.modifiers = EVENTFLAG_COMMAND_DOWN | EVENTFLAG_ALT_DOWN;
+	UAM_ASSERT(!uam::cef::DispatchEditCommandForKeyEvent(event, target));
+	event.modifiers = EVENTFLAG_COMMAND_DOWN;
+	event.type = KEYEVENT_KEYUP;
+	UAM_ASSERT(!uam::cef::DispatchEditCommandForKeyEvent(event, target));
+}
 
 UAM_TEST(ChatProviderSwitchBridgePayloadHandlesNullStringFields)
 {
@@ -936,6 +978,33 @@ UAM_TEST(PerformanceScriptTargetsRuntimeChatDataDirectory)
 	const std::string runtime_directory = AppPaths::ChatsRootPath("data").filename().string();
 
 	UAM_ASSERT(script.find("$chatsDir = Join-Path $testDataRoot \"" + runtime_directory + "\"") != std::string::npos);
+}
+
+UAM_TEST(DataRootResolutionPrefersStableUserStorageAcrossBuildLocations)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string source = ReadFile(source_root / "src/app/application.cpp");
+	const std::size_t initialize = source.find("bool Application::InitializeState()");
+	const std::size_t stable_root = source.find("DefaultDataRootPath()", initialize);
+	const std::size_t executable_root = source.find("executable_path.parent_path() / \"data\"", initialize);
+	const std::size_t working_root = source.find("*cwd / \"data\"", initialize);
+
+	UAM_ASSERT(initialize != std::string::npos);
+	UAM_ASSERT(stable_root != std::string::npos);
+	UAM_ASSERT(executable_root != std::string::npos);
+	UAM_ASSERT(working_root != std::string::npos);
+	UAM_ASSERT(stable_root < executable_root);
+	UAM_ASSERT(stable_root < working_root);
+
+	TempDir temp("uam-stable-settings");
+	AppSettings saved;
+	saved.markdown_store_directory = (temp.root / "Markdown Store").string();
+	CenterViewMode saved_mode = CenterViewMode::CliConsole;
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", saved, saved_mode));
+	AppSettings loaded;
+	CenterViewMode loaded_mode = CenterViewMode::CliConsole;
+	SettingsStore::Load(temp.root / "settings.txt", loaded, loaded_mode);
+	UAM_ASSERT_EQ(loaded.markdown_store_directory, saved.markdown_store_directory);
 }
 
 UAM_TEST(AcpPollingDrainsBufferedCompletionBeforeCancelTimeout)
@@ -1905,7 +1974,7 @@ UAM_TEST(AcpProtocolMethodHelpersClassifySharedMethodSets)
 	UAM_ASSERT_EQ(kSessionModeOrModelUpdateMethods.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(kCodexItemLifecycleMethods.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(kCodexToolOutputDeltaMethods.size(), static_cast<std::size_t>(3));
-	UAM_ASSERT_EQ(kIgnoredCodexAppServerMethods.size(), static_cast<std::size_t>(8));
+	UAM_ASSERT_EQ(kIgnoredCodexAppServerMethods.size(), static_cast<std::size_t>(6));
 	UAM_ASSERT(IsLifecycleResultMethod(kInitialize));
 	UAM_ASSERT(IsLifecycleResultMethod(kThreadStart));
 	UAM_ASSERT(IsLifecycleResultMethod(kThreadResume));
@@ -1935,8 +2004,10 @@ UAM_TEST(AcpProtocolMethodHelpersClassifySharedMethodSets)
 	UAM_ASSERT(IsCodexFileChangeOutputDeltaMethod(kItemFileChangeOutputDelta));
 	UAM_ASSERT(IsCodexFileChangeOutputDeltaMethod(std::string_view("xxitem/fileChange/outputDeltayy").substr(2, 27)));
 	UAM_ASSERT(!IsCodexFileChangeOutputDeltaMethod(kItemCommandExecutionOutputDelta));
-	UAM_ASSERT(IsIgnoredCodexAppServerMethod("thread/tokenUsage/updated"));
-	UAM_ASSERT(IsIgnoredCodexAppServerMethod(std::string_view("xxthread/tokenUsage/updatedyy").substr(2, 25)));
+	UAM_ASSERT_EQ(std::string(kThreadTokenUsageUpdated), std::string("thread/tokenUsage/updated"));
+	UAM_ASSERT_EQ(std::string(kAccountRateLimitsRead), std::string("account/rateLimits/read"));
+	UAM_ASSERT_EQ(std::string(kAccountRateLimitsUpdated), std::string("account/rateLimits/updated"));
+	UAM_ASSERT(!IsIgnoredCodexAppServerMethod(kThreadTokenUsageUpdated));
 	UAM_ASSERT(!IsIgnoredCodexAppServerMethod(kTurnStarted));
 }
 
@@ -4175,6 +4246,89 @@ UAM_TEST(VcsCommitServiceUsesResolvedWorkspaceForGitStatusDiffAndCommit)
 	UAM_ASSERT(committed.ok);
 	UAM_ASSERT(RunGitForTest(worktree, "log --oneline --grep " + ShellQuoteForTest("worktree commit")));
 	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source\n"));
+}
+
+UAM_TEST(VcsCommitServiceFingerprintsTrackedAndUntrackedContent)
+{
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-vcs-content-fingerprint");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "tracked.txt", "original\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add tracked.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "tracked.txt", "before!!\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "untracked.txt", "before!!\n"));
+
+	uam::AppState app;
+	ChatSession chat;
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitStatus before = uam::VcsCommitService().Status(app, chat);
+	const auto find_file = [](const uam::VcsCommitStatus& status, const std::string& path) -> const uam::VcsChangedFile&
+	{
+		const auto found = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&](const uam::VcsChangedFile& file) { return file.path == path; });
+		UAM_ASSERT(found != status.changed_files.end());
+		return *found;
+	};
+	const uam::VcsChangedFile& tracked_before = find_file(before, "tracked.txt");
+	const uam::VcsChangedFile& untracked_before = find_file(before, "untracked.txt");
+	UAM_ASSERT(!tracked_before.content_fingerprint.empty());
+	UAM_ASSERT(!untracked_before.content_fingerprint.empty());
+	const uam::VcsCommitStatus cheap = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false);
+	UAM_ASSERT(find_file(cheap, "tracked.txt").content_fingerprint.empty());
+	UAM_ASSERT(find_file(cheap, "untracked.txt").content_fingerprint.empty());
+
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "tracked.txt", "after!!!\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "untracked.txt", "after!!!\n"));
+	const uam::VcsCommitStatus after = uam::VcsCommitService().Status(app, chat);
+	const uam::VcsChangedFile& tracked_after = find_file(after, "tracked.txt");
+	const uam::VcsChangedFile& untracked_after = find_file(after, "untracked.txt");
+	UAM_ASSERT_EQ(tracked_before.additions, tracked_after.additions);
+	UAM_ASSERT_EQ(tracked_before.deletions, tracked_after.deletions);
+	UAM_ASSERT_EQ(untracked_before.additions, untracked_after.additions);
+	UAM_ASSERT_EQ(untracked_before.deletions, untracked_after.deletions);
+	UAM_ASSERT(tracked_before.content_fingerprint != tracked_after.content_fingerprint);
+	UAM_ASSERT(untracked_before.content_fingerprint != untracked_after.content_fingerprint);
+}
+
+UAM_TEST(VcsCommitServiceFingerprintsRepoRelativePathsFromSubdirectories)
+{
+	if (!GitAvailableForTests())
+	{
+		return;
+	}
+
+	TempDir temp("uam-vcs-subdirectory-fingerprint");
+	const fs::path repo = temp.root / "repo";
+	const fs::path subdir = repo / "subdir";
+	fs::create_directories(subdir);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(subdir / "tracked.txt", "original\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add subdir/tracked.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	UAM_ASSERT(uam::io::WriteTextFile(subdir / "tracked.txt", "before!!\n"));
+
+	uam::AppState app;
+	ChatSession chat;
+	chat.workspace_directory = subdir.string();
+	const uam::VcsChangedFile before = uam::VcsCommitService().Status(app, chat).changed_files.front();
+	UAM_ASSERT_EQ(before.path, std::string("subdir/tracked.txt"));
+	UAM_ASSERT(!before.content_fingerprint.empty());
+
+	UAM_ASSERT(uam::io::WriteTextFile(subdir / "tracked.txt", "after!!!\n"));
+	const uam::VcsChangedFile after = uam::VcsCommitService().Status(app, chat).changed_files.front();
+	UAM_ASSERT_EQ(before.additions, after.additions);
+	UAM_ASSERT_EQ(before.deletions, after.deletions);
+	UAM_ASSERT(before.content_fingerprint != after.content_fingerprint);
 }
 
 #if !defined(_WIN32)
@@ -7092,7 +7246,7 @@ UAM_TEST(RuntimeHandoffRejectsBusyTerminalAndStopsIdleOrShuttingTerminalBeforeAc
 	UAM_ASSERT(app.cli_terminals.front()->last_error.empty());
 }
 
-UAM_TEST(CodexSessionIndexPicksNewestNewSessionForMatchingCwd)
+UAM_TEST(CodexSessionIndexRejectsAmbiguousNewSessionsForMatchingCwd)
 {
 	TempDir temp("uam-codex-index");
 	const fs::path cwd = temp.root / "workspace";
@@ -7145,7 +7299,7 @@ UAM_TEST(CodexSessionIndexPicksNewestNewSessionForMatchingCwd)
 	UAM_ASSERT(!uam::codex::RolloutCwdMatches("not-a-session-id", cwd, temp.root));
 
 	const std::vector<std::string> before = {old_id};
-	UAM_ASSERT_EQ(uam::codex::PickNewSessionId(before, cwd, temp.root), newer_match_id);
+	UAM_ASSERT_EQ(uam::codex::PickNewSessionId(before, cwd, temp.root), std::string(""));
 	UAM_ASSERT_EQ(uam::codex::PickNewSessionId({old_id, newer_match_id}, cwd, temp.root), match_id);
 	UAM_ASSERT_EQ(uam::codex::PickNewSessionId({old_id, match_id, newer_match_id}, cwd, temp.root), std::string(""));
 }
@@ -7983,6 +8137,26 @@ UAM_TEST(CefExternalUrlPolicyAllowsOnlyExplicitSchemes)
 	UAM_ASSERT(!uam::cef::ShouldOpenExternally("/relative/path"));
 }
 
+UAM_TEST(CefPopupPolicyCancelsEveryPopupAndOpensOnlyExternalUrls)
+{
+	std::vector<std::string> opened_urls;
+	const auto opener = [&](const std::string& url) {
+		opened_urls.push_back(url);
+		return true;
+	};
+
+	for (const std::string& url : {std::string{}, std::string("file:///tmp/index.html"), std::string("javascript:alert(1)"), std::string("/relative/path")})
+	{
+		UAM_ASSERT(uam::cef::CancelPopupAndOpenExternally(url, opener));
+	}
+	UAM_ASSERT(opened_urls.empty());
+	UAM_ASSERT(uam::cef::CancelPopupAndOpenExternally("https://example.test/path", opener));
+	UAM_ASSERT_EQ(opened_urls, std::vector<std::string>{"https://example.test/path"});
+
+	using PopupHandler = bool (UamCefClient::*)(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, int, const CefString&, const CefString&, CefLifeSpanHandler::WindowOpenDisposition, bool, const CefPopupFeatures&, CefWindowInfo&, CefRefPtr<CefClient>&, CefBrowserSettings&, CefRefPtr<CefDictionaryValue>&, bool*);
+	UAM_ASSERT((std::is_same_v<decltype(&UamCefClient::OnBeforePopup), PopupHandler>));
+}
+
 UAM_TEST(FolderLifecycleKeepsWorkspaceRootsMinimal)
 {
 	TempDir temp("uam-folders");
@@ -8599,6 +8773,23 @@ UAM_TEST(DataRootLockRejectsSecondWriter)
 	second_error.clear();
 	second_lock = PlatformServicesFactory::Instance().process_service.TryAcquireDataRootLock(temp.root, &second_error);
 	UAM_ASSERT(second_lock != nullptr);
+}
+
+UAM_TEST(PlatformPathServiceEnsuresWorkspaceUamDirectoryIsHidden)
+{
+	TempDir temp("uam-hidden-workspace-directory");
+	const fs::path root = temp.root / "workspace" / ".UAM";
+	std::error_code error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(root, &error));
+	UAM_ASSERT(!error);
+	UAM_ASSERT(fs::is_directory(root));
+#if defined(_WIN32)
+	const DWORD attributes = GetFileAttributesW(root.wstring().c_str());
+	UAM_ASSERT(attributes != INVALID_FILE_ATTRIBUTES);
+	UAM_ASSERT((attributes & FILE_ATTRIBUTE_HIDDEN) != 0);
+#else
+	UAM_ASSERT_EQ(root.filename().string(), std::string(".UAM"));
+#endif
 }
 
 UAM_TEST(ChatIdsPreserveExpectedPrefixesAndFallbackShape)

@@ -17,6 +17,7 @@ void ResetAcpPendingInteractionState(AcpSessionState& session)
 	session.waiting_for_permission = false;
 	session.waiting_for_user_input = false;
 	session.pending_permission = AcpPendingPermissionState{};
+	session.queued_permissions.clear();
 	session.pending_user_input = AcpPendingUserInputState{};
 	ResetAcpWaitState(session);
 }

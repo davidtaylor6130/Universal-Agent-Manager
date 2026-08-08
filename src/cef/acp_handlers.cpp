@@ -521,7 +521,14 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	const std::filesystem::path attachment_root = workspace_root / ".UAM" / "attachments" / chat_id;
+	const std::filesystem::path workspace_data_root = workspace_root / ".UAM";
+	if (!PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(workspace_data_root, &ec))
+	{
+		cb->Failure(500, "Failed to create workspace data directory.");
+		return;
+	}
+
+	const std::filesystem::path attachment_root = workspace_data_root / "attachments" / chat_id;
 	if (!uam::paths::CreateDirectoriesNoThrow(attachment_root, &ec))
 	{
 		cb->Failure(500, "Failed to create attachment directory.");

@@ -601,6 +601,68 @@ namespace uam
 			return turn_events_json;
 		}
 
+		nlohmann::json SerializeAcpTokenUsageBreakdown(const AcpTokenUsageBreakdownState& usage)
+		{
+			return {
+			    {"inputTokens", usage.input_tokens},
+			    {"cachedInputTokens", usage.cached_input_tokens},
+			    {"cacheWriteInputTokens", usage.cache_write_input_tokens},
+			    {"outputTokens", usage.output_tokens},
+			    {"reasoningOutputTokens", usage.reasoning_output_tokens},
+			    {"totalTokens", usage.total_tokens},
+			};
+		}
+
+		nlohmann::json SerializeAcpRateLimitWindow(const AcpRateLimitWindowState& window)
+		{
+			if (!window.available)
+			{
+				return nullptr;
+			}
+			nlohmann::json serialized;
+			serialized["usedPercent"] = window.used_percent;
+			serialized["resetsAt"] = window.resets_at > 0 ? nlohmann::json(window.resets_at) : nlohmann::json(nullptr);
+			serialized["windowDurationMinutes"] = window.window_duration_minutes > 0 ? nlohmann::json(window.window_duration_minutes) : nlohmann::json(nullptr);
+			return serialized;
+		}
+
+		nlohmann::json SerializeAcpProviderUsage(const AcpProviderUsageState& usage)
+		{
+			if (!usage.token_usage.available && !usage.rate_limits.available)
+			{
+				return nullptr;
+			}
+
+			nlohmann::json serialized;
+			serialized["tokenUsage"] = usage.token_usage.available
+			    ? nlohmann::json{
+			          {"updatedAt", usage.token_usage.updated_at_ms},
+			          {"total", SerializeAcpTokenUsageBreakdown(usage.token_usage.total)},
+			          {"last", SerializeAcpTokenUsageBreakdown(usage.token_usage.last)},
+			          {"modelContextWindow", usage.token_usage.model_context_window > 0 ? nlohmann::json(usage.token_usage.model_context_window) : nlohmann::json(nullptr)},
+			      }
+			    : nlohmann::json(nullptr);
+			serialized["rateLimits"] = usage.rate_limits.available
+			    ? nlohmann::json{
+			          {"updatedAt", usage.rate_limits.updated_at_ms},
+			          {"limitId", usage.rate_limits.limit_id},
+			          {"limitName", usage.rate_limits.limit_name},
+			          {"primary", SerializeAcpRateLimitWindow(usage.rate_limits.primary)},
+			          {"secondary", SerializeAcpRateLimitWindow(usage.rate_limits.secondary)},
+			          {"credits", usage.rate_limits.credits.available
+			                          ? nlohmann::json{{"hasCredits", usage.rate_limits.credits.has_credits}, {"unlimited", usage.rate_limits.credits.unlimited}, {"balance", usage.rate_limits.credits.balance.empty() ? nlohmann::json(nullptr) : nlohmann::json(usage.rate_limits.credits.balance)}}
+			                          : nlohmann::json(nullptr)},
+			          {"individualLimit", usage.rate_limits.individual_limit.available
+			                                   ? nlohmann::json{{"limit", usage.rate_limits.individual_limit.limit}, {"used", usage.rate_limits.individual_limit.used}, {"remainingPercent", usage.rate_limits.individual_limit.remaining_percent}, {"resetsAt", usage.rate_limits.individual_limit.resets_at}}
+			                                   : nlohmann::json(nullptr)},
+			          {"spendControlReached", usage.rate_limits.spend_control_reached_available ? nlohmann::json(usage.rate_limits.spend_control_reached) : nlohmann::json(nullptr)},
+			          {"planType", usage.rate_limits.plan_type.empty() ? nlohmann::json(nullptr) : nlohmann::json(usage.rate_limits.plan_type)},
+			          {"rateLimitReachedType", usage.rate_limits.rate_limit_reached_type.empty() ? nlohmann::json(nullptr) : nlohmann::json(usage.rate_limits.rate_limit_reached_type)},
+			      }
+			    : nlohmann::json(nullptr);
+			return serialized;
+		}
+
 		nlohmann::json SerializeAcpPermissionOption(const AcpPermissionOptionState& option)
 		{
 			return {
@@ -722,6 +784,7 @@ namespace uam
 			acp_json["waitSeconds"] = 0;
 			acp_json["pendingPermission"] = nullptr;
 			acp_json["pendingUserInput"] = nullptr;
+			acp_json["providerUsage"] = nullptr;
 			return acp_json;
 		}
 
@@ -781,6 +844,7 @@ namespace uam
 			acp_json["waitSeconds"] = session->wait_started_time_s > 0.0 ? static_cast<int>(std::max(0.0, GetAppTimeSeconds() - session->wait_started_time_s)) : 0;
 			acp_json["pendingPermission"] = SerializePendingAcpPermission(session->pending_permission);
 			acp_json["pendingUserInput"] = SerializePendingAcpUserInput(session->pending_user_input);
+			acp_json["providerUsage"] = SerializeAcpProviderUsage(session->provider_usage);
 
 			return acp_json;
 		}

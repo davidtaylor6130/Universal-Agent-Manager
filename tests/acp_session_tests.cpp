@@ -450,6 +450,81 @@ UAM_TEST(CodexAppServerErrorsUseCodexRuntimeName)
 	UAM_ASSERT(raw_session->diagnostics.back().detail.find("Codex app-server stderr") != std::string::npos);
 }
 
+UAM_TEST(CodexUsageNotificationsSurviveStateSerialization)
+{
+	TempDir temp("uam-codex-provider-usage");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-codex-usage";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-codex-usage";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->codex_thread_id = "thread-codex-usage";
+	session->running = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"thread-codex-usage","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":10000,"cachedInputTokens":2000,"cacheWriteInputTokens":100,"outputTokens":2000,"reasoningOutputTokens":345,"totalTokens":12345},"last":{"inputTokens":900,"cachedInputTokens":200,"cacheWriteInputTokens":10,"outputTokens":250,"reasoningOutputTokens":84,"totalTokens":1234},"modelContextWindow":200000}}})"));
+	raw_session->pending_request_methods[16] = uam::acp_methods::kAccountRateLimitsRead;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":16,"result":{"rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42,"resetsAt":1786118400,"windowDurationMins":300},"secondary":{"usedPercent":20,"resetsAt":1786723200,"windowDurationMins":10080},"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":{"limit":"100.00","used":"75.00","remainingPercent":25,"resetsAt":1786723200},"spendControlReached":true,"planType":"pro","rateLimitReachedType":"workspace_member_usage_limit_reached"}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":43}}}})"));
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
+	UAM_ASSERT(acp.contains("providerUsage"));
+	UAM_ASSERT(acp["providerUsage"].is_object());
+	UAM_ASSERT(acp["providerUsage"]["tokenUsage"].value("updatedAt", 0LL) > 0);
+	UAM_ASSERT_EQ(acp["providerUsage"]["tokenUsage"]["total"].value("totalTokens", 0), 12345);
+	UAM_ASSERT_EQ(acp["providerUsage"]["tokenUsage"]["last"].value("totalTokens", 0), 1234);
+	UAM_ASSERT_EQ(acp["providerUsage"]["tokenUsage"].value("modelContextWindow", 0), 200000);
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"].value("limitName", ""), std::string("Codex"));
+	UAM_ASSERT(acp["providerUsage"]["rateLimits"].value("updatedAt", 0LL) > 0);
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"]["primary"].value("usedPercent", 0), 43);
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"]["primary"].value("resetsAt", 0), 1786118400);
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"]["secondary"].value("windowDurationMinutes", 0), 10080);
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"]["credits"].value("balance", ""), std::string("12.50"));
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"]["individualLimit"].value("remainingPercent", 0), 25);
+	UAM_ASSERT(acp["providerUsage"]["rateLimits"].value("spendControlReached", false));
+	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"].value("rateLimitReachedType", ""), std::string("workspace_member_usage_limit_reached"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{"rateLimits":{"limitName":null,"primary":{"usedPercent":44,"resetsAt":null,"windowDurationMins":null},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":null,"rateLimitReachedType":null}}})"));
+	const nlohmann::json cleared_notification_limits = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
+	UAM_ASSERT_EQ(cleared_notification_limits.value("limitId", ""), std::string("codex"));
+	UAM_ASSERT_EQ(cleared_notification_limits.value("limitName", ""), std::string{});
+	UAM_ASSERT_EQ(cleared_notification_limits["primary"].value("usedPercent", 0), 44);
+	UAM_ASSERT(cleared_notification_limits["primary"]["resetsAt"].is_null());
+	UAM_ASSERT(cleared_notification_limits["primary"]["windowDurationMinutes"].is_null());
+	UAM_ASSERT(cleared_notification_limits["secondary"].is_null());
+	UAM_ASSERT(cleared_notification_limits["credits"].is_null());
+	UAM_ASSERT(cleared_notification_limits["individualLimit"].is_null());
+	UAM_ASSERT(cleared_notification_limits["spendControlReached"].is_null());
+	UAM_ASSERT(cleared_notification_limits["planType"].is_null());
+	UAM_ASSERT(cleared_notification_limits["rateLimitReachedType"].is_null());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"thread-codex-usage","turnId":"turn-2","tokenUsage":{"total":{"totalTokens":12346},"last":{"totalTokens":1},"modelContextWindow":null}}})"));
+	UAM_ASSERT(uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["tokenUsage"]["modelContextWindow"].is_null());
+
+	raw_session->pending_request_methods[18] = uam::acp_methods::kAccountRateLimitsRead;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":18,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"resetsAt":null,"windowDurationMins":null},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":null,"rateLimitReachedType":null}}})"));
+	const nlohmann::json refreshed_limits = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
+	UAM_ASSERT_EQ(refreshed_limits["primary"].value("usedPercent", 0), 10);
+	UAM_ASSERT(refreshed_limits["secondary"].is_null());
+	UAM_ASSERT(refreshed_limits["credits"].is_null());
+	UAM_ASSERT(refreshed_limits["spendControlReached"].is_null());
+
+	raw_session->session_setup_request_id = 17;
+	raw_session->pending_request_methods[17] = uam::acp_methods::kThreadStart;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":17,"result":{"thread":{"id":"6a6f0f3b-1a0b-4a9c-8a01-222222222222"}}})"));
+	const nlohmann::json replaced_usage = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"];
+	UAM_ASSERT(replaced_usage["tokenUsage"].is_null());
+	UAM_ASSERT(replaced_usage["rateLimits"].is_object());
+}
+
 UAM_TEST(CodexAppServerErrorNotificationsExposeRealMessage)
 {
 	TempDir temp("uam-codex-app-server-error-notification");
@@ -1826,6 +1901,7 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	UAM_ASSERT(raw_session->initialized);
 	UAM_ASSERT_EQ(raw_session->agent_title, std::string("Codex"));
 	UAM_ASSERT_EQ(raw_session->agent_version, std::string("codex-cli/1.2.3"));
+	UAM_ASSERT(std::ranges::any_of(raw_session->pending_request_methods, [](const auto& pending) { return pending.second == uam::acp_methods::kAccountRateLimitsRead; }));
 
 	raw_session->pending_request_methods[2] = "model/list";
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":2,"result":{"currentModelId":"gpt-5.4-mini","data":[{"slug":"gpt-5.4","display_name":"gpt-5.4","description":"Latest frontier agentic coding model.","visibility":"list","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"additionalSpeedTiers":["fast"]},{"id":"gpt-5.4-mini","displayName":"GPT-5.4-Mini","description":"Smaller model","isDefault":true},{"slug":"hidden-model","display_name":"Hidden","visibility":"hidden"},{"id":"hidden","displayName":"Hidden","hidden":true},{"id":"gpt-5.4","displayName":"Duplicate","description":"Duplicate entry","visibility":"list"}]}})"));
@@ -2790,6 +2866,55 @@ UAM_TEST(AcpPermissionResolutionRejectsUnofferedOptionAndAllowsSyntheticCancel)
 	UAM_ASSERT(offered_cleared_wait);
 	UAM_ASSERT(cancelled_resolved);
 	UAM_ASSERT(cancelled_cleared_wait);
+}
+
+UAM_TEST(CopilotParallelPermissionRequestsRemainResolvableInOrder)
+{
+	TempDir temp("uam-copilot-parallel-permissions");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-copilot-parallel-permissions";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-copilot-parallel-permissions";
+	session->provider_id = uam::provider_ids::kCopilotCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolCopilotAcp;
+	session->running = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-1","title":"First tool","kind":"execute","status":"pending"},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":8,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"tool-2","title":"Second tool","kind":"execute","status":"pending"},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}})"));
+
+	const bool first_remained_active = raw_session->pending_permission.request_id_json == "7";
+	const bool first_resolved = uam::ResolveAcpPermission(app, raw_session->chat_id, "7", "allow-once", false, &error);
+	const bool second_became_active = raw_session->waiting_for_permission &&
+	                                  raw_session->pending_permission.request_id_json == "8" &&
+	                                  raw_session->lifecycle_state == "waitingPermission";
+	const bool second_resolved = uam::ResolveAcpPermission(app, raw_session->chat_id, "8", "allow-once", false, &error);
+	const bool wait_cleared = !raw_session->waiting_for_permission && raw_session->pending_permission.request_id_json.empty();
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+
+	UAM_ASSERT(first_remained_active);
+	UAM_ASSERT(first_resolved);
+	UAM_ASSERT(second_became_active);
+	UAM_ASSERT(second_resolved);
+	UAM_ASSERT(wait_cleared);
 }
 
 UAM_TEST(CommandSafetyAppliesToStandardAcpExecutePermissions)

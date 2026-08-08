@@ -153,6 +153,23 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('keeps the close action outside the chat and terminal view selector', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+
+    const selector = host.querySelector('.uam-chat-pane__view-switch') as HTMLElement
+    const close = host.querySelector('button[aria-label="Close Gemini Session"]') as HTMLButtonElement
+    expect(selector.querySelectorAll('button')).toHaveLength(2)
+    expect(selector.contains(close)).toBe(false)
+    expect(close.classList.contains('uam-segment-button')).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('quits a busy CLI when switching back to chat', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }) => {

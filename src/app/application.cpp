@@ -447,10 +447,13 @@ bool Application::InitializeState()
 	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
 	const bool running_from_mac_app_bundle = !executable_path.empty() && IsMacAppBundleExecutable(executable_path);
 
-	if (const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR"))
+	const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR");
+	if (data_root_env)
 	{
 		data_root_candidates.push_back(*data_root_env);
 	}
+
+	data_root_candidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
 
 	if (!executable_path.empty() && !running_from_mac_app_bundle)
 	{
@@ -465,7 +468,6 @@ bool Application::InitializeState()
 		}
 	}
 
-	data_root_candidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
 	data_root_candidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
 
 	std::unordered_set<std::string> tried_roots;
