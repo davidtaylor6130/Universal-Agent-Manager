@@ -106,7 +106,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& target_url, cef_window_open_disposition_t target_disposition, bool user_gesture) override;
 
 	// CefLifeSpanHandler
-	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id, const CefString& target_url, const CefString& target_frame_name, WindowOpenDisposition target_disposition, bool user_gesture, const CefPopupFeatures& popup_features, CefWindowInfo& window_info, CefRefPtr<CefClient>& client, CefBrowserSettings& settings, CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override;
+	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id, const CefString& target_url, const CefString& target_frame_name, CefLifeSpanHandler::WindowOpenDisposition target_disposition, bool user_gesture, const CefPopupFeatures& popup_features, CefWindowInfo& window_info, CefRefPtr<CefClient>& client, CefBrowserSettings& settings, CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override;
 	void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
 	bool DoClose(CefRefPtr<CefBrowser> browser) override;
 	void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
