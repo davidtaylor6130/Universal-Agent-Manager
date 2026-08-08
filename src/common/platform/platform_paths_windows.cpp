@@ -8,6 +8,26 @@ namespace uam::platform_windows_impl
 class WindowsPathService final : public IPlatformPathService
 {
   public:
+	bool EnsureHiddenDirectory(const std::filesystem::path& path, std::error_code* error_out = nullptr) const override
+	{
+		if (!uam::paths::CreateDirectoriesNoThrow(path, error_out))
+		{
+			return false;
+		}
+
+		const std::wstring wide_path = path.wstring();
+		const DWORD attributes = GetFileAttributesW(wide_path.c_str());
+		if (attributes == INVALID_FILE_ATTRIBUTES || !SetFileAttributesW(wide_path.c_str(), attributes | FILE_ATTRIBUTE_HIDDEN))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+			}
+			return false;
+		}
+		return true;
+	}
+
 	bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path&) const override
 	{
 		return true;

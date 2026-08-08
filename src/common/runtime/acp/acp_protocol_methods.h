@@ -28,6 +28,9 @@ namespace uam::acp_methods
 	inline constexpr const char* kTurnStarted = "turn/started";
 	inline constexpr const char* kTurnCompleted = "turn/completed";
 	inline constexpr const char* kTurnPlanUpdated = "turn/plan/updated";
+	inline constexpr const char* kThreadTokenUsageUpdated = "thread/tokenUsage/updated";
+	inline constexpr const char* kAccountRateLimitsRead = "account/rateLimits/read";
+	inline constexpr const char* kAccountRateLimitsUpdated = "account/rateLimits/updated";
 	inline constexpr const char* kItemStarted = "item/started";
 	inline constexpr const char* kItemCompleted = "item/completed";
 	inline constexpr const char* kItemAgentMessageDelta = "item/agentMessage/delta";
@@ -80,8 +83,6 @@ namespace uam::acp_methods
 	    "thread/status/changed",
 	    "serverRequest/resolved",
 	    "thread/name/updated",
-	    "thread/tokenUsage/updated",
-	    "account/rateLimits/updated",
 	    "configWarning",
 	    "deprecationNotice",
 	});

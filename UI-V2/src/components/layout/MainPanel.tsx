@@ -1,11 +1,11 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Columns2, Grid2X2, MessageSquare, Square, SquareTerminal } from 'lucide-react'
+import { Columns2, Grid2X2, MessageSquare, Square, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { StatusDot, Tooltip } from '../ui'
+import { IconButton, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -41,12 +41,13 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
-const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane, onActivate }: {
+const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane, onActivate, onClose }: {
   session: Session
   active: boolean
   paneIndex: number
   multiPane: boolean
   onActivate: (paneIndex: number, sessionId?: string) => void
+  onClose: (paneIndex: number, sessionId: string) => void
 }) {
   const [view, setView] = useState<'chat' | 'cli'>('chat')
   const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
@@ -159,6 +160,15 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
             </button>
           </Tooltip>
         </div>
+        <IconButton
+          icon={<X size={14} aria-hidden />}
+          label={`Close ${session.name}`}
+          tooltip="Close chat"
+          tooltipSide="bottom"
+          size="sm"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={() => onClose(paneIndex, session.id)}
+        />
 
       </div>
 
@@ -240,6 +250,7 @@ export function MainPanel() {
       if (current.sessionIds[current.activePane] === activeSessionId) return current
       const existingPane = current.sessionIds.slice(0, current.paneCount).indexOf(activeSessionId)
       if (existingPane >= 0) return { ...current, activePane: existingPane }
+      if (current.paneCount > 1) return current
       const sessionIds = [...current.sessionIds]
       sessionIds[current.activePane] = activeSessionId
       return { ...current, sessionIds }
@@ -290,10 +301,19 @@ export function MainPanel() {
     })
   }
 
+  const closePane = useCallback((index: number, sessionId: string) => {
+    setLayout((current) => {
+      const sessionIds = [...current.sessionIds]
+      sessionIds[index] = ''
+      return { ...current, sessionIds }
+    })
+    if (activeSessionId === sessionId) setActiveSession(null)
+  }, [activeSessionId, setActiveSession])
+
   const pane = (index: number) => {
     const session = visibleSessions[index]
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} />
+      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} onClose={closePane} />
       : <EmptyPane active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} />
   }
 

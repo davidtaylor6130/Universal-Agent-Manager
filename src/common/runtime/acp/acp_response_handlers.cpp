@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_codex_message_handlers.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -384,12 +385,17 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error);
 		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
+		if (method == uam::acp_methods::kAccountRateLimitsRead)
+		{
+			return;
+		}
 		if (std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 && method == uam::acp_methods::kThreadResume && has_code && code == -32600 && uam::codex::ErrorLooksLikeInvalidThreadId(error_message) && !session.codex_resume_fallback_attempted)
 		{
 			session.codex_resume_fallback_attempted = true;
 			session.session_setup_request_id = 0;
 			session.session_id.clear();
 			session.codex_thread_id.clear();
+			session.provider_usage.token_usage = AcpTokenUsageState{};
 			chat.native_session_id.clear();
 			SaveChatQuietly(app, chat);
 			AppendAcpDiagnostic(session, "response", "codex_invalid_resume_id_retry_start", method, request_id, has_code, code, "Codex rejected the stored thread id. Starting a new thread instead.", detail_text);
@@ -502,6 +508,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			(void)WriteAcpMessage(session, BuildCodexInitializedNotification());
 			const int model_list_id = NextAcpRequestId(session, uam::acp_methods::kModelList);
 			(void)WriteAcpMessage(session, BuildCodexModelListRequest(model_list_id));
+			const int rate_limits_id = NextAcpRequestId(session, uam::acp_methods::kAccountRateLimitsRead);
+			(void)WriteAcpMessage(session, BuildCodexRateLimitsReadRequest(rate_limits_id));
 			return;
 		}
 		if (result.is_object())
@@ -518,6 +526,14 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			{
 				session.load_session_supported = JsonBooleanValueOr(agent_capabilities, "loadSession", false);
 			}
+		}
+		return;
+	}
+	if (method == uam::acp_methods::kAccountRateLimitsRead)
+	{
+		if (const nlohmann::json* rate_limits = uam::nlohmann_json::FindObjectField(result, "rateLimits"))
+		{
+			MergeCodexRateLimitSnapshot(session, *rate_limits);
 		}
 		return;
 	}
@@ -570,6 +586,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	if (uam::acp_methods::IsCodexThreadSetupMethod(method))
 	{
 		session.session_setup_request_id = 0;
+		if (method == uam::acp_methods::kThreadStart)
+		{
+			session.provider_usage.token_usage = AcpTokenUsageState{};
+		}
 		std::string returned_thread_id;
 		if (result.is_object())
 		{

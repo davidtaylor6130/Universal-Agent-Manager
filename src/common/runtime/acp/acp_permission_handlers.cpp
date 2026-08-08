@@ -156,42 +156,90 @@ std::string AutoApproveOptionId(const AcpPendingPermissionState& pending)
 bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out)
 {
 	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
-	if (session.pending_permission.request_id_json.empty() || tier == uam::command_safety::Tier::Off)
+	bool approved = false;
+	while (!session.pending_permission.request_id_json.empty())
 	{
-		return false;
-	}
-	if (tier == uam::command_safety::Tier::AcceptEdits && session.pending_permission.safety_tier != "acceptEdits")
-	{
-		return false;
-	}
-	if (tier != uam::command_safety::Tier::Yolo && tier != uam::command_safety::Tier::AcceptEdits &&
-	    (session.pending_permission.safety_risk.empty() || session.pending_permission.safety_requires_approval))
-	{
-		return false;
+		if (tier == uam::command_safety::Tier::Off ||
+		    (tier == uam::command_safety::Tier::AcceptEdits && session.pending_permission.safety_tier != "acceptEdits") ||
+		    (tier != uam::command_safety::Tier::Yolo && tier != uam::command_safety::Tier::AcceptEdits &&
+		     (session.pending_permission.safety_risk.empty() || session.pending_permission.safety_requires_approval)))
+		{
+			break;
+		}
+
+		const std::string option_id = AutoApproveOptionId(session.pending_permission);
+		if (option_id.empty())
+		{
+			break;
+		}
+		if (!SendPermissionResponse(session, session.pending_permission.request_id_json, option_id, false, error_out))
+		{
+			break;
+		}
+
+		if (!session.pending_permission.tool_call_id.empty())
+		{
+			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, session.pending_permission.tool_call_id);
+			tracked_tool_call.status = uam::acp_statuses::kAutoApproved;
+		}
+		AppendAcpDiagnostic(session, "permission", uam::acp_statuses::kAutoApproved, session.pending_permission.provider_request_method, session.pending_permission.request_id_json, false, 0, "UAM yolo auto-approved a command permission request.");
+		session.pending_permission = AcpPendingPermissionState{};
+		approved = true;
+		if (!session.queued_permissions.empty())
+		{
+			session.pending_permission = std::move(session.queued_permissions.front());
+			session.queued_permissions.pop_front();
+		}
 	}
 
-	std::string option_id = AutoApproveOptionId(session.pending_permission);
-	if (option_id.empty())
+	session.waiting_for_permission = !session.pending_permission.request_id_json.empty();
+	if (session.waiting_for_permission)
 	{
-		return false;
+		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
 	}
+	else
+	{
+		ClearAcpPendingWait(session);
+		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+	}
+	return approved;
+}
 
-	if (!SendPermissionResponse(session, session.pending_permission.request_id_json, option_id, false, error_out))
+void QueueAcpPermission(AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending)
+{
+	if (!session.pending_permission.request_id_json.empty())
 	{
-		return false;
+		session.queued_permissions.push_back(std::move(pending));
+		return;
 	}
+	session.pending_permission = std::move(pending);
+	(void)TryAutoApprovePendingPermission(session, chat);
+}
 
-	if (!session.pending_permission.tool_call_id.empty())
-	{
-		AcpToolCallState& tracked_tool_call = UpsertToolCall(session, session.pending_permission.tool_call_id);
-		tracked_tool_call.status = uam::acp_statuses::kAutoApproved;
-	}
-	AppendAcpDiagnostic(session, "permission", uam::acp_statuses::kAutoApproved, session.pending_permission.provider_request_method, session.pending_permission.request_id_json, false, 0, "UAM yolo auto-approved a command permission request.");
+void AdvanceAcpPermissionQueue(AcpSessionState& session, const ChatSession& chat, std::string* error_out)
+{
 	session.pending_permission = AcpPendingPermissionState{};
-	session.waiting_for_permission = false;
-	ClearAcpPendingWait(session);
-	session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
-	return true;
+	if (!session.queued_permissions.empty())
+	{
+		session.pending_permission = std::move(session.queued_permissions.front());
+		session.queued_permissions.pop_front();
+	}
+	(void)TryAutoApprovePendingPermission(session, chat, error_out);
+}
+
+void CancelPendingAcpPermissions(AcpSessionState& session, std::string* error_out)
+{
+	while (!session.pending_permission.request_id_json.empty())
+	{
+		(void)SendPermissionResponse(session, session.pending_permission.request_id_json, "", true, error_out);
+		session.pending_permission = AcpPendingPermissionState{};
+		if (!session.queued_permissions.empty())
+		{
+			session.pending_permission = std::move(session.queued_permissions.front());
+			session.queued_permissions.pop_front();
+		}
+	}
+	session.queued_permissions.clear();
 }
 
 void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message)
@@ -318,13 +366,7 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 
 	ApplyCommandSafetyDecision(app, chat, pending);
-	session.pending_permission = std::move(pending);
-	if (TryAutoApprovePendingPermission(session, chat))
-	{
-		return;
-	}
-	session.waiting_for_permission = true;
-	BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
+	QueueAcpPermission(session, chat, std::move(pending));
 }
 
 } // namespace uam::acp_detail

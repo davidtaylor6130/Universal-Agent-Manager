@@ -229,18 +229,20 @@ namespace uam::codex
 		const std::unordered_set<std::string> before(ids_before.begin(), ids_before.end());
 		std::vector<SessionIndexEntry> entries = ReadSessionIndex(codex_home);
 		SortSessionIndexOldestToNewest(entries);
+		std::string discovered_id;
 
-		for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+		for (const SessionIndexEntry& entry : entries)
 		{
-			if (before.contains(it->id))
+			if (before.contains(entry.id) || !RolloutCwdMatches(entry.id, cwd, codex_home))
 			{
 				continue;
 			}
-			if (RolloutCwdMatches(it->id, cwd, codex_home))
+			if (!discovered_id.empty())
 			{
-				return it->id;
+				return "";
 			}
+			discovered_id = entry.id;
 		}
-		return "";
+		return discovered_id;
 	}
 } // namespace uam::codex

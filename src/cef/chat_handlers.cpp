@@ -40,6 +40,19 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	if (chat_id.empty())
+	{
+		ChatDomainService().SelectChatById(m_app, "");
+		if (!PersistenceCoordinator().SaveSettings(m_app))
+		{
+			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
+			cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to clear selected chat."));
+			return;
+		}
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
 	ChatSession* target_chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Selected chat no longer exists.");
 	if (target_chat == nullptr)
 	{

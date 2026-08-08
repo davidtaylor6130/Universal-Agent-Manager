@@ -7,6 +7,56 @@
 #include <functional>
 #include <memory>
 
+namespace uam::cef
+{
+	inline int EditCommandForKeyEvent(const CefKeyEvent& event)
+	{
+		if (event.type != KEYEVENT_RAWKEYDOWN ||
+		    (!(event.modifiers & EVENTFLAG_CONTROL_DOWN) &&
+		     !(event.modifiers & EVENTFLAG_COMMAND_DOWN)) ||
+		    (event.modifiers & EVENTFLAG_ALT_DOWN))
+		{
+			return 0;
+		}
+
+		switch (event.windows_key_code)
+		{
+		case 'A':
+			return MENU_ID_SELECT_ALL;
+		case 'C':
+			return MENU_ID_COPY;
+		case 'V':
+			return MENU_ID_PASTE;
+		case 'X':
+			return MENU_ID_CUT;
+		default:
+			return 0;
+		}
+	}
+
+	template <typename EditTarget>
+	inline bool DispatchEditCommandForKeyEvent(const CefKeyEvent& event, EditTarget& target)
+	{
+		switch (EditCommandForKeyEvent(event))
+		{
+		case MENU_ID_SELECT_ALL:
+			target.SelectAll();
+			return true;
+		case MENU_ID_COPY:
+			target.Copy();
+			return true;
+		case MENU_ID_PASTE:
+			target.Paste();
+			return true;
+		case MENU_ID_CUT:
+			target.Cut();
+			return true;
+		default:
+			return false;
+		}
+	}
+}
+
 /// <summary>
 /// Callback type used by Application to receive the browser reference
 /// once CEF creates it (for pushing state updates back to JS).
@@ -56,6 +106,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& target_url, cef_window_open_disposition_t target_disposition, bool user_gesture) override;
 
 	// CefLifeSpanHandler
+	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id, const CefString& target_url, const CefString& target_frame_name, CefLifeSpanHandler::WindowOpenDisposition target_disposition, bool user_gesture, const CefPopupFeatures& popup_features, CefWindowInfo& window_info, CefRefPtr<CefClient>& client, CefBrowserSettings& settings, CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override;
 	void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
 	bool DoClose(CefRefPtr<CefBrowser> browser) override;
 	void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
@@ -71,7 +122,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model) override;
 	bool OnContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefContextMenuParams> params, int command_id, EventFlags event_flags) override;
 
-	// CefKeyboardHandler — block DevTools shortcuts and bridge paste shortcuts
+	// CefKeyboardHandler — block DevTools shortcuts and bridge standard edit shortcuts
 	bool OnKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent& event, CefEventHandle os_event) override;
 
 	/// Returns the live browser (null until OnAfterCreated).

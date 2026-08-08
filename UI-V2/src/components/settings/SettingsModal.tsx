@@ -8,6 +8,8 @@ import {
   type CliVersionProviderState,
   type EditorFileAssociation,
   type MemoryWorkerBinding,
+  type AcpBinding,
+  type AcpProviderUsage,
   type ProviderChatDefaults,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
@@ -22,6 +24,7 @@ import {
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
+import type { Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
@@ -43,6 +46,76 @@ interface MemoryModelOption {
 
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
+}
+
+function latestProviderSession(sessions: Session[], providerId: string) {
+  return sessions.reduce<Session | undefined>((latest, session) => {
+    if (session.providerId !== providerId) return latest
+    if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
+    return latest
+  }, undefined)
+}
+
+function latestProviderUsage(sessions: Session[], providerId: string, bindings: Record<string, AcpBinding>): AcpProviderUsage | null {
+  let tokenUsage: AcpProviderUsage['tokenUsage'] = null
+  let rateLimits: AcpProviderUsage['rateLimits'] = null
+  for (const session of sessions) {
+    if (session.providerId !== providerId) continue
+    const usage = bindings[session.id]?.providerUsage
+    if (usage?.tokenUsage && (!tokenUsage || usage.tokenUsage.updatedAt > tokenUsage.updatedAt)) tokenUsage = usage.tokenUsage
+    if (usage?.rateLimits && (!rateLimits || usage.rateLimits.updatedAt > rateLimits.updatedAt)) rateLimits = usage.rateLimits
+  }
+  return tokenUsage || rateLimits ? { tokenUsage, rateLimits } : null
+}
+
+function ProviderUsageSummary({ providerName, usage }: { providerName: string; usage?: AcpProviderUsage | null }) {
+  const tokenUsage = usage?.tokenUsage
+  const rateLimits = usage?.rateLimits
+  const formatNumber = (value: number) => value.toLocaleString()
+  const rateLimitLine = (label: string, window: NonNullable<AcpProviderUsage['rateLimits']>['primary']) => {
+    if (!window) return null
+    const duration = window.windowDurationMinutes ? ` · ${formatNumber(window.windowDurationMinutes)}-minute window` : ''
+    const reset = window.resetsAt ? ` · resets ${new Date(window.resetsAt * 1000).toLocaleString()}` : ''
+    return <div>{label}: {window.usedPercent}% used · {100 - window.usedPercent}% window remaining{duration}{reset}</div>
+  }
+
+  return (
+    <div
+      role="region"
+      aria-label={`${providerName} provider usage`}
+      className="grid gap-1 rounded-md border px-3 py-2"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+    >
+      <div className="font-medium" style={{ color: 'var(--text)' }}>Provider usage</div>
+      {!tokenUsage && !rateLimits ? (
+        <div style={{ color: 'var(--text-3)' }}>Not reported by provider</div>
+      ) : (
+        <>
+          {tokenUsage && (
+            <>
+              <div>Thread tokens: {formatNumber(tokenUsage.total.totalTokens)} total · {formatNumber(tokenUsage.last.totalTokens)} last turn</div>
+              {tokenUsage.modelContextWindow && <div>Model context: {formatNumber(tokenUsage.modelContextWindow)} tokens</div>}
+            </>
+          )}
+          {rateLimits && (
+            <>
+              <div className="font-medium" style={{ color: 'var(--text)' }}>
+                Account limits{rateLimits.limitName ? ` · ${rateLimits.limitName}` : ''}{rateLimits.planType ? ` · ${rateLimits.planType}` : ''}
+              </div>
+              {rateLimits.rateLimitReachedType && <div style={{ color: 'var(--error)' }}>Limit reached: {rateLimits.rateLimitReachedType.replace(/_/g, ' ')}</div>}
+              {rateLimits.spendControlReached && <div style={{ color: 'var(--error)' }}>Spend control reached</div>}
+              {rateLimits.credits && <div>Credits: {rateLimits.credits.unlimited ? 'Unlimited' : rateLimits.credits.hasCredits ? (rateLimits.credits.balance ? `${rateLimits.credits.balance} available` : 'Available') : 'None available'}</div>}
+              {rateLimits.individualLimit && (
+                <div>Individual limit: {rateLimits.individualLimit.used} of {rateLimits.individualLimit.limit} used · {rateLimits.individualLimit.remainingPercent}% remaining{rateLimits.individualLimit.resetsAt ? ` · resets ${new Date(rateLimits.individualLimit.resetsAt * 1000).toLocaleString()}` : ''}</div>
+              )}
+              {rateLimitLine('Primary limit', rateLimits.primary)}
+              {rateLimitLine('Secondary limit', rateLimits.secondary)}
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
@@ -887,8 +960,9 @@ export function SettingsModal() {
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
-                  const providerSession = sessions.find((session) => session.providerId === provider.id)
+                  const providerSession = latestProviderSession(sessions, provider.id)
                   const providerAcp = providerSession ? acpBindings[providerSession.id] : undefined
+                  const providerUsage = latestProviderUsage(sessions, provider.id, acpBindings)
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
@@ -917,6 +991,7 @@ export function SettingsModal() {
                       onToggle={() => toggleDefaultProvider(provider.id)}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                        <ProviderUsageSummary providerName={providerName} usage={providerUsage} />
                         <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
                             <div>Model</div>

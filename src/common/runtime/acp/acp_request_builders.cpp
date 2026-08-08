@@ -50,6 +50,15 @@ nlohmann::json BuildCodexModelListRequest(int request_id)
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kModelList, nlohmann::json::object());
 }
 
+nlohmann::json BuildCodexRateLimitsReadRequest(int request_id)
+{
+	return {
+	    {"jsonrpc", uam::acp_json_rpc::kVersion},
+	    {"id", request_id},
+	    {"method", uam::acp_methods::kAccountRateLimitsRead},
+	};
+}
+
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd)
 {
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionNew,

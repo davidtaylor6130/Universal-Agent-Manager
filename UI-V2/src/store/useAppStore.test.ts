@@ -22,7 +22,7 @@ function ensureTestWindow(): TestWindow {
 
 function makeCppState(
   revision: number,
-  selectedChatId = 'chat-1',
+  selectedChatId: string | null = 'chat-1',
   terminal: Partial<NonNullable<CppAppState['chats'][number]['cliTerminal']>> = {}
 ): CppAppState {
   return {
@@ -183,6 +183,34 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(useAppStore.getState().isMarkdownStoreOpen).toBe(false)
     expect(useAppStore.getState().markdownStoreEntries).toEqual(entries)
+  })
+
+  it('clears the selected chat locally and through CEF', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', name: 'Chat 1', viewMode: 'chat', folderId: 'default', createdAt: new Date(), updatedAt: new Date() }],
+      activeSessionId: 'chat-1',
+    })
+
+    useAppStore.getState().setActiveSession(null)
+    expect(useAppStore.getState().activeSessionId).toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ action: 'selectSession', payload: { chatId: '' } })
+  })
+
+  it('preserves an explicit empty selection from native state and patches', () => {
+    useAppStore.getState().loadFromCef(makeCppState(1, null))
+    expect(useAppStore.getState().activeSessionId).toBeNull()
+
+    const testWindow = ensureTestWindow()
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, selectedChatId: null } })
+    expect(useAppStore.getState().activeSessionId).toBeNull()
   })
 
   it('distinguishes a failed Skills directory browse from cancellation', async () => {

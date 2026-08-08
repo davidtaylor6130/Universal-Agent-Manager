@@ -124,6 +124,9 @@ bool IsRejectPermissionOption(const std::string& id, const std::string& name, co
 bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
 bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+void QueueAcpPermission(AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending);
+void AdvanceAcpPermissionQueue(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+void CancelPendingAcpPermissions(AcpSessionState& session, std::string* error_out = nullptr);
 void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message);
 nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
 bool SendCodexUserInputResponse(AcpSessionState& session, const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers, std::string* error_out = nullptr);
@@ -211,6 +214,7 @@ nlohmann::json BuildInitializeRequest(int request_id);
 nlohmann::json BuildCodexInitializeRequest(int request_id);
 nlohmann::json BuildCodexInitializedNotification();
 nlohmann::json BuildCodexModelListRequest(int request_id);
+nlohmann::json BuildCodexRateLimitsReadRequest(int request_id);
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd);
 nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
 nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd);

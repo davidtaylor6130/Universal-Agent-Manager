@@ -267,6 +267,59 @@ export interface AcpDiagnosticEntry {
   lifecycleState: string
 }
 
+export interface AcpTokenUsageBreakdown {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheWriteInputTokens: number
+  outputTokens: number
+  reasoningOutputTokens: number
+  totalTokens: number
+}
+
+export interface AcpTokenUsage {
+  updatedAt: number
+  total: AcpTokenUsageBreakdown
+  last: AcpTokenUsageBreakdown
+  modelContextWindow: number | null
+}
+
+export interface AcpRateLimitWindow {
+  usedPercent: number
+  resetsAt: number | null
+  windowDurationMinutes: number | null
+}
+
+export interface AcpCredits {
+  hasCredits: boolean
+  unlimited: boolean
+  balance: string | null
+}
+
+export interface AcpSpendControlLimit {
+  limit: string
+  used: string
+  remainingPercent: number
+  resetsAt: number
+}
+
+export interface AcpRateLimits {
+  updatedAt: number
+  limitId: string
+  limitName: string
+  primary: AcpRateLimitWindow | null
+  secondary: AcpRateLimitWindow | null
+  credits: AcpCredits | null
+  individualLimit: AcpSpendControlLimit | null
+  spendControlReached: boolean | null
+  planType: string
+  rateLimitReachedType: string
+}
+
+export interface AcpProviderUsage {
+  tokenUsage: AcpTokenUsage | null
+  rateLimits: AcpRateLimits | null
+}
+
 export interface CppAcpSession {
   sessionId?: string
   providerId?: string
@@ -302,6 +355,7 @@ export interface CppAcpSession {
   waitSeconds?: number
   pendingPermission?: AcpPendingPermission | null
   pendingUserInput?: AcpPendingUserInput | null
+  providerUsage?: AcpProviderUsage | null
 }
 
 export interface CppCliDebugTerminal {
@@ -475,6 +529,7 @@ export interface VcsChangedFile {
   additions: number
   deletions: number
   binary: boolean
+  contentFingerprint?: string
 }
 
 export interface VcsCommitStatus {
@@ -603,6 +658,7 @@ export interface AcpBinding {
   pendingPermission: AcpPendingPermission | null
   pendingUserInput: AcpPendingUserInput | null
   agentInfo: AcpAgentInfo | null
+  providerUsage?: AcpProviderUsage | null
 }
 
 export interface CliTranscript {

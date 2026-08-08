@@ -10,6 +10,11 @@ namespace uam::platform_macos_impl
 class MacPathService final : public IPlatformPathService
 {
   public:
+	bool EnsureHiddenDirectory(const std::filesystem::path& path, std::error_code* error_out = nullptr) const override
+	{
+		return uam::paths::CreateDirectoriesNoThrow(path, error_out);
+	}
+
 	bool CanProbeDirectoryWithoutPrompt(const std::filesystem::path& path) const override
 	{
 		const std::optional<std::filesystem::path> home = ResolveUserHomePath();

@@ -23,6 +23,7 @@ namespace uam
 		int additions = 0;
 		int deletions = 0;
 		bool binary = false;
+		std::string content_fingerprint;
 	};
 
 	struct VcsCommitStatus

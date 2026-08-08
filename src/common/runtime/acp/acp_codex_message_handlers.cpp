@@ -10,7 +10,11 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,6 +107,240 @@ int JsonIntValueOr(const nlohmann::json& object, const char* key, int fallback)
 		return fallback;
 	}
 	return uam::nlohmann_json::IntFieldStrict(object, key).value_or(fallback);
+}
+
+std::optional<std::int64_t> JsonNonNegativeInt64Field(const nlohmann::json& object, const char* key)
+{
+	const nlohmann::json* value = uam::nlohmann_json::FindField(object, key);
+	if (value == nullptr)
+	{
+		return std::nullopt;
+	}
+	if (value->is_number_unsigned())
+	{
+		const std::uint64_t parsed = value->get<std::uint64_t>();
+		if (parsed <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+		{
+			return static_cast<std::int64_t>(parsed);
+		}
+		return std::nullopt;
+	}
+	if (value->is_number_integer())
+	{
+		const std::int64_t parsed = value->get<std::int64_t>();
+		return parsed >= 0 ? std::optional<std::int64_t>{parsed} : std::nullopt;
+	}
+	return std::nullopt;
+}
+
+bool ParseCodexTokenUsageBreakdown(const nlohmann::json& object, AcpTokenUsageBreakdownState& parsed)
+{
+	const std::optional<std::int64_t> total_tokens = JsonNonNegativeInt64Field(object, "totalTokens");
+	if (!object.is_object() || !total_tokens)
+	{
+		return false;
+	}
+
+	AcpTokenUsageBreakdownState next;
+	next.input_tokens = JsonNonNegativeInt64Field(object, "inputTokens").value_or(0);
+	next.cached_input_tokens = JsonNonNegativeInt64Field(object, "cachedInputTokens").value_or(0);
+	next.cache_write_input_tokens = JsonNonNegativeInt64Field(object, "cacheWriteInputTokens").value_or(0);
+	next.output_tokens = JsonNonNegativeInt64Field(object, "outputTokens").value_or(0);
+	next.reasoning_output_tokens = JsonNonNegativeInt64Field(object, "reasoningOutputTokens").value_or(0);
+	next.total_tokens = *total_tokens;
+	parsed = next;
+	return true;
+}
+
+void HandleCodexTokenUsageUpdated(AcpSessionState& session, const nlohmann::json& params)
+{
+	const std::string thread_id = JsonDiagnosticStringValue(params, "threadId");
+	if (!session.codex_thread_id.empty() && !thread_id.empty() && thread_id != session.codex_thread_id)
+	{
+		return;
+	}
+
+	const nlohmann::json* token_usage = uam::nlohmann_json::FindObjectField(params, "tokenUsage");
+	if (token_usage == nullptr)
+	{
+		return;
+	}
+	const nlohmann::json* total = uam::nlohmann_json::FindObjectField(*token_usage, "total");
+	const nlohmann::json* last = uam::nlohmann_json::FindObjectField(*token_usage, "last");
+	AcpTokenUsageBreakdownState parsed_total;
+	AcpTokenUsageBreakdownState parsed_last;
+	if (total == nullptr || last == nullptr ||
+	    !ParseCodexTokenUsageBreakdown(*total, parsed_total) ||
+	    !ParseCodexTokenUsageBreakdown(*last, parsed_last))
+	{
+		return;
+	}
+
+	session.provider_usage.token_usage.available = true;
+	session.provider_usage.token_usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	session.provider_usage.token_usage.total = parsed_total;
+	session.provider_usage.token_usage.last = parsed_last;
+	session.provider_usage.token_usage.model_context_window = JsonNonNegativeInt64Field(*token_usage, "modelContextWindow").value_or(0);
+}
+
+void MergeCodexRateLimitWindow(AcpRateLimitWindowState& window, const nlohmann::json* update)
+{
+	if (update == nullptr)
+	{
+		return;
+	}
+	const std::optional<int> used_percent = uam::nlohmann_json::IntFieldStrict(*update, "usedPercent");
+	if (!used_percent || *used_percent < 0 || *used_percent > 100)
+	{
+		return;
+	}
+
+	window.available = true;
+	window.used_percent = *used_percent;
+	if (const nlohmann::json* resets_at = uam::nlohmann_json::FindField(*update, "resetsAt"))
+	{
+		if (resets_at->is_null())
+		{
+			window.resets_at = 0;
+		}
+		else if (const std::optional<std::int64_t> parsed = JsonNonNegativeInt64Field(*update, "resetsAt"))
+		{
+			window.resets_at = *parsed;
+		}
+	}
+	if (const nlohmann::json* duration = uam::nlohmann_json::FindField(*update, "windowDurationMins"))
+	{
+		if (duration->is_null())
+		{
+			window.window_duration_minutes = 0;
+		}
+		else if (const std::optional<std::int64_t> parsed = JsonNonNegativeInt64Field(*update, "windowDurationMins"))
+		{
+			window.window_duration_minutes = *parsed;
+		}
+	}
+}
+
+void MergeCodexCredits(AcpCreditsState& credits, const nlohmann::json* update)
+{
+	if (update == nullptr)
+	{
+		return;
+	}
+	const std::optional<bool> has_credits = uam::nlohmann_json::BoolFieldStrict(*update, "hasCredits");
+	const std::optional<bool> unlimited = uam::nlohmann_json::BoolFieldStrict(*update, "unlimited");
+	if (!has_credits || !unlimited)
+	{
+		return;
+	}
+
+	credits.available = true;
+	credits.has_credits = *has_credits;
+	credits.unlimited = *unlimited;
+	if (const nlohmann::json* balance = uam::nlohmann_json::FindField(*update, "balance"))
+	{
+		if (balance->is_null())
+		{
+			credits.balance.clear();
+		}
+		else if (balance->is_string())
+		{
+			credits.balance = uam::nlohmann_json::TrimmedStringValue(*update, {"balance"});
+		}
+	}
+}
+
+void MergeCodexSpendControlLimit(AcpSpendControlLimitState& limit, const nlohmann::json* update)
+{
+	if (update == nullptr)
+	{
+		return;
+	}
+	const std::string configured_limit = uam::nlohmann_json::TrimmedStringValue(*update, {"limit"});
+	const std::string used = uam::nlohmann_json::TrimmedStringValue(*update, {"used"});
+	const std::optional<int> remaining_percent = uam::nlohmann_json::IntFieldStrict(*update, "remainingPercent");
+	const std::optional<std::int64_t> resets_at = JsonNonNegativeInt64Field(*update, "resetsAt");
+	if (configured_limit.empty() || used.empty() || !remaining_percent || *remaining_percent < 0 || *remaining_percent > 100 || !resets_at)
+	{
+		return;
+	}
+
+	limit.available = true;
+	limit.limit = configured_limit;
+	limit.used = used;
+	limit.remaining_percent = *remaining_percent;
+	limit.resets_at = *resets_at;
+}
+
+void MergeCodexNullableString(std::string& target, const nlohmann::json& update, const char* key)
+{
+	const nlohmann::json* value = uam::nlohmann_json::FindField(update, key);
+	if (value == nullptr)
+	{
+		return;
+	}
+	if (value->is_null())
+	{
+		target.clear();
+	}
+	else if (value->is_string())
+	{
+		target = uam::nlohmann_json::TrimmedStringValue(update, {key});
+	}
+}
+
+template <typename State>
+void MergeCodexNullableObject(State& target, const nlohmann::json& update, const char* key, void (*merge)(State&, const nlohmann::json*))
+{
+	const nlohmann::json* value = uam::nlohmann_json::FindField(update, key);
+	if (value == nullptr)
+	{
+		return;
+	}
+	if (value->is_null())
+	{
+		target = State{};
+	}
+	else if (value->is_object())
+	{
+		merge(target, value);
+	}
+}
+
+void MergeCodexRateLimitSnapshotImpl(AcpSessionState& session, const nlohmann::json& update)
+{
+	AcpRateLimitsState& rate_limits = session.provider_usage.rate_limits;
+	MergeCodexNullableString(rate_limits.limit_id, update, "limitId");
+	MergeCodexNullableString(rate_limits.limit_name, update, "limitName");
+	MergeCodexNullableObject(rate_limits.primary, update, "primary", MergeCodexRateLimitWindow);
+	MergeCodexNullableObject(rate_limits.secondary, update, "secondary", MergeCodexRateLimitWindow);
+	MergeCodexNullableObject(rate_limits.credits, update, "credits", MergeCodexCredits);
+	MergeCodexNullableObject(rate_limits.individual_limit, update, "individualLimit", MergeCodexSpendControlLimit);
+	if (const nlohmann::json* reached = uam::nlohmann_json::FindField(update, "spendControlReached"))
+	{
+		if (reached->is_null())
+		{
+			rate_limits.spend_control_reached_available = false;
+			rate_limits.spend_control_reached = false;
+		}
+		else if (reached->is_boolean())
+		{
+			rate_limits.spend_control_reached_available = true;
+			rate_limits.spend_control_reached = reached->get<bool>();
+		}
+	}
+	MergeCodexNullableString(rate_limits.plan_type, update, "planType");
+	MergeCodexNullableString(rate_limits.rate_limit_reached_type, update, "rateLimitReachedType");
+	rate_limits.available = !rate_limits.limit_id.empty() || !rate_limits.limit_name.empty() || rate_limits.primary.available || rate_limits.secondary.available || rate_limits.credits.available || rate_limits.individual_limit.available || rate_limits.spend_control_reached_available || !rate_limits.plan_type.empty() || !rate_limits.rate_limit_reached_type.empty();
+	rate_limits.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+}
+
+void HandleCodexRateLimitsUpdated(AcpSessionState& session, const nlohmann::json& params)
+{
+	if (const nlohmann::json* update = uam::nlohmann_json::FindObjectField(params, "rateLimits"))
+	{
+		MergeCodexRateLimitSnapshotImpl(session, *update);
+	}
 }
 
 bool CodexReasoningWasStreamed(const AcpSessionState& session, const std::string& item_id, const std::string& section, int index)
@@ -401,13 +639,7 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 	}
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 	ApplyCommandSafetyDecision(app, chat, pending);
-	session.pending_permission = std::move(pending);
-	if (TryAutoApprovePendingPermission(session, chat))
-	{
-		return;
-	}
-	session.waiting_for_permission = true;
-	BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
+	QueueAcpPermission(session, chat, std::move(pending));
 }
 
 std::string CodexUserInputContent(const AcpPendingUserInputState& pending)
@@ -502,6 +734,15 @@ void HandleCodexUserInputRequest(AcpSessionState& session, const nlohmann::json&
 }
 
 } // anonymous namespace
+
+void MergeCodexRateLimitSnapshot(AcpSessionState& session, const nlohmann::json& snapshot)
+{
+	if (snapshot.is_object())
+	{
+		session.provider_usage.rate_limits = AcpRateLimitsState{};
+		MergeCodexRateLimitSnapshotImpl(session, snapshot);
+	}
+}
 
 void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
@@ -742,6 +983,16 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		FailAcpTurnOrSession(session, FormatAcpFailureMessage(session, failure));
 		SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
+		return;
+	}
+	if (method == uam::acp_methods::kThreadTokenUsageUpdated)
+	{
+		HandleCodexTokenUsageUpdated(session, params);
+		return;
+	}
+	if (method == uam::acp_methods::kAccountRateLimitsUpdated)
+	{
+		HandleCodexRateLimitsUpdated(session, params);
 		return;
 	}
 	if (uam::acp_methods::IsIgnoredCodexAppServerMethod(method))

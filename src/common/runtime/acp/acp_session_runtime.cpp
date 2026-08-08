@@ -914,10 +914,9 @@ namespace uam
 				acp_detail::SaveChatQuietly(app, *chat);
 			}
 		}
-		const std::string pending_permission_request_id = session->pending_permission.request_id_json;
-		if (session->running && !pending_permission_request_id.empty())
+		if (session->running)
 		{
-			(void)acp_detail::SendPermissionResponse(*session, pending_permission_request_id, "", true, error_out);
+			acp_detail::CancelPendingAcpPermissions(*session, error_out);
 		}
 		const std::string pending_user_input_request_id = session->pending_user_input.request_id_json;
 		if (session->running && !pending_user_input_request_id.empty())
@@ -1296,12 +1295,23 @@ namespace uam
 			return false;
 		}
 
-		session->pending_permission = AcpPendingPermissionState{};
-		session->waiting_for_permission = false;
-		ClearAcpPendingWait(*session);
+		if (ChatSession* chat = ChatDomainService().FindChatById(app, chat_id); chat != nullptr)
+		{
+			AdvanceAcpPermissionQueue(*session, *chat, error_out);
+		}
+		else
+		{
+			session->pending_permission = AcpPendingPermissionState{};
+			session->queued_permissions.clear();
+			session->waiting_for_permission = false;
+			ClearAcpPendingWait(*session);
+		}
 		session->cancel_requested = false;
 		session->cancel_requested_time_s = 0.0;
-		session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		if (!session->waiting_for_permission)
+		{
+			session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		}
 		return true;
 	}
 

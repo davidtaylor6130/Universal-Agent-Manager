@@ -22,7 +22,20 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </div>
           <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{checkedLabel}</div>
         </div>
-        <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            leadingIcon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} aria-hidden />}
+            aria-label={monitor.checking ? 'Checking for updates' : 'Check for updates'}
+            aria-busy={monitor.checking}
+            disabled={monitor.checking}
+            onClick={() => { void monitor.checkNow() }}
+          >
+            {monitor.checking ? 'Checking…' : 'Check again'}
+          </Button>
+          <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-4">
@@ -154,20 +167,11 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
         )}
       </div>
 
-      <footer className="flex items-center justify-between gap-2 p-3" style={{ borderTop: '1px solid var(--border)' }}>
-        <Button
-          size="sm"
-          variant="ghost"
-          leadingIcon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} aria-hidden />}
-          aria-label={monitor.checking ? 'Checking for updates' : 'Check for updates'}
-          aria-busy={monitor.checking}
-          disabled={monitor.checking}
-          onClick={() => { void monitor.checkNow() }}
-        >
-          {monitor.checking ? 'Checking…' : 'Check again'}
-        </Button>
-        {monitor.updates.length > 0 && <IconButton size="sm" icon={<X size={14} />} label="Dismiss all updates" onClick={monitor.dismissAll} />}
-      </footer>
+      {monitor.updates.length > 0 && (
+        <footer className="flex items-center justify-end p-3" style={{ borderTop: '1px solid var(--border)' }}>
+          <IconButton size="sm" icon={<X size={14} />} label="Dismiss all updates" onClick={monitor.dismissAll} />
+        </footer>
+      )}
     </aside>
   )
 }

@@ -12,6 +12,7 @@ import type {
   AcpPendingUserInput,
   AcpPermissionOption,
   AcpPlanEntry,
+  AcpProviderUsage,
   AcpQueuedPrompt,
   AcpToolCall,
   AcpTurnEvent,
@@ -546,6 +547,90 @@ export function sanitizeAcpModel(value: unknown): AcpModel | null {
   }
 }
 
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function sanitizeTokenUsageBreakdown(value: unknown) {
+  if (!isRecord(value)) return null
+  const totalTokens = nonNegativeInteger(value.totalTokens)
+  if (totalTokens === null) return null
+  return {
+    inputTokens: nonNegativeInteger(value.inputTokens) ?? 0,
+    cachedInputTokens: nonNegativeInteger(value.cachedInputTokens) ?? 0,
+    cacheWriteInputTokens: nonNegativeInteger(value.cacheWriteInputTokens) ?? 0,
+    outputTokens: nonNegativeInteger(value.outputTokens) ?? 0,
+    reasoningOutputTokens: nonNegativeInteger(value.reasoningOutputTokens) ?? 0,
+    totalTokens,
+  }
+}
+
+function sanitizeRateLimitWindow(value: unknown) {
+  if (!isRecord(value)) return null
+  const usedPercent = nonNegativeInteger(value.usedPercent)
+  if (usedPercent === null || usedPercent > 100) return null
+  return {
+    usedPercent,
+    resetsAt: nonNegativeInteger(value.resetsAt),
+    windowDurationMinutes: nonNegativeInteger(value.windowDurationMinutes),
+  }
+}
+
+function sanitizeCredits(value: unknown) {
+  if (!isRecord(value) || typeof value.hasCredits !== 'boolean' || typeof value.unlimited !== 'boolean') return null
+  return {
+    hasCredits: value.hasCredits,
+    unlimited: value.unlimited,
+    balance: typeof value.balance === 'string' ? value.balance : null,
+  }
+}
+
+function sanitizeSpendControlLimit(value: unknown) {
+  if (!isRecord(value)) return null
+  const remainingPercent = nonNegativeInteger(value.remainingPercent)
+  const resetsAt = nonNegativeInteger(value.resetsAt)
+  if (typeof value.limit !== 'string' || typeof value.used !== 'string' || remainingPercent === null || remainingPercent > 100 || resetsAt === null) return null
+  return { limit: value.limit, used: value.used, remainingPercent, resetsAt }
+}
+
+function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
+  if (!isRecord(value)) return null
+
+  let tokenUsage = null
+  if (isRecord(value.tokenUsage)) {
+    const updatedAt = nonNegativeInteger(value.tokenUsage.updatedAt)
+    const total = sanitizeTokenUsageBreakdown(value.tokenUsage.total)
+    const last = sanitizeTokenUsageBreakdown(value.tokenUsage.last)
+    if (updatedAt !== null && total && last) {
+      tokenUsage = {
+        updatedAt,
+        total,
+        last,
+        modelContextWindow: nonNegativeInteger(value.tokenUsage.modelContextWindow),
+      }
+    }
+  }
+
+  let rateLimits = null
+  if (isRecord(value.rateLimits)) {
+    const updatedAt = nonNegativeInteger(value.rateLimits.updatedAt)
+    const limitId = stringOr(value.rateLimits.limitId)
+    const limitName = stringOr(value.rateLimits.limitName)
+    const primary = sanitizeRateLimitWindow(value.rateLimits.primary)
+    const secondary = sanitizeRateLimitWindow(value.rateLimits.secondary)
+    const credits = sanitizeCredits(value.rateLimits.credits)
+    const individualLimit = sanitizeSpendControlLimit(value.rateLimits.individualLimit)
+    const spendControlReached = typeof value.rateLimits.spendControlReached === 'boolean' ? value.rateLimits.spendControlReached : null
+    const planType = stringOr(value.rateLimits.planType)
+    const rateLimitReachedType = stringOr(value.rateLimits.rateLimitReachedType)
+    if (updatedAt !== null && (limitId || limitName || primary || secondary || credits || individualLimit || spendControlReached !== null || planType || rateLimitReachedType)) {
+      rateLimits = { updatedAt, limitId, limitName, primary, secondary, credits, individualLimit, spendControlReached, planType, rateLimitReachedType }
+    }
+  }
+
+  return tokenUsage || rateLimits ? { tokenUsage, rateLimits } : null
+}
+
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
 
@@ -624,6 +709,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     waitSeconds: finiteNumberOr(value.waitSeconds, 0),
     pendingPermission: sanitizePendingPermission(value.pendingPermission),
     pendingUserInput: sanitizePendingUserInput(value.pendingUserInput),
+    providerUsage: sanitizeProviderUsage(value.providerUsage),
   }
 }
 
@@ -854,6 +940,7 @@ export function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null 
                 additions: finiteNumberOr(file.additions, 0),
                 deletions: finiteNumberOr(file.deletions, 0),
                 binary: booleanOr(file.binary),
+                contentFingerprint: stringOr(file.contentFingerprint),
               }]
             : []
         })

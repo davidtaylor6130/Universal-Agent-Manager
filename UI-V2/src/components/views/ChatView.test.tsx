@@ -136,7 +136,175 @@ describe('ChatView', () => {
         },
       },
       cliBindingBySessionId: {},
+      getVcsCommitStatus: vi.fn(() => Promise.resolve(null)),
     })
+  })
+
+  it('summarizes only repository changes made after the current chat starts', async () => {
+    const baseline = {
+      available: true,
+      vcsTypes: ['git' as const],
+      activeVcsType: 'git' as const,
+      workspaceDirectory: '/tmp/project',
+      branchOrRevision: 'main',
+      changedFiles: [
+        { path: 'pre-existing.ts', status: ' M', staged: false, additions: 20, deletions: 4, binary: false, contentFingerprint: 'pre-existing' },
+        { path: 'src/app.ts', status: ' M', staged: false, additions: 5, deletions: 1, binary: false, contentFingerprint: 'app-before' },
+        { path: 'same-count.ts', status: ' M', staged: false, additions: 1, deletions: 1, binary: false, contentFingerprint: 'same-count-before' },
+      ],
+      lineStatsReady: true,
+      warning: '',
+      error: '',
+    }
+    const current = {
+      ...baseline,
+      changedFiles: [
+        baseline.changedFiles[0],
+        { path: 'src/app.ts', status: ' M', staged: false, additions: 12, deletions: 3, binary: false, contentFingerprint: 'app-after' },
+        { path: 'same-count.ts', status: ' M', staged: false, additions: 1, deletions: 1, binary: false, contentFingerprint: 'same-count-after' },
+        { path: 'README.md', status: '??', staged: false, additions: 8, deletions: 0, binary: false, contentFingerprint: 'readme-new' },
+      ],
+    }
+    const getVcsCommitStatus = vi.fn()
+      .mockResolvedValueOnce(baseline)
+      .mockResolvedValueOnce(current)
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      getVcsCommitStatus,
+      sendAcpPrompt,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(getVcsCommitStatus).not.toHaveBeenCalled()
+    expect(host.querySelector('[aria-label="Repository changes"]')).toBeNull()
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Make the requested change')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+    expect(getVcsCommitStatus).toHaveBeenNthCalledWith(1, 'chat-1', 'git', expect.objectContaining({ requestId: 'chat-summary-baseline:chat-1' }))
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Make the requested change', [])
+    expect(getVcsCommitStatus.mock.invocationCallOrder[0]).toBeLessThan(sendAcpPrompt.mock.invocationCallOrder[0])
+
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        messages: {
+          ...state.messages,
+          'chat-1': [
+            ...state.messages['chat-1'],
+            { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Make the requested change', createdAt: new Date() },
+          ],
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'running',
+            processing: true,
+            processingStartedAtMs: Date.now(),
+            turnSerial: 2,
+            turnUserMessageIndex: 2,
+            turnAssistantMessageIndex: -1,
+          },
+        },
+      }))
+      await Promise.resolve()
+      useAppStore.setState((state) => ({
+        messages: {
+          ...state.messages,
+          'chat-1': [
+            ...state.messages['chat-1'],
+            { id: 'm-4', sessionId: 'chat-1', role: 'assistant', content: 'Done', createdAt: new Date() },
+          ],
+        },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'ready',
+            processing: false,
+            processingStartedAtMs: null,
+            pendingPermission: null,
+            turnAssistantMessageIndex: 3,
+          },
+        },
+      }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
+    expect(getVcsCommitStatus).toHaveBeenNthCalledWith(2, 'chat-1', 'git', expect.objectContaining({ requestId: 'chat-summary:chat-1:m-4:2:' }))
+    const summary = host.querySelector('[aria-label="Repository changes"]') as HTMLElement
+    expect(summary.textContent).toContain('3 changed files')
+    expect(summary.textContent).not.toContain('pre-existing.ts')
+    expect(summary.textContent).toContain('src/app.ts')
+    expect(summary.textContent).toContain('+7')
+    expect(summary.textContent).toContain('-2')
+    expect(summary.textContent).toContain('same-count.ts')
+    expect(summary.textContent).toContain('README.md')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers a jump to the latest message only while scrolled away from the bottom', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+
+    const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
+    const bottom = transcript.querySelector('.uam-message-list')?.lastElementChild as HTMLDivElement
+    const scrollIntoView = vi.fn()
+    bottom.scrollIntoView = scrollIntoView
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    })
+
+    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    const jumpButton = host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null
+    expect(jumpButton).not.toBeNull()
+    expect(transcript.classList.contains('relative')).toBe(true)
+    expect(transcript.classList.contains('z-0')).toBe(true)
+    expect(jumpButton?.parentElement?.classList.contains('z-10')).toBe(true)
+
+    transcript.scrollTop = 800
+    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
+
+    transcript.scrollTop = 100
+    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
+    expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('uses the persisted assistant duration when a completed turn timeline stays visible', () => {
@@ -391,6 +559,7 @@ describe('ChatView', () => {
       queue.click()
     })
 
+    await act(async () => { await Promise.resolve() })
     expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
     await act(async () => {
       finishSends.forEach((finish) => finish(false))
@@ -1350,6 +1519,54 @@ describe('ChatView', () => {
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex' })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows Copilot reasoning when ACP omits per-model effort options', async () => {
+    const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'copilot-cli', name: 'GitHub Copilot CLI', shortName: 'Copilot', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'copilot-acp' },
+      ],
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, providerId: 'copilot-cli', modelId: 'gpt-5.1', reasoningEffort: 'max' }
+        : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'copilot-cli',
+          protocolKind: 'copilot-acp',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+          availableModels: [{ id: 'gpt-5.1', name: 'GPT-5.1', description: '', supportedReasoningEfforts: [] }],
+          currentModelId: 'gpt-5.1',
+        },
+      },
+      setSessionCodexOptions,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('[data-mode-chip="Reasoning: Max"]')).toBeTruthy()
+    openComposerOptions(host)
+    const reasoning = document.body.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
+    expect(reasoning.textContent).toContain('Max')
+    expect(document.body.querySelector('button[aria-label="Speed"]')).toBeNull()
+
+    act(() => reasoning.click())
+    const high = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
+    await act(async () => { high.click(); await Promise.resolve() })
+    expect(setSessionCodexOptions).toHaveBeenCalledWith('chat-1', { reasoningEffort: 'high' })
 
     act(() => root.unmount())
     host.remove()
@@ -2481,6 +2698,34 @@ describe('ChatView', () => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(removeGoal).toHaveBeenCalledWith('goal-1')
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        goalsByChatId: { ...state.goalsByChatId, 'chat-1': [{ ...goal, status: 'complete' as const }] },
+        activeGoalIdByChatId: { ...state.activeGoalIdByChatId, 'chat-1': null },
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': {
+            ...state.acpBindingBySessionId['chat-1'],
+            lifecycleState: 'ready',
+            processing: false,
+            pendingPermission: null,
+          },
+        },
+      }))
+    })
+    openGoalMenu()
+    expect(menuItem('Resume goal')).toBeUndefined()
+    expect(menuItem('Delete goal')).toBeUndefined()
+
+    openComposerOptions(host)
+    const newGoalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    expect(newGoalButton).toBeTruthy()
+    act(() => {
+      newGoalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(resumeGoal).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('Goal: next message')
 
     act(() => {
       root.unmount()

@@ -202,6 +202,7 @@ namespace
 			    {"additions", file.additions},
 			    {"deletions", file.deletions},
 			    {"binary", file.binary},
+			    {"contentFingerprint", file.content_fingerprint},
 			});
 		}
 
