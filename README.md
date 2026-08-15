@@ -11,7 +11,6 @@ Universal Agent Manager runs a React/Vite UI inside CEF (Chromium Embedded Frame
 [![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
 [![UI](https://img.shields.io/badge/UI-React%20%2B%20CEF-61dafb)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![Views](https://hits.sh/github.com/davidtaylor6130/Universal-Agent-Manager.svg)](https://hits.sh/github.com/davidtaylor6130/Universal-Agent-Manager/)
 
 ## Screenshots
 
