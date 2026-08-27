@@ -1,4 +1,5 @@
 #include "platform_services_macos_impl_internal.h"
+#include "common/platform/platform_application_macos.h"
 
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <Security/Security.h>
@@ -74,18 +75,18 @@ class MacProcessService final : public IPlatformProcessService
 		return ExecuteCapturedCommandPosix(command, timeout_ms, stop_token);
 	}
 
-	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
+	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
-		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, error_out);
+		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, environment_overrides, error_out);
 	}
 
-	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const override
+	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
-		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, error_out);
+		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, environment_overrides, error_out);
 	}
 
   private:
-	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, std::string* error_out) const
+	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, const std::vector<std::pair<std::string, std::string>>& environment_overrides, std::string* error_out) const
 	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
@@ -94,6 +95,17 @@ class MacProcessService final : public IPlatformProcessService
 				*error_out = "Stdio process command is empty.";
 			}
 			return false;
+		}
+		for (const auto& [name, value] : environment_overrides)
+		{
+			if (name.empty() || name.find('=') != std::string::npos || name.find('\0') != std::string::npos || value.find('\0') != std::string::npos)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = "Invalid stdio process environment override.";
+				}
+				return false;
+			}
 		}
 
 		if (!PrepareWorkingDirectory(working_directory, "process", "Process", false, error_out))
@@ -194,14 +206,27 @@ class MacProcessService final : public IPlatformProcessService
 		resolved_argv[0] = resolved_executable;
 		std::vector<std::vector<char>> argv_storage;
 		std::vector<char*> argv_ptrs = BuildMutableArgv(resolved_argv, argv_storage);
+		std::vector<std::pair<std::string, std::string>> child_environment;
+		if (!path_env.empty()) child_environment.emplace_back("PATH", path_env);
+		child_environment.insert(child_environment.end(), environment_overrides.begin(), environment_overrides.end());
+		std::vector<std::vector<char>> environment_storage;
+		std::vector<char*> environment_ptrs = BuildChildEnvironment(child_environment, environment_storage);
 
-		const pid_t pid = fork();
-		if (pid < 0)
+		const int input_fd = stdin_file != nullptr ? fileno(stdin_file) : stdin_pipe[0];
+		pid_t pid = -1;
+		if (!SpawnSuspendedProcess(
+		        pid,
+		        resolved_executable,
+		        argv_ptrs.data(),
+		        environment_ptrs.data(),
+		        working_directory,
+		        {{input_fd, STDIN_FILENO},
+		         {stdout_pipe[1], STDOUT_FILENO},
+		         {merge_output ? stdout_pipe[1] : stderr_pipe[1], STDERR_FILENO}},
+		        {},
+		        false,
+		        error_out))
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "fork failed.";
-			}
 			if (stdin_file != nullptr)
 			{
 				std::fclose(stdin_file);
@@ -212,45 +237,20 @@ class MacProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		if (pid == 0)
+		pid_t watchdog_pid = -1;
+		if (!ArmParentDeathWatchdogAndReleaseChild(pid, watchdog_pid, error_out))
 		{
-			(void)setpgid(0, 0);
-			const int input_fd = stdin_file != nullptr ? fileno(stdin_file) : stdin_pipe[0];
-			dup2(input_fd, STDIN_FILENO);
-			if (input_fd == STDIN_FILENO)
+			int ignored_status = 0;
+			(void)TerminateCapturedCommandProcess(pid, &ignored_status);
+			if (stdin_file != nullptr)
 			{
-				const int descriptor_flags = fcntl(STDIN_FILENO, F_GETFD);
-				if (descriptor_flags >= 0)
-				{
-					(void)fcntl(STDIN_FILENO, F_SETFD, descriptor_flags & ~FD_CLOEXEC);
-				}
-			}
-			dup2(stdout_pipe[1], STDOUT_FILENO);
-			dup2(merge_output ? stdout_pipe[1] : stderr_pipe[1], STDERR_FILENO);
-			if (stdin_file != nullptr && input_fd != STDIN_FILENO)
-			{
-				close(input_fd);
+				std::fclose(stdin_file);
 			}
 			ClosePipeFds(stdin_pipe);
 			ClosePipeFds(stdout_pipe);
 			ClosePipeFds(stderr_pipe);
-
-			if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
-			{
-				_exit(126);
-			}
-
-			if (!path_env.empty())
-			{
-				setenv("PATH", path_env.c_str(), 1);
-			}
-
-			RaiseFdLimitBestEffort();
-			execv(argv_ptrs[0], argv_ptrs.data());
-			_exit(127);
+			return false;
 		}
-
-		(void)setpgid(pid, pid);
 		if (stdin_file != nullptr)
 		{
 			std::fclose(stdin_file);
@@ -262,6 +262,7 @@ class MacProcessService final : public IPlatformProcessService
 		process.stdout_read_fd = stdout_pipe[0];
 		process.stderr_read_fd = stderr_pipe[0];
 		process.child_pid = pid;
+		process.watchdog_pid = watchdog_pid;
 
 		for (const int fd : {process.stdout_read_fd, process.stderr_read_fd})
 		{
@@ -274,6 +275,8 @@ class MacProcessService final : public IPlatformProcessService
   public:
 	void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 	{
+		process.stdin_writer.reset();
+		StopParentDeathWatchdog(process.watchdog_pid);
 		CloseFdIfOpen(process.stdin_write_fd);
 		CloseFdIfOpen(process.stdout_read_fd);
 		CloseFdIfOpen(process.stderr_read_fd);
@@ -295,11 +298,20 @@ class MacProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		return WriteAllToFd(process.stdin_write_fd, bytes, len, error_out);
+		if (process.stdin_writer == nullptr)
+		{
+			process.stdin_writer = CreateAsyncFdWriter(process.stdin_write_fd, error_out);
+		}
+		return process.stdin_writer != nullptr && process.stdin_writer->Enqueue(bytes, len, error_out);
 	}
 
 	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
 	{
+		if (process.stdin_writer != nullptr)
+		{
+			(void)process.stdin_writer->Flush(uam::platform::kAsyncInputCloseDrainTimeout);
+		}
+		process.stdin_writer.reset();
 		CloseFdIfOpen(process.stdin_write_fd);
 	}
 
@@ -307,6 +319,7 @@ class MacProcessService final : public IPlatformProcessService
 	{
 		if (process.child_pid <= 0)
 		{
+			StopParentDeathWatchdog(process.watchdog_pid);
 			return;
 		}
 
@@ -315,29 +328,10 @@ class MacProcessService final : public IPlatformProcessService
 		{
 			SignalTerminalProcessGroup(child_pid, SIGKILL);
 		}
-		else
-		{
-			SignalTerminalProcessGroup(child_pid, SIGTERM);
-		}
-
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(fast_exit ? 80 : 600);
 		int status = 0;
-		while (std::chrono::steady_clock::now() < deadline)
-		{
-			const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
-			if (wait_result == child_pid || (wait_result < 0 && errno == ECHILD))
-			{
-				process.child_pid = -1;
-				return;
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
-
-		SignalTerminalProcessGroup(child_pid, SIGKILL);
-		while (waitpid(child_pid, &status, 0) < 0 && errno == EINTR)
-		{
-		}
+		(void)TerminateCapturedCommandProcess(child_pid, &status);
 		process.child_pid = -1;
+		StopParentDeathWatchdog(process.watchdog_pid);
 	}
 
 	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
@@ -380,6 +374,7 @@ class MacProcessService final : public IPlatformProcessService
 				*exit_code_out = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
 			}
 			process.child_pid = -1;
+			StopParentDeathWatchdog(process.watchdog_pid);
 			return true;
 		}
 		return false;
@@ -524,7 +519,7 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		std::string launch_error;
-		if (!RunProgramAndWait({"/usr/bin/open", "-n", "-a", "Terminal", working_directory.string()}, &launch_error))
+		if (!uam::platform::OpenPathWithApplication(working_directory, "com.apple.Terminal", &launch_error))
 		{
 			if (error_out != nullptr)
 			{

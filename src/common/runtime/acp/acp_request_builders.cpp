@@ -78,6 +78,16 @@ nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& sessio
 	                                  });
 }
 
+nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id, const std::string& cwd)
+{
+	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionResume,
+	                                  {
+	                                      {"sessionId", session_id},
+	                                      {"cwd", cwd},
+	                                      {"mcpServers", nlohmann::json::array()},
+	                                  });
+}
+
 nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd)
 {
 	nlohmann::json params = uam::acp_request_defaults::CodexThreadStartParams(cwd);
@@ -218,7 +228,7 @@ nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thr
 	{
 		params["effort"] = reasoning_effort;
 	}
-	params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
+	if (chat.service_tier_explicit) params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
 
 	const std::string app_mode_id = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
 	const std::string requested_mode_id = app_mode_id == uam::approval_modes::kPlanApprovalMode ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;

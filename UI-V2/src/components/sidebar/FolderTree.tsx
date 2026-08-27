@@ -11,10 +11,11 @@ import {
   buildChatSearchIndex,
   buildChatSearchModelFromGroups,
   buildChatSearchSessionGroups,
+  displayedChatStatus,
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
-import { chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
 
@@ -26,7 +27,6 @@ interface FolderTreeProps {
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
-const EMPTY_BINDING_INDEX = {}
 type FolderDropEdge = 'before' | 'after'
 
 function moveId(ids: string[], sourceId: string, targetId: string, edge: FolderDropEdge) {
@@ -61,12 +61,19 @@ function reorderCollectionFolderReferences(
 }
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
-  const hasStatusFilters = (filters?.statusIds.length ?? 0) > 0
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const cliBindingBySessionId = useAppStore(useShallow((s) => hasStatusFilters ? s.cliBindingBySessionId : EMPTY_BINDING_INDEX))
-  const acpBindingBySessionId = useAppStore(useShallow((s) => hasStatusFilters ? s.acpBindingBySessionId : EMPTY_BINDING_INDEX))
+  const runtimeStatusSignature = useAppStore((s) => sessions.map(({ id }) => {
+    const cli = s.cliBindingBySessionId[id]
+    const acp = s.acpBindingBySessionId[id]
+    return JSON.stringify([id, cli?.processing, cli?.lifecycleState, cli?.readySinceLastSelect,
+      acp?.processing, acp?.lifecycleState, acp?.readySinceLastSelect, acp?.attentionKind])
+  }).join('\n'))
+  const runtimeBindings = useMemo(() => {
+    const state = useAppStore.getState()
+    return { cliBindingBySessionId: state.cliBindingBySessionId, acpBindingBySessionId: state.acpBindingBySessionId }
+  }, [runtimeStatusSignature])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -84,6 +91,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const workspaceFolderRecoveryError = useAppStore((s) => s.workspaceFolderRecoveryError)
 
   const [addingFolder, setAddingFolder] = useState(false)
+  const [actionError, setActionError] = useState('')
   const [addingCollection, setAddingCollection] = useState(false)
   const [newCollectionName, setNewCollectionName] = useState('')
   const [newFolderName, setNewFolderName] = useState('')
@@ -92,9 +100,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
+  const [deleteFolderError, setDeleteFolderError] = useState('')
+  const [deletingFolder, setDeletingFolder] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
+  const selectionAnchorRowRef = useRef<HTMLElement | null>(null)
   const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[] | null>(null)
   const [bulkDeleteFailed, setBulkDeleteFailed] = useState(false)
   const [unsortedMenuPoint, setUnsortedMenuPoint] = useState<{ x: number; y: number } | null>(null)
@@ -154,9 +165,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }, [addingCollection, addingFolder])
 
   const paneColorsForFolders = (folderIds: Set<string>) => {
-    if (gridLayout.paneCount === 1) return []
+    const leaves = chatGridLeaves(gridLayout.root)
+    if (leaves.length === 1) return []
     const folderSessionIds = new Set(sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
-    return gridLayout.sessionIds.slice(0, gridLayout.paneCount).flatMap((id, index) => folderSessionIds.has(id) ? [chatPaneColors[index]] : [])
+    return leaves.flatMap((leaf, index) => folderSessionIds.has(leaf.sessionId) ? [chatPaneColors[index]] : [])
   }
   const paneColorsForFolder = (folderId: string) => paneColorsForFolders(new Set([folderId]))
 
@@ -179,9 +191,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       searchTokens,
       deepSearchSet,
       filters,
-      { cliBindingBySessionId, acpBindingBySessionId }
+      runtimeBindings
     ),
-    [sessions, searchIndex, searchTokens, deepSearchSet, filters, cliBindingBySessionId, acpBindingBySessionId]
+    [sessions, searchIndex, searchTokens, deepSearchSet, filters, runtimeBindings]
   )
   const searchModel = useMemo(
     () => buildChatSearchModelFromGroups(folders, searchGroups),
@@ -191,6 +203,24 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions]
   )
+  const activeStatusCounts = useMemo(() => {
+    const counts = { running: 0, attention: 0, done: 0 }
+    for (const sessionId of searchModel.activeSessionIds) {
+      const status = displayedChatStatus(
+        [runtimeBindings.cliBindingBySessionId?.[sessionId]],
+        [runtimeBindings.acpBindingBySessionId?.[sessionId]],
+      )
+      if (status?.type === 'processing') counts.running += 1
+      else if (status?.type === 'attention') counts.attention += 1
+      else if (status?.type === 'done') counts.done += 1
+    }
+    return counts
+  }, [runtimeBindings, searchModel.activeSessionIds])
+  const activeStatusSummary = [
+    activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
+    activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
+    activeStatusCounts.done ? `${activeStatusCounts.done} done` : '',
+  ].filter(Boolean).join(' · ')
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -211,22 +241,28 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   )
   const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
 
-  const visibleSessionIds = useCallback(() => Array.from(
+  const visibleSessionRows = useCallback(() => Array.from(
     treeRef.current?.querySelectorAll<HTMLElement>('[data-session-id]') ?? []
-  ).filter((row) => !row.closest('[inert]')).map((row) => row.dataset.sessionId ?? '').filter(Boolean), [])
+  ).filter((row) => !row.closest('[inert]')), [])
+  const visibleSessionIds = useCallback(() => visibleSessionRows()
+    .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
     if (!event.shiftKey) {
+      selectionAnchorRowRef.current = event.currentTarget
       setSelectionAnchorId(sessionId)
       setSelectedSessionIds(new Set())
       return false
     }
 
     event.preventDefault()
-    const ids = visibleSessionIds()
-    const anchorIndex = selectionAnchorId ? ids.indexOf(selectionAnchorId) : -1
-    const targetIndex = ids.indexOf(sessionId)
+    const rows = visibleSessionRows()
+    const anchorIndex = selectionAnchorId && selectionAnchorRowRef.current
+      ? rows.indexOf(selectionAnchorRowRef.current)
+      : -1
+    const targetIndex = rows.indexOf(event.currentTarget)
     if (anchorIndex < 0 || targetIndex < 0) {
+      selectionAnchorRowRef.current = event.currentTarget
       setSelectionAnchorId(sessionId)
       setSelectedSessionIds(new Set([sessionId]))
       return true
@@ -234,13 +270,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
     const start = Math.min(anchorIndex, targetIndex)
     const end = Math.max(anchorIndex, targetIndex)
-    setSelectedSessionIds(new Set(ids.slice(start, end + 1)))
+    setSelectedSessionIds(new Set(rows.slice(start, end + 1).map((row) => row.dataset.sessionId ?? '').filter(Boolean)))
     return true
-  }, [selectionAnchorId, visibleSessionIds])
+  }, [selectionAnchorId, visibleSessionRows])
 
   const clearBulkSelection = useCallback(() => {
     setSelectedSessionIds(new Set())
     setSelectionAnchorId(null)
+    selectionAnchorRowRef.current = null
     setPendingBulkDeleteIds(null)
     setBulkDeleteFailed(false)
   }, [])
@@ -294,16 +331,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         return next.size === current.size ? current : next
       })
       setSelectionAnchorId((current) => current && visible.has(current) ? current : null)
+      if (selectionAnchorRowRef.current && !visibleSessionRows().includes(selectionAnchorRowRef.current)) {
+        selectionAnchorRowRef.current = null
+      }
     }
     const observer = new MutationObserver(keepVisibleSelection)
     observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['inert'] })
     keepVisibleSelection()
     return () => observer.disconnect()
-  }, [visibleSessionIds])
+  }, [visibleSessionIds, visibleSessionRows])
 
   useEffect(() => {
     if (pendingDeleteFolderId !== null && !pendingDeleteFolder) {
       setPendingDeleteFolderId(null)
+      setDeleteFolderError('')
+      setDeletingFolder(false)
     }
   }, [pendingDeleteFolder, pendingDeleteFolderId])
 
@@ -315,8 +357,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       return
     }
 
+    setActionError('')
     void addFolder(name, null, directory).then((created) => {
       if (!created) {
+        setActionError('The workspace could not be created. Check the directory and try again.')
         return
       }
 
@@ -329,20 +373,25 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const commitAddCollection = () => {
     const name = newCollectionName.trim()
     if (!name) return
+    setActionError('')
     void createResourceCollection(name).then((created) => {
-      if (!created) return
+      if (!created) {
+        setActionError('The collection could not be created. Try again.')
+        return
+      }
       setNewCollectionName('')
       setAddingCollection(false)
     })
   }
 
   const startRenameFolder = (folder: (typeof folders)[number]) => {
+    setActionError('')
     setEditingFolderId(folder.id)
     setEditFolderName(folder.name)
     setEditFolderDirectory(folder.directory)
   }
 
-  const commitRenameFolder = (folderId: string) => {
+  const commitRenameFolder = async (folderId: string) => {
     const name = editFolderName.trim()
     const directory = editFolderDirectory.trim()
 
@@ -350,8 +399,29 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       return
     }
 
-    renameFolder(folderId, name, directory)
-    setEditingFolderId(null)
+    setActionError('')
+    if (await renameFolder(folderId, name, directory)) {
+      setEditingFolderId(null)
+    } else {
+      setActionError('The workspace could not be updated. Finish active work and try again.')
+    }
+  }
+
+  const confirmDeleteFolder = async () => {
+    if (!pendingDeleteFolder || deletingFolder) return
+    setDeletingFolder(true)
+    setDeleteFolderError('')
+    try {
+      if (await deleteFolder(pendingDeleteFolder.id)) {
+        setPendingDeleteFolderId(null)
+      } else {
+        setDeleteFolderError('The workspace could not be deleted. Finish active work and try again.')
+      }
+    } catch {
+      setDeleteFolderError('The workspace could not be deleted. Finish active work and try again.')
+    } finally {
+      setDeletingFolder(false)
+    }
   }
 
   const chooseNewFolderDirectory = async () => {
@@ -424,8 +494,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       editFolderDirectory={editFolderDirectory}
       onToggle={() => toggleFolder(folder.id)}
       onStartRename={() => startRenameFolder(folder)}
-      onDelete={() => setPendingDeleteFolderId(folder.id)}
-      onRescan={() => void rescanFolderChats(folder.id)}
+      onDelete={() => {
+        setDeleteFolderError('')
+        setPendingDeleteFolderId(folder.id)
+      }}
+      onRescan={() => {
+        setActionError('')
+        void rescanFolderChats(folder.id).then((rescanned) => {
+          if (!rescanned) setActionError(`Could not rescan ${folder.name}. Try again.`)
+        })
+      }}
       onEditNameChange={setEditFolderName}
       onEditDirectoryChange={setEditFolderDirectory}
       onCommitRename={() => commitRenameFolder(folder.id)}
@@ -474,6 +552,24 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           </Button>
         </div>
       )}
+      {searchModel.activeSessionIds.length > 0 && (
+        <div className="mb-0.5" data-testid="active-chats">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
+            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
+              Active chats
+            </span>
+            {activeStatusSummary && (
+              <span aria-label="Active chat status counts" className="text-[10px]" title={activeStatusSummary}>
+                {activeStatusSummary}
+              </span>
+            )}
+          </div>
+          {searchModel.activeSessionIds.map((id) => (
+            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+          ))}
+        </div>
+      )}
+
       {searchModel.pinnedSessionIds.length > 0 && (
         <div className="mb-0.5">
           <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
@@ -656,6 +752,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
       {/* Add folder */}
       <div ref={addControlsRef} className="mt-1 px-2.5">
+        {actionError && <div role="alert" className="mb-2 text-xs" style={{ color: 'var(--red)' }}>{actionError}</div>}
         {addingFolder ? (
           <div
             className="rounded-md p-2 space-y-2"
@@ -771,7 +868,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         ) : (
           <div className="flex justify-center gap-4">
             <button
-              onClick={() => setAddingFolder(true)}
+              onClick={() => { setActionError(''); setAddingFolder(true) }}
               className="flex items-center gap-1.5 text-xs transition-colors duration-100"
               style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
             >
@@ -779,7 +876,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               <span>New workspace</span>
             </button>
             <button
-              onClick={() => setAddingCollection(true)}
+              onClick={() => { setActionError(''); setAddingCollection(true) }}
               className="flex items-center gap-1.5 text-xs transition-colors duration-100"
               style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
             >
@@ -794,11 +891,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         <DeleteFolderModal
           folder={pendingDeleteFolder}
           chatCount={pendingDeleteChatCount}
-          onCancel={() => setPendingDeleteFolderId(null)}
-          onConfirm={() => {
-            deleteFolder(pendingDeleteFolder.id)
+          error={deleteFolderError}
+          deleting={deletingFolder}
+          onCancel={() => {
+            if (deletingFolder) return
             setPendingDeleteFolderId(null)
+            setDeleteFolderError('')
           }}
+          onConfirm={() => { void confirmDeleteFolder() }}
         />
       )}
     </div>
@@ -996,6 +1096,8 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
 interface DeleteFolderModalProps {
   folder: Folder
   chatCount: number
+  error: string
+  deleting: boolean
   onCancel: () => void
   onConfirm: () => void
 }
@@ -1135,6 +1237,8 @@ function WorkspaceFolderRecoveryModal({
 function DeleteFolderModal({
   folder,
   chatCount,
+  error,
+  deleting,
   onCancel,
   onConfirm,
 }: DeleteFolderModalProps) {
@@ -1142,21 +1246,21 @@ function DeleteFolderModal({
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !deleting) {
         onCancel()
       }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onCancel])
+  }, [deleting, onCancel])
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel()
+        if (e.target === e.currentTarget && !deleting) onCancel()
       }}
     >
       <div
@@ -1177,7 +1281,7 @@ function DeleteFolderModal({
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             Delete folder and chats?
           </span>
-          <IconButton icon={<X size={16} />} label="Close delete folder dialog" onClick={onCancel} />
+          <IconButton icon={<X size={16} />} label="Close delete folder dialog" disabled={deleting} onClick={onCancel} />
         </div>
 
         <div className="p-5 space-y-4">
@@ -1208,6 +1312,7 @@ function DeleteFolderModal({
               Deleted chats cannot be restored from this app.
             </p>
           )}
+          {error && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
         </div>
 
         <div
@@ -1217,6 +1322,7 @@ function DeleteFolderModal({
           <Button
             variant="ghost"
             size="md"
+            disabled={deleting}
             onClick={onCancel}
           >
             Cancel
@@ -1224,6 +1330,7 @@ function DeleteFolderModal({
           <Button
             variant="danger"
             size="md"
+            loading={deleting}
             onClick={onConfirm}
           >
             Delete Folder
@@ -1242,6 +1349,7 @@ function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; lab
   return (
     <button
       type="button"
+      role="menuitem"
       className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left"
       style={{ color: danger ? 'var(--red)' : 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
       onClick={onClick}
@@ -1320,6 +1428,7 @@ const FolderRow = memo(function FolderRow({
   const [showAllSessions, setShowAllSessions] = useState(false)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
   const visibleSessionIds = shouldLimitSessions && !showAllSessions
     ? sessionIds.slice(0, VISIBLE_SESSION_LIMIT)
@@ -1435,8 +1544,11 @@ const FolderRow = memo(function FolderRow({
         >
           <Tooltip label="Folder actions" side="top">
             <button
+              ref={menuTriggerRef}
               type="button"
               aria-label="Folder actions"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(menuPos)}
               className="flex items-center justify-center rounded"
               style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
               onClick={(e) => {
@@ -1455,7 +1567,11 @@ const FolderRow = memo(function FolderRow({
       {menuPos && (
         <ViewportMenu
           ref={menuRef}
+          anchorRef={menuTriggerRef}
           point={menuPos}
+          role="menu"
+          aria-label={`${folder.name} actions`}
+          onRequestClose={() => setMenuPos(null)}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
             minWidth: 168,

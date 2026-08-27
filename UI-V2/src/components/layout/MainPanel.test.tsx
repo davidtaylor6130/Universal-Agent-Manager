@@ -25,9 +25,16 @@ vi.mock('@xterm/addon-fit', () => ({
 
 import { MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
-import { assignChatToPane, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
+import { assignChatToPane, chatGridLeaves, defaultChatGridLayout, readChatGridLayout, readChatViewMode, setChatInLeaf, splitChatLeaf, writeChatGridLayout, writeChatViewMode } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+function paneLayout(...sessionIds: string[]) {
+  let layout = defaultChatGridLayout
+  while (chatGridLeaves(layout.root).length < sessionIds.length) layout = splitChatLeaf(layout, layout.activeLeafId, 'horizontal')
+  chatGridLeaves(layout.root).forEach((leaf, index) => { layout = setChatInLeaf(layout, sessionIds[index] ?? '', leaf.id) })
+  return { ...layout, activeLeafId: chatGridLeaves(layout.root)[0].id }
+}
 
 describe('MainPanel', () => {
   beforeEach(() => {
@@ -59,6 +66,7 @@ describe('MainPanel', () => {
         },
       ],
       activeSessionId: 'chat-1',
+      lastAppliedStateRevision: -1,
       messages: { 'chat-1': [] },
       acpBindingBySessionId: {
         'chat-1': {
@@ -153,6 +161,49 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('opens a terminal-first session in the terminal fallback view', async () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, viewMode: 'cli' })),
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    await act(async () => {
+      root.render(<MainPanel />)
+      await Promise.resolve()
+    })
+
+    expect(host.querySelector('button[aria-label="Terminal fallback"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.textContent).toContain('Loading terminal')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps imported transcripts in chat view and disables terminal fallback', () => {
+    writeChatViewMode('chat-1', 'cli')
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, viewMode: 'cli', importedReadOnly: true })),
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+
+    const terminal = host.querySelector('button[aria-label="Terminal fallback"]') as HTMLButtonElement
+    expect(terminal.disabled).toBe(true)
+    expect(terminal.getAttribute('aria-pressed')).toBe('false')
+    expect(host.querySelector('button[aria-label="Chat view"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(readChatViewMode('chat-1')).toBe('chat')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps the close action outside the chat and terminal view selector', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -170,7 +221,7 @@ describe('MainPanel', () => {
     host.remove()
   })
 
-  it('quits a busy CLI when switching back to chat', async () => {
+  it('keeps a busy CLI running when switching back to chat', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }) => {
       requests.push(JSON.parse(request) as { action: string; payload?: Record<string, unknown> })
@@ -194,6 +245,7 @@ describe('MainPanel', () => {
     const button = (label: string) =>
       host.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement
     await act(async () => button('Terminal fallback').click())
+    expect(readChatViewMode('chat-1')).toBe('cli')
     await act(async () => {
       await vi.dynamicImportSettled()
     })
@@ -217,11 +269,11 @@ describe('MainPanel', () => {
 
     expect(button('Chat view').disabled).toBe(false)
     act(() => button('Chat view').click())
-    expect(requests).toContainEqual({
+    expect(readChatViewMode('chat-1')).toBe('chat')
+    expect(requests).not.toContainEqual(expect.objectContaining({
       action: 'stopCliTerminal',
-      payload: { chatId: 'chat-1', terminalId: 'term-1', quit: true },
-      requestId: expect.any(String),
-    })
+      payload: expect.objectContaining({ quit: true }),
+    }))
 
     act(() => root.unmount())
     host.remove()
@@ -242,19 +294,20 @@ describe('MainPanel', () => {
 
     act(() => root.render(<MainPanel />))
 
-    const twoChats = host.querySelector('button[aria-label="Show two chats"]') as HTMLButtonElement
-    act(() => twoChats.click())
+    const splitColumns = host.querySelector('button[aria-label="Split active pane into columns"]') as HTMLButtonElement
+    act(() => splitColumns.click())
     expect(host.querySelector('[data-testid="chat-grid-2"]')).not.toBeNull()
 
-    const fourChats = host.querySelector('button[aria-label="Show four chats"]') as HTMLButtonElement
-    act(() => fourChats.click())
+    const splitRows = host.querySelector('button[aria-label="Split active pane into rows"]') as HTMLButtonElement
+    act(() => splitRows.click())
+    act(() => splitRows.click())
 
     expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
-    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Select chat'))).toHaveLength(3)
+    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Drag a chat here or select one'))).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--pane-color')).toBe('#f97316')
-    expect(firstPane.dataset.focused).toBe('true')
+    expect(firstPane.dataset.focused).toBe('false')
     expect(firstPane.dataset.multiPane).toBe('true')
     expect(firstPane.querySelector('[data-testid^="pane-fade-"]')).toBeNull()
     expect(firstPane.style.filter).toBe('')
@@ -262,9 +315,10 @@ describe('MainPanel', () => {
     expect(firstPane.style.opacity).toBe('')
 
     act(() => {
-      assignChatToPane('chat-2', 1)
-      assignChatToPane('chat-3', 2)
-      assignChatToPane('chat-4', 3)
+      const paneIds = chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.id)
+      assignChatToPane('chat-2', paneIds[1])
+      assignChatToPane('chat-3', paneIds[2])
+      assignChatToPane('chat-4', paneIds[3])
       useAppStore.setState({ activeSessionId: 'chat-4' })
     })
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(4)
@@ -297,7 +351,7 @@ describe('MainPanel', () => {
       })),
       messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [] },
     }))
-    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -322,14 +376,14 @@ describe('MainPanel', () => {
 
     expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeTruthy()
     expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeNull()
-    expect(readChatGridLayout()).toMatchObject({ activePane: 1, sessionIds: ['chat-1', 'chat-3'] })
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', 'chat-3'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-3')
 
     act(() => root.unmount())
     host.remove()
   })
 
-  it('keeps multi-pane assignments unchanged when a sidebar chat is selected', () => {
+  it('opens a selected sidebar chat in the active pane without disturbing other panes', () => {
     useAppStore.setState((state) => ({
       sessions: [1, 2, 3].map((number) => ({
         ...state.sessions[0],
@@ -338,18 +392,38 @@ describe('MainPanel', () => {
       })),
       messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [] },
     }))
-    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<MainPanel />))
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-3' }))
-    expect(readChatGridLayout()).toMatchObject({ activePane: 0, sessionIds: ['chat-1', 'chat-2'] })
-    expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeNull()
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-3', 'chat-2'])
+    expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeTruthy()
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
-    expect(readChatGridLayout()).toMatchObject({ activePane: 1, sessionIds: ['chat-1', 'chat-2'] })
+    expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(readChatGridLayout().root)[1].id)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes an active empty leaf from the keyboard-actionable toolbar control', () => {
+    const layout = paneLayout('chat-1', '')
+    writeChatGridLayout({ ...layout, activeLeafId: chatGridLeaves(layout.root)[1].id })
+    useAppStore.setState({ activeSessionId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    const close = host.querySelector('button[aria-label="Close active pane"]') as HTMLButtonElement
+    expect(close.disabled).toBe(false)
+    act(() => close.click())
+
+    expect(chatGridLeaves(readChatGridLayout().root)).toHaveLength(1)
+    expect(chatGridLeaves(readChatGridLayout().root)[0].sessionId).toBe('chat-1')
 
     act(() => root.unmount())
     host.remove()
@@ -364,7 +438,7 @@ describe('MainPanel', () => {
       })),
       messages: { 'chat-1': [], 'chat-2': [] },
     }))
-    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -374,9 +448,44 @@ describe('MainPanel', () => {
 
     expect(useAppStore.getState().sessions).toHaveLength(2)
     expect(useAppStore.getState().activeSessionId).toBeNull()
-    expect(readChatGridLayout()).toMatchObject({ activePane: 0, sessionIds: ['', 'chat-2'] })
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['', 'chat-2'])
+    expect(host.querySelector('[data-testid="chat-grid-2"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent?.includes('Drag a chat here or select one'))).toBe(true)
     expect(host.querySelector('[data-testid="chat-pane-chat-1"]')).toBeNull()
     expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('preserves persisted pane assignments until the initial CEF state hydrates', () => {
+    const hydratedSessions = [1, 2].map((number) => ({
+      ...useAppStore.getState().sessions[0],
+      id: `chat-${number}`,
+      name: `Chat ${number}`,
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    window.cefQuery = ({ onSuccess }) => onSuccess('{}')
+    useAppStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      lastAppliedStateRevision: -1,
+      messages: {},
+      acpBindingBySessionId: {},
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', 'chat-2'])
+
+    act(() => useAppStore.setState({
+      sessions: hydratedSessions,
+      lastAppliedStateRevision: 1,
+      messages: { 'chat-1': [], 'chat-2': [] },
+    }))
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', 'chat-2'])
 
     act(() => root.unmount())
     host.remove()
@@ -396,7 +505,7 @@ describe('MainPanel', () => {
       },
       loadSessionMessages,
     }))
-    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -410,8 +519,7 @@ describe('MainPanel', () => {
       },
     })))
 
-    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
-    expect(loadSessionMessages).toHaveBeenCalledWith('chat-2', true)
+    expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2' && call[1] === true)).toEqual([['chat-2', true]])
 
     act(() => root.unmount())
     host.remove()
@@ -436,7 +544,7 @@ describe('MainPanel', () => {
       },
       loadSessionMessages,
     }))
-    writeChatGridLayout({ paneCount: 2, activePane: 0, sessionIds: ['chat-1', 'chat-2'], columnSizes: [50, 50], rowSizes: [50, 50] })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -455,8 +563,7 @@ describe('MainPanel', () => {
       },
     })))
 
-    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
-    expect(loadSessionMessages).toHaveBeenCalledWith('chat-2')
+    expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2' && call.length === 1)).toEqual([['chat-2']])
 
     act(() => root.unmount())
     host.remove()

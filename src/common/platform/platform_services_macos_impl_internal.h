@@ -4,6 +4,7 @@
 // Include only from those four TUs and platform_services_macos_impl.cpp.
 
 #include "platform_services_macos_impl.h"
+#include "common/platform/platform_application_macos.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
@@ -19,6 +20,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -27,8 +29,14 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <AvailabilityMacros.h>
+#include <crt_externs.h>
+#include <libproc.h>
 #include <mach-o/dyld.h>
 #include <signal.h>
+#include <poll.h>
+#include <spawn.h>
+#include <sys/event.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -65,9 +73,8 @@ inline void ClosePipeFds(int (&pipe_fds)[2])
 }
 
 // Child provider runtimes (e.g. Bun-based OpenCode) refuse to start when the
-// inherited soft RLIMIT_NOFILE is low, so raise it as close to the hard limit
-// as the kernel allows before exec. Async-signal-safe; intended for use
-// between fork and execv.
+// inherited soft RLIMIT_NOFILE is low, so raise the manager's inherited limit
+// before posix_spawn.
 inline void RaiseFdLimitBestEffort()
 {
 	struct rlimit limit
@@ -136,181 +143,93 @@ inline std::vector<char*> BuildMutableArgv(const std::vector<std::string>& argv,
 	return argv_ptrs;
 }
 
-inline bool ValidateProgramArgv(const std::vector<std::string>& argv, std::string* error_out = nullptr)
+// Build the complete environment before fork. setenv() is not async-signal-safe and can
+// deadlock a child of the multithreaded CEF process before it reaches exec.
+inline std::vector<char*> BuildChildEnvironment(
+    const std::vector<std::pair<std::string, std::string>>& overrides,
+    std::vector<std::vector<char>>& storage)
 {
-	if (!argv.empty() && !argv.front().empty())
+	std::map<std::string, std::string> values;
+	if (char*** environment = _NSGetEnviron(); environment != nullptr && *environment != nullptr)
 	{
-		return true;
+		for (char** entry = *environment; *entry != nullptr; ++entry)
+		{
+			const std::string value(*entry);
+			const std::size_t separator = value.find('=');
+			if (separator > 0 && separator != std::string::npos)
+			{
+				values[value.substr(0, separator)] = value.substr(separator + 1);
+			}
+		}
 	}
+	for (const auto& [name, value] : overrides) values[name] = value;
 
-	if (error_out != nullptr)
+	std::vector<std::string> entries;
+	entries.reserve(values.size());
+	for (const auto& [name, value] : values) entries.push_back(name + "=" + value);
+	return BuildMutableArgv(entries, storage);
+}
+
+inline int AddSpawnWorkingDirectory(posix_spawn_file_actions_t& actions, const std::filesystem::path& working_directory)
+{
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+	if (__builtin_available(macOS 26.0, *)) return posix_spawn_file_actions_addchdir(&actions, working_directory.c_str());
+#endif
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	const int result = posix_spawn_file_actions_addchdir_np(&actions, working_directory.c_str());
+#pragma clang diagnostic pop
+	return result;
+}
+
+inline bool SpawnSuspendedProcess(
+    pid_t& pid,
+    const std::string& executable,
+    char* const argv[],
+    char* const environment[],
+    const std::filesystem::path& working_directory,
+    const std::vector<std::pair<int, int>>& fd_mappings,
+    const std::string& controlling_terminal,
+    bool new_session,
+    std::string* error_out)
+{
+	posix_spawn_file_actions_t actions{};
+	posix_spawnattr_t attributes{};
+	int spawn_error = posix_spawn_file_actions_init(&actions);
+	const bool actions_initialized = spawn_error == 0;
+	if (spawn_error == 0 && !controlling_terminal.empty())
 	{
-		*error_out = "Executable path is empty.";
+		spawn_error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, controlling_terminal.c_str(), O_RDWR, 0);
+		if (spawn_error == 0) spawn_error = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDOUT_FILENO);
+		if (spawn_error == 0) spawn_error = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO);
 	}
+	for (const auto& [source_fd, target_fd] : fd_mappings)
+	{
+		if (spawn_error == 0) spawn_error = posix_spawn_file_actions_adddup2(&actions, source_fd, target_fd);
+	}
+	if (spawn_error == 0 && !working_directory.empty())
+	{
+		spawn_error = AddSpawnWorkingDirectory(actions, working_directory);
+	}
+	if (spawn_error == 0) spawn_error = posix_spawnattr_init(&attributes);
+	const bool attributes_initialized = spawn_error == 0;
+	if (spawn_error == 0)
+	{
+		const short flags = static_cast<short>(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_START_SUSPENDED |
+		                                              (new_session ? POSIX_SPAWN_SETSID : POSIX_SPAWN_SETPGROUP));
+		spawn_error = posix_spawnattr_setflags(&attributes, flags);
+		if (spawn_error == 0 && !new_session) spawn_error = posix_spawnattr_setpgroup(&attributes, 0);
+	}
+	if (spawn_error == 0)
+	{
+		RaiseFdLimitBestEffort();
+		spawn_error = posix_spawn(&pid, executable.c_str(), &actions, &attributes, argv, environment);
+	}
+	if (attributes_initialized) (void)posix_spawnattr_destroy(&attributes);
+	if (actions_initialized) (void)posix_spawn_file_actions_destroy(&actions);
+	if (spawn_error == 0) return true;
+	if (error_out != nullptr) *error_out = "posix_spawn failed: " + std::string(std::strerror(spawn_error)) + ".";
 	return false;
-}
-
-inline bool WaitForSuccessfulProgramExit(const pid_t pid, std::string* error_out = nullptr)
-{
-	int status = 0;
-	while (waitpid(pid, &status, 0) < 0)
-	{
-		if (IsInterruptedErrno())
-		{
-			continue;
-		}
-
-		if (error_out != nullptr)
-		{
-			*error_out = "waitpid failed: " + std::string(std::strerror(errno));
-		}
-		return false;
-	}
-
-	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-	{
-		return true;
-	}
-
-	if (error_out != nullptr)
-	{
-		if (WIFEXITED(status))
-		{
-			*error_out = "process exited with status " + std::to_string(WEXITSTATUS(status)) + ".";
-		}
-		else if (WIFSIGNALED(status))
-		{
-			*error_out = "process terminated by signal " + std::to_string(WTERMSIG(status)) + ".";
-		}
-		else
-		{
-			*error_out = "process ended without a normal exit status.";
-		}
-	}
-
-	return false;
-}
-
-inline bool RunProgramAndWait(const std::vector<std::string>& argv, std::string* error_out = nullptr)
-{
-	if (!ValidateProgramArgv(argv, error_out))
-	{
-		return false;
-	}
-
-	std::vector<std::vector<char>> argv_storage;
-	std::vector<char*> argv_ptrs = BuildMutableArgv(argv, argv_storage);
-
-	const pid_t pid = fork();
-	if (pid < 0)
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "fork failed: " + std::string(std::strerror(errno));
-		}
-		return false;
-	}
-
-	if (pid == 0)
-	{
-		execv(argv_ptrs[0], argv_ptrs.data());
-		_exit(127);
-	}
-
-	return WaitForSuccessfulProgramExit(pid, error_out);
-}
-
-inline bool RunProgramAndCapture(const std::vector<std::string>& argv, std::string* output_out = nullptr, std::string* error_out = nullptr)
-{
-	if (!ValidateProgramArgv(argv, error_out))
-	{
-		return false;
-	}
-
-	int output_pipe[2] = {-1, -1};
-	if (pipe(output_pipe) != 0)
-	{
-		if (error_out != nullptr)
-		{
-			*error_out = "pipe failed: " + std::string(std::strerror(errno));
-		}
-		return false;
-	}
-
-	std::vector<std::vector<char>> argv_storage;
-	std::vector<char*> argv_ptrs = BuildMutableArgv(argv, argv_storage);
-
-	const pid_t pid = fork();
-	if (pid < 0)
-	{
-		ClosePipeFds(output_pipe);
-		if (error_out != nullptr)
-		{
-			*error_out = "fork failed: " + std::string(std::strerror(errno));
-		}
-		return false;
-	}
-
-	if (pid == 0)
-	{
-		CloseFdIfOpen(output_pipe[0]);
-		if (dup2(output_pipe[1], STDOUT_FILENO) < 0)
-		{
-			_exit(126);
-		}
-		CloseFdIfOpen(output_pipe[1]);
-		execv(argv_ptrs[0], argv_ptrs.data());
-		_exit(127);
-	}
-
-	CloseFdIfOpen(output_pipe[1]);
-	std::string output;
-	std::array<char, 512> buffer{};
-	bool read_ok = true;
-	std::string read_error;
-
-	while (true)
-	{
-		const ssize_t bytes_read = read(output_pipe[0], buffer.data(), buffer.size());
-		if (bytes_read > 0)
-		{
-			output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
-			continue;
-		}
-
-		if (bytes_read == 0)
-		{
-			break;
-		}
-
-		if (IsInterruptedErrno())
-		{
-			continue;
-		}
-
-		read_ok = false;
-		read_error = "read failed: " + std::string(std::strerror(errno));
-		break;
-	}
-
-	CloseFdIfOpen(output_pipe[0]);
-
-	if (output_out != nullptr)
-	{
-		*output_out = uam::strings::Trim(output);
-	}
-
-	if (!read_ok)
-	{
-		(void)WaitForSuccessfulProgramExit(pid);
-		if (error_out != nullptr)
-		{
-			*error_out = read_error;
-		}
-		return false;
-	}
-
-	return WaitForSuccessfulProgramExit(pid, error_out);
 }
 
 inline bool IsExecutableFile(const std::filesystem::path& candidate)
@@ -529,38 +448,18 @@ inline bool PrepareWorkingDirectory(const std::filesystem::path& working_directo
 	return true;
 }
 
-inline std::string EscapeAppleScriptQuotedString(const std::string& value)
+enum class CapturedPipeReadResult
 {
-	std::string escaped;
-	escaped.reserve(value.size());
+	Drained,
+	BudgetExhausted,
+	Failed,
+	OutputLimit,
+};
 
-	for (const char ch : value)
-	{
-		if (ch == '\\')
-		{
-			escaped += "\\\\";
-		}
-		else if (ch == '"')
-		{
-			escaped += "\\\"";
-		}
-		else
-		{
-			escaped.push_back(ch);
-		}
-	}
-
-	return escaped;
-}
-
-inline bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* error_out = nullptr)
+inline CapturedPipeReadResult ReadAvailablePipeData(int fd, ProcessExecutionResult& result, std::string* error_out = nullptr)
 {
-	if (output_out == nullptr)
-	{
-		return false;
-	}
-
 	std::array<char, 4096> buffer{};
+	std::size_t bytes_drained = 0;
 
 	for (;;)
 	{
@@ -568,13 +467,22 @@ inline bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* 
 
 		if (bytes_read > 0)
 		{
-			output_out->append(buffer.data(), static_cast<std::size_t>(bytes_read));
+			const std::size_t read_size = static_cast<std::size_t>(bytes_read);
+			if (!uam::platform::AppendCapturedCommandOutput(result, buffer.data(), read_size))
+			{
+				return CapturedPipeReadResult::OutputLimit;
+			}
+			bytes_drained += read_size;
+			if (bytes_drained >= uam::platform::kCapturedCommandReadBudgetBytes)
+			{
+				return CapturedPipeReadResult::BudgetExhausted;
+			}
 			continue;
 		}
 
 		if (bytes_read == 0)
 		{
-			return true;
+			return CapturedPipeReadResult::Drained;
 		}
 
 		if (IsInterruptedErrno())
@@ -584,7 +492,7 @@ inline bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* 
 
 		if (IsWouldBlockErrno())
 		{
-			return true;
+			return CapturedPipeReadResult::Drained;
 		}
 
 		if (error_out != nullptr)
@@ -592,11 +500,212 @@ inline bool ReadAvailablePipeData(int fd, std::string* output_out, std::string* 
 			*error_out = std::strerror(errno);
 		}
 
-		return false;
+		return CapturedPipeReadResult::Failed;
 	}
 }
 
 inline void SignalTerminalProcessGroup(pid_t child_pid, int signal_number);
+
+inline void StopParentDeathWatchdog(pid_t& watchdog_pid)
+{
+	if (watchdog_pid <= 0)
+	{
+		return;
+	}
+
+	(void)kill(watchdog_pid, SIGTERM);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+	int status = 0;
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		const pid_t wait_result = waitpid(watchdog_pid, &status, WNOHANG);
+		if (wait_result == watchdog_pid || (wait_result < 0 && errno == ECHILD))
+		{
+			watchdog_pid = -1;
+			return;
+		}
+		if (wait_result < 0 && errno != EINTR)
+		{
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	(void)kill(watchdog_pid, SIGKILL);
+	const auto kill_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (std::chrono::steady_clock::now() < kill_deadline)
+	{
+		const pid_t wait_result = waitpid(watchdog_pid, &status, WNOHANG);
+		if (wait_result == watchdog_pid || (wait_result < 0 && errno == ECHILD))
+		{
+			break;
+		}
+		if (wait_result < 0 && errno != EINTR)
+		{
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	watchdog_pid = -1;
+}
+
+inline bool ArmParentDeathWatchdogAndReleaseChild(pid_t child_pid, pid_t& watchdog_pid, std::string* error_out = nullptr)
+{
+	int ready_pipe[2] = {-1, -1};
+	if (pipe(ready_pipe) != 0)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to create parent-death watchdog readiness pipe.";
+		}
+		return false;
+	}
+
+	const pid_t parent_pid = getpid();
+	struct proc_bsdinfo original_child_info
+	{
+	};
+	if (proc_pidinfo(child_pid, PROC_PIDTBSDINFO, 0, &original_child_info, sizeof(original_child_info)) != sizeof(original_child_info))
+	{
+		ClosePipeFds(ready_pipe);
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to identify contained child process.";
+		}
+		return false;
+	}
+
+	uint32_t executable_size = 0;
+	(void)_NSGetExecutablePath(nullptr, &executable_size);
+	std::string executable(executable_size, '\0');
+	if (executable_size == 0 || _NSGetExecutablePath(executable.data(), &executable_size) != 0)
+	{
+		ClosePipeFds(ready_pipe);
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to resolve parent-death watchdog executable.";
+		}
+		return false;
+	}
+	executable.resize(std::strlen(executable.c_str()));
+	const std::vector<std::string> watchdog_argv = {
+	    executable,
+	    uam::platform::kMacParentDeathWatchdogArgument,
+	    std::to_string(static_cast<long long>(parent_pid)),
+	    std::to_string(static_cast<long long>(child_pid)),
+	    std::to_string(static_cast<long long>(original_child_info.pbi_start_tvsec)),
+	    std::to_string(static_cast<long long>(original_child_info.pbi_start_tvusec)),
+	};
+	std::vector<std::vector<char>> watchdog_argv_storage;
+	std::vector<char*> watchdog_argv_ptrs = BuildMutableArgv(watchdog_argv, watchdog_argv_storage);
+	posix_spawn_file_actions_t actions{};
+	posix_spawnattr_t attributes{};
+	int spawn_error = posix_spawn_file_actions_init(&actions);
+	const bool actions_initialized = spawn_error == 0;
+	if (spawn_error == 0) spawn_error = posix_spawn_file_actions_adddup2(&actions, ready_pipe[1], 3);
+	if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+	if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+	if (spawn_error == 0) spawn_error = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+	if (spawn_error == 0) spawn_error = posix_spawnattr_init(&attributes);
+	const bool attributes_initialized = spawn_error == 0;
+	if (spawn_error == 0) spawn_error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
+	if (spawn_error == 0)
+	{
+		spawn_error = posix_spawn(&watchdog_pid, executable.c_str(), &actions, &attributes, watchdog_argv_ptrs.data(), *_NSGetEnviron());
+	}
+	if (attributes_initialized) (void)posix_spawnattr_destroy(&attributes);
+	if (actions_initialized) (void)posix_spawn_file_actions_destroy(&actions);
+	CloseFdIfOpen(ready_pipe[1]);
+	if (spawn_error != 0)
+	{
+		CloseFdIfOpen(ready_pipe[0]);
+		if (error_out != nullptr) *error_out = "Failed to start parent-death watchdog: " + std::string(std::strerror(spawn_error)) + ".";
+		return false;
+	}
+
+	struct pollfd ready_poll = {ready_pipe[0], POLLIN | POLLHUP, 0};
+	const int poll_result = poll(&ready_poll, 1, 5000);
+	char ready = 0;
+	ssize_t ready_count = -1;
+	if (poll_result > 0)
+	{
+		do
+		{
+			ready_count = read(ready_pipe[0], &ready, 1);
+		} while (ready_count < 0 && errno == EINTR);
+	}
+	CloseFdIfOpen(ready_pipe[0]);
+	if (ready_count != 1 || ready != '1')
+	{
+		StopParentDeathWatchdog(watchdog_pid);
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to arm parent-death watchdog.";
+		}
+		return false;
+	}
+
+	if (kill(child_pid, SIGCONT) != 0)
+	{
+		StopParentDeathWatchdog(watchdog_pid);
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to resume contained child process.";
+		}
+		return false;
+	}
+	return true;
+}
+
+inline bool TerminateCapturedCommandProcess(pid_t pid, int* raw_status_out)
+{
+	if (pid <= 0)
+	{
+		return true;
+	}
+
+	SignalTerminalProcessGroup(pid, SIGTERM);
+	const auto graceful_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+	bool reaped = false;
+	int raw_status = -1;
+
+	while (std::chrono::steady_clock::now() < graceful_deadline)
+	{
+		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+		if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
+		{
+			reaped = true;
+			break;
+		}
+		if (wait_result < 0 && errno != EINTR)
+		{
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	SignalTerminalProcessGroup(pid, SIGKILL);
+	const auto kill_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (!reaped && std::chrono::steady_clock::now() < kill_deadline)
+	{
+		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+		if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
+		{
+			reaped = true;
+			break;
+		}
+		if (wait_result < 0 && errno != EINTR)
+		{
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	if (raw_status_out != nullptr)
+	{
+		*raw_status_out = raw_status;
+	}
+	return reaped;
+}
 
 inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& command, int timeout_ms, std::stop_token stop_token)
 {
@@ -605,30 +714,41 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 
 	if (pipe(pipe_fds) != 0)
 	{
+		ClosePipeFds(pipe_fds);
 		result.error = "Failed to create capture pipe.";
 		return result;
 	}
 
-	const pid_t pid = fork();
-
-	if (pid < 0)
+	const std::vector<std::string> shell_argv = {"/bin/sh", "-lc", command};
+	std::vector<std::vector<char>> shell_argv_storage;
+	std::vector<char*> shell_argv_ptrs = BuildMutableArgv(shell_argv, shell_argv_storage);
+	const std::string path_env = JoinPathEntries(CollectTerminalPathSearchDirs());
+	std::vector<std::vector<char>> environment_storage;
+	std::vector<char*> environment_ptrs = BuildChildEnvironment({{"PATH", path_env}}, environment_storage);
+	pid_t pid = -1;
+	if (!SpawnSuspendedProcess(
+	        pid,
+	        shell_argv.front(),
+	        shell_argv_ptrs.data(),
+	        environment_ptrs.data(),
+	        {},
+	        {{pipe_fds[1], STDOUT_FILENO}, {pipe_fds[1], STDERR_FILENO}},
+	        {},
+	        false,
+	        &result.error))
 	{
 		ClosePipeFds(pipe_fds);
-		result.error = "fork failed.";
 		return result;
 	}
 
-	if (pid == 0)
+	pid_t watchdog_pid = -1;
+	if (!ArmParentDeathWatchdogAndReleaseChild(pid, watchdog_pid, &result.error))
 	{
-		(void)setpgid(0, 0);
-		dup2(pipe_fds[1], STDOUT_FILENO);
-		dup2(pipe_fds[1], STDERR_FILENO);
+		int ignored_status = 0;
+		(void)TerminateCapturedCommandProcess(pid, &ignored_status);
 		ClosePipeFds(pipe_fds);
-		execl("/bin/sh", "sh", "-lc", command.c_str(), static_cast<char*>(nullptr));
-		_exit(127);
+		return result;
 	}
-
-	(void)setpgid(pid, pid);
 	CloseFdIfOpen(pipe_fds[1]);
 	const int read_fd = pipe_fds[0];
 	const int original_flags = fcntl(read_fd, F_GETFL, 0);
@@ -644,15 +764,11 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 
 	while (!finished)
 	{
-		std::string read_error;
-		(void)ReadAvailablePipeData(read_fd, &result.output, &read_error);
-
 		if (stop_token.stop_requested())
 		{
 			result.canceled = true;
 			result.error = "Command canceled.";
-			SignalTerminalProcessGroup(pid, SIGTERM);
-			(void)waitpid(pid, &raw_status, 0);
+			(void)TerminateCapturedCommandProcess(pid, &raw_status);
 			finished = true;
 			break;
 		}
@@ -661,15 +777,31 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 		{
 			const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count();
 
-			if (elapsed_ms > timeout_ms)
+			if (elapsed_ms >= timeout_ms)
 			{
 				result.timed_out = true;
 				result.error = "Command timed out.";
-				SignalTerminalProcessGroup(pid, SIGTERM);
-				(void)waitpid(pid, &raw_status, 0);
+				(void)TerminateCapturedCommandProcess(pid, &raw_status);
 				finished = true;
 				break;
 			}
+		}
+
+		std::string read_error;
+		const CapturedPipeReadResult read_result = ReadAvailablePipeData(read_fd, result, &read_error);
+		if (read_result == CapturedPipeReadResult::OutputLimit)
+		{
+			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+			(void)TerminateCapturedCommandProcess(pid, &raw_status);
+			finished = true;
+			break;
+		}
+		if (read_result == CapturedPipeReadResult::Failed)
+		{
+			result.error = "Failed to read command output: " + read_error;
+			(void)TerminateCapturedCommandProcess(pid, &raw_status);
+			finished = true;
+			break;
 		}
 
 		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
@@ -683,20 +815,32 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 		if (wait_result < 0)
 		{
 			result.error = "waitpid failed.";
-			SignalTerminalProcessGroup(pid, SIGTERM);
-			(void)waitpid(pid, &raw_status, 0);
+			(void)TerminateCapturedCommandProcess(pid, &raw_status);
 			finished = true;
 			break;
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+	StopParentDeathWatchdog(watchdog_pid);
 
-	std::string final_read_error;
-	(void)ReadAvailablePipeData(read_fd, &result.output, &final_read_error);
+	CapturedPipeReadResult final_read_result = CapturedPipeReadResult::BudgetExhausted;
+	while (!result.output_truncated && final_read_result == CapturedPipeReadResult::BudgetExhausted)
+	{
+		std::string final_read_error;
+		final_read_result = ReadAvailablePipeData(read_fd, result, &final_read_error);
+		if (final_read_result == CapturedPipeReadResult::OutputLimit && result.error.empty())
+		{
+			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+		}
+		else if (final_read_result == CapturedPipeReadResult::Failed && result.error.empty())
+		{
+			result.error = "Failed to read command output: " + final_read_error;
+		}
+	}
 	close(read_fd);
 
-	if (result.canceled || result.timed_out)
+	if (result.canceled || result.timed_out || result.output_truncated || !result.error.empty())
 	{
 		result.exit_code = -1;
 		return result;
@@ -901,6 +1045,47 @@ inline bool WriteAllToFd(int fd, const char* bytes, std::size_t len, std::string
 		return false;
 	}
 	return true;
+}
+
+inline std::shared_ptr<uam::platform::AsyncByteWriter> CreateAsyncFdWriter(int fd, std::string* error_out = nullptr)
+{
+	const int writer_fd = dup(fd);
+	if (writer_fd < 0)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = std::strerror(errno);
+		}
+		return {};
+	}
+	const int flags = fcntl(writer_fd, F_GETFL, 0);
+	if (flags < 0 || fcntl(writer_fd, F_SETFL, flags | O_NONBLOCK) != 0)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = std::strerror(errno);
+		}
+		close(writer_fd);
+		return {};
+	}
+	(void)fcntl(writer_fd, F_SETNOSIGPIPE, 1);
+
+	return std::make_shared<uam::platform::AsyncByteWriter>(
+	    [writer_fd](const char* bytes, std::size_t len, std::string& error) -> std::ptrdiff_t
+	    {
+		    const ssize_t written = write(writer_fd, bytes, len);
+		    if (written >= 0)
+		    {
+			    return static_cast<std::ptrdiff_t>(written);
+		    }
+		    if (IsInterruptedErrno() || IsWouldBlockErrno())
+		    {
+			    return 0;
+		    }
+		    error = std::strerror(errno);
+		    return -1;
+	    },
+	    [writer_fd] { close(writer_fd); });
 }
 
 class MacDataRootLock final : public uam::platform::DataRootLock

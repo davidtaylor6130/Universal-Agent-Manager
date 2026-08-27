@@ -198,6 +198,11 @@ namespace
 
 		return candidate.id > existing.id;
 	}
+
+	std::size_t EffectiveMessageCount(const ChatSession& chat)
+	{
+		return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	}
 } // namespace
 
 std::string ChatDomainService::NewFolderId() const
@@ -441,9 +446,16 @@ void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
 {
-	if (candidate.messages.size() != existing.messages.size())
+	const std::size_t candidate_message_count = EffectiveMessageCount(candidate);
+	const std::size_t existing_message_count = EffectiveMessageCount(existing);
+	if (candidate_message_count != existing_message_count)
 	{
-		return candidate.messages.size() > existing.messages.size();
+		return candidate_message_count > existing_message_count;
+	}
+
+	if (candidate.messages_loaded != existing.messages_loaded)
+	{
+		return candidate.messages_loaded;
 	}
 
 	if (candidate.updated_at != existing.updated_at)
@@ -670,15 +682,18 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.branch_message_edited = replacement_content.has_value();
 	branch.linked_files = source.linked_files;
 	branch.model_id = source.model_id;
+	branch.reviewer_model_id = source.reviewer_model_id;
 	branch.reasoning_effort = source.reasoning_effort;
 	branch.service_tier = source.service_tier;
+	branch.service_tier_explicit = source.service_tier_explicit;
 	branch.extra_flags = source.extra_flags;
 	branch.approval_mode = source.approval_mode;
-	branch.auto_approve_commands = source.auto_approve_commands;
+	branch.uam_agent_id = source.uam_agent_id;
 	branch.command_safety_tier = source.command_safety_tier;
 	branch.memory_level = source.memory_level;
 	branch.memory_enabled = source.memory_enabled;
 	branch.small_model_mode = source.small_model_mode;
+	branch.imported_read_only = source.imported_read_only;
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);

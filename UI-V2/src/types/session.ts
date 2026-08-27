@@ -19,12 +19,16 @@ export interface Session {
   workspaceBaseRef?: string
   workspaceBranchName?: string
   workspaceWorktreeDirectory?: string
+  importedReadOnly?: boolean
   modelId?: string
+  reviewerModelId?: string
   reasoningEffort?: string
   serviceTier?: string
+  serviceTierExplicit?: boolean
   approvalMode?: string
-  autoApproveCommands?: boolean
-  commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
+  uamAgentId?: string
+  uamControlEnabled?: boolean
+  commandSafetyTier?: 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
   smallModelMode?: boolean

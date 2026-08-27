@@ -65,6 +65,33 @@ describe('reconcileCppMessages attachments', () => {
   })
 })
 
+describe('reconcileCppMessages deferred tool content', () => {
+  it('replaces a tool call when only contentDeferred changes', () => {
+    const toolMessage: CppMessage = {
+      role: 'assistant',
+      content: 'Done.',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      toolCalls: [{
+        id: 'tool-1',
+        title: 'Read file',
+        kind: 'read',
+        status: 'completed',
+        content: '',
+        contentDeferred: false,
+      }],
+    }
+    const existing = reconcileCppMessages('chat-1', undefined, [toolMessage])
+
+    const reconciled = reconcileCppMessages('chat-1', existing, [{
+      ...toolMessage,
+      toolCalls: [{ ...toolMessage.toolCalls![0], contentDeferred: true }],
+    }], true)
+
+    expect(reconciled).not.toBe(existing)
+    expect(reconciled[0].toolCalls?.[0].contentDeferred).toBe(true)
+  })
+})
+
 describe('backend state reconciliation', () => {
   it('keeps provider package metadata after sanitizing', () => {
     expect(sanitizeCppProvider({

@@ -6,7 +6,7 @@
 #include "cef/cef_push.h"
 #include "common/config/editor_file_associations.h"
 #include "common/config/settings_normalization.h"
-#include "common/config/voice_input_settings.h"
+#include "common/config/mcp_server_config.h"
 #include "common/memory/memory_levels.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -121,8 +121,18 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		m_app.settings.goal_max_loop_iterations = *max_loop_iterations;
 	}
+	if (const std::optional<int> output_limit_mib = uam::nlohmann_json::IntFieldStrict(payload, "acpTurnOutputLimitMiB"))
+	{
+		m_app.settings.acp_turn_output_limit_mib = *output_limit_mib;
+	}
+	if (const std::optional<int> setup_timeout_seconds = uam::nlohmann_json::IntFieldStrict(payload, "acpSetupInactivityTimeoutSeconds"))
+	{
+		m_app.settings.acp_setup_inactivity_timeout_seconds = *setup_timeout_seconds;
+	}
 	uam::settings::ClampMemorySettings(m_app.settings);
 	uam::settings::ClampGoalSettings(m_app.settings);
+	uam::settings::ClampAcpOutputSettings(m_app.settings);
+	uam::settings::ClampRuntimeTimeoutSettings(m_app.settings);
 	if (const nlohmann::json* worker_bindings = uam::nlohmann_json::FindObjectField(payload, "workerBindings"); worker_bindings != nullptr)
 	{
 		for (auto it = worker_bindings->begin(); it != worker_bindings->end(); ++it)
@@ -141,6 +151,15 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 			m_app.settings.memory_worker_bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
 		}
 	}
+	if (payload.contains("permissionReviewerProviderId"))
+	{
+		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("permissionReviewerProviderId", ""));
+		m_app.settings.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
+	}
+	if (payload.contains("permissionReviewerModelId"))
+	{
+		m_app.settings.permission_reviewer_model_id = uam::strings::Trim(payload.value("permissionReviewerModelId", ""));
+	}
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
@@ -153,36 +172,71 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleSetVoiceInputSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	AppSettings next = m_app.settings;
-	next.voice_input_mode = uam::voice_input::NormalizeMode(payload.value("mode", next.voice_input_mode));
-	next.voice_input_server_base_url = uam::strings::Trim(payload.value("serverBaseUrl", next.voice_input_server_base_url));
-	next.voice_input_server_endpoint = uam::strings::Trim(payload.value("serverEndpoint", next.voice_input_server_endpoint));
-	next.voice_input_server_model = uam::strings::Trim(payload.value("serverModel", next.voice_input_server_model));
-	next.voice_input_api_key_env = uam::strings::Trim(payload.value("apiKeyEnv", next.voice_input_api_key_env));
-
-	if (next.voice_input_mode == uam::voice_input::kServerMode)
+	const nlohmann::json* requested_servers = uam::nlohmann_json::FindArrayField(payload, "servers");
+	if (requested_servers == nullptr)
 	{
-		std::string error;
-		if (!uam::voice_input::ValidateServerSettings(next.voice_input_server_base_url, next.voice_input_server_endpoint,
-		                                                    next.voice_input_server_model, next.voice_input_api_key_env, &error))
-		{
-			cb->Failure(400, error);
-			return;
-		}
+		cb->Failure(400, "servers must be an array");
+		return;
 	}
+	std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(*requested_servers);
+	std::string error;
+	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
+
+	const std::vector<McpServerConfiguration> previous = m_app.settings.mcp_servers;
+	m_app.settings.mcp_servers = std::move(servers);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings.mcp_servers = previous;
+		cb->Failure(500, "Failed to save MCP server settings.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"servers", uam::mcp_server_config::Serialize(m_app.settings.mcp_servers)}}.dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json* favorite_ids = uam::nlohmann_json::FindArrayField(payload, "favoriteUamAgentIds");
+	if (favorite_ids == nullptr || !payload.contains("uamAgentCycleShortcut") || !payload["uamAgentCycleShortcut"].is_string())
+	{
+		cb->Failure(400, "favoriteUamAgentIds must be an array and uamAgentCycleShortcut must be a string.");
+		return;
+	}
+	if (!std::ranges::all_of(*favorite_ids, [](const nlohmann::json& item) { return item.is_string(); }))
+	{
+		cb->Failure(400, "Every favorite UAM agent id must be a string.");
+		return;
+	}
+
+	AppSettings next = m_app.settings;
+	next.favorite_uam_agent_ids = uam::nlohmann_json::TrimmedStringArrayField(payload, "favoriteUamAgentIds");
+	next.uam_agent_cycle_shortcut = uam::strings::TrimAndLowerAscii(payload["uamAgentCycleShortcut"].get_ref<const std::string&>());
+	if (!uam::settings::IsUamAgentCycleShortcut(next.uam_agent_cycle_shortcut))
+	{
+		cb->Failure(400, "Unsupported UAM agent cycle shortcut.");
+		return;
+	}
+	uam::settings::NormalizeUamAgentPreferences(next);
 
 	const AppSettings previous = m_app.settings;
 	m_app.settings = std::move(next);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		m_app.settings = previous;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist voice input settings."));
+		cb->Failure(500, "Failed to save UAM agent preferences.");
 		return;
 	}
+	cb->Success(nlohmann::json{
+	    {"favoriteUamAgentIds", m_app.settings.favorite_uam_agent_ids},
+	    {"uamAgentCycleShortcut", m_app.settings.uam_agent_cycle_shortcut},
+	}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -340,6 +394,8 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 	std::string error;
 	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error))
 	{
+		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(400, FailureDetailOrFallback(error, "Failed to start provider CLI install."));
 		return;
 	}

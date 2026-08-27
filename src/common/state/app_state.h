@@ -8,6 +8,7 @@
 #include "common/runtime/terminal/terminal_dimensions.h"
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -65,6 +66,7 @@ namespace uam
 		double last_idle_confirmed_time_s = 0.0;
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
+		double inactivity_interrupt_requested_time_s = 0.0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;
@@ -88,6 +90,8 @@ namespace uam
 		std::string kind;
 		std::string status;
 		std::string content;
+		std::string permission_review_decision;
+		std::string permission_review_reason;
 		bool is_sub_agent = false;
 		std::string sub_agent_id;
 		std::string sub_agent_title;
@@ -105,6 +109,23 @@ namespace uam
 		std::string id;
 		std::string name;
 		std::string description;
+	};
+
+	struct AcpConfigOptionChoiceState
+	{
+		std::string value;
+		std::string name;
+		std::string description;
+	};
+
+	struct AcpConfigOptionState
+	{
+		std::string id;
+		std::string name;
+		std::string description;
+		std::string category;
+		std::string current_value;
+		std::vector<AcpConfigOptionChoiceState> choices;
 	};
 
 	struct AcpCommandState
@@ -273,6 +294,14 @@ namespace uam
 	struct AcpQueuedUserPromptState
 	{
 		std::string text;
+		std::string uam_agent_id = "build";
+		std::string uam_agent_definition_hash;
+		std::string uam_agent_definition_snapshot;
+		std::string uam_agent_instructions;
+		std::vector<std::string> uam_agent_skills;
+		std::vector<std::string> uam_agent_delegates;
+		std::string uam_agent_workspace_access = "write";
+		std::string uam_agent_execution_capability = "uam-prompt-injected";
 		std::vector<std::string> markdown_store_files;
 		std::vector<std::string> markdown_store_prompt_blocks;
 		std::vector<MessageAttachment> attachments;
@@ -280,6 +309,30 @@ namespace uam
 		bool goal_mode = false;
 		std::string goal_id;
 		bool priority_steer = false;
+	};
+
+	struct PendingModelDiscoveryRetry
+	{
+		std::string chat_id;
+		std::string provider_id;
+		std::string workspace_directory;
+	};
+
+	struct UamControlCapability
+	{
+		std::string id;
+		std::filesystem::path directory;
+		std::string chat_id;
+		std::string session_chat_id;
+		std::string provider_id;
+		std::string agent_id;
+		std::string agent_run_id;
+		std::vector<std::string> agent_skills;
+		std::vector<std::string> agent_delegates;
+		int64_t expires_at_epoch_ms = 0;
+		std::deque<int64_t> request_times_epoch_ms;
+		std::unordered_set<std::string> seen_request_ids;
+		std::unordered_set<std::string> owned_agent_run_ids;
 	};
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
@@ -295,17 +348,26 @@ namespace uam
 		bool initialized = false;
 		bool session_ready = false;
 		bool model_discovery_only = false;
+		bool ephemeral_model_discovery = false;
 		bool load_session_supported = false;
+		bool resume_session_supported = false;
+		bool mcp_http_supported = false;
+		bool mcp_sse_supported = false;
 		bool processing = false;
 		bool waiting_for_permission = false;
 		bool waiting_for_user_input = false;
 		bool cancel_requested = false;
 		double cancel_requested_time_s = 0.0;
+		bool inactivity_timeout_pending = false;
+		bool turn_checkpoint_eligible = false;
+		bool turn_checkpoint_preflight_pending = false;
+		bool turn_checkpoint_commit_pending = false;
 		int next_request_id = 1;
 		int initialize_request_id = 0;
 		int session_setup_request_id = 0;
 		int startup_model_request_id = 0;
 		int reasoning_change_request_id = 0;
+		int config_option_change_request_id = 0;
 		int mode_change_request_id = 0;
 		int model_change_request_id = 0;
 		bool awaiting_model_config_options = false;
@@ -315,6 +377,21 @@ namespace uam
 		int turn_user_message_index = -1;
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
+		std::string active_uam_agent_id = "build";
+		std::string active_uam_agent_definition_hash;
+		std::string active_uam_agent_definition_snapshot;
+		std::vector<std::string> active_uam_agent_skills;
+		std::vector<std::string> active_uam_agent_delegates;
+		std::string active_uam_agent_workspace_access = "write";
+		std::string active_uam_agent_instructions;
+		std::string active_uam_agent_execution_capability = "uam-prompt-injected";
+		std::filesystem::path active_uam_agent_adapter_directory;
+		std::string managed_agent_run_id;
+		std::string uam_control_capability_id;
+		bool managed_launch_attempted = false;
+		int last_settled_turn_serial = 0;
+		std::string last_turn_outcome;
+		std::string last_turn_error;
 		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
@@ -334,6 +411,8 @@ namespace uam
 		// override an explicit stop; cleared on the next user prompt.
 		bool goal_resume_suppressed = false;
 		std::string goal_turn_kind;
+		std::string goal_turn_model_id;
+		bool goal_internal_session = false;
 		bool goal_review_turn = false;
 		bool goal_review_scheduled = false;
 		std::string goal_review_goal_id;
@@ -345,6 +424,8 @@ namespace uam
 		bool acp_resume_fallback_attempted = false;
 		std::string stdout_buffer;
 		std::string stderr_buffer;
+		bool stdout_poll_pending = false;
+		bool stderr_poll_pending = false;
 		std::string recent_stderr;
 		std::string last_error;
 		bool has_last_exit_code = false;
@@ -373,16 +454,24 @@ namespace uam
 		std::optional<std::string> mode_change_previous_command_safety_tier;
 		std::string mode_change_requested_id;
 		std::vector<AcpModelState> available_models;
+		std::vector<AcpConfigOptionState> available_config_options;
 		std::string current_model_id;
 		AcpProviderUsageState provider_usage;
 		std::string pending_startup_model_id;
 		std::string reasoning_change_previous_id;
 		std::optional<std::string> reasoning_change_previous_chat_id;
 		std::string reasoning_change_requested_id;
+		std::string config_option_change_id;
+		std::string config_option_change_previous_value;
+		std::string config_option_change_requested_value;
 		std::string model_change_previous_id;
 		std::optional<std::string> model_change_previous_chat_id;
 		std::string model_change_requested_id;
 		std::vector<AcpTurnEventState> turn_events;
+		std::uint64_t turn_protocol_bytes = 0;
+		bool turn_output_warning_emitted = false;
+		std::array<std::uint64_t, 60> turn_output_bytes_per_second{};
+		std::int64_t turn_output_latest_second = -1;
 		AcpPendingPermissionState pending_permission;
 		std::deque<AcpPendingPermissionState> queued_permissions;
 		AcpPendingUserInputState pending_user_input;
@@ -429,6 +518,56 @@ namespace uam
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
+
+	struct AsyncPermissionReviewTask
+	{
+		std::string chat_id;
+		std::string request_id_json;
+		std::string command_preview;
+		std::shared_ptr<AsyncProcessTaskState> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
+	enum class AsyncTurnCheckpointTaskKind
+	{
+		Preflight,
+		Commit,
+	};
+
+	struct AsyncTurnCheckpointState
+	{
+		std::atomic<bool> finished{false};
+		bool eligible = false;
+		bool ok = false;
+		bool changed = false;
+		std::string checkpoint_sha;
+		std::string parent_sha;
+		std::string message;
+	};
+
+	struct AsyncTurnCheckpointTask
+	{
+		AsyncTurnCheckpointTaskKind kind = AsyncTurnCheckpointTaskKind::Preflight;
+		std::string chat_id;
+		int turn_serial = 0;
+		int assistant_message_index = -1;
+		std::string expected_message_created_at;
+		std::string completed_goal_turn_kind;
+		bool completed_review_turn = false;
+		bool cancelled = false;
+		std::string goal_id;
+		std::shared_ptr<AsyncTurnCheckpointState> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
+	inline void StopAsyncPermissionReviewTask(AsyncPermissionReviewTask& task)
+	{
+		if (task.worker != nullptr)
+		{
+			task.worker->request_stop();
+			task.worker.reset();
+		}
+	}
 
 	inline void StopAsyncMemoryExtractionWorker(AsyncMemoryExtractionTask& task)
 	{
@@ -481,6 +620,15 @@ namespace uam
 		std::string install_output;
 	};
 
+	struct PendingGoalIterationState
+	{
+		std::string owner_chat_id;
+		std::string goal_id;
+		std::string prompt;
+		std::string turn_kind;
+		int repair_attempts = 0;
+	};
+
 	/// <summary>
 	/// Shared application state for the CEF/React provider CLI release slice.
 	/// </summary>
@@ -497,6 +645,13 @@ namespace uam
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		std::vector<AgentRun> agent_runs;
+		std::vector<UamControlCapability> uam_control_capabilities;
+		std::string uam_control_manager_id;
+		std::deque<std::string> queued_agent_run_ids;
+		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
+		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
+		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
 		int selected_chat_index = -1;
 		std::uint64_t state_revision = 0;
 
@@ -512,9 +667,11 @@ namespace uam
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
-		CenterViewMode center_view_mode = CenterViewMode::CliConsole;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
+		// Runtime-only discovery contexts; never serialized or persisted as user chats.
+		std::vector<ChatSession> model_discovery_chats;
+		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;
 
 		std::vector<PendingRuntimeCall> pending_calls;
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
@@ -524,6 +681,9 @@ namespace uam
 		std::string runtime_cli_pin_provider_id;
 		std::deque<std::string> runtime_cli_version_check_queue;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
+		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
+		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;
+		std::deque<PendingGoalIterationState> pending_goal_iterations;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;

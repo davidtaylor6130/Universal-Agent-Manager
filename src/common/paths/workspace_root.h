@@ -46,6 +46,11 @@ namespace uam::paths
 
 	inline std::filesystem::path ResolveWorkspaceRootPath(const uam::AppState& app, const ChatSession& chat)
 	{
+		if (chat.imported_read_only)
+		{
+			return {};
+		}
+
 		std::filesystem::path workspace_root;
 
 		if (IsGitWorktreeIsolated(chat))

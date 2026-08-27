@@ -33,6 +33,10 @@ void ResetAcpTurnStreamState(AcpSessionState& session)
 	session.codex_streamed_reasoning_keys.clear();
 	session.codex_last_reasoning_section.clear();
 	session.turn_events.clear();
+	session.turn_protocol_bytes = 0;
+	session.turn_output_warning_emitted = false;
+	session.turn_output_bytes_per_second.fill(0);
+	session.turn_output_latest_second = -1;
 }
 
 void ClearAcpStartupModelRequest(AcpSessionState& session)
@@ -47,6 +51,14 @@ void ClearAcpReasoningChangeRequest(AcpSessionState& session)
 	session.reasoning_change_previous_id.clear();
 	session.reasoning_change_previous_chat_id.reset();
 	session.reasoning_change_requested_id.clear();
+}
+
+void ClearAcpConfigOptionChangeRequest(AcpSessionState& session)
+{
+	session.config_option_change_request_id = 0;
+	session.config_option_change_id.clear();
+	session.config_option_change_previous_value.clear();
+	session.config_option_change_requested_value.clear();
 }
 
 void ClearAcpModeChangeRequest(AcpSessionState& session)

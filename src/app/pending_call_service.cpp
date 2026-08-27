@@ -168,6 +168,10 @@ bool PollPendingRuntimeCall(uam::AppState& app)
 				selected_chat->branch_root_chat_id = pending_chat_snapshot.branch_root_chat_id;
 				selected_chat->branch_from_message_index = pending_chat_snapshot.branch_from_message_index;
 				selected_chat->branch_message_edited = pending_chat_snapshot.branch_message_edited;
+				selected_chat->goal_owner_chat_id = pending_chat_snapshot.goal_owner_chat_id;
+				selected_chat->goal_iteration_goal_id = pending_chat_snapshot.goal_iteration_goal_id;
+				selected_chat->goal_iteration_turn_kind = pending_chat_snapshot.goal_iteration_turn_kind;
+				selected_chat->goal_iteration_repair_attempts = pending_chat_snapshot.goal_iteration_repair_attempts;
 
 				if (!pending_chat_snapshot.folder_id.empty())
 				{

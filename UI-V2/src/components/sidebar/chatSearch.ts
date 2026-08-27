@@ -1,4 +1,5 @@
 import type { Folder, Session } from '../../types/session'
+import type { AcpAttentionKind } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 export type ChatSearchIndex = Record<string, string>
@@ -21,9 +22,15 @@ interface ChatSearchAcpBinding {
   processing?: boolean
   lifecycleState?: string
   readySinceLastSelect?: boolean
-  attentionKind?: string | null
+  attentionKind?: AcpAttentionKind | null
   lastError?: string
 }
+
+export type DisplayedChatStatus =
+  | { type: 'attention'; kind: AcpAttentionKind }
+  | { type: 'processing' }
+  | { type: 'done' }
+  | null
 
 export interface ChatSearchFilterContext {
   cliBindingBySessionId?: Record<string, ChatSearchCliBinding>
@@ -39,6 +46,7 @@ export interface ChatSearchFolderRow {
 export interface ChatSearchModel {
   isSearching: boolean
   pinnedSessionIds: string[]
+  activeSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
   hasMatches: boolean
@@ -48,12 +56,9 @@ export interface ChatSearchSessionGroups {
   isSearching: boolean
   sessionIdsByFolderId: Map<string, string[]>
   pinnedSessionIds: string[]
+  activeSessionIds: string[]
   unfolderedSessionIds: string[]
 }
-
-const CLI_RUNNING_LIFECYCLE_STATES = new Set(['busy', 'shuttingDown'])
-const ACP_RUNNING_LIFECYCLE_STATES = new Set(['starting', 'processing'])
-const ACP_ATTENTION_LIFECYCLE_STATES = new Set(['waitingPermission', 'waitingUserInput', 'error'])
 
 function hasActiveChatSearchFilters(filters?: ChatSearchFilters): boolean {
   return Boolean(filters && (filters.providerIds.length > 0 || filters.statusIds.length > 0))
@@ -93,27 +98,20 @@ export function sessionMatchesChatSearch(
   return searchTokens.every((token) => indexedText.includes(token))
 }
 
-function sessionHasAttention(acpBinding: ChatSearchAcpBinding | undefined): boolean {
-  return Boolean(
-    acpBinding?.attentionKind ||
-    ACP_ATTENTION_LIFECYCLE_STATES.has(acpBinding?.lifecycleState ?? '') ||
-    acpBinding?.lastError
-  )
-}
-
-function sessionIsRunning(cliBinding: ChatSearchCliBinding | undefined, acpBinding: ChatSearchAcpBinding | undefined): boolean {
-  return Boolean(
-    cliBinding?.running ||
-    cliBinding?.processing ||
-    CLI_RUNNING_LIFECYCLE_STATES.has(cliBinding?.lifecycleState ?? '') ||
-    acpBinding?.running ||
-    acpBinding?.processing ||
-    ACP_RUNNING_LIFECYCLE_STATES.has(acpBinding?.lifecycleState ?? '')
-  )
-}
-
-function sessionIsDone(cliBinding: ChatSearchCliBinding | undefined, acpBinding: ChatSearchAcpBinding | undefined): boolean {
-  return Boolean(cliBinding?.readySinceLastSelect || acpBinding?.readySinceLastSelect)
+export function displayedChatStatus(
+  cliBindings: readonly (ChatSearchCliBinding | undefined)[],
+  acpBindings: readonly (ChatSearchAcpBinding | undefined)[]
+): DisplayedChatStatus {
+  const attention = acpBindings.find((binding) => binding?.attentionKind && binding.attentionKind !== 'error')?.attentionKind
+  if (attention) return { type: 'attention', kind: attention }
+  if (
+    acpBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'waitingPermission') ||
+    cliBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'busy' || binding?.lifecycleState === 'shuttingDown')
+  ) return { type: 'processing' }
+  if (acpBindings.some((binding) => binding?.readySinceLastSelect) || cliBindings.some((binding) => binding?.readySinceLastSelect)) {
+    return { type: 'done' }
+  }
+  return null
 }
 
 function sessionMatchesStatusFilter(
@@ -123,27 +121,25 @@ function sessionMatchesStatusFilter(
 ): boolean {
   const cliBinding = context.cliBindingBySessionId?.[session.id]
   const acpBinding = context.acpBindingBySessionId?.[session.id]
-  const hasAttention = sessionHasAttention(acpBinding)
-  const isRunning = sessionIsRunning(cliBinding, acpBinding)
-  const isDone = sessionIsDone(cliBinding, acpBinding)
+  const status = displayedChatStatus([cliBinding], [acpBinding])
 
   if (statusId === 'pinned') {
     return Boolean(session.isPinned)
   }
 
   if (statusId === 'running') {
-    return isRunning
+    return status?.type === 'processing'
   }
 
   if (statusId === 'attention') {
-    return hasAttention
+    return status?.type === 'attention'
   }
 
   if (statusId === 'done') {
-    return isDone
+    return status?.type === 'done'
   }
 
-  return !session.isPinned && !hasAttention && !isRunning && !isDone
+  return !session.isPinned && status === null
 }
 
 export function sessionMatchesChatSearchFilters(
@@ -228,7 +224,13 @@ export function buildChatSearchSessionGroups(
 
   const sessionIdsByFolderId = new Map<string, string[]>()
   const pinnedSessionIds: string[] = []
+  const activeSessionIds: string[] = []
   const unfolderedSessionIds: string[] = []
+  const activeRootIds = new Set(sortedSessions.flatMap((candidate) => {
+    const cli = filterContext.cliBindingBySessionId?.[candidate.id]
+    const acp = filterContext.acpBindingBySessionId?.[candidate.id]
+    return displayedChatStatus([cli], [acp]) ? [branchRootId(candidate)] : []
+  }))
 
   for (const session of sortedSessions) {
     const rootId = branchRootId(session)
@@ -236,9 +238,12 @@ export function buildChatSearchSessionGroups(
       continue
     }
 
+    if (activeRootIds.has(rootId)) {
+      activeSessionIds.push(session.id)
+    }
+
     if (session.isPinned) {
       pinnedSessionIds.push(session.id)
-      continue
     }
 
     if (session.folderId === null) {
@@ -255,6 +260,7 @@ export function buildChatSearchSessionGroups(
     isSearching,
     sessionIdsByFolderId,
     pinnedSessionIds,
+    activeSessionIds,
     unfolderedSessionIds,
   }
 }
@@ -285,12 +291,14 @@ export function buildChatSearchModelFromGroups(
 
   const hasMatches =
     groups.pinnedSessionIds.length > 0 ||
+    groups.activeSessionIds.length > 0 ||
     folderRows.some((row) => row.sessionIds.length > 0) ||
     unfolderedSessionIds.length > 0
 
   return {
     isSearching: groups.isSearching,
     pinnedSessionIds: groups.pinnedSessionIds,
+    activeSessionIds: groups.activeSessionIds,
     folderRows,
     unfolderedSessionIds,
     hasMatches,

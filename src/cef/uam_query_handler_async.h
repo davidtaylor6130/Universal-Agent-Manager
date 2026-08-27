@@ -4,10 +4,12 @@
 
 #include "cef/uam_query_handler.h"
 
+#include "include/cef_task.h"
+
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <thread>
+#include <utility>
 
 namespace uam::query_handler_async
 {
@@ -76,60 +78,58 @@ class CefQueryCallbackTask : public CefTask
 	IMPLEMENT_REFCOUNTING(CefQueryCallbackTask);
 };
 
+class CefQueryWorkerTask : public CefTask
+{
+  public:
+	CefQueryWorkerTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+	                   std::function<AsyncCefResult()> worker,
+	                   std::function<void(AsyncCefResult&)> completion = {})
+	    : m_callback(std::move(callback)), m_worker(std::move(worker)), m_completion(std::move(completion))
+	{
+	}
+
+	void Execute() override
+	{
+		AsyncCefResult result;
+		try
+		{
+			result = m_worker();
+		}
+		catch (const std::exception& ex)
+		{
+			result = AsyncFailure(500, ex.what());
+		}
+		catch (...)
+		{
+			result = AsyncFailure(500, "Async bridge request failed.");
+		}
+		(void)CefPostTask(TID_UI, new CefQueryCallbackTask(m_callback, std::move(result), std::move(m_completion)));
+	}
+
+  private:
+	CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
+	std::function<AsyncCefResult()> m_worker;
+	std::function<void(AsyncCefResult&)> m_completion;
+	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
+};
+
 template <typename Worker>
 void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
 {
-	std::thread(
-	    [callback = std::move(callback), worker = std::move(worker)]() mutable
-	    {
-		    AsyncCefResult result;
-		    try
-		    {
-			    result = worker();
-		    }
-		    catch (const std::exception& ex)
-		    {
-			    result = AsyncFailure(500, ex.what());
-		    }
-		    catch (...)
-		    {
-			    result = AsyncFailure(500, "Async bridge request failed.");
-		    }
-		    CefPostTask(TID_UI, new CefQueryCallbackTask(callback, std::move(result)));
-	    })
-	    .detach();
+	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(callback, std::move(worker))))
+	{
+		callback->Failure(503, "The background task queue is unavailable.");
+	}
 }
 
 template <typename Worker, typename Completion>
 void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion)
 {
-	std::thread(
-	    [callback = std::move(callback), worker = std::move(worker), completion = std::move(completion)]() mutable
-	    {
-		    AsyncCefResult result;
-		    try
-		    {
-			    result = worker();
-		    }
-		    catch (const std::exception& ex)
-		    {
-			    result = AsyncFailure(500, ex.what());
-		    }
-		    catch (...)
-		    {
-			    result = AsyncFailure(500, "Async bridge request failed.");
-		    }
-		    CefPostTask(
-		        TID_UI,
-		        new CefQueryCallbackTask(
-		            callback,
-		            std::move(result),
-		            [completion = std::move(completion)](AsyncCefResult& completed_result) mutable
-		            {
-			            completion(completed_result);
-		            }));
-	    })
-	    .detach();
+	if (!CefPostTask(TID_FILE_BACKGROUND,
+	                 new CefQueryWorkerTask(callback, std::move(worker), std::move(completion))))
+	{
+		callback->Failure(503, "The background task queue is unavailable.");
+	}
 }
 
 } // namespace uam::query_handler_async

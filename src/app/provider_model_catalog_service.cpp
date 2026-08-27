@@ -1,5 +1,6 @@
 #include "provider_model_catalog_service.h"
 
+#include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_ids.h"
@@ -36,7 +37,7 @@ namespace
 
 		try
 		{
-			return nlohmann::json::parse(text);
+			return nlohmann::json::parse(text, nullptr, true, path.extension() == ".jsonc");
 		}
 		catch (const nlohmann::json::exception&)
 		{
@@ -118,6 +119,12 @@ namespace
 		return out.str();
 	}
 
+	std::string NormalizedWorkspace(std::string_view workspace_directory)
+	{
+		const std::string trimmed = uam::strings::Trim(std::string(workspace_directory));
+		return trimmed.empty() ? std::string{} : uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(fs::path(trimmed))).generic_string();
+	}
+
 	std::string NonSecretCatalogEnvironmentContext()
 	{
 		constexpr std::array<const char*, 17> names{
@@ -178,15 +185,7 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root, const st
 	m_configured_open_code_models = ReadConfiguredOpenCodeModels();
 	m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
 
-	// Seed the cached config mtime. The file commonly does not exist (no OpenCode install),
-	// so guard last_write_time, which throws for a missing path.
-	const fs::path config_path = OpenCodeConfigPath();
-	std::error_code mtime_error;
-	m_open_code_config_mtime = fs::last_write_time(config_path, mtime_error);
-	if (mtime_error)
-	{
-		m_open_code_config_mtime = fs::file_time_type{};
-	}
+	m_open_code_config_fingerprint = OpenCodeConfigFingerprint();
 }
 
 bool ProviderModelCatalogService::MaybeStartRefresh()
@@ -227,25 +226,10 @@ bool ProviderModelCatalogService::Poll()
 			updated = true;
 		}
 
-		// Check opencode config mtime for cache invalidation.
-		const fs::path config_path = OpenCodeConfigPath();
-		std::error_code mtime_error;
-		const fs::file_time_type current_mtime = fs::last_write_time(config_path, mtime_error);
-		if (mtime_error)
+		const std::string current_fingerprint = OpenCodeConfigFingerprint();
+		if (current_fingerprint != m_open_code_config_fingerprint)
 		{
-			if (m_open_code_config_mtime != fs::file_time_type{} ||
-			    !m_configured_open_code_models.empty() ||
-			    !m_configured_open_code_default_model.empty())
-			{
-				m_open_code_config_mtime = fs::file_time_type{};
-				m_configured_open_code_models = nlohmann::json::array();
-				m_configured_open_code_default_model.clear();
-				updated = true;
-			}
-		}
-		else if (current_mtime != m_open_code_config_mtime)
-		{
-			m_open_code_config_mtime = current_mtime;
+			m_open_code_config_fingerprint = current_fingerprint;
 			m_configured_open_code_models = ReadConfiguredOpenCodeModels();
 			m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
 			updated = true;
@@ -279,11 +263,13 @@ nlohmann::json ProviderModelCatalogService::GetCachedCodexModels() const
 	return m_cached_codex_models;
 }
 
-std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id) const
+std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 	const auto configured = m_catalog_key_by_provider_id.find(normalized);
-	return configured == m_catalog_key_by_provider_id.end() ? normalized : configured->second;
+	const std::string provider_key = configured == m_catalog_key_by_provider_id.end() ? normalized : configured->second;
+	const std::string workspace = NormalizedWorkspace(workspace_directory);
+	return workspace.empty() ? provider_key : provider_key + "-workspace-" + StableCatalogFingerprint(workspace);
 }
 
 void ProviderModelCatalogService::LoadPersistentCatalogs()
@@ -309,24 +295,38 @@ bool ProviderModelCatalogService::WritePersistentCatalogs() const
 	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, nlohmann::json{{"version", 1}, {"catalogs", m_persistent_catalogs}}.dump(2) + "\n");
 }
 
-bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models)
+bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory, const nlohmann::json& config_options)
 {
-	if (!models.is_array() || models.empty())
+	const bool has_models = models.is_array() && !models.empty();
+	const bool has_config_options = config_options.is_array() && !config_options.empty();
+	if (!has_models && !has_config_options)
 	{
 		return false;
 	}
 
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-	m_pending_discovery_provider_ids.erase(normalized_provider_id);
-	const std::string key = CatalogKey(normalized_provider_id);
+	const std::string workspace = NormalizedWorkspace(workspace_directory);
+	const std::string key = CatalogKey(normalized_provider_id, workspace);
+	m_pending_discovery_provider_ids.erase(key);
+	m_refresh_attempted_provider_ids.insert(key);
 	const nlohmann::json previous = m_persistent_catalogs.contains(key) ? m_persistent_catalogs[key] : nlohmann::json{};
+	const nlohmann::json* cached_models = uam::nlohmann_json::FindArrayField(previous, "models");
 	m_persistent_catalogs[key] = {
 	    {"providerId", normalized_provider_id},
-	    {"models", models},
+	    {"workspaceDirectory", workspace},
+	    {"models", has_models ? models : cached_models == nullptr ? nlohmann::json::array() : *cached_models},
 	    {"updatedAt", uam::time::TimestampNow()},
 	    {"updatedAtSec", uam::time::TimestampNowSec()},
 	};
+	if (has_config_options)
+	{
+		m_persistent_catalogs[key]["configOptions"] = config_options;
+	}
+	else if (const nlohmann::json* cached_options = uam::nlohmann_json::FindArrayField(previous, "configOptions"))
+	{
+		m_persistent_catalogs[key]["configOptions"] = *cached_options;
+	}
 	if (!WritePersistentCatalogs())
 	{
 		if (previous.is_null() || previous.empty())
@@ -337,25 +337,25 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 		{
 			m_persistent_catalogs[key] = previous;
 		}
-		m_refresh_error_by_provider_id[normalized_provider_id] = "Failed to persist provider model cache.";
+		m_refresh_error_by_provider_id[key] = "Failed to persist provider model cache.";
 		return false;
 	}
-	m_refresh_error_by_provider_id.erase(normalized_provider_id);
+	m_refresh_error_by_provider_id.erase(key);
 	return true;
 }
 
-void ProviderModelCatalogService::RememberRefreshFailure(const std::string& provider_id, std::string error)
+void ProviderModelCatalogService::RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-	m_pending_discovery_provider_ids.erase(normalized);
-	m_refresh_error_by_provider_id[normalized] = uam::strings::Trim(std::move(error));
+	const std::string key = CatalogKey(provider_id, workspace_directory);
+	m_pending_discovery_provider_ids.erase(key);
+	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
 }
 
-nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::string& provider_id) const
+nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const std::string key = CatalogKey(provider_id);
+	const std::string key = CatalogKey(provider_id, workspace_directory);
 	const auto entry = m_persistent_catalogs.find(key);
 	if (entry == m_persistent_catalogs.end() || !entry->is_object())
 	{
@@ -365,51 +365,75 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::s
 	return models == nullptr ? nlohmann::json::array() : *models;
 }
 
-std::string ProviderModelCatalogService::GetProviderRefreshError(const std::string& provider_id) const
+nlohmann::json ProviderModelCatalogService::GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const auto error = m_refresh_error_by_provider_id.find(uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id));
+	const auto entry = m_persistent_catalogs.find(CatalogKey(provider_id, workspace_directory));
+	if (entry == m_persistent_catalogs.end() || !entry->is_object()) return nlohmann::json::array();
+	const nlohmann::json* options = uam::nlohmann_json::FindArrayField(*entry, "configOptions");
+	return options == nullptr ? nlohmann::json::array() : *options;
+}
+
+std::string ProviderModelCatalogService::GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const auto error = m_refresh_error_by_provider_id.find(CatalogKey(provider_id, workspace_directory));
 	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
 }
 
-bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provider_id)
+bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-	const auto entry = m_persistent_catalogs.find(CatalogKey(normalized));
+	const std::string key = CatalogKey(normalized, workspace_directory);
+	const auto entry = m_persistent_catalogs.find(key);
 	const nlohmann::json* models = entry == m_persistent_catalogs.end() ? nullptr : uam::nlohmann_json::FindArrayField(entry.value(), "models");
 	const std::int64_t updated_at = entry == m_persistent_catalogs.end() ? 0 : entry->value("updatedAtSec", static_cast<std::int64_t>(0));
 	if (models != nullptr && !models->empty() && updated_at > 0 && uam::time::TimestampNowSec() - updated_at < kProviderModelCacheFreshnessSeconds)
 	{
 		return false;
 	}
-	if (m_pending_discovery_provider_ids.contains(normalized) || m_refresh_attempted_provider_ids.contains(normalized)) return false;
-	m_pending_discovery_provider_ids.insert(normalized);
-	m_refresh_attempted_provider_ids.insert(normalized);
-	m_refresh_error_by_provider_id.erase(normalized);
+	if (m_pending_discovery_provider_ids.contains(key) || m_refresh_attempted_provider_ids.contains(key)) return false;
+	m_pending_discovery_provider_ids.insert(key);
+	m_refresh_error_by_provider_id.erase(key);
 	return true;
 }
 
-bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id)
+bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-	if (m_pending_discovery_provider_ids.contains(normalized)) return false;
-	m_pending_discovery_provider_ids.insert(normalized);
-	m_refresh_attempted_provider_ids.insert(normalized);
-	m_refresh_error_by_provider_id.erase(normalized);
+	const std::string key = CatalogKey(provider_id, workspace_directory);
+	if (m_pending_discovery_provider_ids.contains(key)) return false;
+	m_pending_discovery_provider_ids.insert(key);
+	m_refresh_error_by_provider_id.erase(key);
 	return true;
 }
 
-bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& provider_id)
+bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory)
 {
-	return BeginDiscoveryIfStale(provider_id);
+	return BeginDiscoveryIfStale(provider_id, workspace_directory);
 }
 
-bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id) const
+bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	return m_pending_discovery_provider_ids.contains(uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id));
+	return m_pending_discovery_provider_ids.contains(CatalogKey(provider_id, workspace_directory));
+}
+
+void ProviderModelCatalogService::MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string key = CatalogKey(provider_id, workspace_directory);
+	m_refresh_attempted_provider_ids.insert(key);
+	m_refresh_error_by_provider_id.erase(key);
+}
+
+void ProviderModelCatalogService::RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string key = CatalogKey(provider_id, workspace_directory);
+	m_pending_discovery_provider_ids.insert(key);
+	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
 }
 
 nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
@@ -449,9 +473,9 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 	return fallback_models;
 }
 
-nlohmann::json ProviderModelCatalogService::FallbackAcpModelsForChat(const std::string& provider_id) const
+nlohmann::json ProviderModelCatalogService::FallbackAcpModelsForChat(const std::string& provider_id, std::string_view workspace_directory) const
 {
-	nlohmann::json cached = GetCachedProviderModels(provider_id);
+	nlohmann::json cached = GetCachedProviderModels(provider_id, workspace_directory);
 	if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli))
 	{
 		return MergeAcpModelArrays(std::move(cached), GetCachedCodexModels());
@@ -488,26 +512,43 @@ fs::path ProviderModelCatalogService::OpenCodeZenFreeModelsCachePath() const
 	return m_data_root / kOpenCodeZenFreeModelsCacheFile;
 }
 
-fs::path ProviderModelCatalogService::OpenCodeConfigPath() const
+std::vector<fs::path> ProviderModelCatalogService::OpenCodeConfigPaths() const
 {
+	fs::path config_directory;
 	if (const std::optional<fs::path> config_home = uam::env::GetTrimmedPath("XDG_CONFIG_HOME"))
 	{
-		return *config_home / "opencode" / "opencode.json";
+		config_directory = *config_home / "opencode";
 	}
-
 #if defined(_WIN32)
-	if (const std::optional<fs::path> app_data = uam::env::GetTrimmedPath("APPDATA"))
+	else if (const std::optional<fs::path> app_data = uam::env::GetTrimmedPath("APPDATA"))
 	{
-		return *app_data / "opencode" / "opencode.json";
+		config_directory = *app_data / "opencode";
 	}
 #endif
-
-	if (const std::optional<fs::path> home = uam::env::GetTrimmedPath("HOME"))
+	else if (const std::optional<fs::path> home = uam::env::GetTrimmedPath("HOME"))
 	{
-		return *home / ".config" / "opencode" / "opencode.json";
+		config_directory = *home / ".config" / "opencode";
+	}
+	else
+	{
+		config_directory = uam::paths::CurrentPathOrDot() / ".config" / "opencode";
 	}
 
-	return uam::paths::CurrentPathOrDot() / ".config" / "opencode" / "opencode.json";
+	std::vector<fs::path> paths{config_directory / "config.json", config_directory / "opencode.json", config_directory / "opencode.jsonc"};
+	if (const std::optional<fs::path> custom_config = uam::env::GetTrimmedPath("OPENCODE_CONFIG")) paths.push_back(*custom_config);
+	return paths;
+}
+
+std::string ProviderModelCatalogService::OpenCodeConfigFingerprint() const
+{
+	std::string fingerprint;
+	for (const fs::path& path : OpenCodeConfigPaths())
+	{
+		std::error_code error;
+		const auto mtime = fs::last_write_time(path, error);
+		fingerprint += path.generic_string() + ":" + (error ? "missing" : std::to_string(static_cast<std::int64_t>(mtime.time_since_epoch().count()))) + "\n";
+	}
+	return fingerprint;
 }
 
 nlohmann::json ProviderModelCatalogService::BuiltInOpenCodeZenFreeModels() const
@@ -592,49 +633,25 @@ std::optional<nlohmann::json> ProviderModelCatalogService::FetchOpenCodeZenModel
 nlohmann::json ProviderModelCatalogService::ReadConfiguredOpenCodeModels()
 {
 	auto models_json = nlohmann::json::array();
-	const nlohmann::json config = ReadJsonFile(OpenCodeConfigPath());
-	if (!config.is_object())
-	{
-		return models_json;
-	}
-
-	const nlohmann::json* providers = uam::nlohmann_json::FindObjectField(config, "provider");
-	if (providers == nullptr)
-	{
-		return models_json;
-	}
-
 	std::vector<std::string> seen_model_ids;
-	for (const auto& provider_entry : providers->items())
+	for (const fs::path& path : OpenCodeConfigPaths())
 	{
-		const std::string provider_id = uam::strings::Trim(provider_entry.key());
-		if (provider_id.empty() || !provider_entry.value().is_object())
+		const nlohmann::json config = ReadJsonFile(path);
+		const nlohmann::json* providers = uam::nlohmann_json::FindObjectField(config, "provider");
+		if (providers == nullptr) continue;
+		for (const auto& provider_entry : providers->items())
 		{
-			continue;
-		}
-
-		const nlohmann::json* models = uam::nlohmann_json::FindObjectField(provider_entry.value(), "models");
-		if (models == nullptr)
-		{
-			continue;
-		}
-
-		for (const auto& model_entry : models->items())
-		{
-			const std::string model_id = uam::strings::Trim(model_entry.key());
-			if (model_id.empty())
+			const std::string provider_id = uam::strings::Trim(provider_entry.key());
+			const nlohmann::json* models = provider_entry.value().is_object() ? uam::nlohmann_json::FindObjectField(provider_entry.value(), "models") : nullptr;
+			if (provider_id.empty() || models == nullptr) continue;
+			for (const auto& model_entry : models->items())
 			{
-				continue;
+				const std::string model_id = uam::strings::Trim(model_entry.key());
+				if (model_id.empty()) continue;
+				const std::string name = model_entry.value().is_object() ? uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"name", "displayName", "display_name"}) : std::string{};
+				const std::string description = model_entry.value().is_object() ? uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"description"}) : std::string{};
+				PushModelIfNew(models_json, seen_model_ids, provider_id + "/" + model_id, uam::strings::NonEmptyOrFallback(name, model_id), description);
 			}
-			const std::string full_id = provider_id + "/" + model_id;
-			std::string name;
-			std::string description;
-			if (model_entry.value().is_object())
-			{
-				name = uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"name", "displayName", "display_name"});
-				description = uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"description"});
-			}
-			PushModelIfNew(models_json, seen_model_ids, full_id, uam::strings::NonEmptyOrFallback(name, model_id), description);
 		}
 	}
 
@@ -643,13 +660,13 @@ nlohmann::json ProviderModelCatalogService::ReadConfiguredOpenCodeModels()
 
 std::string ProviderModelCatalogService::ReadConfiguredOpenCodeDefaultModel()
 {
-	const nlohmann::json config = ReadJsonFile(OpenCodeConfigPath());
-	if (!config.is_object())
+	std::string model_id;
+	for (const fs::path& path : OpenCodeConfigPaths())
 	{
-		return "";
+		const std::string configured = uam::nlohmann_json::TrimmedStringValue(ReadJsonFile(path), {"model"});
+		if (!configured.empty()) model_id = configured;
 	}
-
-	return uam::nlohmann_json::TrimmedStringValue(config, {"model"});
+	return model_id;
 }
 
 nlohmann::json ProviderModelCatalogService::ReadCachedCodexModels()

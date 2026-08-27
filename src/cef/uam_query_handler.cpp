@@ -23,7 +23,8 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	if ((!chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
+	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession";
+	if ((!is_runtime_stop && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
 	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "rescanFolderChats")))
 	{
 		cb->Failure(409, "Wait for the chat worktree operation to finish.");
@@ -50,16 +51,26 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatModel", &UamQueryHandler::HandleSetChatModel},
 		{"setChatCodexOptions", &UamQueryHandler::HandleSetChatCodexOptions},
 		{"setChatApprovalMode", &UamQueryHandler::HandleSetChatApprovalMode},
-		{"setChatAutoApproveCommands", &UamQueryHandler::HandleSetChatAutoApproveCommands},
+		{"setChatUamAgent", &UamQueryHandler::HandleSetChatUamAgent},
+		{"setChatUamControlEnabled", &UamQueryHandler::HandleSetChatUamControlEnabled},
+		{"listUamAgents", &UamQueryHandler::HandleListUamAgents},
+		{"browseProviderAgentImport", &UamQueryHandler::HandleBrowseProviderAgentImport},
+		{"previewProviderAgentImport", &UamQueryHandler::HandlePreviewProviderAgentImport},
+		{"importProviderAgent", &UamQueryHandler::HandleImportProviderAgent},
+		{"getManagedAgentTranscript", &UamQueryHandler::HandleGetManagedAgentTranscript},
+		{"resumeAgentRun", &UamQueryHandler::HandleResumeAgentRun},
 		{"setChatCommandSafetyTier", &UamQueryHandler::HandleSetChatCommandSafetyTier},
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
-		{"setVoiceInputSettings", &UamQueryHandler::HandleSetVoiceInputSettings},
+		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
+		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
+		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
+		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
@@ -109,6 +120,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"createChatWorktree", &UamQueryHandler::HandleCreateChatWorktree},
 		{"discardChatWorktreeChanges", &UamQueryHandler::HandleDiscardChatWorktreeChanges},
 		{"portChatWorktreeChanges", &UamQueryHandler::HandlePortChatWorktreeChanges},
+		{"previewChatTurnRollback", &UamQueryHandler::HandlePreviewChatTurnRollback},
+		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
@@ -126,6 +139,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
 		{"manageQueuedAcpPrompt", &UamQueryHandler::HandleManageQueuedAcpPrompt},
 		{"discoverProviderModels", &UamQueryHandler::HandleDiscoverProviderModels},
+		{"setAcpConfigOption", &UamQueryHandler::HandleSetAcpConfigOption},
 		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
 		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
@@ -137,6 +151,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"deleteTheme", &UamQueryHandler::HandleDeleteTheme},
 		{"setGoal", &UamQueryHandler::HandleSetGoal},
 		{"updateGoalStatus", &UamQueryHandler::HandleUpdateGoalStatus},
+		{"updateGoalObjective", &UamQueryHandler::HandleUpdateGoalObjective},
 		{"setActiveGoal", &UamQueryHandler::HandleSetActiveGoal},
 		{"resumeGoal", &UamQueryHandler::HandleResumeGoal},
 		{"removeGoal", &UamQueryHandler::HandleRemoveGoal},

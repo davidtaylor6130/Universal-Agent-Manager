@@ -17,6 +17,7 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
       url: 'https://example.test/codex',
       installable: true,
     }],
+    hasCatalog: true,
     checking: false,
     error: '',
     lastCheckedAt: '2026-07-13T20:00:00.000Z',
@@ -60,6 +61,20 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
+  it('surfaces a provider update that the backend refuses to start', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({ applyCliProviderVersion: vi.fn(async () => false) })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()
+    })
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
+    act(() => root.unmount())
+  })
+
   it('renders accessible icon-only footer actions and their loading state', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
@@ -77,6 +92,19 @@ describe('UpdatesPanel', () => {
     expect(checking.disabled).toBe(true)
     expect(checking.getAttribute('aria-busy')).toBe('true')
     expect(checking.querySelector('.animate-spin')).toBeTruthy()
+    act(() => root.unmount())
+  })
+
+  it('does not claim the app is current before a successful check or after a failure', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], hasCatalog: false, lastCheckedAt: '' })} onClose={vi.fn()} />))
+    expect(host.textContent).toContain('Updates have not been checked')
+    expect(host.textContent).not.toContain('Everything is up to date')
+
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], hasCatalog: false, error: 'Offline' })} onClose={vi.fn()} />))
+    expect(host.textContent).toContain('Could not confirm update status')
+    expect(host.textContent).not.toContain('Everything is up to date')
     act(() => root.unmount())
   })
 
@@ -144,6 +172,29 @@ describe('UpdatesPanel', () => {
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('OpenCode update failed')
     expect(host.textContent).toContain('EEXIST: /opt/homebrew/bin/opencode')
+    const panel = host.querySelector('[data-testid="updates-panel"]') as HTMLElement
+    const output = host.querySelector('pre') as HTMLElement
+    expect(panel.className).toContain('max-w-full')
+    expect(output.className).toContain('max-w-full')
+    expect(output.className).toContain('break-all')
+    act(() => root.unmount())
+  })
+
+  it('contains long unbroken installer output at the 360px panel boundary', async () => {
+    const host = document.createElement('div')
+    host.style.width = '360px'
+    const root = createRoot(host)
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({
+      updates: [],
+      providerUpdateResults: [{
+        providerId: 'codex-cli', name: 'Codex CLI', status: 'failed', message: 'Failed',
+        output: 'x'.repeat(2000), installedVersion: '0.124.0',
+      }],
+    })} onClose={vi.fn()} />))
+
+    expect(host.querySelector('[data-testid="updates-panel"]')?.className).toContain('max-w-full')
+    expect(host.querySelector('details')?.className).toContain('min-w-0')
+    expect(host.querySelector('pre')?.className).toContain('break-all')
     act(() => root.unmount())
   })
 })

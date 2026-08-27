@@ -3,6 +3,7 @@ import type { Provider } from '../types/provider'
 
 const CACHE_KEY = 'uam-update-catalog-v1'
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+export const UPDATE_REQUEST_TIMEOUT_MS = 15_000
 
 const providerPackages: Record<string, {
   npmPackage: string
@@ -36,24 +37,54 @@ export interface AvailableUpdate {
 }
 
 function cleanVersion(value: string): string {
-  return value.trim().replace(/^[vV]/, '').split('-')[0]
+  return value.trim().replace(/^[vV]/, '').split('+')[0]
 }
 
 export function compareVersions(left: string, right: string): number {
-  const a = cleanVersion(left).split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const b = cleanVersion(right).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const [aCore, aPre = ''] = cleanVersion(left).split('-', 2)
+  const [bCore, bPre = ''] = cleanVersion(right).split('-', 2)
+  const a = aCore.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const b = bCore.split('.').map((part) => Number.parseInt(part, 10) || 0)
   for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
     const difference = (a[index] ?? 0) - (b[index] ?? 0)
     if (difference !== 0) return difference
   }
+  if (!aPre || !bPre) return aPre ? -1 : bPre ? 1 : 0
+  const aParts = aPre.split('.')
+  const bParts = bPre.split('.')
+  for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
+    if (aParts[index] === undefined) return -1
+    if (bParts[index] === undefined) return 1
+    if (aParts[index] === bParts[index]) continue
+    const aNumber = /^\d+$/.test(aParts[index]) ? Number(aParts[index]) : null
+    const bNumber = /^\d+$/.test(bParts[index]) ? Number(bParts[index]) : null
+    if (aNumber !== null && bNumber !== null) return aNumber - bNumber
+    if (aNumber !== null) return -1
+    if (bNumber !== null) return 1
+    return aParts[index] < bParts[index] ? -1 : 1
+  }
   return 0
+}
+
+function isCatalog(value: unknown): value is LatestUpdateCatalog {
+  if (!value || typeof value !== 'object') return false
+  const catalog = value as Partial<LatestUpdateCatalog>
+  if (typeof catalog.checkedAt !== 'string' || !Number.isFinite(Date.parse(catalog.checkedAt))) return false
+  if (!catalog.uam || typeof catalog.uam.version !== 'string' || typeof catalog.uam.url !== 'string') return false
+  if (!catalog.providers || typeof catalog.providers !== 'object' || Array.isArray(catalog.providers)) return false
+  return Object.values(catalog.providers).every((provider) =>
+    Boolean(provider) &&
+    typeof provider.version === 'string' &&
+    typeof provider.url === 'string' &&
+    (!provider.homebrew || (typeof provider.homebrew.version === 'string' && typeof provider.homebrew.url === 'string'))
+  )
 }
 
 export function readCachedUpdateCatalog(): LatestUpdateCatalog | null {
   if (typeof window === 'undefined') return null
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? '') as LatestUpdateCatalog
-    return parsed?.uam && parsed?.providers && parsed?.checkedAt ? parsed : null
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? '')
+    return isCatalog(parsed) ? parsed : null
   } catch {
     return null
   }
@@ -70,17 +101,26 @@ function cacheUpdateCatalog(catalog: LatestUpdateCatalog) {
 export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
   const providerEntries = Object.entries(providerPackages)
   const homebrewEntries = providerEntries
-  const [releaseResult, ...results] = await Promise.allSettled([
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, UPDATE_REQUEST_TIMEOUT_MS)
+  const requests = [
     fetch('https://api.github.com/repos/davidtaylor6130/Universal-Agent-Manager/releases/latest', {
       headers: { Accept: 'application/vnd.github+json' },
+      signal: controller.signal,
     }),
     ...providerEntries.map(([, providerPackage]) =>
-      fetch(`https://registry.npmjs.org/${encodeURIComponent(providerPackage.npmPackage)}/latest`)
+      fetch(`https://registry.npmjs.org/${encodeURIComponent(providerPackage.npmPackage)}/latest`, { signal: controller.signal })
     ),
     ...homebrewEntries.map(([, providerPackage]) =>
-      fetch(`https://formulae.brew.sh/api/${providerPackage.homebrew.kind}/${providerPackage.homebrew.name}.json`)
+      fetch(`https://formulae.brew.sh/api/${providerPackage.homebrew.kind}/${providerPackage.homebrew.name}.json`, { signal: controller.signal })
     ),
-  ])
+  ]
+  const [releaseResult, ...results] = await Promise.allSettled(requests).finally(() => window.clearTimeout(timer))
+  if (timedOut) throw new Error('Update check timed out.')
   const providerResults = results.slice(0, providerEntries.length)
   const homebrewResults = results.slice(providerEntries.length)
   const releaseResponse = releaseResult.status === 'fulfilled' ? releaseResult.value : null
@@ -132,9 +172,7 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
     }
   }
 
-  if (!release.tag_name && Object.keys(providers).length === 0) {
-    throw new Error('Update services are currently unavailable.')
-  }
+  if (!release.tag_name) throw new Error('UAM update service is currently unavailable.')
 
   const catalog: LatestUpdateCatalog = {
     checkedAt: new Date().toISOString(),
@@ -176,12 +214,9 @@ export function availableUpdates(
       : catalogProvider
     const currentVersion = cleanVersion(state.installedVersion)
     if (!currentVersion) continue
-    const preferredVersion = state.preferredVersion === 'latest' ? '' : cleanVersion(state.preferredVersion)
-    const latestVersion = state.status === 'unsupported' && preferredVersion
-      ? preferredVersion
-      : cleanVersion(latest?.version ?? '')
+    const latestVersion = cleanVersion(latest?.version ?? '')
     if (!latestVersion) continue
-    if (state.status !== 'unsupported' && compareVersions(latestVersion, currentVersion) <= 0) continue
+    if (compareVersions(latestVersion, currentVersion) <= 0) continue
     if (dismissedVersions[state.providerId] === latestVersion) continue
     const provider = providers.find((entry) => entry.id === state.providerId)
     updates.push({

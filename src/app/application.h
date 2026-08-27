@@ -41,6 +41,9 @@ class Application
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	CefRefPtr<CefBrowser> m_browser;
 	bool m_done = false;
+	bool m_settingsLoaded = false;
+	bool m_cefInitialized = false;
+	bool m_shutdownComplete = false;
 	bool m_shellActionInvocation = false;
 	std::string m_workspaceFolderAvailabilityFingerprint;
 	std::vector<std::string> m_launchArguments;

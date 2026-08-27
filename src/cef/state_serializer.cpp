@@ -1,5 +1,6 @@
 #include "cef/state_serializer.h"
 
+#include "app/agent_definition_service.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_model_catalog_service.h"
 #include "common/memory/memory_levels.h"
@@ -117,9 +118,14 @@ namespace uam
 		{
 			if (app.provider_model_catalog != nullptr)
 			{
-				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id);
+				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
 			}
 			return nlohmann::json::array();
+		}
+
+		std::string ModelCatalogWorkspace(const AppState& app, const ChatSession& chat)
+		{
+			return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
 		}
 
 		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
@@ -129,6 +135,37 @@ namespace uam
 				return app.provider_model_catalog->FallbackAcpCurrentModelForChat(chat.provider_id, chat.model_id);
 			}
 			return uam::strings::IsBlank(chat.model_id) ? std::string{} : chat.model_id;
+		}
+
+		nlohmann::json FallbackAcpConfigOptionsForChat(const AppState& app, const ChatSession& chat)
+		{
+			if (app.provider_model_catalog == nullptr) return nlohmann::json::array();
+			return app.provider_model_catalog->GetCachedProviderConfigOptions(chat.provider_id, ModelCatalogWorkspace(app, chat));
+		}
+
+		nlohmann::json SerializeProviderModelCatalogs(const AppState& app)
+		{
+			nlohmann::json catalogs = nlohmann::json::array();
+			if (app.provider_model_catalog == nullptr) return catalogs;
+			for (const ProviderProfile& provider : app.provider_profiles)
+			{
+				if (!provider.supports_structured) continue;
+				for (const ChatFolder& folder : app.folders)
+				{
+					ChatSession scope;
+					scope.workspace_directory = folder.directory;
+					const std::string workspace = ModelCatalogWorkspace(app, scope);
+					catalogs.push_back({
+					    {"providerId", provider.id},
+					    {"workspaceDirectory", workspace},
+					    {"availableModels", app.provider_model_catalog->FallbackAcpModelsForChat(provider.id, workspace)},
+					    {"currentModelId", app.provider_model_catalog->FallbackAcpCurrentModelForChat(provider.id, "")},
+					    {"modelsLoading", app.provider_model_catalog->IsDiscoveryPending(provider.id, workspace)},
+					    {"modelRefreshError", app.provider_model_catalog->GetProviderRefreshError(provider.id, workspace)},
+					});
+				}
+			}
+			return catalogs;
 		}
 
 		std::string MessageDigestForFingerprint(const ChatSession& session);
@@ -155,10 +192,13 @@ namespace uam
 			session_json["branchFromMessageIndex"] = session.branch_from_message_index;
 			session_json["branchMessageEdited"] = session.branch_message_edited;
 			session_json["modelId"] = session.model_id;
+			session_json["reviewerModelId"] = session.reviewer_model_id;
 			session_json["reasoningEffort"] = session.reasoning_effort;
 			session_json["serviceTier"] = session.service_tier;
+			session_json["serviceTierExplicit"] = session.service_tier_explicit;
 			session_json["approvalMode"] = session.approval_mode;
-			session_json["autoApproveCommands"] = session.auto_approve_commands;
+			session_json["uamAgentId"] = uam::strings::NonEmptyOrFallback(session.uam_agent_id, "build");
+			session_json["uamControlEnabled"] = session.uam_control_enabled;
 			session_json["commandSafetyTier"] = session.command_safety_tier;
 			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
 			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
@@ -166,6 +206,7 @@ namespace uam
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
 			session_json["memoryLastProcessedAt"] = session.memory_last_processed_at;
 			session_json["workspaceDirectory"] = std::string(workspace_directory);
+			session_json["importedReadOnly"] = session.imported_read_only;
 			AddWorkspaceIsolationFields(session_json, session);
 			session_json["createdAt"] = session.created_at;
 			session_json["updatedAt"] = session.updated_at;
@@ -240,6 +281,7 @@ namespace uam
 			}
 			return {
 			    {"text", prompt.text},
+			    {"uamAgentId", prompt.uam_agent_id},
 			    {"markdownStoreFiles", prompt.markdown_store_files},
 			    {"attachments", std::move(attachments)},
 			    {"goalMode", prompt.goal_mode},
@@ -258,6 +300,8 @@ namespace uam
 			{
 				message_json["processingTimeMs"] = message.processing_time_ms;
 			}
+			if (!message.checkpoint_sha.empty()) message_json["checkpointSha"] = message.checkpoint_sha;
+			if (!message.checkpoint_parent_sha.empty()) message_json["checkpointParentSha"] = message.checkpoint_parent_sha;
 			if (!message.provider.empty())
 			{
 				message_json["providerId"] = message.provider;
@@ -374,6 +418,8 @@ namespace uam
 				FingerprintHashString(hash, message.provider);
 				FingerprintHashString(hash, message.content);
 				FingerprintHashString(hash, std::to_string(message.processing_time_ms));
+				FingerprintHashString(hash, message.checkpoint_sha);
+				FingerprintHashString(hash, message.checkpoint_parent_sha);
 				FingerprintHashString(hash, message.thoughts);
 				FingerprintHashString(hash, message.plan_summary);
 				FingerprintHashString(hash, std::to_string(message.tool_calls.size()));
@@ -577,6 +623,21 @@ namespace uam
 			return models_json;
 		}
 
+		nlohmann::json SerializeAcpConfigOptions(const std::vector<AcpConfigOptionState>& options)
+		{
+			nlohmann::json result = nlohmann::json::array();
+			for (const AcpConfigOptionState& option : options)
+			{
+				nlohmann::json choices = nlohmann::json::array();
+				for (const AcpConfigOptionChoiceState& choice : option.choices)
+				{
+					choices.push_back({{"value", choice.value}, {"name", choice.name}, {"description", choice.description}});
+				}
+				result.push_back({{"id", option.id}, {"name", option.name}, {"description", option.description}, {"category", option.category}, {"currentValue", option.current_value}, {"options", std::move(choices)}});
+			}
+			return result;
+		}
+
 		nlohmann::json SerializeAcpTurnEvents(const std::vector<AcpTurnEventState>& turn_events)
 		{
 			nlohmann::json turn_events_json = JsonArrayWithCapacity(turn_events.size());
@@ -753,6 +814,8 @@ namespace uam
 			const std::string session_id = ResolvedAcpSessionIdForChat(app, chat);
 			acp_json["sessionId"] = session_id;
 			acp_json["providerId"] = chat.provider_id;
+			acp_json["uamAgentExecutionCapability"] =
+			    AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id);
 			acp_json["protocolKind"] = "";
 			acp_json["threadId"] = session_id;
 			acp_json["running"] = false;
@@ -771,8 +834,10 @@ namespace uam
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
+			acp_json["configOptions"] = FallbackAcpConfigOptionsForChat(app, chat);
+			const std::string workspace = ModelCatalogWorkspace(app, chat);
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id, workspace);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id, workspace);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -800,6 +865,8 @@ namespace uam
 
 			acp_json["sessionId"] = session->session_id;
 			acp_json["providerId"] = session->provider_id;
+			acp_json["uamAgentExecutionCapability"] =
+			    session->active_uam_agent_execution_capability;
 			acp_json["protocolKind"] = session->protocol_kind;
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
@@ -825,8 +892,10 @@ namespace uam
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id);
+			acp_json["configOptions"] = session->available_config_options.empty() ? FallbackAcpConfigOptionsForChat(app, chat) : SerializeAcpConfigOptions(session->available_config_options);
+			const std::string workspace = ModelCatalogWorkspace(app, chat);
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id, workspace);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id, workspace);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
@@ -882,6 +951,12 @@ namespace uam
 					goal_json["updatedAt"] = goal.updated_at;
 					goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
 					goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
+					goal_json["workerModelId"] = goal.worker_model_id;
+					goal_json["reviewerModelId"] = goal.reviewer_model_id;
+					goal_json["creator"] = goal.creator == "model" ? "model" : "user";
+					goal_json["creatorProviderId"] = goal.creator_provider_id;
+					goal_json["creatorAgentId"] = goal.creator_agent_id;
+					goal_json["creatorRunId"] = goal.creator_run_id;
 					goals_arr.push_back(std::move(goal_json));
 				}
 				chat_json["goals"] = goals_arr;
@@ -1030,7 +1105,7 @@ namespace uam
 			}
 			else if (provider_state.checked)
 			{
-				status = provider_state.supported ? "supported" : "unsupported";
+				status = service.CompatibilityStatusForProvider(provider_id, provider_state.installed_version);
 			}
 
 			nlohmann::json provider_json;
@@ -1039,6 +1114,8 @@ namespace uam
 			provider_json["selectedVersion"] = selected_version;
 			provider_json["availableVersions"] = std::move(versions);
 			provider_json["preferredVersion"] = preferred_version;
+			provider_json["verifiedVersion"] = service.VerifiedVersionForProvider(provider_id);
+			provider_json["verifiedAt"] = service.VerifiedAtForProvider(provider_id);
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
 			provider_json["running"] = check_running_for_provider || install_running_for_provider;
@@ -1125,6 +1202,30 @@ namespace uam
 			return result;
 		}
 
+		bool IsInternalChat(const ChatSession& chat)
+		{
+			return !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty();
+		}
+
+		std::string SelectedVisibleChatId(const AppState& app)
+		{
+			const ChatSession* selected = ChatDomainService().SelectedChat(app);
+			if (selected != nullptr && !IsInternalChat(*selected)) return selected->id;
+			if (selected != nullptr && !selected->goal_owner_chat_id.empty())
+			{
+				if (const ChatSession* owner = ChatDomainService().FindChatById(app, selected->goal_owner_chat_id);
+				    owner != nullptr && !IsInternalChat(*owner))
+				{
+					return owner->id;
+				}
+			}
+			for (const ChatSession& chat : app.chats)
+			{
+				if (!IsInternalChat(chat)) return chat.id;
+			}
+			return "";
+		}
+
 	} // anonymous namespace
 
 	// ---------------------------------------------------------------------------
@@ -1141,13 +1242,15 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
+		j["statusLine"] = app.status_line;
 
 		// Chat sessions
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
-		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
+		const std::string selected_chat_id = SelectedVisibleChatId(app);
 		const bool has_selected_chat = !selected_chat_id.empty();
 		for (const auto& chat : app.chats)
 		{
+			if (IsInternalChat(chat)) continue;
 			const bool selected_chat = !has_selected_chat || selected_chat_id == chat.id;
 			nlohmann::json chat_json = (selected_chat && chat.messages_loaded) ? SerializeSession(chat) : SerializeFingerprintSession(app, chat);
 			chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
@@ -1164,6 +1267,7 @@ namespace uam
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
+		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app);
 
 		// Settings slice that the UI cares about
 		{
@@ -1181,17 +1285,20 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
+		j["statusLine"] = app.status_line;
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		for (const auto& chat : app.chats)
 		{
+			if (IsInternalChat(chat)) continue;
 			chats_arr.push_back(SerializeFingerprintSession(app, chat));
 		}
 		j["chats"] = chats_arr;
 
-		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(ChatDomainService().SelectedChatId(app));
+		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(SelectedVisibleChatId(app));
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
+		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app);
 		j["memoryActivity"] = SerializeMemoryActivity(app);
 		j["cliVersionManager"] = SerializeCliVersionManager(app);
 
@@ -1240,6 +1347,12 @@ namespace uam
 				goal_json["updatedAt"] = goal.updated_at;
 				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
 				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
+				goal_json["workerModelId"] = goal.worker_model_id;
+				goal_json["reviewerModelId"] = goal.reviewer_model_id;
+				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
+				goal_json["creatorProviderId"] = goal.creator_provider_id;
+				goal_json["creatorAgentId"] = goal.creator_agent_id;
+				goal_json["creatorRunId"] = goal.creator_run_id;
 				goals_arr.push_back(std::move(goal_json));
 			}
 			j["goals"] = goals_arr;
@@ -1309,6 +1422,8 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
+		j["structuredPermissionControl"] = profile.supports_structured && profile.structured_protocol != uam::provider_profile_constants::kProtocolClaudeCodeStreamJson ? "uam" : "provider";
+		j["terminalPermissionControl"] = "provider";
 		j["nativeGoalCommand"] = profile.native_goal_command;
 		
 		const std::string npm_package = GetNpmPackageNameForProvider(profile.id);

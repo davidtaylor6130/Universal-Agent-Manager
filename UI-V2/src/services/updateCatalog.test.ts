@@ -1,11 +1,46 @@
-import { describe, expect, it, vi } from 'vitest'
-import { availableUpdates, compareVersions, fetchLatestUpdateCatalog } from './updateCatalog'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { UPDATE_REQUEST_TIMEOUT_MS, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
 
 describe('update catalog', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it('compares normalized semantic versions', () => {
     expect(compareVersions('V4.2.0', '4.1.9')).toBeGreaterThan(0)
     expect(compareVersions('1.2', '1.2.0')).toBe(0)
     expect(compareVersions('0.9.9', '1.0.0')).toBeLessThan(0)
+    expect(compareVersions('4.5.7-alpha2', '4.5.7')).toBeLessThan(0)
+    expect(compareVersions('4.5.7-alpha.10', '4.5.7-alpha.2')).toBeGreaterThan(0)
+  })
+
+  it('rejects malformed cached catalog entries', () => {
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      },
+    })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T00:00:00.000Z',
+      uam: { version: '4.2.0' },
+      providers: { 'codex-cli': { version: 130, url: 'https://example.test' } },
+    }))
+    expect(readCachedUpdateCatalog()).toBeNull()
+  })
+
+  it('aborts an update check that exceeds the request deadline', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    })))
+
+    const result = expect(fetchLatestUpdateCatalog()).rejects.toThrow('Update check timed out.')
+    await vi.advanceTimersByTimeAsync(UPDATE_REQUEST_TIMEOUT_MS)
+    await result
   })
 
   it('reports UAM and installed provider updates while respecting dismissals', () => {
@@ -21,8 +56,8 @@ describe('update catalog', () => {
       'V4.1.0',
       {
         providers: [
-          { providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'supported', message: '', running: false, lastCommand: '', lastOutput: '' },
-          { providerId: 'gemini-cli', installedVersion: '0.38.1', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'supported', message: '', running: false, lastCommand: '', lastOutput: '' },
+          { providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' },
+          { providerId: 'gemini-cli', installedVersion: '0.38.1', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' },
         ],
       },
       [
@@ -36,7 +71,7 @@ describe('update catalog', () => {
     expect(updates[1]).toMatchObject({ currentVersion: '0.124.0', latestVersion: '0.130.0' })
   })
 
-  it('reports native-policy mismatches even when the installed runtime is newer than npm latest', () => {
+  it('never presents an older curated version as an update', () => {
     const updates = availableUpdates(
       {
         checkedAt: '2026-07-13T00:00:00.000Z',
@@ -48,15 +83,14 @@ describe('update catalog', () => {
         providers: [{
           providerId: 'codex-cli', installedVersion: '0.140.0', selectedVersion: '',
           availableVersions: [{ version: '0.124.0', preferred: true }], preferredVersion: '0.124.0',
-          status: 'unsupported', message: '', running: false, lastCommand: '', lastOutput: '',
+          status: 'known-incompatible', message: '', running: false, lastCommand: '', lastOutput: '',
         }],
       },
       [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
       {},
     )
 
-    expect(updates).toHaveLength(1)
-    expect(updates[0]).toMatchObject({ currentVersion: '0.140.0', latestVersion: '0.124.0', installable: true })
+    expect(updates).toEqual([])
   })
 
   it('uses the Homebrew release channel for Homebrew-managed providers', () => {
@@ -80,7 +114,7 @@ describe('update catalog', () => {
           selectedVersion: '',
           availableVersions: [{ version: 'latest', preferred: true }],
           preferredVersion: 'latest',
-          status: 'supported',
+          status: 'verified',
           message: '',
           running: false,
           lastCommand: '',
@@ -126,10 +160,9 @@ describe('update catalog', () => {
     expect(catalog.providers['codex-cli'].version).toBe('0.130.0')
     expect(catalog.providers['opencode-cli'].homebrew?.version).toBe('1.18.0')
     expect(fetch).toHaveBeenCalledTimes(11)
-    vi.unstubAllGlobals()
   })
 
-  it('keeps successful provider results when another update service is unavailable', async () => {
+  it('does not report a successful catalog when the UAM release cannot be checked', async () => {
     let call = 0
     vi.stubGlobal('fetch', vi.fn(async () => {
       call += 1
@@ -141,10 +174,7 @@ describe('update catalog', () => {
       }
     }))
 
-    const catalog = await fetchLatestUpdateCatalog()
-    expect(catalog.uam.version).toBe('')
-    expect(Object.keys(catalog.providers)).toHaveLength(5)
-    vi.unstubAllGlobals()
+    await expect(fetchLatestUpdateCatalog()).rejects.toThrow('UAM update service is currently unavailable.')
   })
 
   it('keeps successful results when one service returns invalid JSON', async () => {
@@ -166,6 +196,5 @@ describe('update catalog', () => {
     const catalog = await fetchLatestUpdateCatalog()
     expect(catalog.uam.version).toBe('V4.2.0')
     expect(Object.keys(catalog.providers)).toHaveLength(5)
-    vi.unstubAllGlobals()
   })
 })

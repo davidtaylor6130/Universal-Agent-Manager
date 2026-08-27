@@ -13,7 +13,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		return true;
 	}
 
-	bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
+	bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
@@ -118,10 +118,21 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
+		std::vector<wchar_t> environment_block;
+		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out))
+		{
+			DeleteProcThreadAttributeList(terminal.attr_list);
+			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+			terminal.attr_list = nullptr;
+			ClosePseudoConsoleSafe(pseudo_console);
+			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
+			return false;
+		}
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
-		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, nullptr, working_directory_arg, &si.StartupInfo, &pi);
+		void* environment_arg = environment_block.empty() ? nullptr : environment_block.data();
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, environment_arg, working_directory_arg, &si.StartupInfo, &pi);
 		CloseInvalidHandleIfOpen(pipe_con_in);
 		CloseInvalidHandleIfOpen(pipe_con_out);
 
@@ -160,6 +171,24 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 			return false;
 		}
+		if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1))
+		{
+			const DWORD resume_error = GetLastError();
+			TerminateProcessTreeAndWaitBriefly(job, pi.hProcess, 1);
+			CloseHandle(job);
+			CloseInvalidHandleIfOpen(pi.hThread);
+			CloseInvalidHandleIfOpen(pi.hProcess);
+			DeleteProcThreadAttributeList(terminal.attr_list);
+			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
+			terminal.attr_list = nullptr;
+			ClosePseudoConsoleSafe(pseudo_console);
+			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to resume provider process: " + FormatWindowsError(resume_error) + ".";
+			}
+			return false;
+		}
 
 		DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 
@@ -180,8 +209,10 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 
 	void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 	{
+		terminal.input_writer.reset();
 		CloseInvalidHandleIfOpen(terminal.pipe_input);
 		CloseInvalidHandleIfOpen(terminal.pipe_output);
+		terminal.pseudo_console_closer.reset();
 
 		if (terminal.attr_list != nullptr)
 		{
@@ -221,23 +252,11 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		std::size_t offset = 0;
-
-		while (offset < len)
+		if (terminal.input_writer == nullptr)
 		{
-			const std::size_t remaining = len - offset;
-			const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(remaining, static_cast<std::size_t>(MAXDWORD)));
-			DWORD written = 0;
-
-			if (!WriteFile(terminal.pipe_input, bytes + offset, chunk, &written, nullptr) || written == 0)
-			{
-				return false;
-			}
-
-			offset += written;
+			terminal.input_writer = CreateAsyncHandleWriter(terminal.pipe_input);
 		}
-
-		return true;
+		return terminal.input_writer != nullptr && terminal.input_writer->Enqueue(bytes, len);
 	}
 
 	void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const override
@@ -369,7 +388,8 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			try
 			{
 				// ClosePseudoConsole can emit a final frame, so keep draining output concurrently.
-				std::thread([pseudo_console]() { ClosePseudoConsoleSafe(pseudo_console); }).detach();
+				terminal.pseudo_console_closer = std::make_unique<std::jthread>(
+				    [pseudo_console]() { ClosePseudoConsoleSafe(pseudo_console); });
 			}
 			catch (...)
 			{

@@ -4,10 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 
 vi.mock('../sidebar/ChatSearchBar', () => ({
-  ChatSearchBar: ({ value, onChange, onClear }: { value: string; onChange: (value: string) => void; onClear: () => void }) => (
+  ChatSearchBar: ({ value, onChange, onClear, onToggleDeepSearch }: { value: string; onChange: (value: string) => void; onClear: () => void; onToggleDeepSearch: () => void }) => (
     <div data-testid="chat-search">
       <input value={value} onChange={(event) => onChange(event.currentTarget.value)} />
       <button type="button" onClick={onClear}>Clear</button>
+      <button type="button" onClick={onToggleDeepSearch}>Deep</button>
     </div>
   ),
 }))
@@ -23,11 +24,44 @@ import { Sidebar } from './Sidebar'
 describe('Sidebar', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    delete window.cefQuery
     useAppStore.setState({
       setNewChatModalOpen: vi.fn(),
       sessions: [],
       providers: [],
     })
+  })
+
+  it('distinguishes a failed deep search from no matches and retries', async () => {
+    vi.useFakeTimers()
+    const requests: string[] = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(request)
+      onFailure(500, 'Search index unavailable.')
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<Sidebar />))
+
+    const input = host.querySelector('input') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'needle')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deep')?.click())
+    await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Search index unavailable.')
+    expect(requests).toHaveLength(1)
+
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry')?.click())
+    await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+    expect(requests).toHaveLength(2)
+
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+    vi.useRealTimers()
   })
 
   it('places New Chat in the bottom sidebar footer', () => {

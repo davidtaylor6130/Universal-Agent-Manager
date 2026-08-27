@@ -1,6 +1,9 @@
 #pragma once
 
 #include "common/provider/provider_runtime.h"
+#include "common/utils/string_utils.h"
+
+#include <array>
 
 class CopilotCliProviderRuntime final : public IProviderRuntime
 {
@@ -21,9 +24,15 @@ class CopilotCliProviderRuntime final : public IProviderRuntime
 };
 
 const IProviderRuntime& GetCopilotCliProviderRuntime();
-std::string NormalizeCopilotReasoningEffort(std::string_view value);
+inline std::string NormalizeCopilotReasoningEffort(std::string_view value)
+{
+	constexpr auto efforts = std::to_array<std::string_view>({"none", "minimal", "low", "medium", "high", "xhigh", "max"});
+	const auto found = uam::strings::FindEqualIgnoreCase(efforts, uam::strings::TrimAsciiView(value));
+	return found ? std::string(*found) : std::string{};
+}
 std::filesystem::path CopilotSessionStatePath();
 std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,
     const std::filesystem::path& workspace_filter = {},
-    const ProviderRuntimeHistoryLoadOptions& options = {});
+    const ProviderRuntimeHistoryLoadOptions& options = {},
+    std::string* error_out = nullptr);

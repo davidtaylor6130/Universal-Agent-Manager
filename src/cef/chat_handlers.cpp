@@ -215,7 +215,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"chatId", created_chat_id}}.dump());
 }
 
 void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

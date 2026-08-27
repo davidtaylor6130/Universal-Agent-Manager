@@ -4,8 +4,10 @@
 #include "common/platform/platform_state_fields.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
+#include "common/utils/io_utils.h"
 
 #include <array>
 #include <chrono>
@@ -15,9 +17,9 @@
 
 namespace
 {
-	bool IsCopilotProfile(const ProviderProfile& profile)
+	bool IsProvider(const ProviderProfile& profile, std::string_view provider_id)
 	{
-		return uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kCopilotCli);
+		return uam::provider_ids::IsCliProviderAliasOf(profile.id, provider_id);
 	}
 
 	void SetError(std::string* error_out, std::string message)
@@ -28,30 +30,109 @@ namespace
 		}
 	}
 
-	std::optional<std::filesystem::path> PrepareCopilotWorkerIsolationDirectory()
+	std::shared_ptr<const std::filesystem::path> PrepareWorkerIsolationDirectory()
 	{
 		const std::optional<std::filesystem::path> temp = uam::paths::TempDirectoryPathNoThrow();
 		if (!temp)
 		{
-			return std::nullopt;
+			return {};
 		}
 
-		const std::filesystem::path workspace = *temp / "uam-copilot-text-worker-7f4938d1";
+		const std::string worker_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (worker_id.empty())
+		{
+			return {};
+		}
+
+		const std::filesystem::path workspace = *temp / ("uam-text-worker-" + worker_id);
 		std::error_code error;
-		std::filesystem::create_directories(workspace, error);
-		return error ? std::nullopt : std::optional<std::filesystem::path>(workspace);
+		const bool created = std::filesystem::create_directory(workspace, error);
+		if (!created || error)
+		{
+			return {};
+		}
+		return std::shared_ptr<const std::filesystem::path>(new std::filesystem::path(workspace), [](const std::filesystem::path* path)
+		                                                {
+			                                                std::error_code cleanup_error;
+			                                                (void)uam::paths::RemoveAllNoThrow(*path, &cleanup_error);
+			                                                delete path;
+		                                                });
 	}
 
-	bool RemoveCopilotPromptArgument(std::vector<std::string>& argv)
+	bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv)
 	{
-		const auto prompt_flag = std::ranges::find(argv, "-p");
-		if (prompt_flag == argv.end() || std::next(prompt_flag) == argv.end())
+		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 		{
-			return false;
+			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"share":"disabled","autoupdate":false})"))
+			{
+				return false;
+			}
+			argv.insert(argv.begin() + 2, "--pure");
 		}
+		else if (IsProvider(profile, uam::provider_ids::kGeminiCli))
+		{
+			const std::filesystem::path policy_file = workspace / "deny-all-tools.toml";
+			if (!uam::io::WriteTextFile(policy_file, R"([[rule]]
+toolName = "*"
+decision = "deny"
+priority = 999999
 
-		argv.erase(prompt_flag, std::next(prompt_flag, 2));
+[[rule]]
+mcpName = "*"
+decision = "deny"
+priority = 999999
+)"))
+			{
+				return false;
+			}
+			argv.insert(argv.begin() + 1, {
+			                                  "--approval-mode",
+			                                  "plan",
+			                                  "--admin-policy",
+			                                  uam::paths::Utf8PathString(policy_file),
+			                              });
+		}
 		return true;
+	}
+
+	bool RemoveWorkerPromptArgument(const ProviderProfile& profile, std::vector<std::string>& argv)
+	{
+		if (IsProvider(profile, uam::provider_ids::kGeminiCli) || IsProvider(profile, uam::provider_ids::kCopilotCli))
+		{
+			const auto prompt_flag = std::ranges::find(argv, "-p");
+			if (prompt_flag == argv.end() || std::next(prompt_flag) == argv.end()) return false;
+			argv.erase(prompt_flag, std::next(prompt_flag, 2));
+			return true;
+		}
+		if (IsProvider(profile, uam::provider_ids::kClaudeCli))
+		{
+			if (argv.size() < 2 || argv[argv.size() - 2] != "--") return false;
+			argv.erase(argv.end() - 2, argv.end());
+			return true;
+		}
+		if (IsProvider(profile, uam::provider_ids::kCodexCli) || IsProvider(profile, uam::provider_ids::kOpenCodeCli))
+		{
+			if (argv.size() < 2) return false;
+			argv.pop_back();
+			return true;
+		}
+		return false;
+	}
+
+	std::vector<std::pair<std::string, std::string>> WorkerEnvironment(uam::ProviderWorkerPathMode path_mode)
+	{
+#if defined(_WIN32)
+		(void)path_mode;
+		return {};
+#else
+		std::string path = uam::JoinProviderWorkerPathEntries(uam::ProviderWorkerPathEntries(path_mode));
+		if (const std::optional<std::string> inherited = uam::env::GetNonEmptyString("PATH"))
+		{
+			if (!path.empty()) path += ":";
+			path += *inherited;
+		}
+		return path.empty() ? std::vector<std::pair<std::string, std::string>>{} : std::vector<std::pair<std::string, std::string>>{{"PATH", std::move(path)}};
+#endif
 	}
 
 	enum class ProviderWorkerReadStatus
@@ -69,7 +150,11 @@ namespace
 		const std::ptrdiff_t bytes_read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
 		if (bytes_read > 0)
 		{
-			result.output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+			if (!uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
+			{
+				result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+				return ProviderWorkerReadStatus::Error;
+			}
 			return ProviderWorkerReadStatus::Data;
 		}
 		if (bytes_read == 0)
@@ -115,7 +200,7 @@ namespace
 		ProcessExecutionResult result;
 		auto& process_service = PlatformServicesFactory::Instance().process_service;
 		uam::platform::StdioProcessPlatformFields process;
-		if (!process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error))
+		if (!process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error, invocation.environment_overrides))
 		{
 			return result;
 		}
@@ -179,7 +264,7 @@ namespace uam
 		{
 			error_out->clear();
 		}
-		if (IsCopilotProfile(profile))
+		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
 		{
 			if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
 			{
@@ -195,43 +280,35 @@ namespace uam
 			return {};
 		}
 
-		if (IsCopilotProfile(profile))
+		const std::shared_ptr<const std::filesystem::path> isolation_directory = PrepareWorkerIsolationDirectory();
+		if (!isolation_directory)
 		{
-			const std::optional<std::filesystem::path> isolation_directory = PrepareCopilotWorkerIsolationDirectory();
-			if (!isolation_directory)
-			{
-				SetError(error_out, "Failed to prepare the isolated Copilot worker directory.");
-				return {};
-			}
-
-			argv.insert(argv.begin() + 1, {
-			                                  "-C",
-			                                  uam::paths::Utf8PathString(*isolation_directory),
-			                              });
+			SetError(error_out, "Failed to prepare the isolated provider worker directory.");
+			return {};
 		}
-
-#if defined(_WIN32)
-		if (IsCopilotProfile(profile))
+		if (!ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
 		{
-			if (!RemoveCopilotPromptArgument(argv))
-			{
-				SetError(error_out, "Copilot worker prompt arguments are invalid.");
-				return {};
-			}
-
-			ProviderWorkerInvocation invocation;
-			invocation.direct_process = true;
-			invocation.argv = std::move(argv);
-			invocation.standard_input = std::string(prompt);
-			invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
-			return invocation;
+			SetError(error_out, "Failed to prepare the provider worker safety policy.");
+			return {};
 		}
-#endif
+		if (!RemoveWorkerPromptArgument(profile, argv))
+		{
+			SetError(error_out, "Provider worker prompt arguments are invalid.");
+			return {};
+		}
 
 		ProviderWorkerInvocation invocation;
+		invocation.direct_process = true;
 		invocation.argv = std::move(argv);
-		invocation.shell_command = BuildProviderWorkerShellCommand(invocation.argv, path_mode);
-		invocation.command_preview = invocation.shell_command;
+		invocation.standard_input = std::string(prompt);
+		invocation.environment_overrides =
+		    uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(profile);
+		const std::vector<std::pair<std::string, std::string>> worker_environment =
+		    WorkerEnvironment(path_mode);
+		invocation.environment_overrides.insert(invocation.environment_overrides.end(),
+		                                        worker_environment.begin(), worker_environment.end());
+		invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
+		invocation.isolated_working_directory = isolation_directory;
 		return invocation;
 	}
 
@@ -243,13 +320,19 @@ namespace uam
 			result.error = "Provider worker command is empty.";
 			return result;
 		}
+		const std::filesystem::path& actual_working_directory = invocation.isolated_working_directory == nullptr ? working_directory : *invocation.isolated_working_directory;
+		ProcessExecutionResult result;
 		if (invocation.direct_process)
 		{
-			return ExecuteProviderWorkerDirect(invocation, working_directory, timeout_ms, stop_token);
+			result = ExecuteProviderWorkerDirect(invocation, actual_working_directory, timeout_ms, stop_token);
+		}
+		else
+		{
+			auto& process_service = PlatformServicesFactory::Instance().process_service;
+			const std::string shell_command = process_service.BuildShellCommandWithWorkingDirectory(actual_working_directory, invocation.shell_command);
+			result = process_service.ExecuteCommand(shell_command, timeout_ms, stop_token);
 		}
 
-		auto& process_service = PlatformServicesFactory::Instance().process_service;
-		const std::string shell_command = process_service.BuildShellCommandWithWorkingDirectory(working_directory, invocation.shell_command);
-		return process_service.ExecuteCommand(shell_command, timeout_ms, stop_token);
+		return result;
 	}
 } // namespace uam

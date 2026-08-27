@@ -96,9 +96,11 @@ describe('ShellActionsSettings', () => {
     ])
     expect(useAppStore.getState().applyShellActions).toHaveBeenCalledTimes(1)
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const remove = host.querySelector('button[aria-label="Remove Review résumé"]') as HTMLButtonElement
     act(() => remove.click())
+    expect(host.textContent).toContain('Delete “Review résumé”?')
+    const confirmDelete = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Delete action')
+    act(() => confirmDelete?.click())
     expect(host.textContent).not.toContain('Review résumé')
 
     act(() => root.unmount())

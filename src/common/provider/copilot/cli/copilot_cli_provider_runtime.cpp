@@ -20,20 +20,9 @@
 
 namespace
 {
-	constexpr const char* kCopilotAllowAllFlag = "--allow-all";
-	constexpr auto kCopilotReasoningEfforts = std::to_array<std::string_view>({
-	    "none",
-	    "minimal",
-	    "low",
-	    "medium",
-	    "high",
-	    "xhigh",
-	    "max",
-	});
-
 	std::vector<std::string> CopilotFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCopilotAllowAllFlag);
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
 	}
 
 	void AppendCopilotModeArgs(std::vector<std::string>& argv, const ChatSession& chat)
@@ -202,12 +191,6 @@ namespace
 	}
 } // namespace
 
-std::string NormalizeCopilotReasoningEffort(std::string_view value)
-{
-	const std::optional<std::string_view> normalized = uam::strings::FindEqualIgnoreCase(kCopilotReasoningEfforts, uam::strings::TrimAsciiView(value));
-	return normalized ? std::string(*normalized) : std::string();
-}
-
 const char* CopilotCliProviderRuntime::RuntimeId() const
 {
 	return uam::provider_ids::kCopilotCli;
@@ -221,8 +204,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 		return {};
 	}
 
-	AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	provider_settings.provider_yolo_mode = provider_settings.provider_yolo_mode || uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kLegacyYoloApprovalMode || uam::strings::TrimAsciiView(chat.command_safety_tier) == uam::approval_modes::kLegacyYoloApprovalMode;
+	const AppSettings provider_settings = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	std::vector<std::string> argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "copilot");
 
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
@@ -317,15 +299,28 @@ std::filesystem::path CopilotSessionStatePath()
 std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,
     const std::filesystem::path& workspace_filter,
-    const ProviderRuntimeHistoryLoadOptions& options)
+    const ProviderRuntimeHistoryLoadOptions& options,
+    std::string* error_out)
 {
 	std::vector<ChatSession> chats;
-	if (!uam::paths::IsDirectoryNoThrow(session_state_root))
+	if (error_out != nullptr) error_out->clear();
+	std::error_code error;
+	const bool root_exists = std::filesystem::exists(session_state_root, error);
+	if (error)
+	{
+		if (error_out != nullptr) *error_out = "Could not inspect Copilot history: " + error.message();
+		return chats;
+	}
+	if (!root_exists)
 	{
 		return chats;
 	}
+	if (!std::filesystem::is_directory(session_state_root, error) || error)
+	{
+		if (error_out != nullptr) *error_out = error ? "Could not inspect Copilot history: " + error.message() : "Copilot history path is not a directory.";
+		return chats;
+	}
 
-	std::error_code error;
 	constexpr auto directory_options = std::filesystem::directory_options::skip_permission_denied;
 	for (std::filesystem::directory_iterator it(session_state_root, directory_options, error), end;
 	     !error && it != end;
@@ -340,5 +335,6 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 			chats.push_back(std::move(*chat));
 		}
 	}
+	if (error && error_out != nullptr) *error_out = "Could not finish scanning Copilot history: " + error.message();
 	return chats;
 }

@@ -6,13 +6,18 @@ import {
   MIN_MEMORY_RECALL_BUDGET_BYTES,
   useAppStore,
   type CliVersionProviderState,
+  type AcpModel,
   type EditorFileAssociation,
   type MemoryWorkerBinding,
+  type McpServerConfiguration,
   type AcpBinding,
   type AcpProviderUsage,
   type ProviderChatDefaults,
+  type ProviderAgentImportPreview,
+  type UamAgentCycleShortcut,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
+import { sendToCEF } from '../../ipc/cefBridge'
 import {
   applyDocumentTheme,
   BUILT_IN_THEMES,
@@ -28,8 +33,8 @@ import type { Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { BookOpen, Brain, Check, ChevronDown, ChevronRight, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, IconButton, MenuSelect, Switch, ViewportMenu } from '../ui'
+import { BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
 import { ShellActionsSettings } from './ShellActionsSettings'
 import {
   DEFAULT_PROVIDER_ID,
@@ -44,6 +49,13 @@ interface MemoryModelOption {
   detail: string
 }
 
+const PERMISSION_DEFAULT_OPTIONS: MemoryModelOption[] = [
+  { id: 'off', label: 'Ask every time', detail: 'Leave every permission request for you.' },
+  { id: 'acceptEdits', label: 'Accept edits', detail: 'Approve workspace file edits; ask for everything else.' },
+  { id: 'aiReview', label: 'AI Review', detail: 'Use the configured isolated reviewer; failures and uncertainty return to you.' },
+  { id: 'yolo', label: 'YOLO', detail: 'Approve every permission request once.' },
+]
+
 function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
 }
@@ -54,6 +66,10 @@ function latestProviderSession(sessions: Session[], providerId: string) {
     if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
     return latest
   }, undefined)
+}
+
+function workspaceKey(value: string | undefined) {
+  return (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
 function latestProviderUsage(sessions: Session[], providerId: string, bindings: Record<string, AcpBinding>): AcpProviderUsage | null {
@@ -118,13 +134,22 @@ function ProviderUsageSummary({ providerName, usage }: { providerName: string; u
   )
 }
 
-function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '') {
+function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '', discoveredModels: AcpModel[] = []) {
   const caps = providerCapabilities(providerId, provider)
-  const baseOptions = caps.memoryModelIds.map((id) => ({
-    id,
-    label: caps.memoryModelLabels[id]?.label ?? titleFromModelId(id),
-    detail: caps.memoryModelLabels[id]?.detail ?? id,
-  }))
+  const baseOptions = discoveredModels.length > 0
+    ? [
+        { id: '', label: caps.memoryModelLabels['']?.label ?? 'Default', detail: caps.memoryModelLabels['']?.detail ?? 'Use provider settings' },
+        ...discoveredModels.map((model) => ({
+          id: model.id,
+          label: model.name || titleFromModelId(model.id),
+          detail: model.description || model.id,
+        })),
+      ].filter((option, index, options) => options.findIndex((candidate) => candidate.id === option.id) === index)
+    : caps.memoryModelIds.map((id) => ({
+        id,
+        label: caps.memoryModelLabels[id]?.label ?? titleFromModelId(id),
+        detail: caps.memoryModelLabels[id]?.detail ?? id,
+      }))
   if (!selectedModelId || baseOptions.some((option) => option.id === selectedModelId)) return baseOptions
   return [
     ...baseOptions,
@@ -136,7 +161,20 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'cli-version' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'editors' | 'shell-actions' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'about'
+
+interface LocalChatBundleResult {
+  cancelled: boolean
+  status: 'complete' | 'degraded' | 'failed' | 'cancelled'
+  folder: string
+  totalCount: number
+  exportedCount?: number
+  importedCount?: number
+  failedCount?: number
+  renamedCount?: number
+  warnings: string[]
+  errors: string[]
+}
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -148,14 +186,17 @@ interface SettingsSection {
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'appearance', label: 'Appearance', detail: 'Theme and display', icon: Palette },
   { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings', icon: MessageSquare },
+  { id: 'agents', label: 'Agents', detail: 'Favorites and composer shortcut', icon: ClipboardList },
   { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs', icon: TerminalSquare },
   { id: 'voice-input', label: 'Voice Input', detail: 'Speech-to-text provider', icon: Mic },
   { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers', icon: Brain },
   { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill', icon: MemoryStick },
   { id: 'markdown-store', label: 'Skills', detail: 'Reusable prompts and attachments', icon: BookOpen },
   { id: 'goal-loops', label: 'Goal Loops', detail: 'Loop safety', icon: Target },
+  { id: 'mcp-servers', label: 'MCP Servers', detail: 'Local workspace tools', icon: TerminalSquare },
   { id: 'editors', label: 'Editors', detail: 'Workspace launch presets', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', detail: 'Finder and Explorer menus', icon: MousePointerClick },
+  { id: 'chat-data', label: 'Chat Data', detail: 'Local export and import', icon: Download },
   { id: 'about', label: 'About', detail: 'Version information', icon: Info },
 ]
 
@@ -218,8 +259,12 @@ function parseExtensions(value: string) {
 function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'checking') return 'Checking installed version'
   if (manager.status === 'installing') return 'Installing selected version'
-  if (manager.status === 'supported') return 'Installed version is supported'
-  if (manager.status === 'unsupported') return 'Installed version is not in the curated list'
+  if (manager.status === 'verified') return `Verified by UAM${manager.verifiedAt ? ` on ${manager.verifiedAt}` : ''}`
+  if (manager.status === 'untested-newer') return 'Newer than UAM’s last verified build'
+  if (manager.status === 'untested') return 'Not yet verified by this UAM build'
+  if (manager.status === 'known-incompatible') return 'Known incompatible — update before structured use'
+  if (manager.status === 'unavailable') return 'Not installed or unavailable on PATH'
+  if (manager.status === 'provider-managed') return 'Compatibility is managed by the provider'
   return 'Version has not been checked'
 }
 
@@ -314,13 +359,18 @@ export function SettingsModal() {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const providers = useAppStore(useShallow((s) => s.providers))
   const sessions = useAppStore(useShallow((s) => s.sessions))
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
   const acpBindings = useAppStore(useShallow((s) => s.acpBindingBySessionId))
+  const providerModelCatalogs = useAppStore(useShallow((s) => s.providerModelCatalogs))
+  const folders = useAppStore(useShallow((s) => s.folders))
   const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
   const memoryLevelDefault = useAppStore((s) => s.memoryLevelDefault)
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
+  const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
+  const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const setWorkingDisplayMode = useAppStore((s) => s.setWorkingDisplayMode)
@@ -333,30 +383,35 @@ export function SettingsModal() {
   const saveCustomTheme = useAppStore((s) => s.saveCustomTheme)
   const deleteCustomTheme = useAppStore((s) => s.deleteCustomTheme)
   const memoryWorkerBindings = useAppStore(useShallow((s) => s.memoryWorkerBindings))
+  const permissionReviewerProviderId = useAppStore((s) => s.permissionReviewerProviderId)
+  const permissionReviewerModelId = useAppStore((s) => s.permissionReviewerModelId)
   const memoryLastStatus = useAppStore((s) => s.memoryLastStatus)
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const markdownStoreError = useAppStore((s) => s.markdownStoreError)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
-  const savedVoiceMode = useAppStore((s) => s.voiceInputMode)
-  const savedVoiceServerBaseUrl = useAppStore((s) => s.voiceInputServerBaseUrl)
-  const savedVoiceServerEndpoint = useAppStore((s) => s.voiceInputServerEndpoint)
-  const savedVoiceServerModel = useAppStore((s) => s.voiceInputServerModel)
-  const savedVoiceCredentialEnv = useAppStore((s) => s.voiceInputApiKeyEnv)
-  const voiceCapabilities = useAppStore((s) => s.voiceInputCapabilities)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
   const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
+  const mcpServers = useAppStore(useShallow((s) => s.mcpServers))
+  const favoriteUamAgentIds = useAppStore(useShallow((s) => s.favoriteUamAgentIds))
+  const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
+  const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
+  const setMcpServers = useAppStore((s) => s.setMcpServers)
+  const setUamAgentPreferences = useAppStore((s) => s.setUamAgentPreferences)
+  const refreshUamAgents = useAppStore((s) => s.refreshUamAgents)
+  const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
+  const previewProviderAgentImport = useAppStore((s) => s.previewProviderAgentImport)
+  const importProviderAgent = useAppStore((s) => s.importProviderAgent)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
-  const setVoiceInputSettings = useAppStore((s) => s.setVoiceInputSettings)
   const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
   const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
   const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
@@ -365,28 +420,94 @@ export function SettingsModal() {
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
   const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
+  const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
+  const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
   const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
   const [expandedCliVersionProviders, setExpandedCliVersionProviders] = useState<Record<string, boolean>>({})
   const [expandedEditorGroups, setExpandedEditorGroups] = useState<Record<string, boolean>>({})
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
+  const [mcpDraft, setMcpDraft] = useState(() => JSON.stringify(mcpServers, null, 2))
+  const [mcpDraftDirty, setMcpDraftDirty] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [mcpWorkspace, setMcpWorkspace] = useState(() => {
+    const active = sessions.find((session) => session.id === activeSessionId)
+    return active?.workspaceSourceDirectory || active?.workspaceDirectory || folders[0]?.directory || ''
+  })
+  const [mcpExecutable, setMcpExecutable] = useState('')
+  const [mcpSaving, setMcpSaving] = useState(false)
+  const [mcpMessage, setMcpMessage] = useState('')
+  const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
+  const [agentImportProvider, setAgentImportProvider] = useState('opencode-cli')
+  const [agentImportPath, setAgentImportPath] = useState('')
+  const [agentImportId, setAgentImportId] = useState('')
+  const [agentImportAccess, setAgentImportAccess] = useState<'read' | 'write'>('read')
+  const [agentImportWorkspaceScope, setAgentImportWorkspaceScope] = useState(true)
+  const [agentImportAcknowledged, setAgentImportAcknowledged] = useState(false)
+  const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
+  const [agentImportBusy, setAgentImportBusy] = useState(false)
+  const [agentImportMessage, setAgentImportMessage] = useState('')
+  const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
+  const [chatDataFolder, setChatDataFolder] = useState('')
+  const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [themeMessage, setThemeMessage] = useState('')
-  const [voiceMode, setVoiceMode] = useState(savedVoiceMode)
-  const [voiceServerUrl, setVoiceServerUrl] = useState(savedVoiceServerBaseUrl)
-  const [voiceServerEndpoint, setVoiceServerEndpoint] = useState(savedVoiceServerEndpoint)
-  const [voiceServerModel, setVoiceServerModel] = useState(savedVoiceServerModel)
-  const [voiceCredentialEnv, setVoiceCredentialEnv] = useState(savedVoiceCredentialEnv)
-  const [voiceSaving, setVoiceSaving] = useState(false)
-  const [voiceMessage, setVoiceMessage] = useState('')
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
   const popupAnchorsRef = useRef(new Map<string, HTMLButtonElement>())
   const themeImportRef = useRef<HTMLInputElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const openerRef = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
+
+  const requestClose = () => {
+    if (mcpDraftDirty) {
+      setConfirmDiscard(true)
+      return
+    }
+    setSettingsOpen(false)
+  }
+
+  const runChatDataAction = async (operation: 'export' | 'import') => {
+    if (chatDataBusy) return
+    setChatDataBusy(operation)
+    setChatDataMessage(null)
+    const response = await sendToCEF<LocalChatBundleResult>({
+      action: operation === 'export' ? 'exportLocalChats' : 'importLocalChats',
+      payload: { currentValue: chatDataFolder },
+    })
+    setChatDataBusy(null)
+    if (!response.ok || !response.data) {
+      setChatDataMessage({ tone: 'error', text: response.error || `Chat ${operation} failed.` })
+      return
+    }
+    const result = response.data
+    if (result.cancelled) {
+      setChatDataMessage({ tone: 'info', text: 'No folder selected.' })
+      return
+    }
+    setChatDataFolder(result.folder)
+    const detail = [...result.errors, ...result.warnings][0]
+    if (operation === 'export') {
+      const text = result.status === 'complete'
+        ? `Exported ${result.exportedCount ?? 0} chats to ${result.folder}.`
+        : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats. ${detail || 'The bundle is incomplete.'}`
+      setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+      return
+    }
+    const text = result.status === 'complete'
+      ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}.`
+      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
+    setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+  }
+
+  useEffect(() => {
+    dialogRef.current?.focus()
+    return () => openerRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     if (!themeDraft) return
@@ -423,11 +544,11 @@ export function SettingsModal() {
         setOpenCliVersionMenu(null)
         return
       }
-      setSettingsOpen(false)
+      requestClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, openCliVersionMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -447,20 +568,20 @@ export function SettingsModal() {
   }, [markdownStoreDirectory])
 
   useEffect(() => {
-    setVoiceMode(savedVoiceMode)
-    setVoiceServerUrl(savedVoiceServerBaseUrl)
-    setVoiceServerEndpoint(savedVoiceServerEndpoint)
-    setVoiceServerModel(savedVoiceServerModel)
-    setVoiceCredentialEnv(savedVoiceCredentialEnv)
-  }, [savedVoiceCredentialEnv, savedVoiceMode, savedVoiceServerBaseUrl, savedVoiceServerEndpoint, savedVoiceServerModel])
-
-  useEffect(() => {
     setEditorAssociationsDraft(editorFileAssociations)
   }, [editorFileAssociations])
 
   useEffect(() => {
     setDefaultEditorDraft(defaultEditorPresetId)
   }, [defaultEditorPresetId])
+
+  useEffect(() => {
+    if (!mcpDraftDirty) setMcpDraft(JSON.stringify(mcpServers, null, 2))
+  }, [mcpDraftDirty, mcpServers])
+
+  useEffect(() => {
+    if (activeSessionId) void refreshUamAgents(activeSessionId)
+  }, [activeSessionId, refreshUamAgents])
 
   const updateMemoryBinding = (providerId: string, binding: MemoryWorkerBinding) => {
     void setMemorySettings({
@@ -475,8 +596,10 @@ export function SettingsModal() {
     const saved = providerChatDefaults[provider.id]
     return {
       modelId: saved?.modelId ?? '',
+      reviewerModelId: saved?.reviewerModelId ?? '',
+      featurePreference: saved?.featurePreference === 'provider' ? 'provider' : 'uam',
       approvalMode: saved?.approvalMode ?? 'default',
-      autoApproveCommands: saved?.autoApproveCommands ?? false,
+      commandSafetyTier: saved?.commandSafetyTier ?? 'off',
       memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
       memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
       smallModelMode: saved?.smallModelMode ?? false,
@@ -932,8 +1055,49 @@ export function SettingsModal() {
     }
 
     if (selectedSection === 'defaults') {
+      const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
+      const reviewerSession = reviewerProvider ? latestProviderSession(sessions, reviewerProvider.id) : undefined
+      const reviewerWorkspace = reviewerSession?.workspaceDirectory || folders[0]?.directory || ''
+      const reviewerAcp = reviewerProvider
+        ? (reviewerSession ? acpBindings[reviewerSession.id] : undefined)
+          ?? providerModelCatalogs.find((catalog) => catalog.providerId === reviewerProvider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(reviewerWorkspace))
+        : undefined
+      const reviewerModels = reviewerProvider
+        ? memoryModelOptions(reviewerProvider, reviewerProvider.id, permissionReviewerModelId, reviewerAcp?.availableModels)
+        : []
       return (
         <div className="space-y-4">
+          <SectionCard
+            title="AI Permission Reviewer"
+            description="Optional. AI Review runs this provider in an isolated text-only worker. If it is unavailable or uncertain, you decide."
+          >
+            <div className="grid gap-3 sm:grid-cols-2 text-xs" style={{ color: 'var(--text-2)' }}>
+              <div className="grid gap-1">
+                <div>Reviewer provider</div>
+                {renderDefaultsMenu(
+                  'permission-reviewer-provider',
+                  permissionReviewerProviderId,
+                  'AI permission reviewer provider',
+                  [
+                    { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
+                    ...providers.map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
+                  ],
+                  (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
+                  (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
+                )}
+              </div>
+              <div className="grid gap-1">
+                <div>Reviewer model</div>
+                {renderDefaultsMenu(
+                  'permission-reviewer-model',
+                  permissionReviewerModelId,
+                  'AI permission reviewer model',
+                  reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
+                  (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
+                )}
+              </div>
+            </div>
+          </SectionCard>
           <SectionCard
             title="New Chat Defaults"
             description="Choose the provider preselected for new chats and the defaults each provider applies."
@@ -961,11 +1125,14 @@ export function SettingsModal() {
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
                   const providerSession = latestProviderSession(sessions, provider.id)
-                  const providerAcp = providerSession ? acpBindings[providerSession.id] : undefined
+				  const providerWorkspace = providerSession?.workspaceDirectory || folders[0]?.directory || ''
+				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
+				    ?? providerModelCatalogs.find((catalog) => catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
                   const providerUsage = latestProviderUsage(sessions, provider.id, acpBindings)
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
+                  const reviewerModelOptions = buildModelOptions(providerAcp, defaults.reviewerModelId || defaults.modelId, provider, provider.id, true)
                   const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, defaults.modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
                   const liveReasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
                     ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort, caps.reasoningOptions.map((option) => option.id))
@@ -992,6 +1159,19 @@ export function SettingsModal() {
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
                         <ProviderUsageSummary providerName={providerName} usage={providerUsage} />
+                        <div className="grid gap-1">
+                          <div>Feature preference</div>
+                          {renderDefaultsMenu(
+                            `${provider.id}:feature-preference`,
+                            defaults.featurePreference ?? 'uam',
+                            `${providerName} feature preference`,
+                            [
+                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and permission mediation.' },
+                              { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
+                            ],
+                            (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
+                          )}
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
                             <div>Model</div>
@@ -1008,11 +1188,11 @@ export function SettingsModal() {
                             )}
                           </div>
                           <div className="grid gap-1">
-                            <div>Agent</div>
+							<div>Provider mode</div>
                             {renderDefaultsMenu(
                               `${provider.id}:mode`,
                               defaults.approvalMode,
-                              `${providerName} default agent`,
+							  `${providerName} default provider mode`,
                               modeOptions,
                               (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
@@ -1043,13 +1223,25 @@ export function SettingsModal() {
                           )}
                         </div>
                         <div className="grid grid-cols-2 gap-2">
-                          <Button
-                            variant={defaults.autoApproveCommands ? 'primary' : 'secondary'}
-                            size="sm"
-                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, autoApproveCommands: !defaults.autoApproveCommands })}
-                          >
-                            {defaults.autoApproveCommands ? 'Auto approve on' : 'Auto approve off'}
-                          </Button>
+                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                            <div>Permissions</div>
+                            {caps.structuredPermissionControl === 'uam'
+                              ? renderDefaultsMenu(
+                                  `${provider.id}:permissions`,
+                                  defaults.commandSafetyTier,
+                                  `${providerName} default permissions`,
+                                  PERMISSION_DEFAULT_OPTIONS.filter((option) => option.id !== 'acceptEdits' || caps.hasAcceptEditsMode),
+                                  (commandSafetyTier) => {
+                                    const nextDefaults = { ...defaults, commandSafetyTier: commandSafetyTier as ProviderChatDefaults['commandSafetyTier'] }
+                                    if (commandSafetyTier === 'yolo' && defaults.commandSafetyTier !== 'yolo') {
+                                      setPendingDefaultYolo({ providerId: provider.id, providerName, defaults: nextDefaults })
+                                      return
+                                    }
+                                    updateProviderDefaults(provider.id, nextDefaults)
+                                  }
+                                )
+                              : <div className="rounded-md border px-2 py-2" style={{ borderColor: 'var(--border)' }}>Provider managed</div>}
+                          </div>
                           <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                             <div>Memory</div>
                             {renderDefaultsMenu(
@@ -1065,6 +1257,37 @@ export function SettingsModal() {
                             )}
                           </div>
                         </div>
+                        {pendingDefaultYolo?.providerId === provider.id && (
+                          <Notice
+                            tone="warning"
+                            title="Use YOLO by default?"
+                            dismissLabel={`Dismiss ${providerName} default YOLO warning`}
+                            onDismiss={() => setPendingDefaultYolo(null)}
+                            actions={(
+                              <>
+                                <Button size="sm" onClick={() => setPendingDefaultYolo(null)}>Cancel</Button>
+                                <Button size="sm" variant="danger" onClick={() => {
+                                  const pending = pendingDefaultYolo
+                                  setPendingDefaultYolo(null)
+                                  updateProviderDefaults(pending.providerId, pending.defaults)
+                                }}>Use YOLO</Button>
+                              </>
+                            )}
+                          >
+                            New {pendingDefaultYolo.providerName} chats will automatically approve computer use, commands, file changes, and every other permission request.
+                          </Notice>
+                        )}
+                        <div className="grid gap-1">
+                          <div>Goal reviewer model</div>
+                          {renderDefaultsMenu(
+                            `${provider.id}:goal-reviewer`,
+                            defaults.reviewerModelId || defaults.modelId,
+                            `${providerName} goal reviewer model`,
+                            reviewerModelOptions,
+                            (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
+                          )}
+                          <span style={{ color: 'var(--text-3)' }}>Used for architecture and read-only review; the normal model remains the worker.</span>
+                        </div>
                         <div className="grid gap-1">
                           <Button
                             variant={defaults.smallModelMode ? 'primary' : 'secondary'}
@@ -1072,14 +1295,14 @@ export function SettingsModal() {
                             aria-pressed={defaults.smallModelMode}
                             onClick={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })}
                           >
-                            {defaults.smallModelMode ? 'Small-model workflow on' : 'Small-model workflow off'}
+                            {defaults.smallModelMode ? 'Architect + worker on' : 'Architect + worker off'}
                           </Button>
-                          <span style={{ color: 'var(--text-3)' }}>Plan first, then run and review one verified step at a time.</span>
+                          <span style={{ color: 'var(--text-3)' }}>The reviewer model plans and checks one step at a time; the normal model implements it.</span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <IconButton icon={<RefreshCw size={14} className={modelsLoading ? 'animate-spin' : ''} />} label={`Refresh ${providerName} models`} disabled={!providerSession || modelsLoading} onClick={() => providerSession && void discoverProviderModels(providerSession.id)} />
+						  <IconButton icon={<RefreshCw size={14} className={modelsLoading ? 'animate-spin' : ''} />} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />
                           <span role="status" className="text-xs" style={{ color: modelRefreshError ? 'var(--red)' : 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : modelRefreshError || (providerSession ? 'Cached models are ready' : 'Open a chat to refresh models')}
+							{modelsLoading ? 'Refreshing models…' : modelRefreshError || (providerWorkspace ? 'Cached models are ready' : 'Add a workspace to refresh models')}
                           </span>
                         </div>
                       </div>
@@ -1087,6 +1310,228 @@ export function SettingsModal() {
                   )
                 })}
               </div>
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    if (selectedSection === 'agents') {
+      const selectableCustomAgents = activeUamAgents
+        .filter((agent) => !agent.builtIn && !favoriteUamAgentIds.includes(agent.id))
+        .sort((left, right) => left.id.localeCompare(right.id))
+      const selectedCandidate = selectableCustomAgents.some((agent) => agent.id === favoriteAgentCandidate)
+        ? favoriteAgentCandidate
+        : selectableCustomAgents[0]?.id ?? ''
+      const updatePreferences = (favoriteIds: string[], shortcut: UamAgentCycleShortcut = uamAgentCycleShortcut) => {
+        void setUamAgentPreferences({ favoriteUamAgentIds: favoriteIds, uamAgentCycleShortcut: shortcut })
+      }
+      const moveFavorite = (index: number, offset: -1 | 1) => {
+        const target = index + offset
+        if (target < 0 || target >= favoriteUamAgentIds.length) return
+        const next = [...favoriteUamAgentIds]
+        ;[next[index], next[target]] = [next[target], next[index]]
+        updatePreferences(next)
+      }
+      const previewImport = async () => {
+        if (!agentImportPath.trim()) return
+        setAgentImportBusy(true)
+        setAgentImportMessage('')
+        const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
+        setAgentImportPreview(preview)
+        setAgentImportId(preview?.suggestedId ?? '')
+        setAgentImportAcknowledged(false)
+        setAgentImportMessage(preview ? '' : 'Preview failed.')
+        setAgentImportBusy(false)
+      }
+      const runImport = async () => {
+        if (!activeSessionId || !agentImportPreview?.supported) return
+        setAgentImportBusy(true)
+        const imported = await importProviderAgent({
+          chatId: activeSessionId,
+          providerId: agentImportProvider,
+          sourcePath: agentImportPath.trim(),
+          canonicalId: agentImportId.trim(),
+          workspaceAccess: agentImportAccess,
+          workspaceScope: agentImportWorkspaceScope,
+          acknowledgeIgnoredFields: agentImportAcknowledged,
+        })
+        setAgentImportMessage(imported ? `Imported ${agentImportId.trim()}.` : 'Import failed. The source or target may have changed; preview it again.')
+        if (imported) setAgentImportPreview(null)
+        setAgentImportBusy(false)
+      }
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Composer agents"
+            description="Build and Plan always come first. The configured shortcut then follows these favorites in the saved order, skipping agents unavailable in the current workspace."
+          >
+            <div className="grid gap-4">
+              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <span>Agent cycle shortcut</span>
+                <MenuSelect
+                  label="Agent cycle shortcut"
+                  value={uamAgentCycleShortcut}
+                  options={[
+                    { value: 'shift+tab', label: 'Shift+Tab' },
+                    { value: 'control+shift+tab', label: 'Ctrl+Shift+Tab' },
+                    { value: 'alt+shift+tab', label: 'Alt+Shift+Tab' },
+                    { value: 'meta+shift+tab', label: 'Command+Shift+Tab' },
+                    { value: 'disabled', label: 'Disabled' },
+                  ]}
+                  onChange={(value) => updatePreferences(favoriteUamAgentIds, value as UamAgentCycleShortcut)}
+                />
+              </label>
+
+              <div className="grid gap-2">
+                <div className="text-xs" style={{ color: 'var(--text-2)' }}>Ordered favorites</div>
+                {favoriteUamAgentIds.length === 0 ? (
+                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>No custom favorites. The cycle is Build, then Plan.</div>
+                ) : favoriteUamAgentIds.map((agentId, index) => {
+                  const available = activeUamAgents.some((agent) => agent.id === agentId)
+                  return (
+                    <div key={agentId} className="flex items-center gap-2 rounded-md px-2 py-2" style={{ border: '1px solid var(--border)' }}>
+                      <span className="min-w-0 flex-1 truncate text-sm">{agentId}</span>
+                      {!available && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Unavailable here</span>}
+                      <Button size="sm" disabled={index === 0} onClick={() => moveFavorite(index, -1)} aria-label={`Move ${agentId} up`}>Up</Button>
+                      <Button size="sm" disabled={index === favoriteUamAgentIds.length - 1} onClick={() => moveFavorite(index, 1)} aria-label={`Move ${agentId} down`}>Down</Button>
+                      <Button size="sm" variant="danger" onClick={() => updatePreferences(favoriteUamAgentIds.filter((id) => id !== agentId))} aria-label={`Remove ${agentId}`}>Remove</Button>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <MenuSelect
+                  label="Favorite UAM agent"
+                  value={selectedCandidate}
+                  options={selectableCustomAgents.length > 0
+                    ? selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))
+                    : [{ value: '', label: activeSessionId ? 'No more selectable custom agents' : 'Open a chat to list workspace agents' }]}
+                  onChange={setFavoriteAgentCandidate}
+                  disabled={selectableCustomAgents.length === 0}
+                />
+                <Button
+                  size="sm"
+                  disabled={!selectedCandidate}
+                  onClick={() => {
+                    updatePreferences([...favoriteUamAgentIds, selectedCandidate])
+                    setFavoriteAgentCandidate('')
+                  }}
+                >Add favorite</Button>
+              </div>
+            </div>
+          </SectionCard>
+          <SectionCard
+            title="Import provider agent"
+			description="Copy one OpenCode, Copilot CLI, Gemini CLI, or Claude Code Markdown agent into UAM. Provider tool and security settings are never silently translated."
+          >
+            <div className="grid gap-3">
+              <MenuSelect
+                label="Source provider"
+                value={agentImportProvider}
+                options={[
+                  { value: 'opencode-cli', label: 'OpenCode' },
+                  { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
+                  { value: 'gemini-cli', label: 'Gemini CLI' },
+				  { value: 'claude-cli', label: 'Claude Code' },
+                ]}
+                onChange={(value) => {
+                  setAgentImportProvider(value)
+                  setAgentImportPreview(null)
+                  setAgentImportMessage('')
+                }}
+              />
+              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <span>Native Markdown file</span>
+                <span className="flex gap-2">
+                  <input
+                    aria-label="Native agent Markdown file"
+                    value={agentImportPath}
+                    onChange={(event) => {
+                      setAgentImportPath(event.target.value)
+                      setAgentImportPreview(null)
+                      setAgentImportMessage('')
+                    }}
+                    className="min-w-0 flex-1 rounded px-2 py-1.5 focus:outline-none"
+                    style={{ border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+                  />
+                  <Button size="sm" onClick={() => void browseProviderAgentImport(agentImportPath).then((path) => {
+                    if (!path) return
+                    setAgentImportPath(path)
+                    setAgentImportPreview(null)
+                    setAgentImportMessage('')
+                  })}>Browse</Button>
+                  <Button size="sm" loading={agentImportBusy} disabled={!agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
+                </span>
+              </label>
+
+              {agentImportPreview && (
+                <div className="grid gap-2 rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+                  <div><strong>{agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}</strong> · {agentImportPreview.mode || 'unknown mode'}</div>
+                  {agentImportPreview.securityFields.length > 0 && (
+                    <div role="alert" style={{ color: 'var(--red)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
+                  )}
+                  {agentImportPreview.ignoredFields.length > 0 && (
+                    <div style={{ color: 'var(--text-2)' }}>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
+                  )}
+                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--red)' }}>{agentImportPreview.error}</div>}
+                  {agentImportPreview.supported && (
+                    <>
+                      <label className="grid gap-1">
+                        <span>UAM agent ID</span>
+                        <input
+                          aria-label="Imported UAM agent ID"
+                          value={agentImportId}
+                          onChange={(event) => setAgentImportId(event.target.value)}
+                          className="rounded px-2 py-1.5 focus:outline-none"
+                          style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                        />
+                      </label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <MenuSelect
+                          label="Workspace access"
+                          value={agentImportAccess}
+                          options={[
+                            { value: 'read', label: 'Read only', description: 'The imported agent cannot approve writes.' },
+                            { value: 'write', label: 'Read and write', description: 'The imported agent may request workspace changes.' },
+                          ]}
+                          onChange={(value) => setAgentImportAccess(value === 'write' ? 'write' : 'read')}
+                        />
+                        <MenuSelect
+                          label="Install scope"
+                          value={agentImportWorkspaceScope ? 'workspace' : 'global'}
+                          options={[
+                            { value: 'workspace', label: 'This workspace' },
+                            { value: 'global', label: 'All workspaces' },
+                          ]}
+                          onChange={(value) => setAgentImportWorkspaceScope(value === 'workspace')}
+                        />
+                      </div>
+                      {agentImportPreview.ignoredFields.length > 0 && (
+                        <label className="flex items-start gap-2" style={{ color: 'var(--text-2)' }}>
+                          <input
+                            type="checkbox"
+                            aria-label="Acknowledge omitted provider fields"
+                            checked={agentImportAcknowledged}
+                            onChange={(event) => setAgentImportAcknowledged(event.target.checked)}
+                          />
+                          <span>I understand the listed provider-only fields will not be copied.</span>
+                        </label>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={agentImportBusy}
+                        disabled={!activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
+                        onClick={() => void runImport()}
+                      >Import agent</Button>
+                    </>
+                  )}
+                </div>
+              )}
+              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--green)' : 'var(--red)' }}>{agentImportMessage}</div>}
+              {!activeSessionId && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat before importing.</div>}
             </div>
           </SectionCard>
         </div>
@@ -1137,7 +1582,7 @@ export function SettingsModal() {
                           {versionStatusText(manager)}
                         </div>
                         {manager.message && (
-                          <div className="text-xs mt-1" style={{ color: manager.status === 'unsupported' ? 'var(--red)' : 'var(--text-3)' }}>
+                          <div className="text-xs mt-1" style={{ color: manager.status === 'known-incompatible' || manager.status === 'unavailable' ? 'var(--red)' : 'var(--text-2)' }}>
                             {manager.message}
                           </div>
                         )}
@@ -1186,12 +1631,29 @@ export function SettingsModal() {
                           label={manager.running ? `Installing ${providerName} CLI version` : `Apply ${providerName} CLI version`}
                           variant={canApplyCliVersion ? 'solid' : 'ghost'}
                           disabled={!canApplyCliVersion}
-                          onClick={() => {
-                            if (!window.confirm(`Install ${providerName} ${selectedCliVersion}?`)) return
-                            void applyCliProviderVersion(manager.providerId, selectedCliVersion)
-                          }}
+                          onClick={() => setPendingCliInstall({ providerId: manager.providerId, providerName, version: selectedCliVersion })}
                         />
                       </div>
+                      {pendingCliInstall?.providerId === manager.providerId && (
+                        <Notice
+                          tone="warning"
+                          title="Install provider CLI?"
+                          dismissLabel={`Dismiss ${providerName} CLI install warning`}
+                          onDismiss={() => setPendingCliInstall(null)}
+                          actions={(
+                            <>
+                              <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
+                              <Button size="sm" variant="danger" onClick={() => {
+                                const pending = pendingCliInstall
+                                setPendingCliInstall(null)
+                                void applyCliProviderVersion(pending.providerId, pending.version)
+                              }}>Install version</Button>
+                            </>
+                          )}
+                        >
+                          Install {pendingCliInstall.providerName} {pendingCliInstall.version} globally with npm?
+                        </Notice>
+                      )}
                     </div>
 
                     {(manager.lastCommand || manager.lastOutput) && (
@@ -1296,9 +1758,13 @@ export function SettingsModal() {
               {providers.map((provider) => {
                 const binding = memoryWorkerBindings[provider.id] ?? { workerProviderId: provider.id, workerModelId: '' }
                 const workerProvider = providers.find((candidate) => candidate.id === binding.workerProviderId) ?? provider
+                const workerSession = latestProviderSession(sessions, binding.workerProviderId)
+                const workerWorkspace = workerSession?.workspaceDirectory || folders[0]?.directory || ''
+                const workerAcp = (workerSession ? acpBindings[workerSession.id] : undefined)
+                  ?? providerModelCatalogs.find((catalog) => catalog.providerId === binding.workerProviderId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(workerWorkspace))
                 const providerMenuId = `${provider.id}:provider`
                 const modelMenuId = `${provider.id}:model`
-                const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId)
+                const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId, workerAcp?.availableModels)
                 return (
                   <div
                     key={provider.id}
@@ -1499,54 +1965,10 @@ export function SettingsModal() {
     }
 
     if (selectedSection === 'voice-input') {
-      let serverUrlError = ''
-      if (voiceServerUrl.trim()) {
-        try {
-          const url = new URL(voiceServerUrl)
-          if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) serverUrlError = 'Use HTTPS unless the server runs on localhost.'
-        } catch {
-          serverUrlError = 'Enter a valid server URL.'
-        }
-      }
-      const voiceDirty = voiceMode !== savedVoiceMode || voiceServerUrl !== savedVoiceServerBaseUrl || voiceServerEndpoint !== savedVoiceServerEndpoint || voiceServerModel !== savedVoiceServerModel || voiceCredentialEnv !== savedVoiceCredentialEnv
-      const selectedCapability = voiceCapabilities[voiceMode]
-      const serverInvalid = voiceMode === 'server' && (!!serverUrlError || !voiceServerUrl.trim() || !voiceServerEndpoint.trim() || !voiceServerModel.trim() || !voiceCredentialEnv.trim())
       return (
-        <SectionCard title="Voice Input" description="Choose where recorded audio is transcribed. Audio is only sent to the selected service.">
-          <div className="grid gap-4">
-            <MenuSelect
-              label="Speech-to-text service"
-              value={voiceMode}
-              options={[
-                { value: 'system', label: 'System speech recognition', description: voiceCapabilities.system.reason || 'Use the operating system speech service.' },
-                { value: 'local', label: 'Local AI model · Coming soon', description: voiceCapabilities.local.reason || 'Requires a compatible local model and hardware check.' },
-                { value: 'server', label: 'OpenAI-compatible server', description: voiceCapabilities.server.reason || 'Send recorded audio to an audio transcription API.' },
-              ]}
-              onChange={(value) => {
-                const next = value as typeof voiceMode
-                if (voiceCapabilities[next].supported) setVoiceMode(next)
-                else setVoiceMessage(voiceCapabilities[next].reason || 'This speech-to-text service is unavailable.')
-              }}
-            />
-            {voiceMode === 'system' && <div role="status" className="rounded-lg p-3 text-xs animate-fade-in" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>Uses the current on-device/system dictation service. Choose a server for AI speech-to-text.</div>}
-            {voiceMode === 'local' && <div role="status" className="rounded-lg p-3 text-xs animate-fade-in" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>Local AI transcription is coming soon. UAM will enable it only after confirming compatible hardware and an installed model.</div>}
-            {voiceMode === 'server' && (
-              <div className="grid gap-3 rounded-lg p-3 animate-fade-in" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Server base URL<input aria-label="Voice transcription server URL" value={voiceServerUrl} onChange={(event) => setVoiceServerUrl(event.target.value)} placeholder="https://api.example.com" className="rounded-lg px-3 py-2 outline-none transition-colors focus:border-[var(--accent)]" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${serverUrlError ? 'var(--red)' : 'var(--border)'}` }} />{serverUrlError && <span role="alert" style={{ color: 'var(--red)' }}>{serverUrlError}</span>}</label>
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Transcription endpoint<input aria-label="Voice transcription endpoint" value={voiceServerEndpoint} onChange={(event) => setVoiceServerEndpoint(event.target.value)} placeholder="/v1/audio/transcriptions" className="rounded-lg px-3 py-2 font-mono outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /></label>
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Model<input aria-label="Voice transcription model" value={voiceServerModel} onChange={(event) => setVoiceServerModel(event.target.value)} placeholder="whisper-1" className="rounded-lg px-3 py-2 outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /></label>
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Credential environment variable<input aria-label="Voice transcription credential environment variable" value={voiceCredentialEnv} onChange={(event) => setVoiceCredentialEnv(event.target.value.replace(/[^A-Za-z0-9_]/g, '').toUpperCase())} placeholder="OPENAI_API_KEY" className="rounded-lg px-3 py-2 font-mono outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} /><span style={{ color: 'var(--text-3)' }}>UAM reads this environment variable; it does not store the secret.</span></label>
-              </div>
-            )}
-            {voiceMessage && <div role="status" className="text-xs" style={{ color: voiceMessage.includes('saved') ? 'var(--green)' : 'var(--red)' }}>{voiceMessage}</div>}
-            <div className="flex justify-end"><IconButton variant="solid" icon={<Save size={15} />} label="Save voice input settings" disabled={voiceSaving || !voiceDirty || !selectedCapability.supported || serverInvalid} onClick={() => {
-              setVoiceSaving(true)
-              setVoiceMessage('')
-              void setVoiceInputSettings({ voiceInputMode: voiceMode, voiceInputServerBaseUrl: voiceServerUrl.trim(), voiceInputServerEndpoint: voiceServerEndpoint.trim(), voiceInputServerModel: voiceServerModel.trim(), voiceInputApiKeyEnv: voiceCredentialEnv.trim() }).then((saved) => {
-                setVoiceSaving(false)
-                setVoiceMessage(saved ? 'Voice input settings saved.' : 'Voice input settings could not be saved.')
-              })
-            }} /></div>
+        <SectionCard title="Voice Input" description="Use the operating system speech recognition service.">
+          <div role="status" className="rounded-lg p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            Dictation stays on the native system speech service. Start it with the microphone button in the composer.
           </div>
         </SectionCard>
       )
@@ -1626,14 +2048,49 @@ export function SettingsModal() {
     if (selectedSection === 'goal-loops') {
       return (
         <SectionCard title="Goal Loop Safety" description="Limit UAM-managed review loops. Provider-native goals continue to use provider controls.">
-          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-            <span>Maximum iterations</span>
-            <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-              <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations === 0} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(0, goalMaxLoopIterations - 1) })} />
-              <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations || 'Unlimited'}</output>
-              <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" onClick={() => void setMemorySettings({ goalMaxLoopIterations: goalMaxLoopIterations + 1 })} />
+          <div className="grid gap-4 text-xs" style={{ color: 'var(--text-2)' }}>
+            <div className="grid gap-1">
+              <span>Maximum iterations</span>
+              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+			    <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
+			    <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations}</output>
+			    <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations >= 200} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.min(200, goalMaxLoopIterations + 1) })} />
+              </div>
+			  <span style={{ color: 'var(--text-3)' }}>Always bounded between 1 and 200 iterations.</span>
             </div>
-            <span style={{ color: 'var(--text-3)' }}>Decrease to 0 for unlimited iterations.</span>
+            <div className="grid w-72 gap-1">
+              <span>ACP setup inactivity timeout</span>
+              <MenuSelect
+                label="ACP setup inactivity timeout"
+                value={String(acpSetupInactivityTimeoutSeconds)}
+                options={[
+                  { value: '60', label: '1 minute' },
+                  { value: '300', label: '5 minutes' },
+                  { value: '600', label: '10 minutes' },
+                  { value: '1200', label: '20 minutes' },
+                  { value: '1800', label: '30 minutes' },
+                  { value: '3600', label: '1 hour' },
+                ]}
+                onChange={(value) => void setMemorySettings({ acpSetupInactivityTimeoutSeconds: Number(value) })}
+              />
+              <span style={{ color: 'var(--text-3)' }}>Restarts an ACP provider only after no setup activity for this long.</span>
+            </div>
+            <div className="grid w-72 gap-1">
+              <span>Provider turn output ceiling</span>
+              <MenuSelect
+                label="Provider turn output ceiling"
+                value={String(acpTurnOutputLimitMiB)}
+                options={[
+                  { value: '256', label: '256 MiB' },
+                  { value: '512', label: '512 MiB' },
+                  { value: '1024', label: '1 GiB' },
+                  { value: '2048', label: '2 GiB' },
+                  { value: '4096', label: '4 GiB' },
+                ]}
+                onChange={(value) => void setMemorySettings({ acpTurnOutputLimitMiB: Number(value) })}
+              />
+              <span style={{ color: 'var(--text-3)' }}>Resets for every worker or review turn; startup history is excluded.</span>
+            </div>
           </div>
         </SectionCard>
       )
@@ -1761,6 +2218,180 @@ export function SettingsModal() {
       return <ShellActionsSettings />
     }
 
+    if (selectedSection === 'mcp-servers') {
+      return (
+        <SectionCard title="Local MCP servers" description="Connect each workspace to local tools such as computer use. Providers run the tools; UAM keeps permissions, activity, and cancellation in the normal chat flow.">
+          <div className="grid gap-3">
+            <div className="grid gap-3 rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
+              <div>
+                <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>Browser control</div>
+                <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-3)' }}>
+                  Add Microsoft Playwright MCP in an isolated browser profile. Gemini, OpenCode, and Copilot structured chats can use it after starting a new provider session.
+                </div>
+              </div>
+              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                Workspace directory
+                <input
+                  aria-label="Browser control workspace directory"
+                  value={mcpWorkspace}
+                  onChange={(event) => setMcpWorkspace(event.currentTarget.value)}
+                  className="rounded-lg px-3 py-2 outline-none"
+                  style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
+                />
+              </label>
+              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                npx executable
+                <div className="flex gap-2">
+                  <input
+                    aria-label="npx executable path"
+                    value={mcpExecutable}
+                    onChange={(event) => setMcpExecutable(event.currentTarget.value)}
+                    placeholder="Absolute path from which npx / where npx"
+                    className="min-w-0 flex-1 rounded-lg px-3 py-2 outline-none"
+                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
+                  />
+                  <Button size="sm" onClick={() => void browseProviderAgentImport(mcpExecutable).then((path) => path && setMcpExecutable(path))}>Browse</Button>
+                </div>
+              </label>
+              <div className="flex justify-end">
+                <Button
+                  aria-label="Add Playwright browser control"
+                  variant="primary"
+                  size="sm"
+                  leadingIcon={<MousePointerClick size={14} />}
+                  loading={mcpSaving}
+                  disabled={!mcpWorkspace.trim() || !mcpExecutable.trim()}
+                  onClick={() => {
+                    let configured: McpServerConfiguration[]
+                    try {
+                      const parsed = JSON.parse(mcpDraft)
+                      if (!Array.isArray(parsed)) throw new Error()
+                      configured = parsed as McpServerConfiguration[]
+                    } catch {
+                      setMcpMessage('Fix the advanced JSON before adding browser control.')
+                      return
+                    }
+                    let suffix = configured.length + 1
+                    while (configured.some((server) => server.id === `playwright-browser-${suffix}`)) suffix += 1
+                    const server: McpServerConfiguration = {
+                      id: `playwright-browser-${suffix}`,
+                      name: 'Playwright browser control',
+                      workspaceDirectory: mcpWorkspace.trim(),
+                      transport: 'stdio',
+                      command: mcpExecutable.trim(),
+                      args: ['-y', '@playwright/mcp@latest', '--isolated'],
+                      url: '',
+                      environment: [],
+                      headers: [],
+                      enabled: true,
+                    }
+                    const next = [...configured, server]
+                    setMcpSaving(true)
+                    setMcpMessage('')
+                    void setMcpServers(next).then((result) => {
+                      setMcpSaving(false)
+                      if (result.ok) {
+                        setMcpDraft(JSON.stringify(next, null, 2))
+                        setMcpDraftDirty(false)
+                      }
+                      setMcpMessage(result.ok ? 'Browser control saved. Start a new structured provider session to use it.' : result.error || 'Browser control configuration was rejected.')
+                    })
+                  }}
+                >Add browser control</Button>
+              </div>
+            </div>
+            <label className="grid gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
+              Advanced server configuration (JSON array)
+              <textarea
+                aria-label="MCP server configuration"
+                value={mcpDraft}
+                onChange={(event) => { setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage('') }}
+                spellCheck={false}
+                rows={16}
+                className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs outline-none"
+                style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
+              />
+            </label>
+            <div className="text-xs leading-5" style={{ color: 'var(--text-3)' }}>
+              Use an absolute workspaceDirectory. stdio requires an absolute command path. http and sse are localhost-only. Put secret values in environment variables and store only their names here. Changes apply to the next provider session.
+            </div>
+            {mcpMessage && <div role="status" className="text-xs" style={{ color: mcpMessage.includes('saved') ? 'var(--green)' : 'var(--red)' }}>{mcpMessage}</div>}
+            <div className="flex justify-end">
+              <IconButton variant="solid" icon={<Save size={15} />} label="Save MCP server configuration" disabled={mcpSaving} onClick={() => {
+                let parsed: unknown
+                try {
+                  parsed = JSON.parse(mcpDraft)
+                } catch {
+                  setMcpMessage('Enter valid JSON.')
+                  return
+                }
+                if (!Array.isArray(parsed)) {
+                  setMcpMessage('MCP server configuration must be a JSON array.')
+                  return
+                }
+                setMcpSaving(true)
+                setMcpMessage('')
+                void setMcpServers(parsed as McpServerConfiguration[]).then((result) => {
+                  setMcpSaving(false)
+                  if (result.ok) setMcpDraftDirty(false)
+                  setMcpMessage(result.ok ? 'MCP server configuration saved.' : result.error || 'MCP server configuration was rejected.')
+                })
+              }} />
+            </div>
+          </div>
+        </SectionCard>
+      )
+    }
+
+    if (selectedSection === 'chat-data') {
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Portable local chat bundle"
+            description="Move your complete local chat history between UAM installations without changing or deleting existing chats."
+          >
+            <div className="grid gap-4">
+              <p className="text-xs leading-5" style={{ color: 'var(--text-2)' }}>
+                Export writes a readable versioned folder with a manifest and canonical chat JSON files. Choose a new or empty folder. Import validates the complete bundle first and gives conflicting chats new local IDs.
+              </p>
+              {chatDataMessage && (
+                <Notice
+                  tone={chatDataMessage.tone}
+                  title="Chat data"
+                  dismissLabel="Dismiss chat data result"
+                  onDismiss={() => setChatDataMessage(null)}
+                >
+                  {chatDataMessage.text}
+                </Notice>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  leadingIcon={<Download size={14} />}
+                  loading={chatDataBusy === 'export'}
+                  disabled={chatDataBusy !== null}
+                  onClick={() => void runChatDataAction('export')}
+                >
+                  Export all chats
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<FolderOpen size={14} />}
+                  loading={chatDataBusy === 'import'}
+                  disabled={chatDataBusy !== null}
+                  onClick={() => void runChatDataAction('import')}
+                >
+                  Import chat bundle
+                </Button>
+              </div>
+              {chatDataFolder && <div className="text-xs" style={{ color: 'var(--text-3)', overflowWrap: 'anywhere' }}>Last folder: {chatDataFolder}</div>}
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
     return (
       <div className="space-y-4">
         <SectionCard
@@ -1792,9 +2423,10 @@ export function SettingsModal() {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false) }}
+      onClick={(e) => { if (e.target === e.currentTarget) requestClose() }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
@@ -1817,7 +2449,7 @@ export function SettingsModal() {
           <IconButton
             icon={<X size={16} />}
             label="Close settings"
-            onClick={() => setSettingsOpen(false)}
+            onClick={requestClose}
           />
         </div>
 
@@ -1880,6 +2512,18 @@ export function SettingsModal() {
         </div>
 
       </div>
+      {confirmDiscard && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
+          <div role="alertdialog" aria-modal="true" aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Discard MCP changes?</div>
+            <p className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
+            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
+              <Button size="sm" variant="danger" onClick={() => setSettingsOpen(false)}>Discard changes</Button>
+            </div>
+          </div>
+        </div>
+      )}
       {pendingDelete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
           <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>

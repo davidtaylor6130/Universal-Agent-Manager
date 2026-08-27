@@ -1,11 +1,16 @@
 #include "app/goal_service.h"
 
+#include "app/agent_run_scheduler.h"
+#include "common/config/provider_chat_defaults.h"
+#include "common/platform/platform_services.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
-#include <atomic>
 #include <algorithm>
+#include <cctype>
 #include <nlohmann/json.hpp>
 #include <sstream>
 
@@ -87,17 +92,32 @@ namespace
 
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
-							  std::string execution_owner, std::string provider_command)
+							  std::string execution_owner, std::string provider_command,
+							  std::string creator, std::string creator_provider_id,
+							  std::string creator_agent_id, std::string creator_run_id,
+							  std::string creator_request_key_hash)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
-	if (chat == nullptr)
+	const std::string trimmed_objective = uam::strings::Trim(objective);
+	if (chat == nullptr || trimmed_objective.empty())
 	{
 		return false;
 	}
 
 	Goal goal;
-	goal.id = GenerateGoalId();
-	goal.objective = objective;
+	for (int attempt = 0; attempt < 4 && goal.id.empty(); ++attempt)
+	{
+		const std::string candidate = GenerateGoalId();
+		if (!candidate.empty() && FindGoalById(app, "", candidate) == nullptr)
+		{
+			goal.id = candidate;
+		}
+	}
+	if (goal.id.empty())
+	{
+		return false;
+	}
+	goal.objective = trimmed_objective;
 	goal.status = GoalStatus::Active;
 	goal.token_budget = token_budget;
 	goal.tokens_used = 0;
@@ -107,6 +127,16 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 	goal.updated_at = uam::time::TimestampNow();
 	goal.execution_owner = execution_owner == "provider" ? "provider" : "uam";
 	goal.provider_command = goal.execution_owner == "provider" ? uam::strings::Trim(provider_command) : "";
+	goal.worker_model_id = uam::strings::Trim(chat->model_id);
+	const ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(app.settings, chat->provider_id);
+	goal.reviewer_model_id = goal.execution_owner == "uam"
+	                             ? uam::strings::NonEmptyOrFallback(chat->reviewer_model_id, uam::strings::NonEmptyOrFallback(defaults.reviewer_model_id, goal.worker_model_id))
+	                             : "";
+	goal.creator = creator == "model" ? "model" : "user";
+	goal.creator_provider_id = goal.creator == "model" ? uam::strings::Trim(creator_provider_id) : "";
+	goal.creator_agent_id = goal.creator == "model" ? uam::strings::Trim(creator_agent_id) : "";
+	goal.creator_run_id = goal.creator == "model" ? uam::strings::Trim(creator_run_id) : "";
+	goal.creator_request_key_hash = goal.creator == "model" ? uam::strings::Trim(creator_request_key_hash) : "";
 
 	chat->goals.push_back(std::move(goal));
 	MarkDirty(app, chat_id);
@@ -124,54 +154,144 @@ bool GoalService::IsProviderManaged(const Goal& goal)
 	return goal.execution_owner == "provider" && !goal.provider_command.empty();
 }
 
-bool GoalService::UpdateGoalObjective(AppState& app, const std::string& goal_id, const std::string& objective)
+std::string GoalService::WorkerModelId(const ChatSession& chat, const Goal& goal)
 {
-	Goal* goal = FindGoalById(app, "", goal_id);
-	if (goal == nullptr)
+	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.worker_model_id, chat.model_id) : chat.model_id;
+}
+
+std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& goal)
+{
+	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id) : chat.model_id;
+}
+
+std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app)
+{
+	std::size_t paused = 0;
+	for (ChatSession& chat : app.chats)
 	{
+		if (chat.active_goal_id.empty()) continue;
+		const auto goal = std::ranges::find_if(chat.goals, [&](const Goal& candidate)
+		{
+			return candidate.id == chat.active_goal_id && candidate.status == GoalStatus::Active;
+		});
+		if (goal == chat.goals.end()) continue;
+		goal->status = GoalStatus::Paused;
+		chat.active_goal_id.clear();
+		++paused;
+	}
+	return paused;
+}
+
+bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
+                                 const std::string& goal_id, std::string* error_out)
+{
+	const ChatSession* chat = FindChatConst(app, chat_id);
+	if (chat == nullptr || FindGoalById(app, chat_id, goal_id) == nullptr)
+	{
+		if (error_out != nullptr) *error_out = "Goal not found in this chat.";
 		return false;
 	}
-
-	goal->objective = objective;
-	goal->updated_at = uam::time::TimestampNow();
-
-	ChatSession* chat = FindChatForGoal(app, goal_id);
-	if (chat != nullptr)
+	std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending)
 	{
-		MarkDirty(app, chat->id);
+		return pending.owner_chat_id == chat_id && pending.goal_id == goal_id;
+	});
+	AcpSessionState* root_session = FindAcpSessionForChat(app, chat_id);
+	if (chat->active_goal_id == goal_id && root_session != nullptr &&
+	    AcpSessionHasActiveTurn(*root_session) && !CancelAcpTurn(app, chat_id, error_out)) return false;
+
+	std::vector<std::string> iteration_chat_ids;
+	for (const ChatSession& candidate : app.chats)
+	{
+		if (candidate.goal_owner_chat_id == chat_id &&
+		    candidate.goal_iteration_goal_id == goal_id)
+		{
+			iteration_chat_ids.push_back(candidate.id);
+		}
+	}
+	for (const std::string& iteration_chat_id : iteration_chat_ids)
+	{
+		AcpSessionState* iteration_session = FindAcpSessionForChat(app, iteration_chat_id);
+		if (iteration_session != nullptr && AcpSessionHasActiveTurn(*iteration_session) &&
+		    !CancelAcpTurn(app, iteration_chat_id, error_out)) return false;
 	}
 
+	std::vector<std::string> roots;
+	for (const AgentRun& run : app.agent_runs)
+	{
+		if (run.root_chat_id != chat_id || run.goal_id != goal_id ||
+		    run.status == "completed" || run.status == "failed" ||
+		    run.status == "cancelled" || run.status == "interrupted") continue;
+		const bool parent_in_goal = std::ranges::any_of(app.agent_runs, [&](const AgentRun& parent)
+		{
+			return parent.id == run.parent_run_id && parent.root_chat_id == chat_id &&
+			       parent.goal_id == goal_id;
+		});
+		if (!parent_in_goal) roots.push_back(run.id);
+	}
+	for (const std::string& run_id : roots)
+	{
+		if (!AgentRunScheduler::CancelTree(app, run_id, error_out)) return false;
+	}
 	return true;
 }
 
-bool GoalService::UpdateGoalStatus(AppState& app, const std::string& goal_id, GoalStatus status)
+bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
+                                   const std::string& goal_id, GoalStatus status)
 {
-	Goal* goal = FindGoalById(app, "", goal_id);
-	if (goal == nullptr)
-	{
-		return false;
-	}
+	Goal* goal = FindGoalById(app, chat_id, goal_id);
+	ChatSession* chat = FindChatMutable(app, chat_id);
+	if (goal == nullptr || chat == nullptr) return false;
 
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
-	ChatSession* chat = FindChatForGoal(app, goal_id);
+	if (status == GoalStatus::Complete)
+	{
+		goal->remaining_items.clear();
+		goal->current_step.clear();
+	}
 
 	// Clear active goal for terminal statuses (Complete, Blocked, Paused)
 	if ((status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused) &&
-	    chat != nullptr && chat->active_goal_id == goal_id)
+	    chat->active_goal_id == goal_id)
 	{
 		ClearActiveGoal(app, chat->id);
 	}
 
-	if (chat != nullptr)
-	{
-		MarkDirty(app, chat->id);
-	}
+	MarkDirty(app, chat->id);
 
 	return true;
 }
 
-bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id)
+bool GoalService::UpdateGoalObjective(AppState& app, const std::string& chat_id,
+                                      const std::string& goal_id, const std::string& objective,
+                                      std::string* error_out)
+{
+	if (error_out != nullptr) error_out->clear();
+	Goal* goal = FindGoalById(app, chat_id, goal_id);
+	if (goal == nullptr)
+	{
+		if (error_out != nullptr) *error_out = "Goal not found in this chat.";
+		return false;
+	}
+	const std::string trimmed_objective = uam::strings::Trim(objective);
+	if (trimmed_objective.empty())
+	{
+		if (error_out != nullptr) *error_out = "Goal objective is required.";
+		return false;
+	}
+	if (goal->status == GoalStatus::Complete || goal->execution_owner == "provider")
+	{
+		if (error_out != nullptr) *error_out = "Only non-complete UAM-managed goals can be edited.";
+		return false;
+	}
+	goal->objective = trimmed_objective;
+	goal->updated_at = uam::time::TimestampNow();
+	MarkDirty(app, chat_id);
+	return true;
+}
+
+bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
+                                std::string* error_out)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr)
@@ -198,6 +318,11 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 	{
 		return false;
 	}
+	if (!chat->active_goal_id.empty() && chat->active_goal_id != goal_id &&
+	    !CancelGoalWork(app, chat_id, chat->active_goal_id, error_out)) return false;
+	chat = FindChatMutable(app, chat_id);
+	matched_goal = FindGoalById(app, chat_id, goal_id);
+	if (chat == nullptr || matched_goal == nullptr) return false;
 
 	const std::string updated_at = uam::time::TimestampNow();
 	for (auto& goal : chat->goals)
@@ -298,6 +423,7 @@ const Goal* GoalService::FindGoalById(const AppState& app, const std::string& ch
 				}
 			}
 		}
+		return nullptr;
 	}
 
 	// Fall back: search all chats for the goal
@@ -320,26 +446,6 @@ Goal* GoalService::FindGoalById(AppState& app, const std::string& chat_id, const
 	return const_cast<Goal*>(FindGoalById(static_cast<const AppState&>(app), chat_id, goal_id));
 }
 
-const ChatSession* GoalService::FindChatForGoal(const AppState& app, const std::string& goal_id)
-{
-	for (const auto& chat : app.chats)
-	{
-		for (const auto& goal : chat.goals)
-		{
-			if (goal.id == goal_id)
-			{
-				return &chat;
-			}
-		}
-	}
-	return nullptr;
-}
-
-ChatSession* GoalService::FindChatForGoal(AppState& app, const std::string& goal_id)
-{
-	return const_cast<ChatSession*>(FindChatForGoal(static_cast<const AppState&>(app), goal_id));
-}
-
 std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::string& chat_id)
 {
 	const ChatSession* chat = FindChatConst(app, chat_id);
@@ -351,38 +457,36 @@ std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::s
 	return chat->goals;
 }
 
-bool GoalService::RemoveGoal(AppState& app, const std::string& goal_id)
+bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
+                             std::string* error_out)
 {
-	// Find the goal in all chats
-	for (auto& chat : app.chats)
+	ChatSession* chat = FindChatMutable(app, chat_id);
+	if (chat == nullptr) return false;
+	auto it = std::find_if(chat->goals.begin(), chat->goals.end(),
+	                       [&goal_id](const Goal& goal) { return goal.id == goal_id; });
+	if (it == chat->goals.end() || it->status == GoalStatus::Complete) return false;
+	if (!CancelGoalWork(app, chat_id, goal_id, error_out)) return false;
+	chat = FindChatMutable(app, chat_id);
+	if (chat == nullptr) return false;
+	it = std::find_if(chat->goals.begin(), chat->goals.end(),
+	                  [&goal_id](const Goal& goal) { return goal.id == goal_id; });
+	if (it == chat->goals.end()) return false;
+	if (chat->active_goal_id == goal_id)
 	{
-		auto it = std::find_if(chat.goals.begin(), chat.goals.end(),
-		                       [&goal_id](const Goal& g) { return g.id == goal_id; });
-		if (it != chat.goals.end())
-		{
-			if (it->status == GoalStatus::Complete)
-			{
-				return false;
-			}
-			// If this was the active goal, clear it
-			if (chat.active_goal_id == goal_id)
-			{
-				chat.active_goal_id.clear();
-				chat.updated_at = uam::time::TimestampNow();
-			}
-			chat.goals.erase(it);
-			MarkDirty(app, chat.id);
-			return true;
-		}
+		chat->active_goal_id.clear();
+		chat->updated_at = uam::time::TimestampNow();
 	}
-
-	return false;
+	chat->goals.erase(it);
+	MarkDirty(app, chat->id);
+	return true;
 }
 
-void GoalService::RecordTurnCompletion(AppState& app, const std::string& goal_id, int64_t tokens_used)
+void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id,
+	                                   const std::string& goal_id, int64_t tokens_used)
 {
-	Goal* goal = FindGoalById(app, "", goal_id);
-	if (goal == nullptr)
+	Goal* goal = FindGoalById(app, chat_id, goal_id);
+	ChatSession* chat = FindChatMutable(app, chat_id);
+	if (goal == nullptr || chat == nullptr)
 	{
 		return;
 	}
@@ -393,29 +497,25 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& goal_id
 	// Reset blocker count on successful turn
 	goal->blocked_turn_count = 0;
 	goal->last_blocker.clear();
-	ChatSession* chat = FindChatForGoal(app, goal_id);
-
 	// Check if token budget is exceeded
 	if (goal->token_budget > 0 && goal->tokens_used >= goal->token_budget)
 	{
 		goal->status = GoalStatus::Blocked;
 		goal->last_blocker = "Token budget exceeded.";
-		if (chat != nullptr && chat->active_goal_id == goal_id)
+		if (chat->active_goal_id == goal_id)
 		{
 			ClearActiveGoal(app, chat->id);
 		}
 	}
-
-	if (chat != nullptr)
-	{
-		MarkDirty(app, chat->id);
-	}
+	MarkDirty(app, chat->id);
 }
 
-void GoalService::RecordBlocker(AppState& app, const std::string& goal_id, const std::string& blocker)
+void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
+	                            const std::string& goal_id, const std::string& blocker)
 {
-	Goal* goal = FindGoalById(app, "", goal_id);
-	if (goal == nullptr)
+	Goal* goal = FindGoalById(app, chat_id, goal_id);
+	ChatSession* chat = FindChatMutable(app, chat_id);
+	if (goal == nullptr || chat == nullptr)
 	{
 		return;
 	}
@@ -433,22 +533,17 @@ void GoalService::RecordBlocker(AppState& app, const std::string& goal_id, const
 	}
 
 	goal->updated_at = uam::time::TimestampNow();
-	ChatSession* chat = FindChatForGoal(app, goal_id);
-
 	// Mark as blocked after >= 3 consecutive turns at the same blocker
 	if (goal->blocked_turn_count >= 3)
 	{
 		goal->status = GoalStatus::Blocked;
-		if (chat != nullptr && chat->active_goal_id == goal_id)
+		if (chat->active_goal_id == goal_id)
 		{
 			ClearActiveGoal(app, chat->id);
 		}
 	}
 
-	if (chat != nullptr)
-	{
-		MarkDirty(app, chat->id);
-	}
+	MarkDirty(app, chat->id);
 }
 
 std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
@@ -469,7 +564,8 @@ std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t token
 		if (goal.loop_count == 0)
 		{
 			ss << "- This is the planning turn. Inspect/read/search as needed, but do not edit files, run mutating commands, or implement anything.\n";
-			ss << "- Convert the entire objective into 3-8 ordered atomic, verifiable steps.\n";
+			ss << "- Create one ordered atomic, verifiable step for every independently verifiable requirement.\n";
+			ss << "- Do not merge or omit requirements to hit an arbitrary step count.\n";
 			ss << "- Name exact files or components when known and give one verification for each step.\n";
 			ss << "- Identify missing facts instead of guessing. End after the plan.\n\n";
 		}
@@ -534,7 +630,7 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
                                            bool small_model_mode)
 {
 	std::ostringstream ss;
-	ss << "You are a goal review agent. Your ONLY output must be a single JSON object. Do not output any text before or after the JSON object. Do not wrap it in markdown code fences. Do not include any explanation, preamble, or commentary.\n\n";
+	ss << "You are the goal architect and read-only reviewer. Inspect the actual workspace state before deciding. Review the changed files, current diff, relevant tests or build evidence, and the original objective; do not trust the worker's summary by itself. Do not edit files or run mutating commands. Your ONLY output must be a single JSON object. Do not output any text before or after the JSON object. Do not wrap it in markdown code fences. Do not include any explanation, preamble, or commentary.\n\n";
 	ss << R"(VALID OUTPUT — copy this exact shape, fill in values:)" << "\n";
 	ss << R"({"decision":"continue","reason":"Step 2 of 3 complete.","nextPrompt":"Implement the database schema in models.py.","evidence":["Created project skeleton"],"blockerKind":"","progressUpdate":{"completed":["Step 1: project skeleton"],"remaining":["Step 2: database schema","Step 3: API routes"],"currentStep":"Step 2: database schema","lastVerification":"Unit tests pass for skeleton"}})" << "\n\n";
 	ss << "INVALID — never output human-readable text like this:" << "\n";
@@ -548,10 +644,15 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 		ss << "</loopDetection>\n\n";
 	}
 	ss << "Decision rules:\n";
-	ss << "- \"complete\": objective fully satisfied AND evidence array non-empty.\n";
+	ss << "- \"complete\": objective fully satisfied AND evidence array names concrete workspace or test evidence you personally checked.\n";
 	ss << "- \"blocked\": concrete blocker prevents progress; classify blockerKind.\n";
 	ss << "- \"continue\": more work can be done; nextPrompt must be a non-empty concrete next step.\n";
 	ss << "- NEVER return continue with empty nextPrompt; use blocked when progress requires user input or external state.\n\n";
+	ss << "Progress ledger rules:\n";
+	ss << "- The first progressUpdate defines the complete ordered plan, with one step for every independently verifiable requirement.\n";
+	ss << "- Once a plan exists, copy every existing step exactly and never add, remove, rename, split, merge, duplicate, or reorder steps.\n";
+	ss << "- Move a step from remaining to completed only after verifying it. Completed steps never move backward.\n";
+	ss << "- Always return the full completed and remaining arrays, not only the step changed this turn.\n\n";
 	if (small_model_mode)
 	{
 		if (goal.loop_count == 0)
@@ -615,10 +716,24 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 		return std::nullopt;
 	}
 
-	const std::string json_text = text.substr(first, last - first + 1);
+	std::string json_text = text.substr(first, last - first + 1);
 	try
 	{
-		const nlohmann::json parsed = nlohmann::json::parse(json_text);
+		nlohmann::json parsed;
+		try
+		{
+			parsed = nlohmann::json::parse(json_text);
+		}
+		catch (const nlohmann::json::parse_error&)
+		{
+			const std::size_t evidence_key = json_text.find("\"evidence\":");
+			if (evidence_key == std::string::npos) return std::nullopt;
+			std::size_t evidence_value = evidence_key + std::string_view("\"evidence\":").size();
+			while (evidence_value < json_text.size() && std::isspace(static_cast<unsigned char>(json_text[evidence_value]))) ++evidence_value;
+			if (evidence_value >= json_text.size() || json_text[evidence_value] != '"' || json_text.find(']', evidence_value) == std::string::npos) return std::nullopt;
+			json_text.insert(evidence_value, "[");
+			parsed = nlohmann::json::parse(json_text);
+		}
 		if (!parsed.is_object())
 		{
 			return std::nullopt;
@@ -631,6 +746,7 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 		decision.evidence = TrimmedStringArray(parsed.value("evidence", nlohmann::json::array()));
 		if (const auto it = parsed.find("progressUpdate"); it != parsed.end() && it->is_object())
 		{
+			decision.has_progress_update = true;
 			decision.completed_items = TrimmedStringArray(it->value("completed", nlohmann::json::array()));
 			decision.remaining_items = TrimmedStringArray(it->value("remaining", nlohmann::json::array()));
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
@@ -662,9 +778,8 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 
 std::string GoalService::GenerateGoalId()
 {
-	static std::atomic<uint64_t> sequence{0};
-	const uint64_t next = sequence.fetch_add(1, std::memory_order_relaxed) + 1;
-	return "goal_" + std::to_string(static_cast<int64_t>(uam::time::TimestampNowSec())) + "_" + std::to_string(next);
+	const std::string uuid = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	return uuid.empty() ? "" : "goal-" + uuid;
 }
 
 } // namespace uam

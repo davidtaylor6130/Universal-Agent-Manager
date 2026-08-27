@@ -20,9 +20,14 @@ bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string
 bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
 bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
 bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, bool stop_when_complete = false);
+bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, std::string* error_out = nullptr);
+bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& blocked_reason);
+bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 bool StopAcpSession(AppState& app, const std::string& chat_id);
 bool SetAcpSessionMode(AppState& app,
                        const std::string& chat_id,
@@ -32,6 +37,7 @@ bool SetAcpSessionMode(AppState& app,
                        std::optional<std::string> previous_command_safety_tier = std::nullopt);
 bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr, std::optional<std::string> previous_chat_model_id = std::nullopt);
 bool SetAcpSessionReasoningEffort(AppState& app, const std::string& chat_id, const std::string& reasoning_effort, std::string* error_out = nullptr, std::optional<std::string> previous_chat_reasoning_effort = std::nullopt);
+bool SetAcpSessionConfigOption(AppState& app, const std::string& chat_id, const std::string& config_id, const std::string& value, std::string* error_out = nullptr);
 bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool ResolveAcpPermission(AppState& app,
                           const std::string& chat_id,

@@ -22,6 +22,26 @@ describe('multi-pane density contract', () => {
     expect(styles).toMatch(/\.uam-chat-pane\[data-multi-pane="true"\] \.uam-composer-toolbar\s*\{[^}]*overflow-x:\s*auto/s)
   })
 
+  it('lets the composer shrink to one line and grow natively to its cap', () => {
+    expect(chatView).toContain('rows={1}')
+    expect(styles).toMatch(/\.uam-composer-textarea\s*\{[^}]*field-sizing:\s*content/s)
+    expect(styles).toMatch(/\.uam-composer-textarea\s*\{[^}]*min-height:\s*40px/s)
+    expect(styles).toMatch(/\.uam-composer-textarea\s*\{[^}]*max-height:\s*160px/s)
+    expect(styles).not.toMatch(/\.uam-chat-pane\[data-multi-pane="true"\] \.uam-composer-textarea\s*\{[^}]*(?:^|[;{]\s*)height\s*:/s)
+  })
+
+  it('keeps pane identity colour visible without requiring focus', () => {
+    expect(styles).toContain('.uam-chat-pane[data-multi-pane="true"] > .uam-chat-pane__header')
+    expect(styles).not.toContain('.uam-chat-pane[data-multi-pane="true"][data-focused="true"] > .uam-chat-pane__header')
+  })
+
+  it('bounds expanded goal details to the pane and gives them their own scroll region', () => {
+    expect(styles).toMatch(/\.uam-chat-pane\s*\{[^}]*container-type:\s*size/s)
+    expect(styles).toMatch(/\.uam-goal-banner__details\s*\{[^}]*max-height:\s*min\([^;]*100cqh/s)
+    expect(styles).toMatch(/\.uam-goal-banner__details\s*\{[^}]*overflow-y:\s*auto/s)
+    expect(styles).toMatch(/\.uam-goal-banner__details\s*\{[^}]*overscroll-behavior:\s*contain/s)
+  })
+
   it('gives live and recovery rows stable compact hooks without removing semantics', () => {
     expect(chatView).toContain('uam-turn-starting')
     expect(chatView).toContain('uam-queued-prompt')

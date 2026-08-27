@@ -14,6 +14,7 @@
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
@@ -42,6 +43,11 @@ namespace uam
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
 		StopCliTerminal(terminal);
+		if (chat.imported_read_only)
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
+			                            "Imported transcripts are read-only. Create a new chat in a workspace to continue.");
+		}
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 		LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "begin", &terminal, "chat_id=" + chat.id + ", provider_id=" + provider.id);
 
@@ -63,6 +69,10 @@ namespace uam
 		if (!provider.supports_interactive)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled, "Active provider does not expose an interactive runtime command.");
+		}
+		if (const std::string permission_flag_error = ProviderInteractivePermissionFlagError(app, provider); !permission_flag_error.empty())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
 
 		std::string runtime_handoff_error;
@@ -137,7 +147,9 @@ namespace uam
 		const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		std::string startup_error;
 
-		if (!PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, workspace_root, interactive_argv, &startup_error))
+		const std::vector<std::pair<std::string, std::string>> launch_environment =
+		    uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
+		if (!PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, workspace_root, interactive_argv, &startup_error, launch_environment))
 		{
 			if (terminal.last_error.empty())
 			{

@@ -157,12 +157,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
     rescanFolderChats: async (id: string): Promise<boolean> => {
       if (!isCefContext()) return true
-      const response = await sendToCEF({
+      const response = await sendToCEF<{ success?: boolean }>({
         action: 'rescanFolderChats',
         payload: { folderId: id },
         requestId: createRequestId('rescanFolderChats'),
       })
-      return response.ok
+      return response.ok && response.data?.success !== false
     },
 
     previewUnsortedWorkspaceFolders: async (): Promise<WorkspaceFolderRecoveryPreview | null> => {
@@ -193,11 +193,11 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    renameFolder: (id: string, name: string, directory: string) => {
+    renameFolder: async (id: string, name: string, directory: string): Promise<boolean> => {
       if (isCefContext()) {
         const previousFolder = get().folders.find((folder) => folder.id === id)
         if (!previousFolder) {
-          return
+          return false
         }
 
         const requestKey = `renameFolder:${id}`
@@ -208,49 +208,41 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
             folder.id === id ? { ...folder, name, directory } : folder
           ),
         }))
-        sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory }, requestId }).then(
-          (resp) => {
-            if (resp.ok) {
-              clearPendingRequest(requestKey, resp.requestId)
-              return
-            }
+        const response = await sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory }, requestId })
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
 
-            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
-              return
-            }
-
-            set((state) => ({
-              folders: state.folders.map((folder) => (folder.id === id ? {
-                ...folder,
-                name: previousFolder.name,
-                directory: previousFolder.directory,
-              } : folder)),
-            }))
-            pendingRequestIdsByKey.delete(requestKey)
-          }
-        )
-        return
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            folders: state.folders.map((folder) => (folder.id === id ? {
+              ...folder,
+              name: previousFolder.name,
+              directory: previousFolder.directory,
+            } : folder)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+        return false
       }
 
       set((state) => ({
         folders: state.folders.map((f) => (f.id === id ? { ...f, name, directory } : f)),
       }))
+      return true
     },
 
-    deleteFolder: (id: string) => {
+    deleteFolder: async (id: string): Promise<boolean> => {
       if (isCefContext()) {
         const deletedFolder = get().folders.find((folder) => folder.id === id)
         if (!deletedFolder) {
-          return
+          return false
         }
 
         const requestId = createRequestId('deleteFolder')
-        sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId }).then((resp) => {
-          if (!resp.ok) {
-            console.error('[CEF] deleteFolder failed:', resp.error)
-          }
-        })
-        return
+        const response = await sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        return response.ok
       }
 
       set((state) => {
@@ -284,6 +276,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
               : state.activeSessionId,
         }
       })
+      return true
     },
 
     browseFolderDirectory: async (currentValue: string) => {

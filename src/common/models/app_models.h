@@ -78,6 +78,8 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	std::string checkpoint_sha;
+	std::string checkpoint_parent_sha;
 	std::vector<ToolCall> tool_calls;
 	std::string thoughts;
 	std::string plan_summary;
@@ -127,6 +129,62 @@ struct Goal
 	std::string updated_at;
 	std::string execution_owner = "uam";
 	std::string provider_command;
+	std::string worker_model_id;
+	std::string reviewer_model_id;
+	std::string creator = "user";
+	std::string creator_provider_id;
+	std::string creator_agent_id;
+	std::string creator_run_id;
+	std::string creator_request_key_hash;
+};
+
+struct UamControlAuditRecord
+{
+	std::string request_id;
+	std::string method;
+	std::string result;
+	std::string reason;
+	std::string provider_id;
+	std::string agent_id;
+	std::string run_id;
+	std::string created_at;
+};
+
+struct AgentRun
+{
+	std::string id;
+	std::string root_chat_id;
+	std::string parent_run_id;
+	std::string resumed_from_run_id;
+	std::string transcript_chat_id;
+	std::string goal_id;
+	std::string agent_id;
+	std::string definition_hash;
+	std::string definition_snapshot;
+	std::string definition_instructions;
+	std::vector<std::string> skills_snapshot;
+	std::vector<std::string> delegates_snapshot;
+	std::string provider_id;
+	std::string model_id;
+	std::string execution_capability;
+	std::string task;
+	std::string effective_workspace_access;
+	std::string status;
+	int depth = 1;
+	int expected_turn_serial = 0;
+	int64_t started_at_epoch_ms = 0;
+	int64_t deadline_at_epoch_ms = 0;
+	std::string created_at;
+	std::string started_at;
+	std::string finished_at;
+	std::string updated_at;
+	std::string result_delivery_id;
+	bool deliver_result_to_root_chat = false;
+	bool root_result_delivered = false;
+	int root_result_delivery_attempts = 0;
+	std::string result_excerpt;
+	std::string diagnostic_code;
+	std::string diagnostic;
 };
 
 /// <summary>
@@ -158,18 +216,30 @@ struct ChatSession
 	std::string workspace_base_ref;
 	std::string workspace_branch_name;
 	std::string workspace_worktree_directory;
+	bool imported_read_only = false;
 	std::string approval_mode;
-	bool auto_approve_commands = false;
-	std::string command_safety_tier = "medium";
+	std::string uam_agent_id = "build";
+	std::string agent_run_id;
+	// Fresh, bounded transcript owned by a goal on another visible chat.
+	// Empty on ordinary chats and on all legacy data.
+	std::string goal_owner_chat_id;
+	std::string goal_iteration_goal_id;
+	std::string goal_iteration_turn_kind;
+	int goal_iteration_repair_attempts = 0;
+	bool uam_control_enabled = false;
+	std::string command_safety_tier = "off";
 	std::string model_id;
+	std::string reviewer_model_id;
 	std::string reasoning_effort;
 	std::string service_tier;
+	bool service_tier_explicit = false;
 	std::string extra_flags;
 	bool memory_enabled = true;
 	int memory_last_processed_message_count = 0;
 	std::string memory_last_processed_at;
 	std::vector<Goal> goals;
 	std::string active_goal_id;
+	std::vector<UamControlAuditRecord> uam_control_audit;
 	std::string memory_level = "strict";
 	bool small_model_mode = false;
 };
@@ -192,12 +262,14 @@ struct ProviderChatDefaults
 {
 	std::string model_id;
 	std::string approval_mode = "default";
-	bool auto_approve_commands = false;
+	std::string command_safety_tier = "off";
 	bool memory_enabled = true;
 	std::string reasoning_effort;
 	std::string service_tier;
 	std::string memory_level = "strict";
 	bool small_model_mode = false;
+	std::string reviewer_model_id;
+	std::string feature_preference = "uam";
 };
 
 /// <summary>
@@ -241,19 +313,35 @@ struct ShellAction
 	bool open_workspace = false;
 };
 
+struct McpSecretReference
+{
+	std::string name;
+	std::string environment_variable;
+};
+
+struct McpServerConfiguration
+{
+	std::string id;
+	std::string name;
+	std::string workspace_directory;
+	std::string transport = "stdio";
+	std::string command;
+	std::vector<std::string> args;
+	std::string url;
+	std::vector<McpSecretReference> environment;
+	std::vector<McpSecretReference> headers;
+	bool enabled = true;
+};
+
 /// <summary>
 /// Persisted application settings.
 /// </summary>
 struct AppSettings
 {
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
-	bool provider_yolo_mode = false;
 	std::string provider_extra_flags;
-	std::string runtime_backend = "provider-cli";
 	int cli_idle_timeout_seconds = 600;
-	// Legacy keys retained for backward-compatible load paths.
-	bool gemini_yolo_mode = false;
-	std::string gemini_extra_flags;
+	int active_turn_inactivity_timeout_seconds = 1800;
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
@@ -269,32 +357,25 @@ struct AppSettings
 	bool memory_enabled_default = true;
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
-	int goal_max_loop_iterations = 200; // 0 = unlimited
+	int goal_max_loop_iterations = 200;
+	int acp_setup_inactivity_timeout_seconds = 600;
+	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;
 	std::string update_last_checked_at;
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
+	std::string permission_reviewer_provider_id;
+	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
+	std::vector<McpServerConfiguration> mcp_servers;
+	std::vector<std::string> favorite_uam_agent_ids;
+	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";
-	std::string voice_input_mode = "system";
-	std::string voice_input_server_base_url = "https://api.openai.com";
-	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
-	std::string voice_input_server_model = "whisper-1";
-	// A credential environment-variable name is persisted; the credential itself never is.
-	std::string voice_input_api_key_env = "OPENAI_API_KEY";
-};
-
-/// <summary>
-/// Main center-pane rendering mode.
-/// </summary>
-enum class CenterViewMode
-{
-	CliConsole
 };
 
 /// <summary>
@@ -305,6 +386,7 @@ struct ProcessExecutionResult
 	bool ok = false;
 	bool timed_out = false;
 	bool canceled = false;
+	bool output_truncated = false;
 	int exit_code = -1;
 	std::string output;
 	std::string error;
@@ -350,14 +432,6 @@ std::string RoleToString(MessageRole role);
 /// Parses persisted message role text into an enum value.
 /// </summary>
 MessageRole RoleFromString(std::string_view value);
-/// <summary>
-/// Converts center view mode enum into persisted text.
-/// </summary>
-std::string ViewModeToString(CenterViewMode mode);
-/// <summary>
-/// Parses persisted center view mode text into an enum value.
-/// </summary>
-CenterViewMode ViewModeFromString(std::string_view value);
 /// <summary>
 /// Converts goal status enum into persisted text.
 /// </summary>

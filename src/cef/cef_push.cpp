@@ -44,11 +44,13 @@ namespace
 	std::string g_last_pushed_folders_fingerprint;
 	std::string g_last_pushed_resource_collections_fingerprint;
 	std::string g_last_pushed_providers_fingerprint;
+	std::string g_last_pushed_provider_model_catalogs_fingerprint;
 	std::string g_last_pushed_settings_fingerprint;
 	std::string g_last_pushed_memory_fingerprint;
 	std::string g_last_pushed_cli_version_manager_fingerprint;
 	std::string g_last_pushed_shell_actions_fingerprint;
 	std::string g_last_pushed_shell_action_notification;
+	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
 
 	/// Posts a window.uamPush(json) call to the browser's main frame.
@@ -83,11 +85,13 @@ namespace
 		g_last_pushed_folders_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "folders").dump();
 		g_last_pushed_resource_collections_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "resourceCollections").dump();
 		g_last_pushed_providers_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers").dump();
+		g_last_pushed_provider_model_catalogs_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providerModelCatalogs").dump();
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app).dump();
 		g_last_pushed_memory_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity").dump();
 		g_last_pushed_cli_version_manager_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "cliVersionManager").dump();
 		g_last_pushed_shell_actions_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions").dump();
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
+		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
@@ -287,6 +291,9 @@ namespace
 		const nlohmann::json providers = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers");
 		AddChangedJsonField(data, "providers", providers, g_last_pushed_providers_fingerprint);
 
+		const nlohmann::json provider_model_catalogs = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providerModelCatalogs");
+		AddChangedJsonField(data, "providerModelCatalogs", provider_model_catalogs, g_last_pushed_provider_model_catalogs_fingerprint);
+
 		const nlohmann::json settings = SerializeSettingsForPatch(app);
 		AddChangedJsonField(data, "settings", settings, g_last_pushed_settings_fingerprint);
 
@@ -304,6 +311,13 @@ namespace
 		{
 			data["shellActionNotification"] = shell_notification;
 			g_last_pushed_shell_action_notification = shell_notification;
+		}
+
+		const std::string status_line = fingerprint_state.value("statusLine", std::string{});
+		if (status_line != g_last_pushed_status_line)
+		{
+			data["statusLine"] = status_line;
+			g_last_pushed_status_line = status_line;
 		}
 
 		if (selected_chat_id != g_last_pushed_selected_chat_id)

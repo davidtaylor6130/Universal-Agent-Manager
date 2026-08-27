@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace uam
@@ -19,6 +20,22 @@ namespace uam
 
 	namespace platform
 	{
+		inline constexpr std::size_t kCapturedCommandMaxOutputBytes = 4 * 1024 * 1024;
+		inline constexpr std::size_t kCapturedCommandReadBudgetBytes = 64 * 1024;
+		inline constexpr std::string_view kCapturedCommandOutputLimitError = "Command output exceeded the 4 MiB safety limit.";
+
+		inline bool AppendCapturedCommandOutput(ProcessExecutionResult& result, const char* bytes, std::size_t len)
+		{
+			const std::size_t remaining = result.output.size() < kCapturedCommandMaxOutputBytes ? kCapturedCommandMaxOutputBytes - result.output.size() : 0;
+			const std::size_t accepted = len < remaining ? len : remaining;
+			result.output.append(bytes, accepted);
+			if (accepted != len)
+			{
+				result.output_truncated = true;
+			}
+			return !result.output_truncated;
+		}
+
 		struct StdioProcessPlatformFields;
 
 		class DataRootLock
@@ -43,7 +60,7 @@ class IPlatformTerminalRuntime
   public:
 	virtual ~IPlatformTerminalRuntime() = default;
 	virtual bool IsAvailable() const = 0;
-	virtual bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const = 0;
+	virtual bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	virtual void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const = 0;
 	virtual bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const = 0;
 	virtual void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const = 0;
@@ -68,10 +85,10 @@ class IPlatformProcessService
 	virtual bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const = 0;
 	virtual int NormalizeCapturedCommandExitCode(int raw_status) const = 0;
 	virtual ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const = 0;
-	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const = 0;
+	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
 	// blocking the caller while a child delays or refuses to consume stdin.
-	virtual bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const = 0;
+	virtual bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const = 0;
 	virtual void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const = 0;
@@ -139,11 +156,7 @@ struct DictationEvent
 
 struct DictationOptions
 {
-	std::string mode = "system";
 	std::string locale;
-	std::string server_url;
-	std::string server_model;
-	std::string server_api_key;
 };
 
 /// <summary>

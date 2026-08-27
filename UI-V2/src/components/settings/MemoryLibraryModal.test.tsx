@@ -215,6 +215,36 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
+  it('dismisses nested UI before the library and preserves a dirty add draft', () => {
+    const { host, root } = renderModal()
+    const closeMemoryLibrary = useAppStore.getState().closeMemoryLibrary as ReturnType<typeof vi.fn>
+
+    clickButton(host, 'Add memory')
+    const title = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
+    changeInput(title, 'Keep this draft')
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(closeMemoryLibrary).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('New memory')
+
+    clickButton(host, 'Add memory')
+    expect((Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
+
+    clickButton(host, 'Delete Global lesson')
+    expect(host.querySelector('[role="dialog"][aria-label="Delete memory entry"]')).toBeTruthy()
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(host.querySelector('[role="dialog"][aria-label="Delete memory entry"]')).toBeNull()
+    expect(closeMemoryLibrary).not.toHaveBeenCalled()
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(host.textContent).not.toContain('New memory')
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(closeMemoryLibrary).toHaveBeenCalledTimes(1)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows the selected memory location in the content pane', () => {
     const { host, root } = renderModal()
 

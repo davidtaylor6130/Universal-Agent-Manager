@@ -445,6 +445,38 @@ void StopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTerminalState&
 	app.status_line = terminal.last_error;
 }
 
+bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalState& terminal, double now_seconds)
+{
+	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(app.settings.active_turn_inactivity_timeout_seconds));
+	if (action == CliTerminalInactivityRecoveryAction::None)
+	{
+		return false;
+	}
+	if (action == CliTerminalInactivityRecoveryAction::Interrupt)
+	{
+		constexpr char interrupt = '\x03';
+		terminal.inactivity_interrupt_requested_time_s = now_seconds;
+		const std::string message = "Provider terminal turn exceeded the " + std::to_string(app.settings.active_turn_inactivity_timeout_seconds) + "-second busy limit. Interrupting it now; the delivered prompt will not be replayed.";
+		if (!WriteToCliTerminal(terminal, &interrupt, 1))
+		{
+			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
+			terminal.should_launch = false;
+		}
+		terminal.last_error = message;
+		app.status_line = message;
+		uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_interrupt", &terminal, message);
+		return true;
+	}
+
+	const std::string message = "Provider terminal stopped after the inactivity interrupt grace period. The delivered prompt was not replayed.";
+	uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_force_stop", &terminal, message);
+	StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
+	terminal.should_launch = false;
+	terminal.last_error = message;
+	app.status_line = message;
+	return true;
+}
+
 bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::CliTerminalState& terminal, bool preserve_selection)
 {
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
@@ -465,6 +497,14 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (!terminal.running)
 	{
 		return false;
+	}
+	std::string input_error;
+	if (terminal.input_writer != nullptr && terminal.input_writer->FailureOrStall(&input_error))
+	{
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "async_input_failed", &terminal, input_error);
+		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error"));
+		app.status_line = terminal.last_error;
+		return true;
 	}
 	if (!platform_terminal_runtime.HasReadableTerminalOutputHandle(terminal))
 	{
@@ -737,6 +777,12 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 
 		if (!terminal->running)
 		{
+			continue;
+		}
+
+		if (HandleCliTerminalInactivityTimeout(app, *terminal, now))
+		{
+			changed = true;
 			continue;
 		}
 

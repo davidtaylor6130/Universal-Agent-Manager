@@ -123,9 +123,18 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
-bool TryAutoApprovePendingPermission(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
-void QueueAcpPermission(AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending);
-void AdvanceAcpPermissionQueue(AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+std::string RejectPermissionOptionId(const AcpPendingPermissionState& pending);
+struct PermissionReviewDecision
+{
+	std::string decision;
+	std::string reason;
+};
+std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
+bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+void QueueAcpPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending);
+void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+bool PollPermissionReviewTasks(AppState& app);
+void StopPermissionReviewTasks(AppState& app, std::string_view chat_id = {}, std::string_view request_id_json = {});
 void CancelPendingAcpPermissions(AcpSessionState& session, std::string* error_out = nullptr);
 void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message);
 nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
@@ -217,6 +226,7 @@ nlohmann::json BuildCodexModelListRequest(int request_id);
 nlohmann::json BuildCodexRateLimitsReadRequest(int request_id);
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd);
 nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
+nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
 nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd);
 nlohmann::json BuildCodexThreadResumeRequest(int request_id, const ChatSession& chat, const std::string& cwd);
 nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);
@@ -257,9 +267,11 @@ void ResetAcpPendingInteractionState(AcpSessionState& session);
 void ResetAcpTurnStreamState(AcpSessionState& session);
 void ClearAcpStartupModelRequest(AcpSessionState& session);
 void ClearAcpReasoningChangeRequest(AcpSessionState& session);
+void ClearAcpConfigOptionChangeRequest(AcpSessionState& session);
 void ClearAcpModeChangeRequest(AcpSessionState& session);
 bool RollbackAcpModeChange(AcpSessionState& session, ChatSession& chat);
 void ClearAcpModelChangeRequest(AcpSessionState& session);
+bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& config_options);
 bool UpdateCopilotReasoningFromConfigOptions(AcpSessionState& session, ChatSession& chat, const nlohmann::json& config_options);
 bool ReconcileCopilotReasoningEffort(AppState& app, AcpSessionState& session, ChatSession& chat);
 void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state);
@@ -286,7 +298,10 @@ void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_secon
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
-bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const std::string& prompt, bool review_turn);
+bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
+                             const std::string& prompt, bool review_turn,
+                             const std::string& model_id = {}, bool fresh_session = false);
+bool ScheduleTurnCheckpointPreflight(AppState& app, AcpSessionState& session, const ChatSession& chat);
 void ClearGoalReviewState(AcpSessionState& session);
 void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);

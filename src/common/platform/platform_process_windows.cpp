@@ -250,7 +250,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		}
 
 		SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-		const std::wstring command_w = WideFromUtf8("cmd.exe /C " + command);
+		const std::wstring command_w = WideFromUtf8("cmd.exe /D /S /C \"" + command + "\"");
 
 		if (command_w.empty())
 		{
@@ -263,15 +263,25 @@ class WindowsProcessService final : public IPlatformProcessService
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 
-		STARTUPINFOW startup_info{};
-		startup_info.cb = sizeof(startup_info);
-		startup_info.dwFlags = STARTF_USESTDHANDLES;
-		startup_info.hStdInput = INVALID_HANDLE_VALUE;
-		startup_info.hStdOutput = stdout_write;
-		startup_info.hStdError = stdout_write;
+		ScopedThreadAttributeList attribute_list;
+		if (!attribute_list.Initialize({stdout_write}, &result.error))
+		{
+			CloseInvalidHandleIfOpen(stdout_read);
+			CloseInvalidHandleIfOpen(stdout_write);
+			return result;
+		}
+
+		STARTUPINFOEXW startup_info{};
+		startup_info.StartupInfo.cb = sizeof(startup_info);
+		startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+		startup_info.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+		startup_info.StartupInfo.hStdOutput = stdout_write;
+		startup_info.StartupInfo.hStdError = stdout_write;
+		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, nullptr, &startup_info.StartupInfo, &process_info);
 		CloseInvalidHandleIfOpen(stdout_write);
 
 		if (!created)
@@ -293,6 +303,17 @@ class WindowsProcessService final : public IPlatformProcessService
 			result.error = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect command process tree.");
 			return result;
 		}
+		if (ResumeThread(process_info.hThread) == static_cast<DWORD>(-1))
+		{
+			const DWORD resume_error = GetLastError();
+			TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
+			CloseInvalidHandleIfOpen(stdout_read);
+			CloseHandle(job_object);
+			CloseInvalidHandleIfOpen(process_info.hProcess);
+			CloseInvalidHandleIfOpen(process_info.hThread);
+			result.error = "Failed to resume command: " + FormatWindowsError(resume_error) + ".";
+			return result;
+		}
 
 		std::array<char, 4096> buffer{};
 		const auto deadline = (timeout_ms >= 0) ? (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms)) : std::chrono::steady_clock::time_point::max();
@@ -302,13 +323,15 @@ class WindowsProcessService final : public IPlatformProcessService
 		while (!process_finished || !pipe_closed)
 		{
 			DWORD available = 0;
+			std::size_t bytes_drained = 0;
 
 			if (!pipe_closed && PeekNamedPipe(stdout_read, nullptr, 0, nullptr, &available, nullptr))
 			{
-				while (available > 0)
+				while (available > 0 && bytes_drained < uam::platform::kCapturedCommandReadBudgetBytes)
 				{
 					DWORD bytes_read = 0;
-					const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available));
+					const std::size_t budget_remaining = uam::platform::kCapturedCommandReadBudgetBytes - bytes_drained;
+					const DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(std::min<std::size_t>(buffer.size(), available), budget_remaining));
 
 					if (!ReadFile(stdout_read, buffer.data(), to_read, &bytes_read, nullptr))
 					{
@@ -322,9 +345,21 @@ class WindowsProcessService final : public IPlatformProcessService
 						break;
 					}
 
-					result.output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+					if (!uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
+					{
+						result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+						TerminateProcessTreeAndWaitBriefly(job_object, process_info.hProcess, 1);
+						process_finished = true;
+						pipe_closed = true;
+						break;
+					}
+					bytes_drained += bytes_read;
 					available -= bytes_read;
 				}
+			}
+			else if (!pipe_closed)
+			{
+				pipe_closed = true;
 			}
 
 			const DWORD wait_result = WaitForSingleObject(process_info.hProcess, 0);
@@ -350,15 +385,8 @@ class WindowsProcessService final : public IPlatformProcessService
 				process_finished = true;
 			}
 
-			if (process_finished && !pipe_closed)
+			if (process_finished && available == 0)
 			{
-				DWORD bytes_read = 0;
-
-				while (ReadFile(stdout_read, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) && bytes_read > 0)
-				{
-					result.output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
-				}
-
 				pipe_closed = true;
 			}
 
@@ -367,7 +395,10 @@ class WindowsProcessService final : public IPlatformProcessService
 				break;
 			}
 
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			if (bytes_drained == 0)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
 		}
 
 		DWORD exit_code = 1;
@@ -377,7 +408,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		CloseInvalidHandleIfOpen(process_info.hProcess);
 		CloseInvalidHandleIfOpen(process_info.hThread);
 
-		if (!result.timed_out && !result.canceled)
+		if (!result.timed_out && !result.canceled && !result.output_truncated)
 		{
 			result.exit_code = static_cast<int>(exit_code);
 			result.ok = result.error.empty() && result.exit_code == 0;
@@ -386,18 +417,18 @@ class WindowsProcessService final : public IPlatformProcessService
 		return result;
 	}
 
-	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
+	bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
-		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, error_out);
+		return StartStdioProcessInternal(process, working_directory, argv, nullptr, false, environment_overrides, error_out);
 	}
 
-	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr) const override
+	bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
-		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, error_out);
+		return StartStdioProcessInternal(process, working_directory, argv, &standard_input, true, environment_overrides, error_out);
 	}
 
   private:
-	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, std::string* error_out) const
+	bool StartStdioProcessInternal(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, const std::string_view* preloaded_input, bool merge_output, const std::vector<std::pair<std::string, std::string>>& environment_overrides, std::string* error_out) const
 	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
@@ -471,6 +502,12 @@ class WindowsProcessService final : public IPlatformProcessService
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
+		std::vector<wchar_t> environment_block;
+		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out))
+		{
+			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
+			return false;
+		}
 
 		std::vector<HANDLE> inherited_handles = {stdin_read, stdout_write};
 		if (!merge_output)
@@ -495,7 +532,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		PROCESS_INFORMATION process_info{};
 		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, working_directory_arg, &startup_info.StartupInfo, &process_info);
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.empty() ? nullptr : environment_block.data(), working_directory_arg, &startup_info.StartupInfo, &process_info);
 
 		CloseStdioChildPipeEnds(stdin_read, stdout_write, stderr_write);
 
@@ -553,6 +590,7 @@ class WindowsProcessService final : public IPlatformProcessService
   public:
 	void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const override
 	{
+		process.stdin_writer.reset();
 		CloseInvalidHandleIfOpen(process.stdin_write);
 		CloseInvalidHandleIfOpen(process.stdout_read);
 		CloseInvalidHandleIfOpen(process.stderr_read);
@@ -582,27 +620,20 @@ class WindowsProcessService final : public IPlatformProcessService
 			return false;
 		}
 
-		std::size_t offset = 0;
-		while (offset < len)
+		if (process.stdin_writer == nullptr)
 		{
-			const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(len - offset, static_cast<std::size_t>(MAXDWORD)));
-			DWORD written = 0;
-			if (!WriteFile(process.stdin_write, bytes + offset, chunk, &written, nullptr) || written == 0)
-			{
-				if (error_out != nullptr)
-				{
-					const DWORD err = GetLastError();
-					*error_out = written == 0 ? "stdin pipe write returned zero bytes." : FormatWindowsError(err);
-				}
-				return false;
-			}
-			offset += written;
+			process.stdin_writer = CreateAsyncHandleWriter(process.stdin_write, error_out);
 		}
-		return true;
+		return process.stdin_writer != nullptr && process.stdin_writer->Enqueue(bytes, len, error_out);
 	}
 
 	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
 	{
+		if (process.stdin_writer != nullptr && !process.stdin_writer->Flush(uam::platform::kAsyncInputCloseDrainTimeout))
+		{
+			TerminateStdioProcess(process, true);
+		}
+		process.stdin_writer.reset();
 		CloseInvalidHandleIfOpen(process.stdin_write);
 	}
 

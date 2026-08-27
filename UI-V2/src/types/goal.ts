@@ -21,4 +21,6 @@ export interface Goal {
   updatedAt: Date
 	executionOwner?: 'uam' | 'provider'
 	providerCommand?: string
+	workerModelId?: string
+	reviewerModelId?: string
 }

@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.5.4 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.5.7 LANGUAGES C CXX)
+set(UAM_PRODUCT_VERSION "${PROJECT_VERSION}")
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -123,6 +124,7 @@ set(CMAKE_FOLDER "ThirdParty/nlohmann_json")
 FetchContent_Declare(
   nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -137,17 +139,37 @@ set(CMAKE_FOLDER "")
 # Platform-specific CEF versions (latest stable from cef-builds.spotifycdn.com).
 if(WIN32)
   set(CEF_PLATFORM "windows64")
+  set(PROJECT_ARCH "x86_64")
   set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
+  set(CEF_SHA256 "f5b0a6fcd3c6d4abd7486e849db2640c27bb4d94d7b792691be348dec8063ff6")
 elseif(APPLE)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+  if(CMAKE_OSX_ARCHITECTURES)
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+      set(CEF_PLATFORM "macosarm64")
+      set(PROJECT_ARCH "arm64")
+      set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+      set(CEF_PLATFORM "macosx64")
+      set(PROJECT_ARCH "x86_64")
+      set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
+    else()
+      message(FATAL_ERROR "CEF macOS builds require exactly one architecture: arm64 or x86_64.")
+    endif()
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(CEF_PLATFORM "macosarm64")
+    set(PROJECT_ARCH "arm64")
+    set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
   else()
     set(CEF_PLATFORM "macosx64")
+    set(PROJECT_ARCH "x86_64")
+    set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
   endif()
   set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
 else()
   set(CEF_PLATFORM "linux64")
+  set(PROJECT_ARCH "x86_64")
   set(CEF_VERSION "138.0.61+g664e74a+chromium-138.0.7204.308")
+  set(CEF_SHA256 "dd2de7339c4f56de23ed2d80c9b11db81a6553180c18af64f694963a50be5707")
 endif()
 
 # Encode the + characters as %2B for the URL.
@@ -157,6 +179,7 @@ set(CMAKE_FOLDER "ThirdParty/CEF")
 FetchContent_Declare(
   cef_binary
   URL "https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION_ENCODED}_${CEF_PLATFORM}_minimal.tar.bz2"
+  URL_HASH "SHA256=${CEF_SHA256}"
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 # Force libcef_dll_wrapper to be a STATIC library regardless of BUILD_SHARED_LIBS.
@@ -251,10 +274,15 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_SOURCES}
   ${UAM_PLATFORM_IMPL_SOURCES}
   src/main.cpp
+	  src/app/agent_definition_service.cpp
+	  src/app/agent_run_ledger.cpp
+	  src/app/agent_run_scheduler.cpp
+	  src/app/uam_control_service.cpp
   src/app/application.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
   src/app/git_worktree_service.cpp
+  src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
@@ -281,6 +309,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
+  src/cef/local_chat_bundle_handlers.cpp
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
@@ -495,7 +524,7 @@ file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
   <key>CFBundleName</key><string>${_hname}</string>
   <key>CFBundleDisplayName</key><string>Universal Agent Manager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>
+  <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.15.0</string>
@@ -638,7 +667,7 @@ else()
   find_program(UAM_NPM_EXECUTABLE NAMES npm REQUIRED)
 endif()
 string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
-set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
+set(UAM_UI_BUILD_VERSION "${UAM_PRODUCT_VERSION}")
 if(UAM_UI_BUILD_VERSION STREQUAL "")
   set(UAM_UI_BUILD_VERSION "local")
 endif()
@@ -779,7 +808,7 @@ if(APPLE)
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
       MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
-      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${UAM_PRODUCT_VERSION}"
       MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
     )
   endif()
@@ -804,9 +833,14 @@ if(UAM_BUILD_TESTS)
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
+	    src/app/agent_definition_service.cpp
+	    src/app/agent_run_ledger.cpp
+	    src/app/agent_run_scheduler.cpp
+	    src/app/uam_control_service.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
     src/app/git_worktree_service.cpp
+    src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
     src/app/memory_library_service.cpp
     src/app/memory_service.cpp
@@ -941,5 +975,13 @@ if(UAM_BUILD_TESTS)
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake
+  )
+  add_test(
+    NAME uam_windows_process_containment_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_windows_process_containment.cmake
+  )
+  add_test(
+    NAME uam_macos_process_spawn_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_macos_process_spawn_contract.cmake
   )
 endif()

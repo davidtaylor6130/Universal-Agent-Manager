@@ -52,6 +52,36 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
 }
 
+UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)
+{
+	TempDir temp("uam-memory-idempotent-retry");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-memory-retry";
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.workspace_directory = (temp.root / "workspace").string();
+	chat.messages.push_back({MessageRole::User, "Remember this retry-safe preference.", "now"});
+	fs::create_directories(chat.workspace_directory);
+	app.chats.push_back(chat);
+	const std::string output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Retry-safe memory","memory":"Apply a completed extraction at most once.","evidence":"The user requested retry safety.","confidence":"high"}]})";
+
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 1, &error));
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 1, &error));
+	const fs::path path = fs::path(chat.workspace_directory) / ".UAM" / "Lessons" / "User_Lessons" / "retry-safe-memory.md";
+	const std::string text = ReadFile(path);
+	UAM_ASSERT(text.find("Occurrence count: 1") != std::string::npos);
+	const std::size_t key_at = text.find("Extraction key: chat-memory-retry:1");
+	UAM_ASSERT(key_at != std::string::npos);
+	UAM_ASSERT(text.find("Extraction key: chat-memory-retry:1", key_at + 1) == std::string::npos);
+
+	app.chats[0].messages.push_back({MessageRole::User, "Remember it again.", "later"});
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 2, &error));
+	UAM_ASSERT(ReadFile(path).find("Occurrence count: 2") != std::string::npos);
+}
+
 UAM_TEST(MemoryServiceRecallTruncatesUtf8AtCodePointBoundary)
 {
 	TempDir temp("uam-memory-utf8-preview");
@@ -428,8 +458,9 @@ UAM_TEST(MemoryServiceBuildsHeadlessGeminiWorkerCommand)
 	const std::string command = MemoryService::BuildWorkerCommandForTests(gemini, settings, "remember this", " flash-lite ");
 
 	UAM_ASSERT(command.find("gemini") != std::string::npos);
-	UAM_ASSERT(command.find("-p") != std::string::npos || command.find("--prompt") != std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
+	UAM_ASSERT(command.find("'-p'") == std::string::npos && command.find("\"-p\"") == std::string::npos);
+	UAM_ASSERT(command.find("remember this") == std::string::npos);
+	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
 	UAM_ASSERT(command.find("--model") != std::string::npos);
 	UAM_ASSERT(command.find("flash-lite") != std::string::npos);
 	UAM_ASSERT(command.find(" flash-lite ") == std::string::npos);
@@ -565,7 +596,8 @@ UAM_TEST(MemoryServiceBuildsStructuredCodexWorkerCommand)
 	UAM_ASSERT(command.find("-m") != std::string::npos);
 	UAM_ASSERT(command.find("gpt-5.4-mini") != std::string::npos);
 	UAM_ASSERT(command.find(" gpt-5.4-mini ") == std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") == std::string::npos);
+	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
 #if !defined(_WIN32)
 	UAM_ASSERT(command.find("PATH=") != std::string::npos);
 	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
@@ -583,11 +615,12 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveClaudeWorkerCommand)
 	UAM_ASSERT(command.find("-p") != std::string::npos || command.find("--print") != std::string::npos);
 	UAM_ASSERT(command.find("--no-session-persistence") != std::string::npos);
 	UAM_ASSERT(command.find("--tools") != std::string::npos);
-	UAM_ASSERT(command.find("'--'") != std::string::npos || command.find("\"--\"") != std::string::npos);
+	UAM_ASSERT(command.find("'--'") == std::string::npos && command.find("\"--\"") == std::string::npos);
 	UAM_ASSERT(command.find("--model") != std::string::npos);
 	UAM_ASSERT(command.find("sonnet") != std::string::npos);
 	UAM_ASSERT(command.find(" sonnet ") == std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") == std::string::npos);
+	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
 #if !defined(_WIN32)
 	UAM_ASSERT(command.find("PATH=") != std::string::npos);
 	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
@@ -607,7 +640,8 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveOpenCodeWorkerCommand)
 	UAM_ASSERT(command.find("--model") != std::string::npos);
 	UAM_ASSERT(command.find("anthropic/claude-sonnet-4") != std::string::npos);
 	UAM_ASSERT(command.find(" anthropic/claude-sonnet-4 ") == std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
+	UAM_ASSERT(command.find("remember this") == std::string::npos);
+	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
 #if !defined(_WIN32)
 	UAM_ASSERT(command.find("PATH=") != std::string::npos);
 	UAM_ASSERT(command.find("/opt/homebrew/bin") != std::string::npos);
@@ -624,14 +658,9 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveCopilotWorkerCommand)
 	const std::string command = MemoryService::BuildWorkerCommandForTests(copilot, settings, "remember this", " gpt-5.1 ");
 
 	UAM_ASSERT(command.find("copilot") != std::string::npos);
-#if defined(_WIN32)
 	UAM_ASSERT(command.find("-p") == std::string::npos);
 	UAM_ASSERT(command.find("remember this") == std::string::npos);
 	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
-#else
-	UAM_ASSERT(command.find("-p") != std::string::npos);
-	UAM_ASSERT(command.find("remember this") != std::string::npos);
-#endif
 	UAM_ASSERT(command.find("--model") != std::string::npos);
 	UAM_ASSERT(command.find("gpt-5.1") != std::string::npos);
 	UAM_ASSERT(command.find(" gpt-5.1 ") == std::string::npos);

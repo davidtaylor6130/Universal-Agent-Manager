@@ -51,6 +51,7 @@ namespace uam
 	};
 
 	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id);
+	bool RecoverPendingDeletionTransaction(AppState& app);
 	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr);
 	WorkspaceFolderRecoveryPreview PreviewUnsortedWorkspaceFolders(const AppState& app);
 	bool RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecoveryResult* result_out = nullptr);

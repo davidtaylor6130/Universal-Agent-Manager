@@ -5,6 +5,7 @@
 #include "common/memory/memory_levels.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
+#include "common/security/command_safety.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
@@ -40,15 +41,27 @@ namespace uam::provider_chat_defaults
 	inline ProviderChatDefaults Normalize(ProviderChatDefaults defaults, std::string_view provider_id)
 	{
 		defaults.model_id = uam::strings::Trim(defaults.model_id);
+		defaults.reviewer_model_id = uam::strings::Trim(defaults.reviewer_model_id);
 		if (!IsAllowedModelId(defaults.model_id))
 		{
 			defaults.model_id.clear();
 		}
+		if (!IsAllowedModelId(defaults.reviewer_model_id))
+		{
+			defaults.reviewer_model_id.clear();
+		}
+		defaults.feature_preference = defaults.feature_preference == "provider" ? "provider" : "uam";
 		defaults.approval_mode = uam::approval_modes::NormalizeIncomingApprovalModeId(defaults.approval_mode);
 		if (!uam::approval_modes::IsAppApprovalMode(defaults.approval_mode))
 		{
 			defaults.approval_mode = uam::approval_modes::kDefaultApprovalMode;
 		}
+		if (defaults.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode)
+		{
+			defaults.approval_mode = uam::approval_modes::kDefaultApprovalMode;
+			defaults.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
+		}
+		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
 		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
@@ -64,7 +77,7 @@ namespace uam::provider_chat_defaults
 		{
 			return Normalize(found->second, normalized_provider_id);
 		}
-		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
+		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
 	}
 
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
@@ -75,13 +88,14 @@ namespace uam::provider_chat_defaults
 			defaults.service_tier.clear();
 		}
 		chat.model_id = defaults.model_id;
-		chat.approval_mode = defaults.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode ? uam::approval_modes::kDefaultApprovalMode : defaults.approval_mode;
-		if (defaults.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode) chat.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
-		chat.auto_approve_commands = defaults.auto_approve_commands;
+		chat.reviewer_model_id = defaults.reviewer_model_id;
+		chat.approval_mode = defaults.approval_mode;
+		chat.command_safety_tier = defaults.command_safety_tier;
 		chat.memory_level = defaults.memory_level;
 		chat.memory_enabled = defaults.memory_enabled;
 		chat.reasoning_effort = defaults.reasoning_effort;
 		chat.service_tier = defaults.service_tier;
+		chat.service_tier_explicit = !defaults.service_tier.empty();
 		chat.small_model_mode = defaults.small_model_mode;
 	}
 

@@ -6,8 +6,11 @@ import { NewChatModal } from './NewChatModal'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const originalDiscoverProviderModels = useAppStore.getState().discoverProviderModels
+
 describe('NewChatModal', () => {
   beforeEach(() => {
+	delete window.cefQuery
     useAppStore.setState({
       folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
       providers: [
@@ -19,7 +22,99 @@ describe('NewChatModal', () => {
       newChatFolderId: 'project',
 	  sessions: [],
 	  acpBindingBySessionId: {},
+      providerModelCatalogs: [],
+      cliVersionManager: { providers: [] },
+      discoverProviderModels: originalDiscoverProviderModels,
     })
+  })
+
+  it.each(['unknown', 'verified', 'untested', 'untested-newer', 'provider-managed'] as const)(
+    'allows structured creation when provider readiness is %s',
+    (status) => {
+      useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '1.0.0', selectedVersion: '1.0.0', availableVersions: [], preferredVersion: '1.0.0', status, message: '', running: false, lastCommand: '', lastOutput: '' }] } })
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<NewChatModal />))
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(false)
+      act(() => root.unmount())
+      host.remove()
+    },
+  )
+
+  it.each(['checking', 'installing', 'known-incompatible'] as const)(
+    'blocks only structured creation for provider readiness %s and keeps terminal creation available',
+    (status) => {
+      useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [{ version: '1.0.0', preferred: true }], preferredVersion: '1.0.0', status, message: 'Provider needs attention.', running: status === 'checking' || status === 'installing', lastCommand: '', lastOutput: '' }] } })
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<NewChatModal />))
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(true)
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create terminal chat')?.disabled).toBe(false)
+      act(() => root.unmount())
+      host.remove()
+    },
+  )
+
+  it('does not launch model discovery for a provider blocked from structured creation', async () => {
+    const discoverProviderModels = vi.fn().mockResolvedValue(false)
+    useAppStore.setState({
+      discoverProviderModels,
+      cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [], preferredVersion: '1.0.0', status: 'known-incompatible', message: 'Unsupported version.', running: false, lastCommand: '', lastOutput: '' }] },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+
+    expect(discoverProviderModels).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers direct provider check and supported-version install actions', async () => {
+    const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
+    const applyCliProviderVersion = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      refreshCliProviderVersion,
+      applyCliProviderVersion,
+      cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [{ version: '1.0.0', preferred: true }], preferredVersion: '1.0.0', status: 'known-incompatible', message: 'Unsupported version.', running: false, lastCommand: '', lastOutput: '' }] },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    await act(async () => { (Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Install supported version'))?.click(); await Promise.resolve() })
+    expect(applyCliProviderVersion).toHaveBeenCalledWith('gemini-cli', '1.0.0')
+    await act(async () => { (Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Check again'))?.click(); await Promise.resolve() })
+    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks terminal creation when the provider executable is unavailable', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      addSession,
+      cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'CLI unavailable.', running: false, lastCommand: '', lastOutput: '' }] },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    const structured = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')
+    const terminal = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create terminal chat')
+    act(() => structured?.click())
+    expect(addSession).not.toHaveBeenCalled()
+    expect(terminal?.disabled).toBe(true)
+    await act(async () => { terminal?.click(); await Promise.resolve() })
+    expect(addSession).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('creates a folder chat with the provider and model selected by the user', () => {
@@ -70,10 +165,10 @@ describe('NewChatModal', () => {
     )
     act(() => high?.click())
 
-    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create chat')
+    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create structured chat')
     act(() => create?.click())
 
-	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high')
+	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high', 'chat')
 
     act(() => root.unmount())
     host.remove()
@@ -87,10 +182,10 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')
     expect(create?.disabled).toBe(false)
     act(() => create?.click())
-    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '')
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat')
 
     act(() => root.unmount())
     host.remove()
@@ -106,6 +201,7 @@ describe('NewChatModal', () => {
         viewMode: 'chat',
         folderId: 'project',
         providerId: 'codex-cli',
+		workspaceDirectory: '/tmp/project',
         createdAt: new Date(),
         updatedAt: new Date(),
       }],
@@ -160,10 +256,10 @@ describe('NewChatModal', () => {
     const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
     expect(reasoning.textContent).toContain('Low')
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create chat')
+      .find((button) => button.textContent === 'Create structured chat')
     act(() => create?.click())
 
-    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', '', 'low')
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', '', 'low', 'chat')
 
     act(() => root.unmount())
     host.remove()
@@ -181,7 +277,7 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
 
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create chat')!
+      .find((button) => button.textContent === 'Create structured chat')!
     act(() => {
       create.click()
       create.click()
@@ -196,12 +292,46 @@ describe('NewChatModal', () => {
       await Promise.resolve()
     })
     expect(create.disabled).toBe(false)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('chat could not be created')
 
     await act(async () => {
       create.click()
       await Promise.resolve()
     })
     expect(addSession).toHaveBeenCalledTimes(2)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('cannot be dismissed while chat creation is committing', async () => {
+    let finishCreation: (created: boolean) => void = () => {}
+    const addSession = vi.fn(() => new Promise<boolean>((resolve) => { finishCreation = resolve }))
+    const setNewChatModalOpen = vi.fn()
+    useAppStore.setState({ addSession, setNewChatModalOpen })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Create structured chat')!
+    act(() => create.click())
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      ;(host.querySelector('button[aria-label="Close new chat"]') as HTMLButtonElement).click()
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')?.click()
+      host.firstElementChild?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(setNewChatModalOpen).not.toHaveBeenCalled()
+
+    await act(async () => {
+      finishCreation(false)
+      await Promise.resolve()
+    })
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(setNewChatModalOpen).toHaveBeenCalledWith(false)
 
     act(() => root.unmount())
     host.remove()
@@ -225,6 +355,7 @@ describe('NewChatModal', () => {
         viewMode: 'chat',
         folderId: 'project',
         providerId: 'gemini-cli',
+		workspaceDirectory: '/tmp/project',
         createdAt: new Date(),
         updatedAt: new Date(),
       }],
@@ -281,6 +412,42 @@ describe('NewChatModal', () => {
     delete window.cefQuery
   })
 
+	it('discovers and displays workspace-scoped models before the first chat exists', async () => {
+	  const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+	  window.cefQuery = ({ request, onSuccess }) => {
+		requests.push(JSON.parse(request))
+		onSuccess(JSON.stringify({ started: true, pending: true }))
+	  }
+	  useAppStore.setState({
+		defaultNewChatProviderId: 'codex-cli',
+		sessions: [],
+		providerModelCatalogs: [{
+		  providerId: 'codex-cli',
+		  workspaceDirectory: '/tmp/project',
+		  availableModels: [{ id: 'gpt-first-chat', name: 'GPT First Chat', description: 'Discovered without a chat.' }],
+		  currentModelId: 'gpt-first-chat',
+		  modelsLoading: false,
+		  modelRefreshError: '',
+		}],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+
+	  expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+	  expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('GPT First Chat')
+	  expect(requests).toContainEqual(expect.objectContaining({
+		action: 'discoverProviderModels',
+		payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/project' },
+	  }))
+
+	  act(() => root.unmount())
+	  host.remove()
+	  delete window.cefQuery
+	})
+
   it('blocks chat creation and offers to create a workspace when none exists', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
     const addFolder = vi.fn().mockResolvedValue(true)
@@ -290,7 +457,7 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
     expect(host.textContent).toContain('A workspace is required')
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')?.disabled).toBe(true)
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(true)
     const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create workspace')
     await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
     expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')

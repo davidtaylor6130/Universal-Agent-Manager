@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel } from './modelOptions'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, reasoningEffortForModel } from './modelOptions'
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {
@@ -44,9 +44,10 @@ describe('reasoningEffortForModel', () => {
       ],
     } as AcpBinding
 
-    expect(buildCodexSpeedOptions(acp, 'gpt-5.6-sol').map((option) => option.id)).toEqual(['', 'fast'])
-    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini', 'flex').map((option) => option.id)).toEqual([''])
-    expect(buildCodexSpeedOptions(undefined, '').map((option) => option.id)).toEqual(['', 'fast', 'flex'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.6-sol').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, '', 'fast'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini', 'flex').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, ''])
+    expect(buildCodexSpeedOptions(undefined, '').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, '', 'fast', 'flex'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini').map((option) => option.label).slice(0, 2)).toEqual(['Inherit', 'Standard'])
   })
 
   it('keeps current Codex efforts in the offline fallback catalog', () => {

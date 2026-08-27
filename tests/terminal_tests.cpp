@@ -1,16 +1,116 @@
 #include "test_harness.h"
 
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/terminal/terminal_launch.h"
 
 using namespace uam_test;
 
+UAM_TEST(CliTerminalRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)
+{
+	uam::AppState app;
+	uam::CliTerminalState terminal;
+	ChatSession chat;
+	chat.id = "chat-imported-read-only";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.imported_read_only = true;
+
+	UAM_ASSERT(!uam::StartCliTerminalForChat(app, terminal, chat, 24, 80));
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Disabled);
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "Imported transcripts are read-only"));
+}
+
+UAM_TEST(CliTurnInactivityRecoveryIgnoresProviderOutputNoiseAndUsesInterruptGrace)
+{
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal.last_busy_time_s = 30.0;
+	terminal.last_user_input_time_s = 89.0;
+	terminal.last_ai_output_time_s = 89.0;
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(terminal, 89.0, 60.0), uam::CliTerminalInactivityRecoveryAction::None);
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(terminal, 90.0, 60.0), uam::CliTerminalInactivityRecoveryAction::Interrupt);
+	terminal.inactivity_interrupt_requested_time_s = 200.0;
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(terminal, 204.9, 60.0), uam::CliTerminalInactivityRecoveryAction::None);
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(terminal, 205.0, 60.0), uam::CliTerminalInactivityRecoveryAction::Stop);
+}
+
+UAM_TEST(ProviderChildEnvironmentIsolationKeepsOnlySelectedProviderApiKeys)
+{
+	const auto value_for = [](const std::vector<std::pair<std::string, std::string>>& values, std::string_view name) -> const std::string*
+	{
+		const auto found = std::ranges::find_if(values, [name](const auto& value) { return value.first == name; });
+		return found == values.end() ? nullptr : &found->second;
+	};
+
+	ProviderProfile codex = ProviderProfileStore::DefaultCodexProfile();
+	const auto codex_environment = uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(codex);
+	UAM_ASSERT(value_for(codex_environment, "OPENAI_API_KEY") == nullptr);
+	UAM_ASSERT(value_for(codex_environment, "ANTHROPIC_API_KEY") != nullptr);
+	UAM_ASSERT(value_for(codex_environment, "ANTHROPIC_API_KEY")->empty());
+	UAM_ASSERT(value_for(codex_environment, "GEMINI_API_KEY") != nullptr);
+	UAM_ASSERT(value_for(codex_environment, "GOOGLE_API_KEY") != nullptr);
+
+	ProviderProfile claude = ProviderProfileStore::DefaultClaudeProfile();
+	const auto claude_environment = uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(claude);
+	UAM_ASSERT(value_for(claude_environment, "ANTHROPIC_API_KEY") == nullptr);
+	UAM_ASSERT(value_for(claude_environment, "OPENAI_API_KEY") != nullptr);
+
+	ProviderProfile opencode = ProviderProfileStore::DefaultOpenCodeProfile();
+	UAM_ASSERT(uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(opencode).empty());
+
+	uam::AppState worker_app;
+	const uam::ProviderWorkerInvocation worker = uam::BuildProviderWorkerInvocation(
+	    worker_app, codex, AppSettings{}, "Review without unrelated provider credentials.", "",
+	    uam::ProviderWorkerPathMode::BasePath);
+	UAM_ASSERT(!worker.Empty());
+	UAM_ASSERT(value_for(worker.environment_overrides, "OPENAI_API_KEY") == nullptr);
+	UAM_ASSERT(value_for(worker.environment_overrides, "ANTHROPIC_API_KEY") != nullptr);
+	UAM_ASSERT(value_for(worker.environment_overrides, "ANTHROPIC_API_KEY")->empty());
+
+	ScopedEnvVar preserve("UAM_PRESERVE_PROVIDER_CHILD_SECRETS", "1");
+	UAM_ASSERT(uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(codex).empty());
+}
+
+UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
+{
+	TempDir temp("uam-cli-inactivity-timeout");
+	uam::AppState app;
+	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	uam::CliTerminalState terminal;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "trap '' HUP INT TERM; while :; do sleep 1; done"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	terminal.running = true;
+	terminal.should_launch = true;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal.turn_state = uam::CliTerminalTurnState::Busy;
+	terminal.generation_in_progress = true;
+	terminal.last_busy_time_s = 1.0;
+	terminal.last_user_input_time_s = 1.0;
+	terminal.last_ai_output_time_s = 1.0;
+
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 61.0));
+	UAM_ASSERT(terminal.running);
+	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 61.0);
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "will not be replayed"));
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 66.0));
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT(!terminal.should_launch);
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "not replayed"));
+}
+
 UAM_TEST(GeminiCliCompatibilityAcceptsCurrentStableVersions)
 {
-	UAM_ASSERT_EQ(std::string(uam::PreferredGeminiCliVersion()), std::string("0.38.1"));
-	UAM_ASSERT_EQ(uam::SupportedGeminiCliVersionsLabel(), std::string("0.36.0 or newer (preferred 0.38.1)"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.38.1"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.36.0"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.39.0"));
+	UAM_ASSERT_EQ(std::string(uam::PreferredGeminiCliVersion()), std::string("latest"));
+	UAM_ASSERT_EQ(uam::SupportedGeminiCliVersionsLabel(), std::string("0.55.1 or newer (verified 2026-08-27)"));
+	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.38.1"));
+	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.55.0"));
+	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.55.1"));
+	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.56.0"));
 	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("1.0.0"));
 	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.30.0"));
 	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0..0"));
@@ -1514,4 +1614,25 @@ UAM_TEST(ProviderInteractiveTerminalReasonMatchesSupportPredicate)
 	UAM_ASSERT(!uam::ProviderSupportsInteractiveTerminal(opencode_provider));
 	UAM_ASSERT_EQ(uam::ProviderInteractiveTerminalUnavailableReason(opencode_provider), std::string("Provider does not expose an interactive CLI runtime."));
 #endif
+}
+
+UAM_TEST(ProviderInteractiveTerminalRejectsPermissionBypassSettings)
+{
+	uam::AppState app;
+	ProviderProfile provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	app.settings.provider_extra_flags = "--debug";
+	UAM_ASSERT(uam::ProviderInteractivePermissionFlagError(app, provider).empty());
+
+	app.settings.provider_extra_flags = "--debug --dangerously-skip-permissions";
+	UAM_ASSERT(!uam::ProviderInteractivePermissionFlagError(app, provider).empty());
+
+	app.settings.provider_extra_flags.clear();
+	provider.runtime_flags = {"--ask-for-approval", "never"};
+	UAM_ASSERT(!uam::ProviderInteractivePermissionFlagError(app, provider).empty());
+
+	provider.runtime_flags = {"--auto"};
+	UAM_ASSERT(!uam::ProviderInteractivePermissionFlagError(app, provider).empty());
+	app.settings.provider_extra_flags = "--auto";
+	provider.runtime_flags.clear();
+	UAM_ASSERT(!uam::ProviderInteractivePermissionFlagError(app, provider).empty());
 }

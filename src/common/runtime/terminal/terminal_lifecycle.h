@@ -21,6 +21,13 @@ enum class CliTerminalSteerRecoveryAction
 	ReportTimeout,
 };
 
+enum class CliTerminalInactivityRecoveryAction
+{
+	None,
+	Interrupt,
+	Stop,
+};
+
 enum class CliTerminalStopMode
 {
 	Graceful,
@@ -34,6 +41,7 @@ std::string BuildCliTerminalPromptInput(std::string_view prompt);
 bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt, bool retry, std::string* error_out = nullptr);
 bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal);
 CliTerminalSteerRecoveryAction CliTerminalSteerRecovery(const CliTerminalState& terminal, double now_seconds);
+CliTerminalInactivityRecoveryAction CliTerminalInactivityRecovery(const CliTerminalState& terminal, double now_seconds, double timeout_seconds, double interrupt_grace_seconds = 5.0);
 const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state);
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal);
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal);

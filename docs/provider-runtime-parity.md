@@ -58,6 +58,12 @@ Sub-agent rows always retain the original tool details. Full nested chat history
 the provider supplies an addressable child session; otherwise the visible tool call/result is the
 complete history available from that provider.
 
+Structured permission events are mediated by UAM: providers start in their restrictive request mode,
+and UAM Default, YOLO, Auto Decide, and AI Review decide what happens to each normalized request.
+Plan is a hard read-only ceiling and cannot be widened by another mode. Terminal fallback is an opaque
+provider-controlled PTY, so it does not claim this mediation and never receives UAM-generated native
+bypass flags.
+
 ## Platform boundary
 
 | Capability | macOS | Windows |

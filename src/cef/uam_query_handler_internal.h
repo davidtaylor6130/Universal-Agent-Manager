@@ -86,11 +86,6 @@ using uam::provider_chat_defaults::IsAllowedModelId;
 
 inline bool CommandSafetyTierNeedsLiveUpdate(const ChatSession& previous, const ChatSession& requested)
 {
-	if (uam::approval_modes::EffectiveProviderMode(previous.approval_mode, previous.command_safety_tier) !=
-	    uam::approval_modes::EffectiveProviderMode(requested.approval_mode, requested.command_safety_tier))
-	{
-		return true;
-	}
 	ProviderProfile provider;
 	provider.id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(requested.provider_id);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider.id);
@@ -107,11 +102,10 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 		return uam::provider_chat_defaults::Normalize(defaults, provider_id);
 	}
 	defaults.model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "modelId", defaults.model_id);
+	defaults.reviewer_model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "reviewerModelId", defaults.reviewer_model_id);
+	defaults.feature_preference = uam::nlohmann_json::TrimmedStringValueOr(value, "featurePreference", defaults.feature_preference);
 	defaults.approval_mode = uam::nlohmann_json::TrimmedStringValueOr(value, "approvalMode", defaults.approval_mode);
-	if (const std::optional<bool> auto_approve_commands = uam::nlohmann_json::BoolFieldStrict(value, "autoApproveCommands"))
-	{
-		defaults.auto_approve_commands = *auto_approve_commands;
-	}
+	defaults.command_safety_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "commandSafetyTier", defaults.command_safety_tier);
 	if (const std::optional<bool> memory_enabled = uam::nlohmann_json::BoolFieldStrict(value, "memoryEnabled"))
 	{
 		defaults.memory_enabled = *memory_enabled;

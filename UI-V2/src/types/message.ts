@@ -48,5 +48,7 @@ export interface Message {
   isStreaming?: boolean
   attachments?: Attachment[]
   processingTimeMs?: number
+  checkpointSha?: string
+  checkpointParentSha?: string
   createdAt: Date
 }

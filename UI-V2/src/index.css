@@ -20,7 +20,7 @@
   --border-bright:   rgba(16, 24, 40, 0.15);
   --text:            #141820;
   --text-2:          #596273;
-  --text-3:          #98a1b2;
+  --text-3:          #687285;
   --accent:          #ff6a00;
   --accent-dim:      rgba(255, 106, 0, 0.10);
   --accent-glow:     rgba(255, 106, 0, 0.18);
@@ -73,7 +73,7 @@
   --border-bright:   rgba(255, 255, 255, 0.14);
   --text:            #eef1f7;
   --text-2:          #9aa4b6;
-  --text-3:          #5f6a7c;
+  --text-3:          #8993a5;
   --accent:          #ff6a00;
   --accent-dim:      rgba(255, 106, 0, 0.13);
   --accent-glow:     rgba(255, 106, 0, 0.22);
@@ -112,7 +112,7 @@
   --border-bright:   rgba(226, 232, 240, 0.14);
   --text:            #f2f4f7;
   --text-2:          #a6adbb;
-  --text-3:          #687080;
+  --text-3:          #9099a8;
   --accent:          #cf7538;
   --accent-dim:      rgba(207, 117, 56, 0.09);
   --accent-glow:     rgba(207, 117, 56, 0.15);
@@ -220,15 +220,27 @@
 
 .uam-chat-pane {
   background: var(--bg);
-  container-type: inline-size;
+  container-type: size;
   transition: background var(--dur-base) var(--ease);
+}
+
+.uam-goal-banner__details {
+  max-height: min(20rem, 40dvh, calc(100cqh - 10rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.uam-goal-banner__details:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .uam-chat-pane__header {
   transition: background var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
 }
 
-.uam-chat-pane[data-multi-pane="true"][data-focused="true"] > .uam-chat-pane__header {
+.uam-chat-pane[data-multi-pane="true"] > .uam-chat-pane__header {
   background: color-mix(in srgb, var(--surface) 96%, var(--pane-color)) !important;
   box-shadow: inset 0 2px 0 var(--pane-color);
 }
@@ -341,8 +353,14 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   transition: background var(--dur-fast) var(--ease);
 }
 
-.uam-resize-handle:hover::after {
+.uam-resize-handle:hover::after,
+.uam-resize-handle:focus-visible::after {
   background: var(--border-bright);
+}
+
+.uam-resize-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 @media (max-width: 1000px) {
@@ -434,6 +452,13 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-composer-surface {
   container-type: inline-size;
+}
+
+.uam-composer-textarea {
+  field-sizing: content;
+  min-height: 40px;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 @container (max-width: 720px) {
@@ -540,8 +565,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-composer-textarea {
-    height: 52px;
-    min-height: 52px !important;
+    min-height: 38px !important;
     max-height: 112px !important;
     padding: 8px 10px !important;
   }
@@ -581,6 +605,14 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 }
 
+.uam-goal-banner__summary::marker {
+  content: '';
+}
+
+.uam-goal-banner__summary::-webkit-details-marker {
+  display: none;
+}
+
 @container (max-width: 280px) {
   .uam-composer-toolbar {
     gap: 4px;
@@ -606,8 +638,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-composer-textarea {
-    height: 48px;
-    min-height: 48px !important;
+    min-height: 36px !important;
   }
 }
 

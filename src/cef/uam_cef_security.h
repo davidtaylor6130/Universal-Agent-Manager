@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -20,8 +19,7 @@
 #endif
 
 #if defined(__APPLE__)
-#include <sys/wait.h>
-#include <unistd.h>
+#include "common/platform/platform_application_macos.h"
 #endif
 
 namespace uam::cef
@@ -29,6 +27,13 @@ namespace uam::cef
 	inline constexpr std::string_view kFileUrlPrefix = "file://";
 	inline constexpr std::string_view kLocalhostFilePrefix = "localhost/";
 	inline constexpr std::string_view kLocalhostHost = "localhost";
+	inline constexpr std::string_view kUamUiUrlPrefix = "uam://app/";
+	inline constexpr std::string_view kUamUiIndexUrl = "uam://app/index.html";
+	inline constexpr std::string_view kContentSecurityPolicy =
+	    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+	    "img-src 'self' data: blob: https:; font-src 'self' data:; "
+	    "connect-src 'self' https://api.github.com https://registry.npmjs.org https://formulae.brew.sh; "
+	    "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'";
 
 	inline std::string StripUrlQueryAndFragment(std::string url)
 	{
@@ -202,46 +207,7 @@ namespace uam::cef
 		}
 		return true;
 #elif defined(__APPLE__)
-		const pid_t pid = fork();
-		if (pid < 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to launch the macOS open command.";
-			}
-			return false;
-		}
-
-		if (pid == 0)
-		{
-			execl("/usr/bin/open", "open", url.c_str(), static_cast<char*>(nullptr));
-			_exit(127);
-		}
-
-		int status = 0;
-		while (waitpid(pid, &status, 0) < 0)
-		{
-			if (errno == EINTR)
-			{
-				continue;
-			}
-
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to wait for the macOS open command.";
-			}
-			return false;
-		}
-
-		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "The macOS open command failed.";
-			}
-			return false;
-		}
-		return true;
+		return uam::platform::OpenExternalUrl(url, error_out);
 #else
 		(void)url;
 		if (error_out != nullptr)
@@ -286,14 +252,48 @@ namespace uam::cef
 		return std::nullopt;
 	}
 
-	inline std::string ResolveTrustedUiIndexUrl(const std::filesystem::path& exe_dir)
+	inline std::filesystem::path ResolveTrustedUiRoot(const std::filesystem::path& exe_dir)
 	{
-		if (const std::optional<std::filesystem::path> bundled_index = FindTrustedUiIndexPath(exe_dir))
+		if (const std::optional<std::filesystem::path> index = FindTrustedUiIndexPath(exe_dir))
 		{
-			return FileUrlFromPath(*bundled_index);
+			return uam::paths::NormalizeExistingPath(index->parent_path());
+		}
+		return uam::paths::NormalizeExistingOrAbsolutePath("UI-V2/dist");
+	}
+
+	inline std::optional<std::filesystem::path> ResolveTrustedUiResourcePath(
+	    const std::filesystem::path& root, const std::string& raw_url)
+	{
+		const std::string url = StripUrlQueryAndFragment(raw_url);
+		if (!uam::strings::StartsWithIgnoreCase(url, kUamUiUrlPrefix)) return std::nullopt;
+
+		std::string relative_text = PercentDecode(
+		    std::string_view(url).substr(kUamUiUrlPrefix.size()));
+		if (relative_text.empty()) relative_text = "index.html";
+		if (relative_text.find('\0') != std::string::npos || relative_text.find('\\') != std::string::npos)
+			return std::nullopt;
+
+		const std::filesystem::path relative = uam::paths::PathFromUtf8(relative_text);
+		if (relative.empty() || relative.is_absolute() || relative.has_root_name()) return std::nullopt;
+		for (const auto& component : relative)
+		{
+			if (component == "." || component == "..") return std::nullopt;
 		}
 
-		return FileUrlFromPath("UI-V2/dist/index.html");
+		const std::filesystem::path candidate = root / relative;
+		if (!uam::paths::IsSameOrInsideRoot(root, candidate) ||
+		    uam::paths::IsLinkOrReparsePointNoThrow(candidate) ||
+		    !uam::paths::IsRegularFileNoThrow(candidate))
+		{
+			return std::nullopt;
+		}
+		return uam::paths::NormalizeExistingPath(candidate);
+	}
+
+	inline std::string ResolveTrustedUiIndexUrl(const std::filesystem::path& exe_dir)
+	{
+		(void)exe_dir;
+		return std::string(kUamUiIndexUrl);
 	}
 
 	inline std::string ResolveTrustedUiIndexUrl()

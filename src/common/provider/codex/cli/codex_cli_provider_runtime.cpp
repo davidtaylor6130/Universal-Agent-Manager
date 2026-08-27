@@ -14,11 +14,9 @@
 
 namespace
 {
-	constexpr const char* kCodexFullAutoFlag = "--full-auto";
-
 	std::vector<std::string> CodexFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCodexFullAutoFlag);
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
 	}
 } // namespace
 
@@ -52,7 +50,7 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(chat.reasoning_effort);
 	const std::string service_tier = uam::codex::NormalizeServiceTier(chat.service_tier);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", reasoning_effort.empty() ? "" : "model_reasoning_effort=\"" + reasoning_effort + "\"");
-	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", service_tier.empty() ? "" : "service_tier=\"" + service_tier + "\"");
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", !chat.service_tier_explicit ? "" : service_tier.empty() ? "service_tier=null" : "service_tier=\"" + service_tier + "\"");
 
 	uam::provider_runtime_internal::AppendArgs(argv, CodexFlagsFromSettings(provider_settings));
 	return argv;

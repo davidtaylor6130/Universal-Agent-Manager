@@ -141,6 +141,96 @@ inline std::string FormatWindowsError(const DWORD error)
 	return message + " (" + std::to_string(static_cast<unsigned long>(error)) + ")";
 }
 
+inline bool BuildEnvironmentBlock(const std::vector<std::pair<std::string, std::string>>& overrides, std::vector<wchar_t>& block, std::string* error_out)
+{
+	if (overrides.empty())
+	{
+		return true;
+	}
+
+	std::vector<std::wstring> entries;
+	LPWCH inherited = GetEnvironmentStringsW();
+	if (inherited == nullptr)
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to read the process environment: " + FormatWindowsError(GetLastError()) + ".";
+		}
+		return false;
+	}
+	for (const wchar_t* current = inherited; *current != L'\0'; current += std::wcslen(current) + 1)
+	{
+		entries.emplace_back(current);
+	}
+	FreeEnvironmentStringsW(inherited);
+
+	for (const auto& [name, value] : overrides)
+	{
+		if (name.empty() || name.find('=') != std::string::npos || name.find('\0') != std::string::npos || value.find('\0') != std::string::npos)
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Invalid provider process environment override.";
+			}
+			return false;
+		}
+		const std::wstring wide_name = WideFromUtf8(name);
+		const std::wstring wide_value = WideFromUtf8(value);
+		if (wide_name.empty() || (!value.empty() && wide_value.empty()))
+		{
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to encode provider process environment override.";
+			}
+			return false;
+		}
+		entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const std::wstring& entry)
+		{
+			const std::size_t separator = entry.empty() || entry.front() != L'=' ? entry.find(L'=') : entry.find(L'=', 1);
+			return separator == wide_name.size() && _wcsnicmp(entry.c_str(), wide_name.c_str(), separator) == 0;
+		}), entries.end());
+		entries.push_back(wide_name + L"=" + wide_value);
+	}
+
+	std::sort(entries.begin(), entries.end(), [](const std::wstring& left, const std::wstring& right)
+	{
+		return _wcsicmp(left.c_str(), right.c_str()) < 0;
+	});
+	for (const std::wstring& entry : entries)
+	{
+		block.insert(block.end(), entry.begin(), entry.end());
+		block.push_back(L'\0');
+	}
+	block.push_back(L'\0');
+	return true;
+}
+
+inline std::shared_ptr<uam::platform::AsyncByteWriter> CreateAsyncHandleWriter(HANDLE handle, std::string* error_out = nullptr)
+{
+	HANDLE writer_handle = INVALID_HANDLE_VALUE;
+	if (!DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &writer_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = FormatWindowsError(GetLastError());
+		}
+		return {};
+	}
+
+	return std::make_shared<uam::platform::AsyncByteWriter>(
+	    [writer_handle](const char* bytes, std::size_t len, std::string& error) -> std::ptrdiff_t
+	    {
+		    DWORD written = 0;
+		    if (!WriteFile(writer_handle, bytes, static_cast<DWORD>(len), &written, nullptr))
+		    {
+			    error = FormatWindowsError(GetLastError());
+			    return -1;
+		    }
+		    return static_cast<std::ptrdiff_t>(written);
+	    },
+	    [writer_handle] { CloseHandle(writer_handle); });
+}
+
 inline std::string QuoteWindowsArg(const std::string& arg)
 {
 	if (arg.empty())

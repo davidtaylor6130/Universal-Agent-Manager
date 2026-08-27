@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  security-evidence:
+    name: Dependency evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate locked frontend SBOM
+        run: npm --prefix UI-V2 sbom --package-lock-only --sbom-format cyclonedx > UAM-frontend.cdx.json
+      - name: Validate frontend SBOM
+        run: node -e "const value = JSON.parse(require('fs').readFileSync('UAM-frontend.cdx.json', 'utf8')); if (value.bomFormat !== 'CycloneDX' || !Array.isArray(value.components) || value.components.length === 0) throw new Error('Invalid or empty frontend SBOM.');"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UAM-frontend-SBOM-PR
+          path: UAM-frontend.cdx.json
+          if-no-files-found: error
+
   test:
     name: Test ${{ matrix.name }}
     strategy:
@@ -17,9 +35,20 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            name: macOS
+            name: macOS ARM
+            arch: arm64
+            archive: UAM-macOS-ARM-PR.zip
+            artifact: UAM-macOS-ARM-Release-PR
+          - os: macos-26-intel
+            name: macOS Intel
+            arch: x86_64
+            archive: UAM-macOS-Intel-PR.zip
+            artifact: UAM-macOS-Intel-Release-PR
           - os: windows-latest
             name: Windows
+            arch: x64
+            archive: UAM-Windows-PR.zip
+            artifact: UAM-Windows-Release-PR
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,45 +62,54 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: Builds/tests/_deps
-          key: ${{ runner.os }}-uam-test-deps-${{ hashFiles('CMakeLists.txt') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-test-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-uam-test-deps-
-            ${{ runner.os }}-uam-deps-
+            ${{ runner.os }}-${{ matrix.arch }}-uam-test-deps-
+            ${{ runner.os }}-${{ matrix.arch }}-uam-deps-
 
       - run: npm --prefix UI-V2 ci
       - run: npm --prefix UI-V2 run test
       - run: npm --prefix UI-V2 run build
       - name: Configure native Release tests (macOS)
         if: runner.os == 'macOS'
-        run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DUAM_BUILD_TESTS=ON
+        run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON
       - name: Configure native Release tests (Windows x64)
         if: runner.os == 'Windows'
         run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON
       - run: cmake --build Builds/tests --config Release --parallel 4
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure
+      - name: Package macOS review build
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
+
+      - name: Smoke test packaged macOS app
+        if: runner.os == 'macOS'
+        run: bash scripts/smoke_packaged_macos.sh ${{ matrix.archive }} Builds/tests/UI-V2/dist
+
       - name: Package Windows review build
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Remove-Item Builds/tests/Release/uam_core_tests* -Force -ErrorAction SilentlyContinue
-          Compress-Archive -Path Builds/tests/Release/* -DestinationPath UAM-Windows-PR.zip
+          Compress-Archive -Path Builds/tests/Release/* -DestinationPath ${{ matrix.archive }}
 
       - name: Smoke test packaged Windows app
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $packageRoot = Join-Path $env:RUNNER_TEMP 'uam-package'
-          Expand-Archive UAM-Windows-PR.zip -DestinationPath $packageRoot
-          $env:UAM_DATA_DIR = Join-Path $env:RUNNER_TEMP 'uam-smoke'
-          $process = Start-Process (Join-Path $packageRoot 'universal_agent_manager.exe') -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
-          Stop-Process -Id $process.Id -Force
+        run: ./scripts/smoke_packaged_windows.ps1 ${{ matrix.archive }} Builds/tests/UI-V2/dist
 
       - name: Upload Windows Release review artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: UAM-Windows-Release-PR
-          path: UAM-Windows-PR.zip
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+      - name: Upload macOS Release review artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
           if-no-files-found: error

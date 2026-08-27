@@ -89,6 +89,11 @@ namespace
 		return json;
 	}
 
+	nlohmann::json SerializeTurnCheckpointResult(const uam::GitTurnCheckpointResult& result)
+	{
+		return {{"message", result.message}, {"diff", result.diff}, {"checkpointSha", result.checkpoint_sha}, {"parentSha", result.parent_sha}};
+	}
+
 	using WorktreeOperation = uam::GitWorktreeOperationResult (uam::GitWorktreeService::*)(uam::AppState&, ChatSession&) const;
 
 	struct WorktreeAsyncState
@@ -366,6 +371,85 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 	                          "Failed to port worktree changes.");
 }
 
+void UamQueryHandler::HandlePreviewChatTurnRollback(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	const std::optional<int> message_index = uam::nlohmann_json::IntFieldStrict(payload, "messageIndex");
+	if (chat == nullptr) return;
+	if (!message_index || *message_index < 0)
+	{
+		cb->Failure(400, "messageIndex must be a non-negative integer.");
+		return;
+	}
+	const std::string chat_id = chat->id;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	RunAsyncCefQuery(cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
+		uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		std::string warning;
+		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
+		if (!loaded) return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the checkpointed turn."));
+		const uam::GitTurnCheckpointResult result = uam::GitWorktreeService().PreviewTurnRollback(snapshot, *loaded, message_index);
+		return result.ok ? AsyncSuccess(SerializeTurnCheckpointResult(result)) : AsyncFailure(409, result.message);
+	});
+}
+
+void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	const std::optional<int> message_index = uam::nlohmann_json::IntFieldStrict(payload, "messageIndex");
+	if (chat == nullptr) return;
+	if (!message_index || *message_index < 0)
+	{
+		cb->Failure(400, "messageIndex must be a non-negative integer.");
+		return;
+	}
+	if (ChatRuntimeBusy(m_app, chat->id) || m_app.worktree_operation_chat_ids.contains(chat->id))
+	{
+		cb->Failure(409, "Stop the chat runtime and wait for the current worktree operation before rollback.");
+		return;
+	}
+	if (m_app.pending_chat_save_at_by_chat_id.contains(chat->id))
+	{
+		cb->Failure(409, "Wait for chat history to finish saving before rollback.");
+		return;
+	}
+	const std::string chat_id = chat->id;
+	const int index = *message_index;
+	if (index >= static_cast<int>(chat->messages.size()) || chat->messages[index].checkpoint_sha.empty())
+	{
+		cb->Failure(409, "This turn has no rollback checkpoint.");
+		return;
+	}
+	const std::string expected_checkpoint_sha = chat->messages[index].checkpoint_sha;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	auto result_state = std::make_shared<uam::GitTurnCheckpointResult>();
+	m_app.worktree_operation_chat_ids.insert(chat_id);
+	uam::AppState* live_app = &m_app;
+	RunAsyncCefQuery(cb,
+		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, result_state]() mutable {
+			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+			std::string warning;
+			std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
+			if (!loaded) return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the checkpointed turn."));
+			*result_state = uam::GitWorktreeService().RollbackTurn(snapshot, *loaded, index);
+			return result_state->ok ? AsyncSuccess(SerializeTurnCheckpointResult(*result_state)) : AsyncFailure(409, result_state->message);
+		},
+		[live_app, browser, chat_id, index, expected_checkpoint_sha](AsyncCefResult& result) {
+			live_app->worktree_operation_chat_ids.erase(chat_id);
+			if (!result.ok) return;
+			ChatSession* live_chat = ChatDomainService().FindChatById(*live_app, chat_id);
+			if (live_chat == nullptr || index < 0 || index >= static_cast<int>(live_chat->messages.size()) ||
+			    live_chat->messages[index].checkpoint_sha != expected_checkpoint_sha)
+			{
+				result = AsyncFailure(404, "Chat changed while its rollback was running.");
+				return;
+			}
+			live_chat->messages[index].checkpoint_sha.clear();
+			live_chat->messages[index].checkpoint_parent_sha.clear();
+			uam::PushStateUpdateIfChanged(browser, *live_app);
+		});
+}
+
 void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
@@ -377,14 +461,15 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	const uam::VcsType requested_type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const bool include_line_stats = payload.value("includeLineStats", true);
 	const std::string request_id = payload.value("requestId", "");
+	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 
 	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
-		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats);
+		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref);
 		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
 	                 });
 }
@@ -400,15 +485,16 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	const std::string path = payload.value("path", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const std::string request_id = payload.value("requestId", "");
+	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 
 	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 std::string error;
-		                 const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error);
+		                 const std::string diff = uam::VcsCommitService().Diff(snapshot, chat, path, type, &error, comparison_ref);
 		                 if (!error.empty())
 		                 {
 			                 return AsyncFailure(400, error);
@@ -424,19 +510,30 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	{
 		return;
 	}
+	if (ChatRuntimeBusy(m_app, chat->id))
+	{
+		cb->Failure(409, "Stop the active chat runtime before committing workspace changes.");
+		return;
+	}
 
 	const std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const std::string message = payload.value("message", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	const uam::VcsCommitResult result = uam::VcsCommitService().Commit(m_app, *chat, type, message, files);
-	if (!result.ok)
-	{
-		cb->Failure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(SerializeVcsCommitResult(result).dump());
+	const ChatSession chat_snapshot = *chat;
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	uam::AppState* live_app = &m_app;
+	RunAsyncCefQuery(cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files]() mutable
+	                 {
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
+		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
+		                 return AsyncSuccess(SerializeVcsCommitResult(result));
+	                 },
+	                 [live_app, browser](AsyncCefResult& result)
+	                 {
+		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, *live_app);
+	                 });
 }
 
 void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent } from './MessageBlocks'
 import { ToolCallModal } from './ToolCallViews'
+import { useAppStore } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -279,5 +280,101 @@ describe('working transcript', () => {
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
+  })
+
+  it('opens a validated managed-agent transcript without adding it to the chat list', async () => {
+    const previousCefQuery = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'resumeAgentRun') {
+        expect(parsed.payload).toEqual({ runId: 'run-old' })
+        onSuccess(JSON.stringify({ runId: 'run-fresh' }))
+        return
+      }
+      expect(parsed).toMatchObject({ action: 'getManagedAgentTranscript', payload: { chatId: 'chat-1', transcriptChatId: 'managed-chat-1' } })
+      onSuccess(JSON.stringify({
+        runId: 'run-old', title: 'Reviewer run', status: 'interrupted',
+        messages: [{ role: 'user', content: 'Review this change.' }, { role: 'assistant', content: 'The change is stable.' }],
+      }))
+    }
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <ToolCallModal
+        tool={{ ...tools[0], content: '{"ok":true,"result":{"transcriptChatId":"managed-chat-1"}}' }}
+        chatId="chat-1"
+        onClose={vi.fn()}
+      />
+    ))
+    const open = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'View managed agent transcript') as HTMLButtonElement
+    await act(async () => open.click())
+
+    const transcript = document.body.querySelector('[aria-label="Managed agent transcript"]')
+    expect(transcript?.textContent).toContain('Reviewer run')
+    expect(transcript?.textContent).toContain('The change is stable.')
+    const resume = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Resume as fresh run') as HTMLButtonElement
+    await act(async () => resume.click())
+    expect(transcript?.textContent).toContain('Fresh run queued: run-fresh')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
+  })
+
+  it('resolves a running subtask once and refreshes only its messages afterwards', async () => {
+    vi.useFakeTimers()
+    const openSubAgentSession = vi.fn(async () => 'child-chat')
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState({
+      sessions: [
+        { id: 'parent-chat', name: 'Parent', viewMode: 'chat', folderId: 'folder', providerId: 'codex-cli', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'child-chat', name: 'Child', viewMode: 'chat', folderId: 'folder', providerId: 'codex-cli', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      messages: { 'child-chat': [] },
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      openSubAgentSession,
+      loadSessionMessages,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <PersistedMessageContent
+          message={{
+            id: 'message-subtask',
+            sessionId: 'parent-chat',
+            role: 'assistant',
+            content: '',
+            createdAt: new Date(),
+            blocks: [{ type: 'tool_call', toolCallId: 'subtask-1' }],
+            toolCalls: [{ id: 'subtask-1', kind: 'sub-agent', title: 'Review', status: 'running', content: '', isSubAgent: true, subAgentId: 'native-child' }],
+          }}
+          workingMode="verbose"
+          sourceChatId="parent-chat"
+          onSelectTool={vi.fn()}
+        />
+      )
+      await Promise.resolve()
+    })
+    const panel = host.querySelector('details.uam-subagent-panel') as HTMLDetailsElement
+    await act(async () => {
+      panel.open = true
+      panel.dispatchEvent(new Event('toggle', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(openSubAgentSession).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    expect(openSubAgentSession).toHaveBeenCalledTimes(1)
+    expect(loadSessionMessages).toHaveBeenCalledWith('child-chat')
+
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
   })
 })

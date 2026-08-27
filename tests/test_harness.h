@@ -1,6 +1,9 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "app/agent_definition_service.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/git_worktree_service.h"
 #include "app/goal_service.h"
@@ -27,7 +30,6 @@
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/settings_store.h"
-#include "common/config/voice_input_settings.h"
 #include "common/constants/app_constants.h"
 #include "common/memory/memory_categories.h"
 #include "common/paths/app_paths.h"

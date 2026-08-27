@@ -1,8 +1,9 @@
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, HTMLAttributes, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 
 const VIEWPORT_GAP = 8
+export const VIEWPORT_MENU_Z_INDEX = 1100
 
 export interface ViewportMenuAnchor {
   left: number
@@ -58,6 +59,8 @@ export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'end'
   gap?: number
+  onRequestClose?: () => void
+  manageFocus?: boolean
 }
 
 export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({
@@ -66,10 +69,14 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
   side = 'bottom',
   align = 'start',
   gap = 4,
+  onRequestClose,
+  manageFocus,
   style,
   ...props
 }, forwardedRef) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const onRequestCloseRef = useRef(onRequestClose)
+  onRequestCloseRef.current = onRequestClose
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   useImperativeHandle(forwardedRef, () => menuRef.current as HTMLDivElement)
 
@@ -102,6 +109,36 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     }
   }, [align, anchorRef, gap, point?.x, point?.y, side])
 
+  useEffect(() => {
+    const menu = menuRef.current
+    if (!menu || (manageFocus ?? props.role === 'menu') === false) return
+    const items = () => Array.from(menu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled])'))
+    items()[0]?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && onRequestCloseRef.current) {
+        event.preventDefault()
+        event.stopPropagation()
+        anchorRef?.current?.focus()
+        onRequestCloseRef.current()
+        return
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+      const available = items()
+      if (available.length === 0) return
+      event.preventDefault()
+      const current = Math.max(0, available.indexOf(document.activeElement as HTMLElement))
+      const next = event.key === 'Home' ? 0
+        : event.key === 'End' ? available.length - 1
+          : (current + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length
+      available[next]?.focus()
+    }
+    menu.addEventListener('keydown', onKeyDown)
+    return () => {
+      menu.removeEventListener('keydown', onKeyDown)
+      if (menu.contains(document.activeElement)) anchorRef?.current?.focus()
+    }
+  }, [anchorRef, manageFocus, props.role])
+
   return createPortal(
     <div
       {...props}
@@ -110,7 +147,7 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
       style={{
         ...style,
         position: 'fixed',
-        zIndex: 1000,
+        zIndex: VIEWPORT_MENU_Z_INDEX,
         left: position?.left ?? 0,
         top: position?.top ?? 0,
         maxWidth: style?.maxWidth ?? 'calc(100vw - 16px)',

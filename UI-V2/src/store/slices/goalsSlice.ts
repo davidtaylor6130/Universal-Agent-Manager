@@ -9,25 +9,27 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
     goalModeByChatId: {} as Record<string, boolean>,
     defaultGoalTokenBudgetByChatId: {} as Record<string, number>,
 
-	setGoal: async (chatId: string, objective: string, tokenBudget = 0, executionOwner: 'uam' | 'provider' = 'uam'): Promise<string | null> => {
-      if (isCefContext()) {
-        const response = await sendToCEF<{ goalId: string }>({
-          action: 'setGoal',
-		  payload: { chatId, objective, tokenBudget, executionOwner },
-          requestId: createRequestId('setGoal'),
-        })
-        if (response.ok && response.data?.goalId) {
-          return response.data.goalId
-        }
-        return null
-      }
+		setGoal: async (chatId: string, objective: string, tokenBudget = 0, executionOwner: 'uam' | 'provider' = 'uam') => {
+		  const trimmedObjective = objective.trim()
+		  if (!trimmedObjective) return { ok: false, error: 'Goal objective is required.' }
+	      if (isCefContext()) {
+	        const response = await sendToCEF<{ goalId: string }>({
+	          action: 'setGoal',
+			  payload: { chatId, objective: trimmedObjective, tokenBudget, executionOwner },
+	          requestId: createRequestId('setGoal'),
+	        })
+	        if (response.ok && response.data?.goalId) {
+	          return { ok: true, goalId: response.data.goalId }
+	        }
+	        return { ok: false, error: response.error ?? 'Failed to create goal.' }
+	      }
 
       const goalId = `goal-${Date.now()}`
       const now = new Date()
       const newGoal: Goal = {
         id: goalId,
         chatId,
-        objective,
+	        objective: trimmedObjective,
         status: 'active',
         tokenBudget: tokenBudget || undefined,
         tokensUsed: 0,
@@ -54,87 +56,93 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
           [chatId]: goalId,
         },
       }))
-      return goalId
-    },
+	      return { ok: true, goalId }
+	    },
 
-    updateGoalStatus: async (goalId: string, status: GoalStatus): Promise<boolean> => {
-      if (isCefContext()) {
+	    updateGoalStatus: async (chatId: string, goalId: string, status: GoalStatus) => {
+	      if (isCefContext()) {
         const response = await sendToCEF({
           action: 'updateGoalStatus',
-          payload: { goalId, status },
+          payload: { chatId, goalId, status },
           requestId: createRequestId('updateGoalStatus'),
         })
-        return response.ok
+	        return { ok: response.ok, error: response.error }
       }
 
-      set((state: AppState) => {
-        const nextActive: Record<string, string | null> = {}
-        const nextGoals: Record<string, Goal[]> = {}
-        const entries = Object.entries(state.goalsByChatId) as [string, Goal[]][]
-        for (const [chatId, goals] of entries) {
-          const updated = goals.map((g: Goal) =>
-            g.id === goalId ? { ...g, status, updatedAt: new Date() } : g
-          )
-          if (updated !== goals) {
-            nextGoals[chatId] = updated
-            if (status === 'complete' || status === 'blocked' || status === 'paused') {
-              if (state.activeGoalIdByChatId[chatId] === goalId) {
-                nextActive[chatId] = null
-              }
-            }
-          }
-        }
-        if (Object.keys(nextGoals).length === 0) return state
-        return {
-          goalsByChatId: { ...state.goalsByChatId, ...nextGoals },
-          activeGoalIdByChatId: { ...state.activeGoalIdByChatId, ...nextActive },
-        }
-      })
-      return true
-    },
+      set((state: AppState) => ({
+        goalsByChatId: {
+          ...state.goalsByChatId,
+          [chatId]: (state.goalsByChatId[chatId] ?? []).map((goal) =>
+            goal.id === goalId ? { ...goal, status, updatedAt: new Date() } : goal
+          ),
+        },
+        activeGoalIdByChatId:
+          (status === 'complete' || status === 'blocked' || status === 'paused') &&
+          state.activeGoalIdByChatId[chatId] === goalId
+            ? { ...state.activeGoalIdByChatId, [chatId]: null }
+            : state.activeGoalIdByChatId,
+      }))
+	      return { ok: true }
+	    },
 
-    removeGoal: async (goalId: string): Promise<boolean> => {
-	  if (Object.values(get().goalsByChatId).some((goals) => goals.some((goal) => goal.id === goalId && goal.status === 'complete'))) return false
+	    updateGoalObjective: async (chatId: string, goalId: string, objective: string) => {
+	      const trimmedObjective = objective.trim()
+	      if (!trimmedObjective) return { ok: false, error: 'Goal objective is required.' }
+	      if (isCefContext()) {
+	        const response = await sendToCEF({
+	          action: 'updateGoalObjective',
+	          payload: { chatId, goalId, objective: trimmedObjective },
+	          requestId: createRequestId('updateGoalObjective'),
+	        })
+	        return { ok: response.ok, error: response.error }
+	      }
+	      const goal = (get().goalsByChatId[chatId] ?? []).find((candidate) => candidate.id === goalId)
+	      if (!goal || goal.status === 'complete' || goal.executionOwner === 'provider') {
+	        return { ok: false, error: 'Only non-complete UAM-managed goals can be edited.' }
+	      }
+	      set((state: AppState) => ({
+	        goalsByChatId: {
+	          ...state.goalsByChatId,
+	          [chatId]: (state.goalsByChatId[chatId] ?? []).map((candidate) =>
+	            candidate.id === goalId ? { ...candidate, objective: trimmedObjective, updatedAt: new Date() } : candidate
+	          ),
+	        },
+	      }))
+	      return { ok: true }
+	    },
+
+	    removeGoal: async (chatId: string, goalId: string) => {
+		  if ((get().goalsByChatId[chatId] ?? []).some((goal) => goal.id === goalId && goal.status === 'complete')) return { ok: false, error: 'Completed goals cannot be deleted.' }
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'removeGoal',
-          payload: { goalId },
+          payload: { chatId, goalId },
           requestId: createRequestId('removeGoal'),
         })
-        return response.ok
+	        return { ok: response.ok, error: response.error }
       }
 
-      set((state: AppState) => {
-        const nextActive: Record<string, string | null> = {}
-        const nextGoals: Record<string, Goal[]> = {}
-        const entries = Object.entries(state.goalsByChatId) as [string, Goal[]][]
-        for (const [chatId, goals] of entries) {
-          const filtered = goals.filter((g: Goal) => g.id !== goalId)
-          if (filtered.length !== goals.length) {
-            nextGoals[chatId] = filtered
-            if (state.activeGoalIdByChatId[chatId] === goalId) {
-              nextActive[chatId] = null
-            }
-          }
-        }
-        if (Object.keys(nextGoals).length === 0) return state
-        return {
-          goalsByChatId: { ...state.goalsByChatId, ...nextGoals },
-          activeGoalIdByChatId: { ...state.activeGoalIdByChatId, ...nextActive },
-        }
-      })
-      return true
-    },
+      set((state: AppState) => ({
+        goalsByChatId: {
+          ...state.goalsByChatId,
+          [chatId]: (state.goalsByChatId[chatId] ?? []).filter((goal) => goal.id !== goalId),
+        },
+        activeGoalIdByChatId: state.activeGoalIdByChatId[chatId] === goalId
+          ? { ...state.activeGoalIdByChatId, [chatId]: null }
+          : state.activeGoalIdByChatId,
+      }))
+	      return { ok: true }
+	    },
 
-    resumeGoal: async (chatId: string, goalId: string): Promise<boolean> => {
-      if (!goalId) return false
+	    resumeGoal: async (chatId: string, goalId: string) => {
+	      if (!goalId) return { ok: false, error: 'Goal id is required.' }
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'resumeGoal',
           payload: { chatId, goalId },
           requestId: createRequestId('resumeGoal'),
         })
-        return response.ok
+	        return { ok: response.ok, error: response.error }
       }
 
       set((state: AppState) => {
@@ -154,19 +162,19 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
           },
         }
       })
-      return true
-    },
+	      return { ok: true }
+	    },
 
-    clearActiveGoal: async (chatId: string): Promise<boolean> => {
-      if (isCefContext()) {
-        const currentActiveGoalId = get().activeGoalIdByChatId[chatId]
-        if (!currentActiveGoalId) return true
+	    clearActiveGoal: async (chatId: string) => {
+	      if (isCefContext()) {
+	        const currentActiveGoalId = get().activeGoalIdByChatId[chatId]
+	        if (!currentActiveGoalId) return { ok: true }
         const response = await sendToCEF({
           action: 'setActiveGoal',
           payload: { chatId, goalId: '' },
           requestId: createRequestId('setActiveGoal'),
         })
-        return response.ok
+	        return { ok: response.ok, error: response.error }
       }
 
       set((state: AppState) => ({
@@ -175,7 +183,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
           [chatId]: null,
         },
       }))
-      return true
+	      return { ok: true }
     },
 
     setGoalMode: (chatId: string, active: boolean) => {

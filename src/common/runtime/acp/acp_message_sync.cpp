@@ -92,6 +92,11 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	persisted.name = uam::strings::NonEmptyOrFallback(tool_call.title, uam::strings::NonEmptyOrFallback(tool_call.kind, tool_call.id));
 	persisted.status = tool_call.status;
 	persisted.result_text = tool_call.content;
+	if (!tool_call.permission_review_reason.empty())
+	{
+		if (!persisted.result_text.empty()) persisted.result_text += "\n\n";
+		persisted.result_text += "AI Review (" + tool_call.permission_review_decision + "): " + tool_call.permission_review_reason;
+	}
 	persisted.is_sub_agent = tool_call.is_sub_agent;
 	persisted.sub_agent_id = tool_call.sub_agent_id;
 	persisted.sub_agent_title = tool_call.sub_agent_title;

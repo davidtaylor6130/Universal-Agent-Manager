@@ -8,6 +8,8 @@ export interface Provider {
   supportsCli?: boolean
   supportsStructured?: boolean
   structuredProtocol?: string
+  structuredPermissionControl?: 'uam' | 'provider'
+  terminalPermissionControl?: 'provider'
   npmPackageName?: string
 	nativeGoalCommand?: string
 }

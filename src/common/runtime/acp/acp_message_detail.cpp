@@ -46,7 +46,7 @@ std::string AcpMessageDetailForDiagnostics(const nlohmann::json& message)
 	{
 		return "cwd=" + JsonDiagnosticStringValue(params, "cwd");
 	}
-	if (method == uam::acp_methods::kSessionLoad)
+	if (method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume)
 	{
 		return "sessionId=" + JsonDiagnosticStringValue(params, "sessionId") + ", cwd=" + JsonDiagnosticStringValue(params, "cwd");
 	}

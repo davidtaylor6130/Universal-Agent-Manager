@@ -4,9 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
-import { defaultChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+function gridLayout(...sessionIds: string[]) {
+  let layout = defaultChatGridLayout
+  while (chatGridLeaves(layout.root).length < sessionIds.length) layout = splitChatLeaf(layout, layout.activeLeafId, 'horizontal')
+  chatGridLeaves(layout.root).forEach((leaf, index) => { layout = setChatInLeaf(layout, sessionIds[index] ?? '', leaf.id) })
+  return layout
+}
 
 const now = new Date('2026-01-01T12:00:00.000Z')
 
@@ -541,7 +548,7 @@ describe('FolderTree', () => {
     expect(host.textContent).not.toContain('Chat 3')
     expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
 
-    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+    act(() => writeChatGridLayout(gridLayout('chat-1', 'chat-3', '', '')))
 
     const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
     expect(folderIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
@@ -578,7 +585,7 @@ describe('FolderTree', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
-    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+    act(() => writeChatGridLayout(gridLayout('chat-1', 'chat-3', '', '')))
 
     const collectionIcon = host.querySelector('[data-testid="collection-icon-work"]') as HTMLElement
     expect(collectionIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
@@ -626,28 +633,68 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('does not rerender for runtime binding updates while status filtering is off', () => {
-    let filterReads = 0
-    const filters = {
-      providerIds: [],
-      get statusIds() {
-        filterReads++
-        return []
-      },
-    }
+  it('shows runtime-active chats with state counts above pinned chats without requiring a status filter', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, isPinned: true } : session),
+    }))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
 
     act(() => {
-      root.render(<FolderTree searchQuery="" filters={filters} />)
+      root.render(<FolderTree searchQuery="" />)
     })
-    filterReads = 0
+    expect(host.textContent).not.toContain('Active chats')
 
-    act(() => useAppStore.getState().setCliBinding('chat-1', { processing: true }))
-    act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': {} as never } }))
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.getState().setCliBinding('chat-3', { readySinceLastSelect: true })
+      useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-2': { running: true, processing: false, lifecycleState: 'waitingPermission', attentionKind: 'permission' },
+        },
+      }))
+    })
 
-    expect(filterReads).toBe(0)
+    expect(host.textContent).toContain('Active chats')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
+    expect(host.textContent!.indexOf('Active chats')).toBeLessThan(host.textContent!.indexOf('Pinned chats'))
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 done')
+
+    act(() => useAppStore.getState().setCliBinding('chat-1', {
+      processing: false,
+      readySinceLastSelect: true,
+    }))
+
+    expect(host.textContent).toContain('Active chats')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shift-selects from the clicked duplicate row occurrence', () => {
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.getState().setCliBinding('chat-3', { processing: true })
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const folder = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const first = folder.querySelector('[data-session-id="chat-1"]') as HTMLElement
+    const second = folder.querySelector('[data-session-id="chat-2"]') as HTMLElement
+    act(() => first.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    act(() => second.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+
+    expect(host.textContent).toContain('2 selected')
+    expect(host.querySelector('[data-testid="session-row-chat-3"][data-selected="true"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -726,6 +773,69 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('treats folder actions as a keyboard menu and restores trigger focus', () => {
+    const previousResizeObserver = globalThis.ResizeObserver
+    Object.defineProperty(globalThis, 'ResizeObserver', {
+      configurable: true,
+      value: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const trigger = host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement
+    trigger.focus()
+    act(() => trigger.click())
+    const menu = document.body.querySelector('[role="menu"][aria-label="Project actions"]')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('New chat')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(document.activeElement?.textContent).toContain('Project memory')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.contains(menu)).toBe(false)
+    expect(document.activeElement).toBe(trigger)
+
+    act(() => root.unmount())
+    host.remove()
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: previousResizeObserver })
+  })
+
+  it('keeps folder rename and delete failures visible', async () => {
+    const renameFolder = vi.fn(async () => false)
+    const deleteFolder = vi.fn(async () => false)
+    useAppStore.setState({ renameFolder, deleteFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    const rename = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!
+    act(() => rename.click())
+    const directory = host.querySelector('input[placeholder="Workspace directory"]') as HTMLInputElement
+    act(() => {
+      directory.value = '/tmp/other'
+      directory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save')!.click())
+    expect(host.textContent).toContain('workspace could not be updated')
+    expect(host.querySelector('input[placeholder="Workspace directory"]')).toBeTruthy()
+
+    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
+    act(() => remove.click())
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete Folder')!.click())
+    expect(document.body.querySelector('[aria-label="Delete folder and chats"]')?.textContent).toContain('workspace could not be deleted')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('opens the shared new-chat flow from the folder context menu', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -759,6 +869,23 @@ describe('FolderTree', () => {
     act(() => rescan?.click())
 
     expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a failed rescan visible instead of looking empty', async () => {
+    useAppStore.setState({ rescanFolderChats: vi.fn(() => Promise.resolve(false)) })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    await act(async () => { rescan?.click(); await Promise.resolve() })
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
 
     act(() => root.unmount())
     host.remove()

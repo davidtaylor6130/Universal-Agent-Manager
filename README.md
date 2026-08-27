@@ -59,7 +59,6 @@ The detailed, release-gating capability matrix is maintained in
 |------|-------------|
 | **Structured View** | Chat-bubble UI over the provider's structured protocol (Gemini ACP, Codex app-server stdio, Claude stream JSON, OpenCode/Copilot ACP). Tool calls, approvals, and model selection surface in the UI with persisted history. |
 | **CLI View** | Embedded xterm.js terminal running the provider's CLI directly over a PTY (openpty on macOS, ConPTY on Windows). Full terminal experience with real-time streaming output. |
-| **Interactive** *(future)* | CLI power with a polished UI overlay — stream terminal output into chat bubbles, capture tool calls, and show progress while keeping full CLI capability underneath. |
 
 ### What is Universal Chat History?
 
@@ -246,7 +245,7 @@ The UI talks to native code through `window.cefQuery`; native state updates are 
 Current bridge capabilities include:
 
 - State and chat loading: initial state, chat selection, lazy message loading, and sidebar search.
-- Chat lifecycle: create, rename, delete, pin, provider switch, model changes, Codex options, approval modes, auto-approve commands, and per-chat memory toggles.
+- Chat lifecycle: create, rename, delete, pin, provider switch, model changes, provider modes, UAM agents, command-safety policy, and per-chat memory toggles.
 - Settings: memory settings, editor settings, provider chat defaults, CLI provider version refresh/apply, theme, and clipboard writes.
 - Folders and workspaces: create, rename, delete, toggle, browse, open workspace, and open workspace editor.
 - Markdown store: browse/set store directory, list entries, create entries, and reveal entries.
@@ -286,7 +285,7 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the current development and release line is `v4.5.4`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+This is an actively developed project; the current development and release line is `v4.5.7-alpha2`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
 
 - The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
 - The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.

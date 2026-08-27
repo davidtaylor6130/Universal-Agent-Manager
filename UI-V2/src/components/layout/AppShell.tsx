@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, TriangleAlert, X } from 'lucide-react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -35,12 +35,26 @@ import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, StatusDot } from '../ui'
+import { Button, IconButton, Notice, StatusDot } from '../ui'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 
+const SIDEBAR_WIDTH_MIN = 260
+const SIDEBAR_WIDTH_MAX = 520
+const COMMIT_PANEL_WIDTH_MIN = 320
+const COMMIT_PANEL_WIDTH_MAX = 680
+const KEYBOARD_RESIZE_STEP = 16
+const MIN_CHAT_WIDTH = 360
+const ACTIVITY_RAILS_WIDTH = 88
+const RESIZE_HANDLE_WIDTH = 5
+const FIXED_RIGHT_PANEL_WIDTH = 360
+
 function shellActionNotificationId(detail: string): string {
   return `shell-action-${detail}`
+}
+
+function statusLineNotificationId(detail: string): string {
+  return `status-line-${detail}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -124,17 +138,26 @@ function NotificationsPanel({
 }) {
   const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+  const statusLine = useAppStore((s) => s.statusLine)
   const sessions = useAppStore((s) => s.sessions)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const renameFolder = useAppStore((s) => s.renameFolder)
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const [busyAction, setBusyAction] = useState('')
+  const [confirmingFolderId, setConfirmingFolderId] = useState('')
+  const [folderActionError, setFolderActionError] = useState('')
   const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
   type Notification = { id: string; title: string; detail: string; warning?: boolean; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
+    ...(statusLine ? [{
+      id: statusLineNotificationId(statusLine),
+      title: 'Application status',
+      detail: statusLine,
+      warning: /failed|could not|cannot|error|warning|corrupt|missing|unavailable|timed out|rejected/i.test(statusLine),
+    }] : []),
     ...(shellActionNotification ? [{
       id: shellActionNotificationId(shellActionNotification),
       title: 'Finder / Explorer action',
@@ -151,21 +174,24 @@ function NotificationsPanel({
           variant: 'primary',
           run: async () => {
             const directory = await browseFolderDirectory(folder.directory)
-            if (directory) renameFolder(folder.id, folder.name, directory)
+            if (!directory) return
+            setFolderActionError('')
+            if (!await renameFolder(folder.id, folder.name, directory)) {
+              setFolderActionError('The workspace could not be relinked. Finish active work and try again.')
+            }
           },
         },
         {
           label: 'Remove',
           variant: 'danger',
-          run: () => {
-            const chatCount = sessions.filter((session) => session.folderId === folder.id).length
-            const chats = chatCount === 1 ? '1 chat' : `${chatCount} chats`
-            if (window.confirm(`Remove “${folder.name}” from Universal Agent Manager and delete ${chats}? The directory on disk will not be deleted.`)) deleteFolder(folder.id)
-          },
+          run: () => setConfirmingFolderId(folder.id),
         },
       ],
     })),
   ].filter((notification) => !dismissedNotificationIds.has(notification.id))
+  const confirmingFolder = missingFolders.find((folder) => folder.id === confirmingFolderId)
+  const confirmingChatCount = confirmingFolder ? sessions.filter((session) => session.folderId === confirmingFolder.id).length : 0
+  const confirmingChats = confirmingChatCount === 1 ? '1 chat' : `${confirmingChatCount} chats`
 
   const runAction = async (notificationId: string, action: NotificationAction) => {
     const actionId = `${notificationId}-${action.label}`
@@ -201,27 +227,53 @@ function NotificationsPanel({
           </div>
         ) : (
           <div className="grid gap-3">
+            {folderActionError && (
+              <Notice
+                tone="warning"
+                title="Workspace action failed"
+                dismissLabel="Dismiss workspace action error"
+                onDismiss={() => setFolderActionError('')}
+              >
+                {folderActionError}
+              </Notice>
+            )}
+            {confirmingFolder && (
+              <Notice
+                tone="warning"
+                title="Remove workspace folder?"
+                dismissLabel="Dismiss workspace removal warning"
+                onDismiss={() => setConfirmingFolderId('')}
+                actions={(
+                  <>
+                    <Button size="sm" onClick={() => setConfirmingFolderId('')}>Cancel</Button>
+                    <Button size="sm" variant="danger" loading={busyAction === 'remove-folder'} onClick={() => {
+                      setBusyAction('remove-folder')
+                      setFolderActionError('')
+                      void deleteFolder(confirmingFolder.id).then((deleted) => {
+                        if (deleted) setConfirmingFolderId('')
+                        else setFolderActionError('The workspace could not be removed. Finish active work and try again.')
+                      }).catch(() => {
+                        setFolderActionError('The workspace could not be removed. Finish active work and try again.')
+                      }).finally(() => setBusyAction(''))
+                    }}>Confirm removal</Button>
+                  </>
+                )}
+              >
+                Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
+              </Notice>
+            )}
             {notifications.map((notification) => (
-              <div key={notification.id} className="grid gap-2 rounded-xl p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <div className="flex items-start justify-between gap-2">
-                  <strong className="flex items-start gap-2" style={{ color: notification.warning ? 'var(--yellow)' : 'var(--text)' }}>
-                    {notification.warning && <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />}
-                    <span>{notification.title}</span>
-                  </strong>
-                  <IconButton
-                    icon={<X size={14} />}
-                    label={`Dismiss ${notification.title}`}
-                    size="sm"
-                    tooltipSide="left"
-                    onClick={() => {
-                      onDismiss(notification.id)
-                      headingRef.current?.focus()
-                    }}
-                  />
-                </div>
-                <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
-                {notification.actions && (
-                  <div className="flex gap-2 pt-1">
+              <Notice
+                key={notification.id}
+                tone={notification.warning ? 'warning' : 'info'}
+                title={notification.title}
+                dismissLabel={`Dismiss ${notification.title}`}
+                onDismiss={() => {
+                  onDismiss(notification.id)
+                  headingRef.current?.focus()
+                }}
+                actions={notification.actions && (
+                  <>
                     {notification.actions.map((action) => {
                       const actionId = `${notification.id}-${action.label}`
                       return (
@@ -237,9 +289,11 @@ function NotificationsPanel({
                         </Button>
                       )
                     })}
-                  </div>
+                  </>
                 )}
-              </div>
+              >
+                <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
+              </Notice>
             ))}
           </div>
         )}
@@ -328,12 +382,15 @@ export function AppShell() {
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
   const folders = useAppStore((s) => s.folders)
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+  const statusLine = useAppStore((s) => s.statusLine)
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
+    ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
   ]
@@ -344,7 +401,14 @@ export function AppShell() {
   }, [refreshCustomThemes])
 
   useEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', updateViewportWidth)
+    return () => window.removeEventListener('resize', updateViewportWidth)
+  }, [])
+
+  useEffect(() => {
     const activeIds = new Set([
+      ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
     ])
@@ -353,7 +417,7 @@ export function AppShell() {
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [folders, shellActionNotification])
+  }, [folders, shellActionNotification, statusLine])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -400,6 +464,29 @@ export function AppShell() {
     document.addEventListener('mouseup', onMouseUp)
   }, [commitPanelWidthPx, setCommitPanelWidthPx, setSidebarWidthPx, sidebarWidthPx])
 
+  const resizeFromKeyboard = useCallback((side: 'sidebar' | 'commit', event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const minimum = side === 'sidebar' ? SIDEBAR_WIDTH_MIN : COMMIT_PANEL_WIDTH_MIN
+    const maximum = side === 'sidebar' ? SIDEBAR_WIDTH_MAX : COMMIT_PANEL_WIDTH_MAX
+    const current = side === 'sidebar' ? sidebarWidthPx : commitPanelWidthPx
+    const direction = side === 'sidebar' ? 1 : -1
+    const next = event.key === 'Home' ? minimum
+      : event.key === 'End' ? maximum
+        : current + (event.key === 'ArrowRight' ? direction : -direction) * KEYBOARD_RESIZE_STEP
+    if (side === 'sidebar') setSidebarWidthPx(next)
+    else setCommitPanelWidthPx(next)
+  }, [commitPanelWidthPx, setCommitPanelWidthPx, setSidebarWidthPx, sidebarWidthPx])
+
+  const rightPanelWidth = commitPanelOpen
+    ? commitPanelWidthPx
+    : alertsOpen || updatesOpen
+      ? FIXED_RIGHT_PANEL_WIDTH
+      : 0
+  const resizeHandlesWidth = (sidebarCollapsed ? 0 : RESIZE_HANDLE_WIDTH) + (commitPanelOpen ? RESIZE_HANDLE_WIDTH : 0)
+  const sidebarWouldStarveChat = !sidebarCollapsed && rightPanelWidth > 0 &&
+    viewportWidth - ACTIVITY_RAILS_WIDTH - resizeHandlesWidth - sidebarWidthPx - rightPanelWidth < MIN_CHAT_WIDTH
+
   return (
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
@@ -408,7 +495,7 @@ export function AppShell() {
     >
       <LeftActivityRail />
 
-      {!sidebarCollapsed && (
+      {!sidebarCollapsed && !sidebarWouldStarveChat && (
         <>
           <aside
             className="uam-side-panel-in uam-shell-panel uam-shell-panel--left flex h-full flex-col overflow-hidden"
@@ -421,8 +508,13 @@ export function AppShell() {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize chat selector"
+            aria-valuemin={SIDEBAR_WIDTH_MIN}
+            aria-valuemax={SIDEBAR_WIDTH_MAX}
+            aria-valuenow={sidebarWidthPx}
+            tabIndex={0}
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('sidebar', event)}
+            onKeyDown={(event) => resizeFromKeyboard('sidebar', event)}
           />
         </>
       )}
@@ -437,8 +529,13 @@ export function AppShell() {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize Git/SVN commit panel"
+            aria-valuemin={COMMIT_PANEL_WIDTH_MIN}
+            aria-valuemax={COMMIT_PANEL_WIDTH_MAX}
+            aria-valuenow={commitPanelWidthPx}
+            tabIndex={0}
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('commit', event)}
+            onKeyDown={(event) => resizeFromKeyboard('commit', event)}
           />
           <aside
             className="uam-shell-panel uam-shell-panel--right flex h-full flex-col overflow-hidden"

@@ -9,10 +9,12 @@
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
 #include "include/cef_image.h"
+#include "include/cef_parser.h"
 #include "include/cef_path_util.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_fill_layout.h"
 #include "include/views/cef_window.h"
+#include "include/wrapper/cef_stream_resource_handler.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -20,6 +22,40 @@
 
 namespace
 {
+	class UamUiSchemeHandlerFactory final : public CefSchemeHandlerFactory
+	{
+	  public:
+		explicit UamUiSchemeHandlerFactory(std::filesystem::path root) : m_root(std::move(root)) {}
+
+		CefRefPtr<CefResourceHandler> Create(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+		                                      const CefString& scheme_name,
+		                                      CefRefPtr<CefRequest> request) override
+		{
+			if (request == nullptr || !uam::strings::EqualsIgnoreCase(scheme_name.ToString(), "uam") ||
+			    request->GetMethod().ToString() != "GET")
+			{
+				return nullptr;
+			}
+			const auto path = uam::cef::ResolveTrustedUiResourcePath(m_root, request->GetURL().ToString());
+			if (!path.has_value()) return nullptr;
+			CefRefPtr<CefStreamReader> stream = CefStreamReader::CreateForFile(path->string());
+			if (stream == nullptr) return nullptr;
+
+			std::string extension = path->extension().string();
+			if (!extension.empty() && extension.front() == '.') extension.erase(0, 1);
+			CefString mime = CefGetMimeType(extension);
+			if (mime.empty()) mime = "application/octet-stream";
+			CefResponse::HeaderMap headers;
+			headers.emplace("Content-Security-Policy", std::string(uam::cef::kContentSecurityPolicy));
+			headers.emplace("X-Content-Type-Options", "nosniff");
+			headers.emplace("Cache-Control", "no-cache");
+			return new CefStreamResourceHandler(200, "OK", mime, headers, stream);
+		}
+
+	  private:
+		const std::filesystem::path m_root;
+		IMPLEMENT_REFCOUNTING(UamUiSchemeHandlerFactory);
+	};
 
 	CefRefPtr<CefImage> LoadUamWindowIcon()
 	{
@@ -157,17 +193,22 @@ namespace uam_cef_globals
 	extern CefRefPtr<UamCefClient> g_client;
 } // namespace uam_cef_globals
 
+void UamCefApp::FailStartup(const std::string& error)
+{
+	if (m_onFatalStartup)
+	{
+		m_onFatalStartup(error);
+		return;
+	}
+	std::fprintf(stderr, "[CEF] %s\n", error.c_str());
+}
+
 void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
 {
 	if (command_line == nullptr)
 	{
 		return;
 	}
-
-	// Allow file:// pages to make XHR/fetch requests to other file:// URLs.
-	// Required because the React UI is served from file:// in production.
-	command_line->AppendSwitch("allow-file-access-from-files");
-	command_line->AppendSwitch("disable-web-security");
 
 #if defined(__APPLE__)
 	// Disable Chromium features that trigger an EXC_BREAKPOINT / SIGTRAP crash
@@ -200,17 +241,36 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 	}
 }
 
+void UamCefApp::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
+{
+	if (registrar == nullptr) return;
+	registrar->AddCustomScheme(
+	    "uam", CEF_SCHEME_OPTION_STANDARD | CEF_SCHEME_OPTION_SECURE |
+	               CEF_SCHEME_OPTION_CORS_ENABLED | CEF_SCHEME_OPTION_FETCH_ENABLED |
+	               CEF_SCHEME_OPTION_DISPLAY_ISOLATED);
+}
+
 void UamCefApp::OnContextInitialized()
 {
 	CEF_REQUIRE_UI_THREAD();
 	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
+	CefString exe_dir_string;
+	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)
+	                                          ? uam::paths::PathFromUtf8(exe_dir_string.ToString())
+	                                          : std::filesystem::path(".");
+	if (!CefRegisterSchemeHandlerFactory(
+	        "uam", "app", new UamUiSchemeHandlerFactory(uam::cef::ResolveTrustedUiRoot(exe_dir))))
+	{
+		FailStartup("Failed to register the bundled UAM UI scheme.");
+		return;
+	}
 
 	// Reuse the pre-constructed client if Application already set it up
 	// (e.g. with a BrowserReadyCallback).  Fall back to a fresh client if not.
 	uam::AppState* app_state = uam_cef_globals::g_app_state;
 	if (app_state == nullptr)
 	{
-		std::fprintf(stderr, "[CEF] AppState is unavailable during context initialization.\n");
+		FailStartup("AppState is unavailable during context initialization.");
 		return;
 	}
 
@@ -235,6 +295,11 @@ void UamCefApp::OnContextInitialized()
 	CefRefPtr<UamRootWindowDelegate> window_delegate = new UamRootWindowDelegate(initial_bounds);
 
 	CefRefPtr<CefBrowserView> browser_view = CefBrowserView::CreateBrowserView(client, m_trustedUiIndexUrl, browser_settings, nullptr, nullptr, window_delegate);
+	if (browser_view == nullptr)
+	{
+		FailStartup("Failed to create the application browser view.");
+		return;
+	}
 
 	window_delegate->SetBrowserView(browser_view);
 	CefWindow::CreateTopLevelWindow(window_delegate);

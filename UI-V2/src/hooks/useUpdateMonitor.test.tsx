@@ -16,6 +16,28 @@ describe('useUpdateMonitor', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    delete window.cefQuery
+  })
+
+  it('waits for persisted CEF settings before attempting an automatic check', async () => {
+    window.cefQuery = vi.fn()
+    vi.stubGlobal('fetch', vi.fn())
+    useAppStore.setState({
+      lastAppliedStateRevision: -1,
+      updateChecksEnabled: true,
+      updateLastCheckedAt: '',
+    })
+
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    act(() => root.render(<Probe />))
+    await act(async () => { await Promise.resolve() })
+    expect(fetch).not.toHaveBeenCalled()
+
+    act(() => useAppStore.setState({ lastAppliedStateRevision: 0, updateChecksEnabled: false }))
+    await act(async () => { await Promise.resolve() })
+    expect(fetch).not.toHaveBeenCalled()
+    act(() => root.unmount())
   })
 
   it('checks again every 24 hours while the app remains open', async () => {

@@ -14,6 +14,7 @@ namespace uam::acp_methods
 	inline constexpr const char* kModelList = "model/list";
 	inline constexpr const char* kSessionNew = "session/new";
 	inline constexpr const char* kSessionLoad = "session/load";
+	inline constexpr const char* kSessionResume = "session/resume";
 	inline constexpr const char* kSessionPrompt = "session/prompt";
 	inline constexpr const char* kSessionCancel = "session/cancel";
 	inline constexpr const char* kSessionUpdate = "session/update";
@@ -54,6 +55,7 @@ namespace uam::acp_methods
 	    kTurnStart,
 	    kSessionNew,
 	    kSessionLoad,
+	    kSessionResume,
 	});
 
 	inline constexpr auto kCodexThreadSetupMethods = std::to_array<std::string_view>({

@@ -122,13 +122,16 @@ namespace uam
 		std::optional<std::vector<ResourceCollection>> ParseCollections(const std::string& text)
 		{
 			const nlohmann::json root = nlohmann::json::parse(text, nullptr, false);
-			if (!root.is_object() || !root.contains("collections") || !root["collections"].is_array())
+			const auto version = root.find("version");
+			const auto values = root.find("collections");
+			if (!root.is_object() || version == root.end() || !version->is_number_integer() ||
+			    *version != 1 || values == root.end() || !values->is_array())
 			{
 				return std::nullopt;
 			}
 			std::vector<ResourceCollection> collections;
 			std::unordered_set<std::string> collection_ids;
-			for (const nlohmann::json& value : root["collections"])
+			for (const nlohmann::json& value : *values)
 			{
 				if (!value.is_object() || collections.size() >= kMaxCollections)
 				{
@@ -273,7 +276,7 @@ namespace uam
 			}
 			values.push_back(CollectionJson(collection));
 		}
-		return uam::io::WriteTextFile(FilePath(data_root), nlohmann::json{{"version", 1}, {"collections", std::move(values)}}.dump(2));
+		return uam::io::WriteTextFileWithBackup(FilePath(data_root), nlohmann::json{{"version", 1}, {"collections", std::move(values)}}.dump(2));
 	}
 
 	bool ResourceCollectionService::Create(AppState& app, const std::string& name, ResourceCollection* created, std::string* error_out)

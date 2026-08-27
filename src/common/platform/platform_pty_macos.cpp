@@ -13,7 +13,7 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		return true;
 	}
 
-	bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr) const override
+	bool StartCliTerminalProcess(uam::CliTerminalState& terminal, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const override
 	{
 		if (argv.empty() || uam::strings::IsBlank(argv.front()))
 		{
@@ -47,6 +47,17 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 
 			return false;
 		}
+		std::array<char, 1024> slave_name{};
+		if (ttyname_r(slave_fd, slave_name.data(), slave_name.size()) != 0)
+		{
+			CloseFdIfOpen(master_fd);
+			CloseFdIfOpen(slave_fd);
+			if (error_out != nullptr)
+			{
+				*error_out = "Failed to resolve terminal device.";
+			}
+			return false;
+		}
 
 		const std::vector<std::string> terminal_path_dirs = CollectTerminalPathSearchDirs();
 		const std::string terminal_path_env = JoinPathEntries(terminal_path_dirs);
@@ -73,49 +84,42 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		resolved_argv[0] = resolved_executable;
 		std::vector<std::vector<char>> argv_storage;
 		std::vector<char*> argv_ptrs = BuildMutableArgv(resolved_argv, argv_storage);
+		std::vector<std::pair<std::string, std::string>> child_environment{{"TERM", "xterm-256color"}};
+		if (!terminal_path_env.empty()) child_environment.emplace_back("PATH", terminal_path_env);
+		child_environment.insert(child_environment.end(), environment_overrides.begin(), environment_overrides.end());
+		std::vector<std::vector<char>> environment_storage;
+		std::vector<char*> environment_ptrs = BuildChildEnvironment(child_environment, environment_storage);
 
-		const pid_t pid = fork();
-
-		if (pid < 0)
+		pid_t pid = -1;
+		if (!SpawnSuspendedProcess(
+		        pid,
+		        resolved_executable,
+		        argv_ptrs.data(),
+		        environment_ptrs.data(),
+		        working_directory,
+		        {},
+		        slave_name.data(),
+		        true,
+		        error_out))
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "fork failed.";
-			}
-
 			CloseFdIfOpen(master_fd);
 			CloseFdIfOpen(slave_fd);
 			return false;
 		}
 
-		if (pid == 0)
+		pid_t watchdog_pid = -1;
+		if (!ArmParentDeathWatchdogAndReleaseChild(pid, watchdog_pid, error_out))
 		{
-			setsid();
-			ioctl(slave_fd, TIOCSCTTY, 0);
-			dup2(slave_fd, STDIN_FILENO);
-			dup2(slave_fd, STDOUT_FILENO);
-			dup2(slave_fd, STDERR_FILENO);
+			int ignored_status = 0;
+			(void)TerminateCapturedCommandProcess(pid, &ignored_status);
 			CloseFdIfOpen(master_fd);
 			CloseFdIfOpen(slave_fd);
-
-			if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
-			{
-				_exit(126);
-			}
-
-			setenv("TERM", "xterm-256color", 1);
-			if (!terminal_path_env.empty())
-			{
-				setenv("PATH", terminal_path_env.c_str(), 1);
-			}
-			RaiseFdLimitBestEffort();
-			execv(argv_ptrs[0], argv_ptrs.data());
-			_exit(127);
+			return false;
 		}
-
 		CloseFdIfOpen(slave_fd);
 		terminal.master_fd = master_fd;
 		terminal.child_pid = pid;
+		terminal.watchdog_pid = watchdog_pid;
 		SetFdNonBlockingIfOpen(terminal.master_fd);
 
 		return true;
@@ -123,6 +127,8 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 
 	void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const override
 	{
+		terminal.input_writer.reset();
+		StopParentDeathWatchdog(terminal.watchdog_pid);
 		CloseFdIfOpen(terminal.master_fd);
 
 		if (terminal.child_pid > 0 && ChildWaitResultClearsPid(WaitForChildProcess(terminal.child_pid, false, 0.0)))
@@ -133,15 +139,21 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 
 	bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const override
 	{
-		return WriteAllToFd(terminal.master_fd, bytes, len);
+		if (terminal.input_writer == nullptr)
+		{
+			terminal.input_writer = CreateAsyncFdWriter(terminal.master_fd);
+		}
+		return terminal.input_writer != nullptr && terminal.input_writer->Enqueue(bytes, len);
 	}
 
 	void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const override
 	{
 		if (terminal.child_pid <= 0)
 		{
+			StopParentDeathWatchdog(terminal.watchdog_pid);
 			return;
 		}
+		StopParentDeathWatchdog(terminal.watchdog_pid);
 
 		const pid_t child_pid = terminal.child_pid;
 		const auto wait_and_clear = [&](bool wait_for_exit, double timeout_seconds) -> bool
@@ -239,6 +251,7 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		if (ChildWaitResultClearsPid(result))
 		{
 			terminal.child_pid = -1;
+			StopParentDeathWatchdog(terminal.watchdog_pid);
 			return true;
 		}
 

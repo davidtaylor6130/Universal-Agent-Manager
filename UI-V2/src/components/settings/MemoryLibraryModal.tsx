@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -214,6 +214,23 @@ export function MemoryLibraryModal() {
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
+  const draftDirty = Object.entries(draft).some(([key, value]) => key !== 'category' && key !== 'confidence' && Boolean(value))
+  const requestClose = useCallback(() => {
+    if (submittingRef.current) return
+    if (pendingDeleteEntryId) {
+      setPendingDeleteEntryId(null)
+      return
+    }
+    if (pendingMassDeleteEntryIds) {
+      setPendingMassDeleteEntryIds(null)
+      return
+    }
+    if (isAdding && draftDirty) {
+      setIsAdding(false)
+      return
+    }
+    closeMemoryLibrary()
+  }, [closeMemoryLibrary, draftDirty, isAdding, pendingDeleteEntryId, pendingMassDeleteEntryIds])
 
   useEffect(() => {
     if (!memoryLibraryScope) {
@@ -222,13 +239,13 @@ export function MemoryLibraryModal() {
 
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        closeMemoryLibrary()
+        requestClose()
       }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [closeMemoryLibrary, memoryLibraryScope])
+  }, [memoryLibraryScope, requestClose])
 
   const filteredEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -327,7 +344,7 @@ export function MemoryLibraryModal() {
       className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) closeMemoryLibrary()
+        if (event.target === event.currentTarget) requestClose()
       }}
     >
       <div
@@ -353,7 +370,7 @@ export function MemoryLibraryModal() {
           <IconButton
             icon={<X size={16} />}
             label="Close memory library"
-            onClick={closeMemoryLibrary}
+            onClick={requestClose}
           />
         </div>
 
@@ -375,7 +392,7 @@ export function MemoryLibraryModal() {
 
             {groupedEntries.length > 0 && (
               <nav aria-label="Memory locations" className="grid gap-1">
-                <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>Locations</div>
+                <div className="px-2 text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>Locations</div>
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => {
                   const active = location.key === selectedLocation?.key
                   return (
@@ -390,9 +407,9 @@ export function MemoryLibraryModal() {
                       <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium">{location.label}</span>
-                        <span className="block truncate text-[10px]" style={{ color: 'var(--text-3)' }}>{location.rootPath}</span>
+                        <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{location.rootPath}</span>
                       </span>
-                      <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
+                      <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
                     </button>
                   )
                 })}
@@ -413,7 +430,7 @@ export function MemoryLibraryModal() {
                       <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
                         {locations.map((location) => {
                           const active = location.key === selectedLocation?.key
-                          return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                          return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
                         })}
                       </div>
                     </div>
@@ -421,10 +438,10 @@ export function MemoryLibraryModal() {
                 })}
                 {isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))) && (
                   <div className="mt-1">
-                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
+                    <div className="px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
-                      return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                      return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
                     })}
                   </div>
                 )}
@@ -593,15 +610,15 @@ export function MemoryLibraryModal() {
               <div key={selectedLocation.key} className="space-y-4 animate-fade-in">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
-                  <div className="mt-0.5 text-[11px] truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
+                  <div className="mt-0.5 text-xs truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
                 </div>
                 {selectedLocation.categories.map(({ category, entries }) => (
                           <section key={`${selectedLocation.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
+                              <div className="text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
                                 {memoryCategoryLabel(category)}
                               </div>
-                              <div className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
+                              <div className="text-xs rounded px-1.5 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
                                 {entries.length}
                               </div>
                             </div>

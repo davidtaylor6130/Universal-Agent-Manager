@@ -5,6 +5,7 @@ import type {
   AcpAgentInfo,
   AcpAttentionKind,
   AcpCommand,
+  AcpConfigOption,
   AcpDiagnosticEntry,
   AcpMode,
   AcpModel,
@@ -30,6 +31,7 @@ import type {
   CppMessage,
   CppProvider,
   CppSettings,
+  McpServerConfiguration,
   CppStatePatch,
   EditorFileAssociation,
   GitWorktreeResult,
@@ -37,6 +39,7 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ProviderModelCatalog,
   ShellAction,
   VcsCommitResult,
   VcsCommitStatus,
@@ -64,6 +67,30 @@ export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
 export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
+export const MIN_GOAL_MAX_LOOP_ITERATIONS = 1
+export const MAX_GOAL_MAX_LOOP_ITERATIONS = 200
+export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
+export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
+export const MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 3600
+export const DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB = 1024
+export const MIN_ACP_TURN_OUTPUT_LIMIT_MIB = 256
+export const MAX_ACP_TURN_OUTPUT_LIMIT_MIB = 4096
+
+export function normalizeGoalMaxLoopIterations(value: unknown): number {
+  const parsed = Math.floor(finiteNumberOr(value, DEFAULT_GOAL_MAX_LOOP_ITERATIONS))
+  return parsed <= 0 ? DEFAULT_GOAL_MAX_LOOP_ITERATIONS : Math.min(MAX_GOAL_MAX_LOOP_ITERATIONS, parsed)
+}
+
+export function normalizeAcpTurnOutputLimitMiB(value: unknown): number {
+  const parsed = Math.floor(finiteNumberOr(value, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB))
+  return parsed <= 0
+    ? DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB
+    : Math.min(MAX_ACP_TURN_OUTPUT_LIMIT_MIB, Math.max(MIN_ACP_TURN_OUTPUT_LIMIT_MIB, parsed))
+}
+
+export function normalizeAcpSetupInactivityTimeoutSeconds(value: unknown): number {
+  return clampedFiniteNumberOr(value, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS)
+}
 
 export function normalizeMemoryLevel(value: unknown, legacyEnabled = true): MemoryLevel {
   if (!legacyEnabled) return 'off'
@@ -196,9 +223,11 @@ export function normalizeAgentMode(value: unknown): string {
   return (AGENT_MODE_IDS as readonly string[]).includes(modeId) ? modeId : 'default'
 }
 
-export function normalizeCommandSafetyTier(value: unknown): 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo' {
+export function normalizeCommandSafetyTier(value: unknown): 'off' | 'acceptEdits' | 'aiReview' | 'yolo' {
   const tier = stringOr(value).trim().toLowerCase()
-  return tier === 'acceptedits' ? 'acceptEdits' : tier === 'off' || tier === 'low' || tier === 'high' || tier === 'yolo' ? tier : 'medium'
+  if (tier === 'acceptedits') return 'acceptEdits'
+  if (tier === 'aireview' || tier === 'low' || tier === 'medium' || tier === 'high') return 'aiReview'
+  return tier === 'yolo' ? 'yolo' : 'off'
 }
 
 export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
@@ -321,6 +350,7 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
   if (!text) return null
   return {
     text,
+    uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
       ? value.markdownStoreFiles.filter(isString)
       : [],
@@ -376,6 +406,8 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
       })
       : [],
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
+    checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
+    checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
     createdAt: stringOr(value.createdAt),
   }
 }
@@ -547,6 +579,31 @@ export function sanitizeAcpModel(value: unknown): AcpModel | null {
   }
 }
 
+export function sanitizeAcpConfigOption(value: unknown): AcpConfigOption | null {
+  if (!isRecord(value)) return null
+  const id = stringOr(value.id).trim().slice(0, 256)
+  if (!id) return null
+  return {
+    id,
+    name: stringOr(value.name, id).slice(0, 512),
+    description: stringOr(value.description).slice(0, 1024),
+    category: stringOr(value.category).slice(0, 256),
+    currentValue: stringOr(value.currentValue).trim().slice(0, 512),
+    options: Array.isArray(value.options)
+      ? value.options.slice(0, 128).flatMap((choice) => {
+          if (!isRecord(choice)) return []
+          const choiceValue = stringOr(choice.value).trim().slice(0, 512)
+          if (!choiceValue) return []
+          return [{
+            value: choiceValue,
+            name: stringOr(choice.name, choiceValue).slice(0, 512),
+            description: stringOr(choice.description).slice(0, 1024),
+          }]
+        })
+      : [],
+  }
+}
+
 function nonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
@@ -686,6 +743,12 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
           return sanitized ? [sanitized] : []
         })
       : [],
+    configOptions: Array.isArray(value.configOptions)
+      ? value.configOptions.slice(0, 64).flatMap((option) => {
+          const sanitized = sanitizeAcpConfigOption(option)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
     modelsLoading: booleanOr(value.modelsLoading),
     modelRefreshError: stringOr(value.modelRefreshError),
     currentModelId: normalizeAcpModelId(value.currentModelId),
@@ -741,6 +804,8 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
 	executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
+	workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
+	reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
 	providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
   }
 }
@@ -773,11 +838,18 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
     branchMessageEdited: booleanOr(value.branchMessageEdited),
     modelId: normalizeAcpModelId(value.modelId),
+    reviewerModelId: normalizeAcpModelId(value.reviewerModelId),
     reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
     serviceTier: normalizeCodexServiceTier(value.serviceTier),
+    serviceTierExplicit: booleanOr(value.serviceTierExplicit, normalizeCodexServiceTier(value.serviceTier) !== ''),
     approvalMode: normalizeAgentMode(value.approvalMode),
-    autoApproveCommands: booleanOr(value.autoApproveCommands, stringOr(value.approvalMode).trim() === 'yolo'),
-    commandSafetyTier: normalizeCommandSafetyTier(value.commandSafetyTier),
+    uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
+    uamControlEnabled: booleanOr(value.uamControlEnabled),
+    commandSafetyTier: normalizeCommandSafetyTier(
+      isString(value.commandSafetyTier)
+        ? value.commandSafetyTier
+        : booleanOr(value.autoApproveCommands) || stringOr(value.approvalMode).trim() === 'yolo' ? 'yolo' : 'off'
+    ),
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
@@ -789,6 +861,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     workspaceBaseRef: isString(value.workspaceBaseRef) ? value.workspaceBaseRef : undefined,
     workspaceBranchName: isString(value.workspaceBranchName) ? value.workspaceBranchName : undefined,
     workspaceWorktreeDirectory: isString(value.workspaceWorktreeDirectory) ? value.workspaceWorktreeDirectory : undefined,
+    importedReadOnly: booleanOr(value.importedReadOnly),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
@@ -824,6 +897,8 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     supportsCli: typeof value.supportsCli === 'boolean' ? value.supportsCli : undefined,
     supportsStructured: typeof value.supportsStructured === 'boolean' ? value.supportsStructured : undefined,
     structuredProtocol: isString(value.structuredProtocol) ? value.structuredProtocol : undefined,
+    structuredPermissionControl: value.structuredPermissionControl === 'uam' ? 'uam' : 'provider',
+    terminalPermissionControl: 'provider',
     npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
 	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
@@ -994,8 +1069,12 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
   const normalizedStatus: CliVersionProviderState['status'] =
     status === 'checking' ||
     status === 'installing' ||
-    status === 'supported' ||
-    status === 'unsupported' ||
+    status === 'verified' ||
+    status === 'untested' ||
+    status === 'untested-newer' ||
+    status === 'known-incompatible' ||
+    status === 'unavailable' ||
+    status === 'provider-managed' ||
     status === 'unknown'
       ? status
       : 'unknown'
@@ -1024,6 +1103,8 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
         })
       : [],
     preferredVersion: stringOr(value.preferredVersion),
+    verifiedVersion: stringOr(value.verifiedVersion),
+    verifiedAt: stringOr(value.verifiedAt),
     status: normalizedStatus,
     message: stringOr(value.message),
     running: booleanOr(value.running),
@@ -1197,7 +1278,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     return {
       modelId: '',
       approvalMode: 'default',
-      autoApproveCommands: false,
+      commandSafetyTier: 'off',
       memoryEnabled: true,
       memoryLevel: 'strict',
       smallModelMode: false,
@@ -1207,8 +1288,12 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
   }
   return {
     modelId: normalizeAcpModelId(value.modelId),
+    reviewerModelId: normalizeAcpModelId(value.reviewerModelId),
+    featurePreference: value.featurePreference === 'provider' ? 'provider' : 'uam',
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
-    autoApproveCommands: booleanOr(value.autoApproveCommands),
+    commandSafetyTier: normalizeCommandSafetyTier(
+      isString(value.commandSafetyTier) ? value.commandSafetyTier : booleanOr(value.autoApproveCommands) ? 'yolo' : 'off'
+    ),
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
@@ -1268,22 +1353,23 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
       memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
       goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+      acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+      acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
       updateLastCheckedAt: '',
       dismissedUpdateVersions: {},
       memoryLastStatus: '',
       memoryWorkerBindings: {},
+      permissionReviewerProviderId: '',
+      permissionReviewerModelId: '',
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
-      voiceInputMode: 'system',
-      voiceInputServerBaseUrl: '',
-      voiceInputServerEndpoint: '/v1/audio/transcriptions',
-      voiceInputServerModel: 'whisper-1',
-      voiceInputApiKeyEnv: 'OPENAI_API_KEY',
-      voiceInputCapabilities: { system: { supported: true, reason: '' }, local: { supported: false, reason: 'Coming soon.' }, server: { supported: false, reason: 'Unavailable.' } },
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
+      mcpServers: [],
+      favoriteUamAgentIds: [],
+      uamAgentCycleShortcut: 'shift+tab',
     }
   }
 
@@ -1306,13 +1392,41 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       }
     }
   }
-  const capability = (input: unknown, fallbackSupported: boolean) => isRecord(input)
-    ? { supported: booleanOr(input.supported, fallbackSupported), reason: stringOr(input.reason) }
-    : { supported: fallbackSupported, reason: '' }
-  const capabilities = isRecord(value.voiceInputCapabilities) ? value.voiceInputCapabilities : {}
-  const voiceInputMode = ['system', 'local', 'server'].includes(stringOr(value.voiceInputMode))
-    ? stringOr(value.voiceInputMode) as 'system' | 'local' | 'server'
-    : 'system'
+  const mcpServers: McpServerConfiguration[] = Array.isArray(value.mcpServers)
+    ? value.mcpServers.flatMap((entry) => {
+        if (!isRecord(entry)) return []
+        const transport = stringOr(entry.transport)
+        if (transport !== 'stdio' && transport !== 'http' && transport !== 'sse') return []
+        const references = (input: unknown) => Array.isArray(input)
+          ? input.flatMap((reference) => isRecord(reference)
+            ? [{ name: stringOr(reference.name), environmentVariable: stringOr(reference.environmentVariable) }]
+            : [])
+          : []
+        return [{
+          id: stringOr(entry.id),
+          name: stringOr(entry.name),
+          workspaceDirectory: stringOr(entry.workspaceDirectory),
+          transport,
+          command: stringOr(entry.command),
+		  args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
+          url: stringOr(entry.url),
+          environment: references(entry.environment),
+          headers: references(entry.headers),
+          enabled: booleanOr(entry.enabled, true),
+        }]
+      })
+    : []
+  const favoriteUamAgentIds = Array.isArray(value.favoriteUamAgentIds)
+    ? Array.from(new Set(value.favoriteUamAgentIds
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.trim().toLowerCase())
+        .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
+        .slice(0, 64)
+    : []
+  const requestedUamAgentCycleShortcut = stringOr(value.uamAgentCycleShortcut).toLowerCase()
+  const uamAgentCycleShortcut = ['shift+tab', 'control+shift+tab', 'alt+shift+tab', 'meta+shift+tab', 'disabled'].includes(requestedUamAgentCycleShortcut)
+    ? requestedUamAgentCycleShortcut as CppSettings['uamAgentCycleShortcut']
+    : 'shift+tab'
   return {
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
@@ -1322,27 +1436,24 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
-    goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(value.goalMaxLoopIterations, DEFAULT_GOAL_MAX_LOOP_ITERATIONS))),
+    goalMaxLoopIterations: normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations),
+    acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
+    acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     updateLastCheckedAt: stringOr(value.updateLastCheckedAt),
     dismissedUpdateVersions,
     memoryLastStatus: stringOr(value.memoryLastStatus),
     memoryWorkerBindings: bindings,
+    permissionReviewerProviderId: stringOr(value.permissionReviewerProviderId),
+    permissionReviewerModelId: stringOr(value.permissionReviewerModelId),
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
-    voiceInputMode,
-    voiceInputServerBaseUrl: stringOr(value.voiceInputServerBaseUrl),
-    voiceInputServerEndpoint: stringOr(value.voiceInputServerEndpoint, '/v1/audio/transcriptions'),
-    voiceInputServerModel: stringOr(value.voiceInputServerModel, 'whisper-1'),
-    voiceInputApiKeyEnv: stringOr(value.voiceInputApiKeyEnv, 'OPENAI_API_KEY'),
-    voiceInputCapabilities: {
-      system: capability(capabilities.system, true),
-      local: capability(capabilities.local, false),
-      server: capability(capabilities.server, false),
-    },
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
+    mcpServers,
+    favoriteUamAgentIds,
+    uamAgentCycleShortcut,
   }
 }
 
@@ -1372,6 +1483,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   const resourceCollections = sanitizeResourceCollections(value.resourceCollections)
+	const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
 
   const selectedChatId =
     isString(value.selectedChatId)
@@ -1396,12 +1508,37 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     selectedChatId,
     selectedChatIndex: finiteNumberOr(value.selectedChatIndex, -1),
     providers,
+    providerModelCatalogs,
     settings,
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     shellActionNotification: stringOr(value.shellActionNotification),
+    statusLine: stringOr(value.statusLine),
   }
+}
+
+function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 512).flatMap((entry) => {
+    if (!isRecord(entry)) return []
+    const providerId = normalizeCliProviderIdAlias(stringOr(entry.providerId))
+    const workspaceDirectory = stringOr(entry.workspaceDirectory).trim()
+    if (!providerId || !workspaceDirectory) return []
+    return [{
+      providerId,
+      workspaceDirectory,
+      availableModels: Array.isArray(entry.availableModels)
+        ? entry.availableModels.flatMap((model) => {
+            const sanitized = sanitizeAcpModel(model)
+            return sanitized ? [sanitized] : []
+          })
+        : [],
+      currentModelId: normalizeAcpModelId(entry.currentModelId),
+      modelsLoading: booleanOr(entry.modelsLoading),
+      modelRefreshError: stringOr(entry.modelRefreshError),
+    }]
+  })
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -1505,10 +1642,14 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
           return sanitized ? [sanitized] : []
         })
       : undefined,
+    providerModelCatalogs: value.providerModelCatalogs !== undefined
+      ? sanitizeProviderModelCatalogs(value.providerModelCatalogs)
+      : undefined,
     settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
+    statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }
 }

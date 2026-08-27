@@ -212,6 +212,37 @@ bool UpdateCopilotReasoningFromConfigOptions(AcpSessionState& session, ChatSessi
 	return changed;
 }
 
+bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& config_options)
+{
+	if (!config_options.is_array()) return false;
+	std::vector<AcpConfigOptionState> parsed;
+	parsed.reserve(std::min<std::size_t>(config_options.size(), 64));
+	for (const nlohmann::json& value : config_options)
+	{
+		if (parsed.size() >= 64 || !value.is_object()) break;
+		AcpConfigOptionState option;
+		option.id = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(value, {"id"}), 256);
+		if (option.id.empty()) continue;
+		option.name = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValueOr(value, "name", option.id), 256);
+		option.description = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(value, {"description"}), 1024);
+		option.category = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(value, {"category"}), 256);
+		option.current_value = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(value, {"currentValue"}), 512);
+		for (const nlohmann::json& raw_choice : JsonArrayValue(value, "options"))
+		{
+			if (option.choices.size() >= 128 || !raw_choice.is_object()) break;
+			AcpConfigOptionChoiceState choice;
+			choice.value = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(raw_choice, {"value"}), 512);
+			if (choice.value.empty()) continue;
+			choice.name = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValueOr(raw_choice, "name", choice.value), 256);
+			choice.description = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(raw_choice, {"description"}), 1024);
+			option.choices.push_back(std::move(choice));
+		}
+		parsed.push_back(std::move(option));
+	}
+	session.available_config_options = std::move(parsed);
+	return true;
+}
+
 bool ReconcileCopilotReasoningEffort(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	if (!uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) || session.model_discovery_only || (!chat.model_id.empty() && chat.model_id != session.current_model_id))
@@ -274,19 +305,40 @@ nlohmann::json ModelsForPersistentCache(const std::vector<AcpModelState>& models
 	return result;
 }
 
-void RememberDiscoveredModels(AppState& app, const AcpSessionState& session)
+nlohmann::json ConfigOptionsForPersistentCache(const std::vector<AcpConfigOptionState>& options)
 {
-	if (app.provider_model_catalog != nullptr && !session.available_models.empty())
+	nlohmann::json result = nlohmann::json::array();
+	for (const AcpConfigOptionState& option : options)
 	{
-		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, ModelsForPersistentCache(session.available_models));
+		nlohmann::json choices = nlohmann::json::array();
+		for (const AcpConfigOptionChoiceState& choice : option.choices)
+		{
+			choices.push_back({{"value", choice.value}, {"name", choice.name}, {"description", choice.description}});
+		}
+		result.push_back({{"id", option.id}, {"name", option.name}, {"description", option.description}, {"category", option.category}, {"currentValue", option.current_value}, {"options", std::move(choices)}});
+	}
+	return result;
+}
+
+std::string DiscoveryWorkspace(const AppState& app, const ChatSession& chat)
+{
+	return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+}
+
+void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	if (app.provider_model_catalog != nullptr && (!session.available_models.empty() || !session.available_config_options.empty()))
+	{
+		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, ModelsForPersistentCache(session.available_models), DiscoveryWorkspace(app, chat), ConfigOptionsForPersistentCache(session.available_config_options));
 	}
 }
 
-void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& session)
+void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
-	if (app.provider_model_catalog != nullptr && session.available_models.empty() && app.provider_model_catalog->IsDiscoveryPending(session.provider_id))
+	const std::string workspace = DiscoveryWorkspace(app, chat);
+	if (app.provider_model_catalog != nullptr && session.available_models.empty() && app.provider_model_catalog->IsDiscoveryPending(session.provider_id, workspace))
 	{
-		app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Provider model discovery completed without reporting any models.");
+		app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Provider model discovery completed without reporting any models.", workspace);
 	}
 }
 
@@ -326,6 +378,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	}
 	if (session.cancel_requested && method == uam::acp_methods::kSessionPrompt)
 	{
+		if (session.inactivity_timeout_pending)
+		{
+			FinalizeAcpTurnInactivityTimeout(app, session, chat);
+			return;
+		}
 		session.prompt_request_id = 0;
 		session.cancel_requested = false;
 		session.cancel_requested_time_s = 0.0;
@@ -379,10 +436,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.message = error_message;
 		failure.has_detail = !detail_text.empty();
 		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
-		const bool model_discovery_request = method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad;
+		const bool model_discovery_request = method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume;
 		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
-			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error);
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error, DiscoveryWorkspace(app, chat));
 		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
 		if (method == uam::acp_methods::kAccountRateLimitsRead)
@@ -446,6 +503,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				SaveChatQuietly(app, chat);
 			}
 			ClearAcpReasoningChangeRequest(session);
+		}
+		if (method == uam::acp_methods::kSessionSetConfigOption && id == session.config_option_change_request_id)
+		{
+			ClearAcpConfigOptionChangeRequest(session);
 		}
 		if (method == uam::acp_methods::kSessionSetMode && id == session.mode_change_request_id)
 		{
@@ -512,21 +573,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			(void)WriteAcpMessage(session, BuildCodexRateLimitsReadRequest(rate_limits_id));
 			return;
 		}
-		if (result.is_object())
-		{
-			const nlohmann::json agent_info = JsonObjectValue(result, "agentInfo");
-			if (agent_info.is_object())
-			{
-				session.agent_name = JsonDiagnosticStringValue(agent_info, "name");
-				session.agent_title = JsonDiagnosticStringValue(agent_info, "title");
-				session.agent_version = JsonDiagnosticStringValue(agent_info, "version");
-			}
-			const nlohmann::json agent_capabilities = JsonObjectValue(result, "agentCapabilities");
-			if (agent_capabilities.is_object())
-			{
-				session.load_session_supported = JsonBooleanValueOr(agent_capabilities, "loadSession", false);
-			}
-		}
+		ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpInitializeResult(session, result);
 		return;
 	}
 	if (method == uam::acp_methods::kAccountRateLimitsRead)
@@ -577,8 +624,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				}
 			}
 		}
-		RememberDiscoveredModels(app, session);
-		FinishModelDiscoveryWithoutResults(app, session);
+		RememberDiscoveredModels(app, session, chat);
+		FinishModelDiscoveryWithoutResults(app, session, chat);
 		StopBackgroundModelDiscovery(app, session);
 		return;
 	}
@@ -610,9 +657,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.codex_thread_id.clear();
 			session.session_id.clear();
 		}
-		const std::string previous_native_session_id = chat.native_session_id;
-		SetChatNativeSessionIdIfChanged(chat, session.session_id);
-		SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
+		if (!session.goal_internal_session)
+		{
+			const std::string previous_native_session_id = chat.native_session_id;
+			SetChatNativeSessionIdIfChanged(chat, session.session_id);
+			SyncResolvedNativeSessionIdForChat(app, chat, session.session_id, previous_native_session_id);
+		}
 		session.available_modes = {
 		    AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Codex default collaboration mode."},
 		    AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Ask Codex to plan before implementing."},
@@ -662,12 +712,13 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
 			if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
 			{
+				(void)UpdateAcpConfigOptions(session, *config_options);
 				(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
 			}
 		}
-		RememberDiscoveredModels(app, session);
-		FinishModelDiscoveryWithoutResults(app, session);
-		if (!session.model_discovery_only)
+		RememberDiscoveredModels(app, session, chat);
+		FinishModelDiscoveryWithoutResults(app, session, chat);
+		if (!session.model_discovery_only && !session.goal_internal_session)
 		{
 			const std::string previous_native_session_id = chat.native_session_id;
 			SetChatNativeSessionIdIfChanged(chat, session.session_id);
@@ -696,7 +747,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		return;
 	}
 
-	if (method == uam::acp_methods::kSessionLoad)
+	if (method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume)
 	{
 		session.session_setup_request_id = 0;
 		if (result.is_object())
@@ -705,11 +756,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			UpdateAcpModelsFromJson(session, JsonObjectValue(result, "models"));
 			if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
 			{
+				(void)UpdateAcpConfigOptions(session, *config_options);
 				(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
 			}
 		}
-		RememberDiscoveredModels(app, session);
-		FinishModelDiscoveryWithoutResults(app, session);
+		RememberDiscoveredModels(app, session, chat);
+		FinishModelDiscoveryWithoutResults(app, session, chat);
 		session.session_ready = true;
 		session.ignore_session_updates_until_ready = false;
 		session.lifecycle_state = kAcpLifecycleReady;
@@ -730,6 +782,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 
 	if (method == uam::acp_methods::kSessionCancel)
 	{
+		if (session.inactivity_timeout_pending)
+		{
+			FinalizeAcpTurnInactivityTimeout(app, session, chat);
+			return;
+		}
 		session.cancel_requested = false;
 		session.cancel_requested_time_s = 0.0;
 		session.cancel_request_id = 0;
@@ -743,7 +800,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		return;
 	}
 
-	if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
+		if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
 	{
 		const int response_id = JsonRpcNumericId(JsonRpcIdOrNull(message));
 		if (method == uam::acp_methods::kSessionSetConfigOption && response_id == session.reasoning_change_request_id)
@@ -752,6 +809,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			{
 				if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
 				{
+					(void)UpdateAcpConfigOptions(session, *config_options);
 					(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
 				}
 			}
@@ -760,6 +818,32 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.lifecycle_state = kAcpLifecycleReady;
 			(void)ReconcileCopilotReasoningEffort(app, session, chat);
 			(void)SendQueuedPromptIfReady(session, chat);
+		}
+		if (method == uam::acp_methods::kSessionSetConfigOption && response_id == session.config_option_change_request_id)
+		{
+			bool received_config_options = false;
+			if (result.is_object())
+			{
+				if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
+				{
+					received_config_options = true;
+					(void)UpdateAcpConfigOptions(session, *config_options);
+				}
+			}
+			if (!received_config_options) return;
+			const auto confirmed = std::ranges::find_if(session.available_config_options, [&](const AcpConfigOptionState& option) {
+				return option.id == session.config_option_change_id && option.current_value == session.config_option_change_requested_value;
+			});
+			if (confirmed == session.available_config_options.end())
+			{
+				session.last_error = "The provider did not confirm the requested model variant.";
+			}
+			else
+			{
+				session.last_error.clear();
+			}
+			ClearAcpConfigOptionChangeRequest(session);
+			session.lifecycle_state = kAcpLifecycleReady;
 		}
 		if (method == uam::acp_methods::kSessionSetMode && response_id == session.mode_change_request_id)
 		{
@@ -774,13 +858,20 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			if (response_id == session.model_change_request_id)
 			{
 				session.current_model_id = session.model_change_requested_id;
+				bool received_config_options = false;
 				if (result.is_object())
 				{
 					if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(result, "configOptions"))
 					{
+						received_config_options = true;
+						(void)UpdateAcpConfigOptions(session, *config_options);
 						(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
-						session.awaiting_model_config_options = false;
 					}
+				}
+				if (received_config_options ||
+				    !uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli))
+				{
+					session.awaiting_model_config_options = false;
 				}
 				ClearAcpModelChangeRequest(session);
 				session.last_error.clear();

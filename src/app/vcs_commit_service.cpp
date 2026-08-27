@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -74,6 +75,11 @@ namespace uam
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
 			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+		}
+
+		std::string BuildLiteralGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
+		{
+			return BuildGitCommandInDirectory(cwd, "--literal-pathspecs " + args);
 		}
 
 		std::string BuildSvnCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
@@ -230,6 +236,37 @@ namespace uam
 					position = original_path_end + 1;
 				}
 				files.push_back({path, code, code[0] != ' ' && code[0] != '?'});
+			}
+			return files;
+		}
+
+		bool IsCommitId(std::string_view value)
+		{
+			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char ch) { return std::isxdigit(ch) != 0; });
+		}
+
+		std::vector<VcsChangedFile> ParseGitNameStatus(const std::string& output)
+		{
+			std::vector<VcsChangedFile> files;
+			std::size_t position = 0;
+			while (position < output.size())
+			{
+				const std::size_t status_end = output.find('\0', position);
+				if (status_end == std::string::npos) break;
+				const std::string status = output.substr(position, status_end - position);
+				position = status_end + 1;
+				const std::size_t path_end = output.find('\0', position);
+				if (path_end == std::string::npos) break;
+				std::string path = output.substr(position, path_end - position);
+				position = path_end + 1;
+				if (!status.empty() && (status[0] == 'R' || status[0] == 'C'))
+				{
+					const std::size_t destination_end = output.find('\0', position);
+					if (destination_end == std::string::npos) break;
+					path = output.substr(position, destination_end - position);
+					position = destination_end + 1;
+				}
+				if (!status.empty() && !path.empty()) files.push_back({path, " " + status.substr(0, 1), false});
 			}
 			return files;
 		}
@@ -467,6 +504,31 @@ namespace uam
 			}
 		}
 
+		void ApplyGitComparisonDetails(const std::filesystem::path& workspace, const std::string& comparison_ref, std::vector<VcsChangedFile>& files)
+		{
+			std::string output;
+			std::map<std::string, LineStats> stats;
+			if (OutputCommand(BuildGitCommandInDirectory(workspace, "diff --numstat " + uam::shell::EscapeArg(comparison_ref) + " --"), &output))
+			{
+				stats = ParseGitNumstat(output);
+			}
+			for (VcsChangedFile& file : files)
+			{
+				if (const auto found = stats.find(file.path); found != stats.end())
+				{
+					file.additions = found->second.additions;
+					file.deletions = found->second.deletions;
+					file.binary = found->second.binary;
+				}
+				else if (file.status == "??")
+				{
+					if (const std::optional<int> lines = CountTextFileLines(uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path)))) file.additions = *lines;
+					else file.binary = true;
+				}
+			}
+			ApplyContentFingerprints(workspace, files);
+		}
+
 		LineStats ParseUnifiedDiffLineStats(const std::string& diff)
 		{
 			LineStats stats;
@@ -544,13 +606,73 @@ namespace uam
 			return trimmed_files;
 		}
 
+		struct GitIndexSnapshot
+		{
+			std::filesystem::path path;
+			std::string content;
+			bool existed = false;
+		};
+
+		bool CaptureGitIndex(const std::filesystem::path& workspace, GitIndexSnapshot& snapshot, std::string& error)
+		{
+			std::string index_path;
+			if (!OutputCommand(BuildGitCommandInDirectory(workspace, "rev-parse --git-path index"), &index_path, &error)) return false;
+			snapshot.path = uam::paths::PathFromUtf8(index_path);
+			if (snapshot.path.is_relative()) snapshot.path = workspace / snapshot.path;
+			snapshot.existed = uam::paths::PathExistsNoThrow(snapshot.path);
+			if (snapshot.existed && !uam::io::TryReadBinaryFile(snapshot.path, snapshot.content))
+			{
+				error = "Failed to preserve the Git staging area before committing.";
+				return false;
+			}
+			return true;
+		}
+
+		bool RestoreGitIndex(const GitIndexSnapshot& snapshot)
+		{
+			if (snapshot.existed) return uam::io::WriteBinaryFile(snapshot.path, snapshot.content);
+			std::error_code error;
+			std::filesystem::remove(snapshot.path, error);
+			return !error;
+		}
+
 		std::string BuildVcsDiffCommand(const std::filesystem::path& workspace, const std::string& path, const VcsType type)
 		{
 			if (type == VcsType::Git)
 			{
-				return BuildGitCommandInDirectory(workspace, "diff HEAD -- " + uam::shell::EscapeArg(path));
+				return BuildLiteralGitCommandInDirectory(workspace, "diff HEAD -- " + uam::shell::EscapeArg(path));
 			}
 			return "svn diff " + BuildSvnPathArgument(workspace, path);
+		}
+
+		bool OutputGitUntrackedDiff(const std::filesystem::path& workspace, const std::string& path, std::string* output_out, std::string* error_out)
+		{
+			if (output_out != nullptr)
+			{
+				output_out->clear();
+			}
+			if (error_out != nullptr)
+			{
+				error_out->clear();
+			}
+#if defined(_WIN32)
+			constexpr std::string_view null_device = "NUL";
+#else
+			constexpr std::string_view null_device = "/dev/null";
+#endif
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(
+			    workspace,
+			    "diff --no-index --no-ext-diff -- " + uam::shell::EscapeArg(null_device) + " " + uam::shell::EscapeArg(path)));
+			if (result.timed_out || result.canceled || !result.error.empty() || (result.exit_code != 0 && result.exit_code != 1))
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = CommandOutputOrError(result);
+				}
+				return false;
+			}
+			StoreCommandOutput(result, CommandOutputMode::Trimmed, output_out);
+			return true;
 		}
 
 		bool HasVcsType(const VcsCommitStatus& status, VcsType type)
@@ -622,6 +744,36 @@ namespace uam
 			}
 
 			status.error = uam::strings::NonEmptyOrFallback(error, "Failed to read Git status.");
+		}
+
+		void PopulateGitComparisonDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, const std::filesystem::path& git_root, bool include_line_stats, const std::string& comparison_ref)
+		{
+			std::string output;
+			std::string error;
+			if (!OutputCommand(BuildGitCommandInDirectory(workspace, "rev-parse --verify " + uam::shell::EscapeArg(comparison_ref + "^{commit}")), &output, &error))
+			{
+				status.error = uam::strings::NonEmptyOrFallback(error, "The saved chat comparison point is unavailable.");
+				return;
+			}
+			if (OutputCommand(BuildGitCommandInDirectory(workspace, "branch --show-current"), &output)) status.branch_or_revision = output;
+			if (!OutputCommandRaw(BuildGitCommandInDirectory(workspace, "diff --name-status -z " + uam::shell::EscapeArg(comparison_ref) + " --"), &output, &error))
+			{
+				status.error = uam::strings::NonEmptyOrFallback(error, "Failed to read changes since the chat comparison point.");
+				return;
+			}
+			status.changed_files = ParseGitNameStatus(output);
+
+			std::string porcelain;
+			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain=v1 -z --untracked-files=all"), &porcelain))
+			{
+				for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
+				{
+					auto existing = std::ranges::find_if(status.changed_files, [&](const VcsChangedFile& file) { return file.path == working_file.path; });
+					if (existing == status.changed_files.end()) status.changed_files.push_back(working_file);
+					else existing->staged = working_file.staged;
+				}
+			}
+			if (include_line_stats) ApplyGitComparisonDetails(git_root, comparison_ref, status.changed_files);
 		}
 
 		void PopulateSvnStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats)
@@ -840,7 +992,7 @@ namespace uam
 		return uam::strings::TrimmedEqualsIgnoreCase(value, "svn") ? VcsType::Svn : VcsType::Git;
 	}
 
-	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats) const
+	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref) const
 	{
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
@@ -858,7 +1010,10 @@ namespace uam
 		SelectActiveVcsType(status, requested_type);
 		if (status.active_vcs_type == VcsType::Git)
 		{
-			PopulateGitStatusDetails(status, workspace, git_root, include_line_stats);
+			const std::string ref = uam::strings::Trim(comparison_ref);
+			if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
+			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats);
 		}
 		else
 		{
@@ -867,7 +1022,7 @@ namespace uam
 		return status;
 	}
 
-	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out) const
+	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out, std::string_view comparison_ref) const
 	{
 		const std::string trimmed_path = uam::strings::Trim(path);
 		if (trimmed_path.empty())
@@ -879,8 +1034,36 @@ namespace uam
 			return "";
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+		std::filesystem::path diff_workspace = workspace;
+		if (type == VcsType::Git)
+		{
+			const std::string ref = uam::strings::Trim(comparison_ref);
+			if (!ref.empty() && !IsCommitId(ref))
+			{
+				if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
+				return "";
+			}
+			std::string git_root;
+			if (GitAvailable(workspace, &git_root) && !git_root.empty())
+			{
+				diff_workspace = uam::paths::PathFromUtf8(git_root);
+			}
+
+			const VcsCommitStatus status = Status(app, chat, type, false, ref);
+			const auto changed_file = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&trimmed_path](const VcsChangedFile& file) { return file.path == trimmed_path; });
+			if (changed_file != status.changed_files.end() && changed_file->status == "??")
+			{
+				std::string output;
+				return OutputGitUntrackedDiff(diff_workspace, trimmed_path, &output, error_out) ? output : "";
+			}
+			if (!ref.empty())
+			{
+				std::string output;
+				return OutputCommand(BuildGitCommandInDirectory(diff_workspace, "diff " + uam::shell::EscapeArg(ref) + " -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+			}
+		}
 		std::string output;
-		const std::string command = BuildVcsDiffCommand(workspace, trimmed_path, type);
+		const std::string command = BuildVcsDiffCommand(diff_workspace, trimmed_path, type);
 		if (!OutputCommand(command, &output, error_out))
 		{
 			return "";
@@ -888,7 +1071,7 @@ namespace uam
 		return output;
 	}
 
-	VcsCommitResult VcsCommitService::Commit(AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const
+	VcsCommitResult VcsCommitService::Commit(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const
 	{
 		VcsCommitResult result;
 		result.status = Status(app, chat, type);
@@ -913,13 +1096,20 @@ namespace uam
 
 		if (type == VcsType::Git)
 		{
-			if (!Command(BuildGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &result.error))
+			GitIndexSnapshot index_snapshot;
+			if (!CaptureGitIndex(workspace, index_snapshot, result.error))
 			{
 				return result;
 			}
-			ProcessExecutionResult commit_result;
-			if (!Command(BuildGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &commit_result, &result.error))
+			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &result.error))
 			{
+				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
+				return result;
+			}
+			ProcessExecutionResult commit_result;
+			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &commit_result, &result.error))
+			{
+				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
 				return result;
 			}
 			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "Git commit created.");

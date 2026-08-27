@@ -6,11 +6,9 @@
 
 namespace
 {
-	constexpr const char* kOpenCodeDangerouslySkipPermissionsFlag = "--dangerously-skip-permissions";
-
 	std::vector<std::string> OpenCodeFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kOpenCodeDangerouslySkipPermissionsFlag);
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
 	}
 
 } // namespace
@@ -71,6 +69,13 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const Provi
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
 {
 	return {"opencode", "acp"};
+}
+
+std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession&) const
+{
+	// OpenCode ACP does not reliably forward child-session permission requests, so
+	// disable Task until the provider can mediate those requests without hanging.
+	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny"})"}};
 }
 
 std::string OpenCodeCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const

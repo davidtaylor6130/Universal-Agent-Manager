@@ -3,9 +3,9 @@
 #include "common/config/editor_file_associations.h"
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
+#include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/settings_normalization.h"
-#include "common/config/voice_input_settings.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/codex_options.h"
@@ -32,14 +32,15 @@ namespace
 	constexpr char kSettingsFieldDelimiter = ',';
 	constexpr std::string_view kSettingsEntryDelimiterText = ";";
 	constexpr std::string_view kSettingsFieldDelimiterText = ",";
-	constexpr std::string_view kProviderCliRuntimeBackend = "provider-cli";
+	constexpr std::string_view kSettingsFormatVersionKey = "settings_format_version";
+	constexpr std::string_view kSettingsCompleteKey = "settings_complete";
 
 constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderYoloModeKey = "provider_yolo_mode";
 	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
-	constexpr std::string_view kRuntimeBackendKey = "runtime_backend";
 	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
-	constexpr std::string_view kCenterViewModeKey = "center_view_mode";
+	constexpr std::string_view kActiveTurnInactivityTimeoutSecondsKey = "active_turn_inactivity_timeout_seconds";
+	constexpr std::string_view kAcpSetupInactivityTimeoutSecondsKey = "acp_setup_inactivity_timeout_seconds";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
@@ -57,26 +58,70 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
 	constexpr std::string_view kMemoryRecallBudgetBytesKey = "memory_recall_budget_bytes";
 	constexpr std::string_view kGoalMaxLoopIterationsKey = "goal_max_loop_iterations";
+	constexpr std::string_view kAcpTurnOutputLimitMiBKey = "acp_turn_output_limit_mib";
 	constexpr std::string_view kUpdateChecksEnabledKey = "update_checks_enabled";
 	constexpr std::string_view kUpdateLastCheckedAtKey = "update_last_checked_at";
 	constexpr std::string_view kDismissedUpdateVersionsKey = "dismissed_update_versions";
 	constexpr std::string_view kMemoryWorkerBindingsKey = "memory_worker_bindings";
+	constexpr std::string_view kPermissionReviewerProviderIdKey = "permission_reviewer_provider_id";
+	constexpr std::string_view kPermissionReviewerModelIdKey = "permission_reviewer_model_id";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
-	constexpr std::string_view kVoiceInputModeKey = "voice_input_mode";
-	constexpr std::string_view kVoiceInputServerBaseUrlKey = "voice_input_server_base_url";
-	constexpr std::string_view kVoiceInputServerEndpointKey = "voice_input_server_endpoint";
-	constexpr std::string_view kVoiceInputServerModelKey = "voice_input_server_model";
-	constexpr std::string_view kVoiceInputApiKeyEnvKey = "voice_input_api_key_env";
+	constexpr std::string_view kMcpServersKey = "mcp_servers";
+	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
+	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
 
 	std::string NormalizeProviderId(std::string_view value);
+
+	bool IsValidSettingsText(std::string_view text)
+	{
+		bool saw_setting = false;
+		bool saw_active_provider = false;
+		bool saw_format_version = false;
+		bool saw_complete = false;
+		std::istringstream lines{std::string(text)};
+		std::string line;
+		while (std::getline(lines, line))
+		{
+			const std::string_view trimmed = uam::strings::TrimAsciiView(line);
+			if (trimmed.empty())
+			{
+				continue;
+			}
+			const std::size_t equals_at = trimmed.find('=');
+			if (equals_at == std::string_view::npos)
+			{
+				return false;
+			}
+			const std::string_view key = trimmed.substr(0, equals_at);
+			const std::string_view value = trimmed.substr(equals_at + 1);
+			saw_setting = true;
+			if (key == kSettingsFormatVersionKey)
+			{
+				saw_format_version = value == "1";
+				if (!saw_format_version)
+				{
+					return false;
+				}
+			}
+			else if (key == kSettingsCompleteKey)
+			{
+				saw_complete = value == "1";
+			}
+			else if (key == kActiveProviderIdKey)
+			{
+				saw_active_provider = !uam::strings::IsBlank(uam::DecodeLineValue(value));
+			}
+		}
+		return saw_setting && (!saw_format_version || (saw_active_provider && saw_complete));
+	}
 
 	void WriteRawSetting(std::ostringstream& lines, std::string_view key, std::string_view value)
 	{
@@ -216,7 +261,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	ProviderChatDefaults NormalizeProviderChatDefaults(ProviderChatDefaults defaults, std::string_view provider_id)
 	{
 		defaults.model_id = uam::strings::Trim(defaults.model_id);
+		defaults.reviewer_model_id = uam::strings::Trim(defaults.reviewer_model_id);
+		if (!uam::provider_chat_defaults::IsAllowedModelId(defaults.reviewer_model_id)) defaults.reviewer_model_id.clear();
+		defaults.feature_preference = defaults.feature_preference == "provider" ? "provider" : "uam";
 		defaults.approval_mode = uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(defaults.approval_mode);
+		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
 		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
@@ -271,12 +320,14 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    provider_id,
 			    defaults.model_id,
 			    defaults.approval_mode,
-			    defaults.auto_approve_commands ? "1" : "0",
+			    defaults.command_safety_tier,
 			    defaults.memory_enabled ? "1" : "0",
 			    defaults.reasoning_effort,
 			    defaults.service_tier,
 			    defaults.memory_level,
 			    defaults.small_model_mode ? "1" : "0",
+			    defaults.reviewer_model_id,
+			    defaults.feature_preference,
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -296,12 +347,15 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			ProviderChatDefaults defaults;
 			defaults.model_id = uam::DecodedLineFieldOr(fields, 1, "");
 			defaults.approval_mode = uam::DecodedLineFieldOr(fields, 2, uam::approval_modes::kDefaultApprovalMode);
-			defaults.auto_approve_commands = BoolFieldOr(fields, 3, false);
+			const std::string legacy_or_tier = uam::DecodedLineFieldOr(fields, 3, "off");
+			defaults.command_safety_tier = legacy_or_tier == "1" ? "yolo" : legacy_or_tier == "0" ? "aiReview" : legacy_or_tier;
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
 			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
+			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
+			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
@@ -370,9 +424,25 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		}
 	}
 
+	std::string EncodeFavoriteUamAgentIds(const std::vector<std::string>& ids)
+	{
+		return nlohmann::json(ids).dump();
+	}
+
+	void DecodeFavoriteUamAgentIds(std::string_view value, std::vector<std::string>& ids)
+	{
+		ids.clear();
+		const nlohmann::json parsed = nlohmann::json::parse(value, nullptr, false);
+		if (!parsed.is_array()) return;
+		for (const nlohmann::json& item : parsed)
+		{
+			if (item.is_string()) ids.push_back(item.get_ref<const std::string&>());
+		}
+	}
+
 	std::string NormalizeProviderId(std::string_view value)
 	{
-		return provider_build_config::EnabledCliProviderIdOrFirst(value);
+		return uam::provider_ids::NormalizeCliProviderAlias(value);
 	}
 
 	void EnsureMemoryWorkerBinding(AppSettings& settings, std::string_view provider_id)
@@ -389,7 +459,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		const std::string provider_key(provider_id);
 		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
-			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, false, settings.memory_enabled_default, "", "", settings.memory_level_default};
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
 			return;
 		}
 
@@ -398,27 +468,25 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	void ClampSettings(AppSettings& settings)
 	{
-		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
-		settings.default_new_chat_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(uam::strings::NonEmptyOrFallback(settings.default_new_chat_provider_id, settings.active_provider_id));
-		settings.runtime_backend = kProviderCliRuntimeBackend;
-		settings.gemini_yolo_mode = settings.provider_yolo_mode;
-		settings.gemini_extra_flags = settings.provider_extra_flags;
-		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, uam::settings::kMinCliIdleTimeoutSeconds, uam::settings::kMaxCliIdleTimeoutSeconds);
+		settings.active_provider_id = uam::strings::NonEmptyOrFallback(NormalizeProviderId(settings.active_provider_id), provider_build_config::FirstEnabledProviderId());
+		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
+		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
+		uam::settings::ClampRuntimeTimeoutSettings(settings);
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
 		settings.memory_level_default = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
 		settings.memory_enabled_default = uam::memory_levels::IsEnabled(settings.memory_level_default);
 		uam::settings::ClampGoalSettings(settings);
+		uam::settings::ClampAcpOutputSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
+		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
+		uam::settings::NormalizeUamAgentPreferences(settings);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
-		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
-		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
-		settings.voice_input_server_endpoint = uam::strings::Trim(settings.voice_input_server_endpoint);
-		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
-		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
+		settings.permission_reviewer_provider_id = NormalizeProviderId(settings.permission_reviewer_provider_id);
+		settings.permission_reviewer_model_id = uam::strings::Trim(settings.permission_reviewer_model_id);
 		NormalizeProviderChatDefaultsByProvider(settings.provider_chat_defaults);
 
 		for (const char* provider_id : uam::provider_ids::kAllCliProviderIds)
@@ -426,7 +494,6 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			EnsureMemoryWorkerBinding(settings, provider_id);
 			EnsureProviderChatDefaults(settings, provider_id);
 		}
-
 		if (!settings.remember_last_chat)
 		{
 			settings.last_selected_chat_id.clear();
@@ -439,7 +506,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 } // namespace
 
-bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings, CenterViewMode center_view_mode)
+bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings)
 {
 	uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
 
@@ -447,12 +514,12 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	ClampSettings(normalized);
 
 	std::ostringstream lines;
+	WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
 	WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
-	WriteBoolSetting(lines, kProviderYoloModeKey, normalized.provider_yolo_mode);
 	WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
-	WriteRawSetting(lines, kRuntimeBackendKey, kProviderCliRuntimeBackend);
 	WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
-	WriteRawSetting(lines, kCenterViewModeKey, ViewModeToString(center_view_mode));
+	WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
+	WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
 	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
 	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
@@ -470,33 +537,57 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
 	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
 	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
+	WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
 	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
 	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
 	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
 	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
+	WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id);
+	WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
 	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
 	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
-	WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
-	WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
-	WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
-	WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
-	WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
-	return uam::io::WriteTextFile(settings_file, lines.str());
+	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
+	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
+	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+	WriteRawSetting(lines, kSettingsCompleteKey, "1");
+	return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
 }
 
-void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings, CenterViewMode& center_view_mode)
+SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings)
 {
+	SettingsLoadResult result;
+	bool legacy_yolo = false;
+	std::string legacy_extra_flags;
 	std::string text;
-	if (!uam::io::TryReadTextFile(settings_file, text))
+	const bool primary_exists = uam::paths::PathExistsNoThrow(settings_file);
+	const bool primary_valid = uam::io::TryReadTextFile(settings_file, text) && IsValidSettingsText(text);
+	if (!primary_valid)
 	{
-		ClampSettings(settings);
-		center_view_mode = CenterViewMode::CliConsole;
-		return;
+		const std::filesystem::path backup = uam::io::MakeBackupPath(settings_file);
+		const bool backup_exists = uam::paths::PathExistsNoThrow(backup);
+		std::string backup_text;
+		if (uam::io::TryReadTextFile(backup, backup_text) && IsValidSettingsText(backup_text))
+		{
+			text = std::move(backup_text);
+			result.recovered_from_backup = true;
+			result.warning = "Recovered settings from the validated backup because the primary settings file was missing or invalid.";
+		}
+		else
+		{
+			ClampSettings(settings);
+			result.unrecovered_error = primary_exists || backup_exists;
+			if (result.unrecovered_error)
+			{
+				result.warning = "The primary settings file and its recovery backup are invalid. UAM did not overwrite either file.";
+			}
+			return result;
+		}
 	}
+	result.loaded = true;
 
 	std::istringstream lines(text);
 	std::string line;
@@ -518,7 +609,7 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == kProviderYoloModeKey)
 		{
-			settings.provider_yolo_mode = uam::parse::BoolOr(value, settings.provider_yolo_mode);
+			legacy_yolo = uam::parse::BoolOr(value, legacy_yolo);
 		}
 		else if (key == kProviderExtraFlagsKey)
 		{
@@ -526,19 +617,23 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		}
 		else if (key == kLegacyGeminiYoloModeKey)
 		{
-			settings.gemini_yolo_mode = uam::parse::BoolOr(value, settings.gemini_yolo_mode);
+			legacy_yolo = uam::parse::BoolOr(value, legacy_yolo);
 		}
 		else if (key == kLegacyGeminiExtraFlagsKey)
 		{
-			settings.gemini_extra_flags = decoded_value;
+			legacy_extra_flags = decoded_value;
 		}
 		else if (key == kCliIdleTimeoutSecondsKey)
 		{
 			settings.cli_idle_timeout_seconds = uam::parse::IntOr(value, settings.cli_idle_timeout_seconds);
 		}
-		else if (key == kCenterViewModeKey)
+		else if (key == kActiveTurnInactivityTimeoutSecondsKey)
 		{
-			center_view_mode = ViewModeFromString(value);
+			settings.active_turn_inactivity_timeout_seconds = uam::parse::IntOr(value, settings.active_turn_inactivity_timeout_seconds);
+		}
+		else if (key == kAcpSetupInactivityTimeoutSecondsKey)
+		{
+			settings.acp_setup_inactivity_timeout_seconds = uam::parse::IntOr(value, settings.acp_setup_inactivity_timeout_seconds);
 		}
 		else if (key == kUiThemeKey)
 		{
@@ -608,6 +703,10 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			settings.goal_max_loop_iterations = uam::parse::IntOr(value, settings.goal_max_loop_iterations);
 		}
+		else if (key == kAcpTurnOutputLimitMiBKey)
+		{
+			settings.acp_turn_output_limit_mib = uam::parse::IntOr(value, settings.acp_turn_output_limit_mib);
+		}
 		else if (key == kUpdateChecksEnabledKey)
 		{
 			settings.update_checks_enabled = uam::parse::BoolOr(value, settings.update_checks_enabled);
@@ -623,6 +722,14 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		else if (key == kMemoryWorkerBindingsKey)
 		{
 			DecodeMemoryWorkerBindings(decoded_value, settings.memory_worker_bindings);
+		}
+		else if (key == kPermissionReviewerProviderIdKey)
+		{
+			settings.permission_reviewer_provider_id = decoded_value;
+		}
+		else if (key == kPermissionReviewerModelIdKey)
+		{
+			settings.permission_reviewer_model_id = decoded_value;
 		}
 		else if (key == kDefaultNewChatProviderIdKey)
 		{
@@ -648,34 +755,33 @@ void SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings
 		{
 			DecodeEditorFileAssociations(decoded_value, settings.editor_file_associations);
 		}
-		else if (key == kVoiceInputModeKey)
+		else if (key == kMcpServersKey)
 		{
-			settings.voice_input_mode = decoded_value;
+			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
+			settings.mcp_servers = uam::mcp_server_config::Parse(parsed);
 		}
-		else if (key == kVoiceInputServerBaseUrlKey)
+		else if (key == kFavoriteUamAgentIdsKey)
 		{
-			settings.voice_input_server_base_url = decoded_value;
+			DecodeFavoriteUamAgentIds(decoded_value, settings.favorite_uam_agent_ids);
 		}
-		else if (key == kVoiceInputServerEndpointKey)
+		else if (key == kUamAgentCycleShortcutKey)
 		{
-			settings.voice_input_server_endpoint = decoded_value;
-		}
-		else if (key == kVoiceInputServerModelKey)
-		{
-			settings.voice_input_server_model = decoded_value;
-		}
-		else if (key == kVoiceInputApiKeyEnvKey)
-		{
-			settings.voice_input_api_key_env = decoded_value;
+			settings.uam_agent_cycle_shortcut = decoded_value;
 		}
 	}
 
-	settings.provider_yolo_mode = settings.provider_yolo_mode || settings.gemini_yolo_mode;
-	if (settings.provider_extra_flags.empty())
+	if (settings.provider_extra_flags.empty() && !legacy_extra_flags.empty())
 	{
-		settings.provider_extra_flags = settings.gemini_extra_flags;
+		settings.provider_extra_flags = legacy_extra_flags;
 	}
-
-	center_view_mode = CenterViewMode::CliConsole;
 	ClampSettings(settings);
+	if (legacy_yolo)
+	{
+		for (auto& [provider_id, defaults] : settings.provider_chat_defaults)
+		{
+			(void)provider_id;
+			defaults.command_safety_tier = "yolo";
+		}
+	}
+	return result;
 }

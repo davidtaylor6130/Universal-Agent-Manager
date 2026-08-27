@@ -106,7 +106,7 @@ namespace
 		std::vector<std::string> ordered(keys.begin(), keys.end());
 		std::ranges::sort(ordered);
 		const fs::path path = data_root / kNativeImportTombstonesFile;
-		return uam::io::WriteTextFile(path, nlohmann::json(ordered).dump(2));
+		return uam::io::WriteTextFileWithBackup(path, nlohmann::json(ordered).dump(2));
 	}
 
 	fs::path NormalizeWorkspacePathForComparison(const std::string& workspace_directory)
@@ -159,9 +159,13 @@ namespace
 	{
 		std::unordered_set<std::string> existing_ids;
 		std::unordered_map<std::string, std::string> existing_id_by_native_key;
+		std::unordered_map<std::string, ChatSession> existing_summary_by_native_key;
 		bool tombstones_available = false;
 		std::unordered_set<std::string> tombstoned_native_keys;
 	};
+
+	bool MessagesEquivalent(const std::vector<Message>& lhs, const std::vector<Message>& rhs);
+	void OverlayLocalChatState(const ChatSession& local, ChatSession& native);
 
 	NativeImportIndex LoadNativeImportIndex(const fs::path& data_root)
 	{
@@ -172,13 +176,16 @@ namespace
 		import_index.tombstoned_native_keys = std::move(tombstones.keys);
 		import_index.existing_ids.reserve(local_chats.size());
 		import_index.existing_id_by_native_key.reserve(local_chats.size());
+		import_index.existing_summary_by_native_key.reserve(local_chats.size());
 
 		for (const ChatSession& chat : local_chats)
 		{
 			import_index.existing_ids.insert(chat.id);
 			if (!uam::strings::IsBlank(chat.native_session_id))
 			{
-				import_index.existing_id_by_native_key[chat_identity::NativeIdentityKeyForHistoryImport(chat)] = chat.id;
+				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+				import_index.existing_id_by_native_key[native_key] = chat.id;
+				import_index.existing_summary_by_native_key[native_key] = chat;
 			}
 		}
 
@@ -189,6 +196,7 @@ namespace
 	{
 		import_index.existing_ids.insert(chat.id);
 		import_index.existing_id_by_native_key[native_key] = chat.id;
+		import_index.existing_summary_by_native_key[native_key] = chat;
 	}
 
 	bool RemoveNativeSessionFileIfPresent(const fs::path& chats_dir, const std::string& native_session_id, std::error_code* error_out = nullptr);
@@ -217,7 +225,40 @@ namespace
 		}
 	}
 
-	std::optional<std::string> PrepareNativeChatForImport(NativeImportIndex& import_index, ChatSession& native_chat, const std::string& target_chat_id)
+	void PreserveEquivalentLocalMessageDetails(const ChatSession& local_chat, ChatSession& native_chat)
+	{
+		const std::size_t common_count = std::min(local_chat.messages.size(), native_chat.messages.size());
+		for (std::size_t index = 0; index < common_count; ++index)
+		{
+			const Message& local_message = local_chat.messages[index];
+			const Message& native_message = native_chat.messages[index];
+			if (local_message.role == native_message.role && local_message.content == native_message.content && local_message.created_at == native_message.created_at)
+			{
+				native_chat.messages[index] = local_message;
+			}
+		}
+	}
+
+	bool ReconcileExistingNativeImport(const fs::path& data_root, const ChatSession& local_summary, ChatSession& native_chat)
+	{
+		std::optional<ChatSession> local = ChatRepository::LoadLocalChat(data_root, local_summary.id, true);
+		if (!local) return false;
+		const std::size_t local_count = local->messages.size();
+		const std::size_t native_count = native_chat.messages.size();
+		const bool native_changed = native_count > local_count ||
+		    (native_count == local_count && native_chat.updated_at > local->updated_at && !MessagesEquivalent(local->messages, native_chat.messages));
+		OverlayLocalChatState(*local, native_chat);
+		if (!native_changed)
+		{
+			native_chat.messages = local->messages;
+			native_chat.updated_at = local->updated_at;
+			return false;
+		}
+		PreserveEquivalentLocalMessageDetails(*local, native_chat);
+		return true;
+	}
+
+	std::optional<std::string> PrepareNativeChatForImport(const fs::path& data_root, NativeImportIndex& import_index, ChatSession& native_chat, const std::string& target_chat_id)
 	{
 		if (!import_index.tombstones_available)
 		{
@@ -231,14 +272,11 @@ namespace
 		const auto existing_id_it = import_index.existing_id_by_native_key.find(native_key);
 		const bool existing_same_native_identity = existing_id_it != import_index.existing_id_by_native_key.end();
 
-		if (target_chat_id.empty() && existing_same_native_identity)
-		{
-			return std::nullopt;
-		}
-
 		if (existing_same_native_identity)
 		{
 			native_chat.id = existing_id_it->second;
+			const auto summary = import_index.existing_summary_by_native_key.find(native_key);
+			if (target_chat_id.empty() && (summary == import_index.existing_summary_by_native_key.end() || !ReconcileExistingNativeImport(data_root, summary->second, native_chat))) return std::nullopt;
 		}
 		else if (import_index.existing_ids.contains(native_chat.id))
 		{
@@ -322,14 +360,16 @@ namespace
 		return text;
 	}
 
-	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder)
+	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr)
 	{
+		if (malformed_out != nullptr) *malformed_out = false;
 		ChatSession chat;
 		bool metadata_seen = false;
 		bool include = false;
 		bool has_user_message = false;
+		bool parse_error = false;
 
-		uam::io::ForEachTextFileLine(
+		const bool read_success = uam::io::ForEachTextFileLine(
 		    rollout_file,
 		    [&](const std::string& line)
 		    {
@@ -408,10 +448,11 @@ namespace
 			    }
 			    catch (const nlohmann::json::exception&)
 			    {
-				    // A malformed JSONL record must not hide the rest of the session.
+				    parse_error = true;
 			    }
 			    return true;
-		    });
+			});
+		if (malformed_out != nullptr) *malformed_out = !read_success || (parse_error && !metadata_seen);
 
 		if (!metadata_seen || !include || !has_user_message)
 		{
@@ -606,18 +647,24 @@ namespace
 		native.branch_root_chat_id = local.branch_root_chat_id;
 		native.branch_from_message_index = local.branch_from_message_index;
 		native.branch_message_edited = local.branch_message_edited;
+		native.goal_owner_chat_id = local.goal_owner_chat_id;
+		native.goal_iteration_goal_id = local.goal_iteration_goal_id;
+		native.goal_iteration_turn_kind = local.goal_iteration_turn_kind;
+		native.goal_iteration_repair_attempts = local.goal_iteration_repair_attempts;
 		native.workspace_directory = local.workspace_directory;
 		native.workspace_isolation_kind = local.workspace_isolation_kind;
 		native.workspace_source_directory = local.workspace_source_directory;
 		native.workspace_base_ref = local.workspace_base_ref;
 		native.workspace_branch_name = local.workspace_branch_name;
 		native.workspace_worktree_directory = local.workspace_worktree_directory;
+		native.imported_read_only = local.imported_read_only;
 		native.approval_mode = local.approval_mode;
-		native.auto_approve_commands = local.auto_approve_commands;
 		native.command_safety_tier = local.command_safety_tier;
 		native.model_id = local.model_id;
+		native.reviewer_model_id = local.reviewer_model_id;
 		native.reasoning_effort = local.reasoning_effort;
 		native.service_tier = local.service_tier;
+		native.service_tier_explicit = local.service_tier_explicit;
 		native.small_model_mode = local.small_model_mode;
 		native.extra_flags = local.extra_flags;
 		native.memory_enabled = local.memory_enabled;
@@ -1033,6 +1080,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	const std::string target_id = uam::strings::Trim(target_chat_id);
 	const ProviderProfile& native_provider = DefaultNativeHistoryProvider(app);
 	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; import stopped to avoid restoring deleted chats.");
+		return result;
+	}
 
 	for (const fs::path& workspace_root : CollectWorkspaceRootsForNativeHistory(app))
 	{
@@ -1057,7 +1109,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 			native_chat.workspace_directory = uam::paths::Utf8PathString(workspace_root);
 			AssignKnownWorkspaceFolderToNewImport(app, import_index, workspace_root, native_chat);
 
-			const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, native_chat, target_id);
+			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, native_chat, target_id);
 			if (!native_key)
 			{
 				continue;
@@ -1066,6 +1118,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 			if (SaveImportedNativeChat(app, import_index, native_chat, *native_key, *chats_dir, delete_native_after_import))
 			{
 				++result.imported_count;
+			}
+			else
+			{
+				result.Fail("Failed to save imported " + native_provider.title + " chat " + native_chat.native_session_id + ".");
 			}
 		}
 	}
@@ -1080,10 +1136,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(app, uam::strings::Trim(folder_id));
 	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory))
 	{
+		result.Fail("Codex history scan requires a valid workspace folder.");
 		return result;
 	}
 	const ChatFolder folder = *matched_folder;
 	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; Codex import stopped to avoid restoring deleted chats.");
+		return result;
+	}
 
 	for (const fs::path& root : {uam::codex::CodexHomePath() / "sessions", uam::codex::CodexHomePath() / "archived_sessions"})
 	{
@@ -1099,18 +1161,25 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 			{
 				continue;
 			}
-			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder);
+			bool malformed = false;
+			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed);
+			if (malformed) result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + ".");
 			if (!chat)
 			{
 				continue;
 			}
 			++result.total_count;
-			const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, *chat, "");
+			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, *chat, "");
 			if (native_key && SaveImportedNativeChat(app, import_index, *chat, *native_key, it->path().parent_path(), false))
 			{
 				++result.imported_count;
 			}
+			else if (native_key)
+			{
+				result.Fail("Failed to save imported Codex chat " + chat->native_session_id + ".");
+			}
 		}
+		if (error) result.Fail("Could not finish scanning Codex history: " + error.message());
 	}
 #else
 	(void)app;
@@ -1126,27 +1195,40 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChats
 	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(app, uam::strings::Trim(folder_id));
 	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory))
 	{
+		if (result.success) result.Fail("Copilot history scan requires a valid workspace folder.");
 		return result;
 	}
 	const ChatFolder folder = *matched_folder;
 	ProviderRuntimeHistoryLoadOptions options;
 	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
 	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
+	std::string copilot_error;
 	std::vector<ChatSession> copilot_chats = LoadCopilotSessionStateChats(
 	    CopilotSessionStatePath(),
 	    folder.directory,
-	    options);
+	    options,
+	    &copilot_error);
+	if (!copilot_error.empty()) result.Fail(copilot_error);
 	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; Copilot import stopped to avoid restoring deleted chats.");
+		return result;
+	}
 
 	for (ChatSession& chat : copilot_chats)
 	{
 		++result.total_count;
 		chat.folder_id = folder.id;
 		chat.workspace_directory = folder.directory;
-		const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, chat, "");
+		const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, chat, "");
 		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, CopilotSessionStatePath(), false))
 		{
 			++result.imported_count;
+		}
+		else if (native_key)
+		{
+			result.Fail("Failed to save imported Copilot chat " + chat.native_session_id + ".");
 		}
 	}
 #else
@@ -1160,6 +1242,7 @@ void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const
 {
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
+	std::erase_if(chats, [](const ChatSession& chat) { return !chat.agent_run_id.empty(); });
 	NormalizeLegacyOpenCodeChatsForSidebar(app, chats);
 	ReplaceAppChatsWithNormalized(app, std::move(chats));
 	if (!warning.empty())
@@ -1179,6 +1262,7 @@ void ChatHistorySyncService::MergeSidebarChatsPreservingCurrent(uam::AppState& a
 
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
+	std::erase_if(chats, [](const ChatSession& chat) { return !chat.agent_run_id.empty(); });
 	for (ChatSession& chat : chats)
 	{
 		const auto current = current_by_id.find(chat.id);
@@ -1199,13 +1283,6 @@ void ChatHistorySyncService::MergeSidebarChatsPreservingCurrent(uam::AppState& a
 	{
 		app.status_line = warning;
 	}
-}
-
-void ChatHistorySyncService::LoadSidebarChatsByDiscovery(uam::AppState& app) const
-{
-	ReconcileUnresolvedDraftLinksByDiscovery(app);
-	ImportAllNativeChatsByDiscovery(app, false);
-	LoadSidebarChats(app);
 }
 
 void ChatHistorySyncService::ReconcileUnresolvedDraftLinksByDiscovery(uam::AppState& app) const
@@ -1242,10 +1319,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	const ProviderDiscoveryResult discovery = ProviderRuntime::DiscoverChatSources(native_provider);
 	if (!discovery.error.empty())
 	{
+		result.Fail(native_provider.title + " history discovery failed: " + discovery.error);
 		return result;
 	}
 
 	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; import stopped to avoid restoring deleted chats.");
+		return result;
+	}
 
 	for (const ProviderChatSource& source : discovery.sources)
 	{
@@ -1263,7 +1346,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 			++result.total_count;
 
 			native_chat.workspace_directory = source.folder_directory;
-			const std::optional<std::string> native_key = PrepareNativeChatForImport(import_index, native_chat, target_id);
+			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, native_chat, target_id);
 			if (!native_key)
 			{
 				continue;
@@ -1276,6 +1359,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 				if (!import_folder_id)
 				{
 					import_folder_id = ResolvePersistedImportFolderIdForSource(app, source);
+					if (import_folder_id->empty()) result.Fail("Imported history from " + source.folder_directory + ", but could not save its workspace folder.");
 				}
 
 				native_chat.folder_id = *import_folder_id;
@@ -1285,6 +1369,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 			if (SaveImportedNativeChat(app, import_index, native_chat, *native_key, source.chats_dir, delete_native_after_import))
 			{
 				++result.imported_count;
+			}
+			else
+			{
+				result.Fail("Failed to save imported " + native_provider.title + " chat " + native_chat.native_session_id + ".");
 			}
 		}
 	}
@@ -1467,7 +1555,7 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 	}
 
 	std::error_code error;
-	uam::paths::RemoveAllNoThrow(*tmp_dir, &error);
+	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(*tmp_dir, &error);
 
 	if (error_out != nullptr)
 	{
@@ -1529,6 +1617,7 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	const fs::path normalized_old_workspace = NormalizeWorkspacePathForComparison(old_workspace);
 	const fs::path normalized_new_workspace = NormalizeWorkspacePathForComparison(new_folder->directory);
 	const bool workspaces_different = !session_id.empty() && !old_workspace.empty() && normalized_old_workspace != normalized_new_workspace;
+	const bool reset_opencode_session = workspaces_different && uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli);
 	std::optional<fs::path> old_chats_dir;
 
 	if (workspaces_different)
@@ -1544,6 +1633,13 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 			app.move_chat_pending_id = chat.id;
 			app.move_chat_show_missing_session_warning = true;
 			return true;
+		}
+		if (reset_opencode_session)
+		{
+			// OpenCode ACP cannot safely load a session under a different cwd: replies
+			// may be routed to the old workspace and hang. Preserve UAM history but
+			// start a fresh provider-native session in the destination workspace.
+			moved_chat.native_session_id.clear();
 		}
 	}
 
@@ -1566,6 +1662,10 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	if (workspaces_different && old_chats_dir)
 	{
 		RemoveNativeSessionFileIfPresent(*old_chats_dir, session_id);
+	}
+	if (reset_opencode_session)
+	{
+		app.resolved_native_sessions_by_chat_id.erase(chat.id);
 	}
 
 	uam::StopAndEraseCliTerminalForChat(app, chat.id);

@@ -153,9 +153,12 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	if (!session_id.empty())
 	{
 		session.session_id = session_id;
-		const std::string previous_native_session_id = chat.native_session_id;
-		SetChatNativeSessionIdIfChanged(chat, session_id);
-		SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
+		if (!session.goal_internal_session)
+		{
+			const std::string previous_native_session_id = chat.native_session_id;
+			SetChatNativeSessionIdIfChanged(chat, session_id);
+			SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
+		}
 	}
 
 	const std::string model_id = uam::nlohmann_json::TrimmedStringValueOr(message, "model", "");
@@ -210,7 +213,7 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		{
 			session.session_id = session_id;
 			const std::string previous_native_session_id = chat.native_session_id;
-			if (SetChatNativeSessionIdIfChanged(chat, session_id))
+			if (!session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id))
 			{
 				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 				SaveChatQuietly(app, chat);

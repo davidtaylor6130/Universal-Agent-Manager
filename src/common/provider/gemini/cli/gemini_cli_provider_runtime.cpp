@@ -244,7 +244,7 @@ const IProviderRuntime& GetGeminiCliProviderRuntime()
 ProviderDiscoveryResult GeminiCliProviderRuntime::DiscoverChatSources(const ProviderProfile&) const
 {
 	ProviderDiscoveryResult result;
-	result.sources = DiscoverGeminiTmpChatSources();
+	result.sources = DiscoverGeminiTmpChatSources(&result.error);
 	return result;
 }
 

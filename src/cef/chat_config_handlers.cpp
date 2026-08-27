@@ -2,13 +2,20 @@
 #include "cef/uam_query_handler_internal.h"
 
 #include "app/chat_domain_service.h"
+#include "app/agent_definition_service.h"
+#include "app/agent_run_scheduler.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/uam_control_service.h"
 #include "cef/cef_push.h"
+#include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
 #include "common/memory/memory_levels.h"
+#include "common/paths/workspace_root.h"
+#include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #include "common/provider/provider_ids.h"
@@ -184,12 +191,13 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	const std::string model_id = uam::strings::Trim(payload.value("modelId", ""));
+	const std::string chat_id = uam::nlohmann_json::TrimmedStringValueOr(payload, "chatId", "");
+	const std::string model_id = uam::nlohmann_json::TrimmedStringValueOr(payload, "modelId", "");
+	const std::string model_role = uam::nlohmann_json::TrimmedStringValueOr(payload, "modelRole", "worker");
 
-	if (!IsAllowedModelId(model_id))
+	if (!IsAllowedModelId(model_id) || (model_role != "worker" && model_role != "reviewer"))
 	{
-		cb->Failure(400, "Unsupported ACP model: " + model_id);
+		cb->Failure(400, "Unsupported ACP model selection.");
 		return;
 	}
 
@@ -201,6 +209,29 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 
 	if (!ChatProviderAvailableOrFail(m_app, *chat, cb))
 	{
+		return;
+	}
+
+	if (model_role == "reviewer")
+	{
+		if (chat->reviewer_model_id == model_id)
+		{
+			cb->Success(nlohmann::json{{"reviewerModelId", model_id}}.dump());
+			return;
+		}
+		const std::string previous_model_id = chat->reviewer_model_id;
+		const std::string previous_updated_at = chat->updated_at;
+		chat->reviewer_model_id = model_id;
+		chat->updated_at = uam::time::TimestampNow();
+		if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat reviewer model updated.", "Chat reviewer model changed in UI, but failed to save."))
+		{
+			chat->reviewer_model_id = previous_model_id;
+			chat->updated_at = previous_updated_at;
+			cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat reviewer model."));
+			return;
+		}
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"reviewerModelId", model_id}}.dump());
 		return;
 	}
 
@@ -218,6 +249,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 	std::string reasoning_effort = chat->reasoning_effort;
 	std::string service_tier = chat->service_tier;
+	bool service_tier_explicit = chat->service_tier_explicit;
 	if (selected_model != nullptr && !reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() &&
 	    !uam::ranges::Contains(selected_model->supported_reasoning_efforts, reasoning_effort))
 	{
@@ -228,6 +260,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if (selected_model != nullptr && !service_tier.empty() && !uam::ranges::Contains(selected_model->additional_speed_tiers, service_tier))
 	{
 		service_tier.clear();
+		service_tier_explicit = true;
 	}
 	const bool copilot_effort_changed = is_copilot && chat->reasoning_effort != reasoning_effort;
 	if (defer_live_update && copilot_effort_changed)
@@ -236,7 +269,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	if (chat->model_id == model_id && chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
+	if (chat->model_id == model_id && chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier && chat->service_tier_explicit == service_tier_explicit)
 	{
 		if (!defer_live_update && session != nullptr && session->running && !model_id.empty() && session->current_model_id != model_id)
 		{
@@ -248,17 +281,19 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			}
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
+		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
 
 	const std::string previous_model_id = chat->model_id;
 	const std::string previous_reasoning_effort = chat->reasoning_effort;
 	const std::string previous_service_tier = chat->service_tier;
+	const bool previous_service_tier_explicit = chat->service_tier_explicit;
 	const std::string previous_updated_at = chat->updated_at;
 	chat->model_id = model_id;
 	chat->reasoning_effort = reasoning_effort;
 	chat->service_tier = service_tier;
+	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
@@ -266,6 +301,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		chat->model_id = previous_model_id;
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
+		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
 		return;
@@ -280,6 +316,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			chat->model_id = previous_model_id;
 			chat->reasoning_effort = previous_reasoning_effort;
 			chat->service_tier = previous_service_tier;
+			chat->service_tier_explicit = previous_service_tier_explicit;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
 			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
@@ -288,7 +325,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
+	cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -311,6 +348,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
 	const bool is_copilot = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCopilotCli);
+	bool service_tier_explicit = is_codex && (payload.contains("serviceTierExplicit") ? payload.value("serviceTierExplicit", false) : payload.contains("serviceTier"));
 	std::string reasoning_effort = is_copilot ? NormalizeCopilotReasoningEffort(requested_reasoning_effort) : uam::codex::NormalizeReasoningEffort(requested_reasoning_effort);
 	if (session != nullptr && uam::AcpSessionHasBlockingRuntimeWork(*session))
 	{
@@ -348,30 +386,34 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	if (!is_codex)
 	{
 		service_tier.clear();
+		service_tier_explicit = false;
 	}
 	if (is_codex && selected_model != nullptr && !service_tier.empty() && !uam::ranges::Contains(selected_model->additional_speed_tiers, service_tier))
 	{
 		cb->Failure(409, "The selected model does not support that speed tier.");
 		return;
 	}
-	if (chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier)
+	if (chat->reasoning_effort == reasoning_effort && chat->service_tier == service_tier && chat->service_tier_explicit == service_tier_explicit)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
+		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
 
 	const std::string previous_reasoning_effort = chat->reasoning_effort;
 	const std::string previous_service_tier = chat->service_tier;
+	const bool previous_service_tier_explicit = chat->service_tier_explicit;
 	const std::string previous_updated_at = chat->updated_at;
 	chat->reasoning_effort = reasoning_effort;
 	chat->service_tier = service_tier;
+	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save."))
 	{
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
+		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
 		return;
@@ -382,7 +424,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}}.dump());
+	cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -451,7 +493,7 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 			}
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
+		cb->Success(nlohmann::json{{"approvalMode", chat->approval_mode}, {"currentModeId", session == nullptr ? effective_mode_id : session->current_mode_id}}.dump());
 		return;
 	}
 
@@ -482,66 +524,288 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"approvalMode", chat->approval_mode}, {"currentModeId", session == nullptr ? effective_mode_id : session->current_mode_id}}.dump());
 }
 
-void UamQueryHandler::HandleSetChatAutoApproveCommands(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	const bool enabled = payload.value("enabled", false);
+	const std::string agent_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(payload.value("agentId", "")), "build");
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
-	if (chat == nullptr)
+	if (chat == nullptr) return;
+	if (!chat->agent_run_id.empty())
 	{
+		cb->Failure(403, "Managed child chats cannot change their assigned UAM agent.");
+		return;
+	}
+	const uam::AgentDefinitionCatalog agents = uam::AgentDefinitionService::Load(
+	    m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
+	const auto selected = std::ranges::find(agents.definitions, agent_id, &uam::AgentDefinition::id);
+	if (selected == agents.definitions.end() || (selected->mode != "primary" && selected->mode != "both"))
+	{
+		cb->Failure(400, "UAM agent is unavailable for primary chat use: " + agent_id);
+		return;
+	}
+	if (chat->uam_agent_id == agent_id)
+	{
+		cb->Success(nlohmann::json{{"uamAgentId", agent_id}}.dump());
+		return;
+	}
+	const std::string previous_agent_id = chat->uam_agent_id;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->uam_agent_id = agent_id;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "UAM agent updated.", "UAM agent changed in UI, but failed to save."))
+	{
+		chat->uam_agent_id = previous_agent_id;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist the UAM agent."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"uamAgentId", chat->uam_agent_id}}.dump());
+}
+
+void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
+	if (!enabled.has_value())
+	{
+		cb->Failure(400, "Agent goal control requires an explicit boolean enabled value.");
+		return;
+	}
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	if (!chat->agent_run_id.empty())
+	{
+		cb->Failure(403, "Managed child chats cannot change UAM Control authority.");
+		return;
+	}
+	const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(m_app, *chat);
+	if (*enabled && (provider == nullptr ||
+	                 !uam::UamControlService::SupportsStructuredProtocol(provider->structured_protocol)))
+	{
+		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Gemini CLI, OpenCode, and GitHub Copilot CLI.");
+		return;
+	}
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
+	if (*enabled && session != nullptr && session->running && session->uam_control_capability_id.empty())
+	{
+		cb->Failure(409, "Stop the current provider session before enabling agent goal control.");
+		return;
+	}
+	if (chat->uam_control_enabled == *enabled)
+	{
+		cb->Success(nlohmann::json{{"enabled", *enabled}}.dump());
 		return;
 	}
 
-	if (chat->auto_approve_commands == enabled)
+	const bool previous = chat->uam_control_enabled;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->uam_control_enabled = *enabled;
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Agent goal control updated.",
+	                                                "Agent goal control changed in UI, but failed to save."))
 	{
-		if (enabled && !AutoApprovePendingAcpPermissionOrFail(m_app, chat->id, cb))
+		chat->uam_control_enabled = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist agent goal control."));
+		return;
+	}
+	if (!*enabled)
+	{
+		if (session != nullptr)
 		{
+			uam::UamControlService::RevokeForSession(m_app, *session);
+		}
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"enabled", chat->uam_control_enabled}}.dump());
+}
+
+void UamQueryHandler::HandleListUamAgents(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(
+	    m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
+	nlohmann::json agents = nlohmann::json::array();
+	for (const uam::AgentDefinition& agent : catalog.definitions)
+	{
+		if (agent.mode != "primary" && agent.mode != "both") continue;
+		agents.push_back({
+		    {"id", agent.id},
+		    {"description", agent.description},
+		    {"builtIn", agent.built_in},
+		});
+	}
+	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", catalog.errors}}.dump());
+}
+
+namespace
+{
+	nlohmann::json SerializeProviderAgentImportPreview(const uam::ProviderAgentImportPreview& preview)
+	{
+		return {
+		    {"providerId", preview.provider_id},
+		    {"sourcePath", uam::paths::Utf8PathString(preview.source_path)},
+		    {"suggestedId", preview.suggested_id},
+		    {"description", preview.description},
+		    {"mode", preview.mode},
+		    {"securityFields", preview.security_fields},
+		    {"ignoredFields", preview.ignored_fields},
+		    {"error", preview.error},
+		    {"supported", preview.supported},
+		};
+	}
+}
+
+void UamQueryHandler::HandleBrowseProviderAgentImport(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::filesystem::path initial_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(payload.value("currentValue", ""));
+	std::string selected_path;
+	std::string error;
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::File, initial_path, &selected_path, &error))
+	{
+		if (!error.empty()) cb->Failure(500, error);
+		else cb->Success(nlohmann::json{{"selectedPath", ""}}.dump());
+		return;
+	}
+	cb->Success(nlohmann::json{{"selectedPath", selected_path}}.dump());
+}
+
+void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(
+	    payload.value("providerId", ""), uam::paths::PathFromUtf8(payload.value("sourcePath", "")));
+	cb->Success(SerializeProviderAgentImportPreview(preview).dump());
+}
+
+void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Open a workspace chat before importing an agent.");
+	if (chat == nullptr) return;
+
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = payload.value("providerId", "");
+	request.source_path = uam::paths::PathFromUtf8(payload.value("sourcePath", ""));
+	request.canonical_id = payload.value("canonicalId", "");
+	request.workspace_access = payload.value("workspaceAccess", "");
+	request.workspace_scope = payload.value("workspaceScope", false);
+	request.acknowledge_ignored_fields = payload.value("acknowledgeIgnoredFields", false);
+
+	uam::AgentDefinition imported;
+	std::string error;
+	if (!uam::AgentDefinitionService::ImportProviderAgent(
+	        m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat), request, &imported, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Provider agent import failed."));
+		return;
+	}
+	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode}}.dump());
+}
+
+void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string root_chat_id = payload.value("chatId", "");
+	const std::string transcript_chat_id = payload.value("transcriptChatId", "");
+	const ChatSession* root_chat = ChatDomainService().FindChatById(m_app, root_chat_id);
+	if (root_chat == nullptr || !root_chat->agent_run_id.empty())
+	{
+		cb->Failure(404, "Managed agent transcript parent chat is unavailable.");
+		return;
+	}
+	const auto run = std::ranges::find_if(m_app.agent_runs, [&](const AgentRun& candidate) {
+		return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id;
+	});
+	if (run == m_app.agent_runs.end())
+	{
+		cb->Failure(404, "Managed agent transcript is outside this chat or no longer exists.");
+		return;
+	}
+	std::optional<ChatSession> loaded_transcript;
+	ChatSession* transcript = ChatDomainService().FindChatById(m_app, transcript_chat_id);
+	if (transcript == nullptr)
+	{
+		std::string warning;
+		loaded_transcript = ChatRepository::LoadLocalChat(m_app.data_root, transcript_chat_id, true, &warning);
+		if (!loaded_transcript.has_value())
+		{
+			cb->Failure(404, FailureDetailOrFallback(warning, "Managed agent transcript is unavailable."));
 			return;
 		}
-		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
-		return;
+		transcript = &*loaded_transcript;
 	}
-
-	const bool previous = chat->auto_approve_commands;
-	const std::string previous_updated_at = chat->updated_at;
-	chat->auto_approve_commands = enabled;
-	chat->updated_at = uam::time::TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat auto-approval updated.", "Chat auto-approval changed in UI, but failed to save."))
+	if (transcript->agent_run_id != run->id)
 	{
-		chat->auto_approve_commands = previous;
-		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat auto-approval."));
+		cb->Failure(404, "Managed agent transcript is unavailable.");
 		return;
 	}
-
-	if (enabled && !AutoApprovePendingAcpPermissionOrFail(m_app, chat->id, cb))
+	std::string hydrate_warning;
+	if (!transcript->messages_loaded &&
+	    !ChatRepository::HydrateChatMessages(m_app.data_root, *transcript, &hydrate_warning))
 	{
+		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load the managed agent transcript."));
 		return;
 	}
+	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(*transcript);
+	cb->Success(nlohmann::json{
+	    {"runId", run->id}, {"agentId", run->agent_id}, {"status", run->status},
+	    {"providerId", run->provider_id}, {"executionCapability", run->execution_capability},
+	    {"resumedFromRunId", run->resumed_from_run_id},
+	    {"title", transcript->title}, {"messages", serialized.value("messages", nlohmann::json::array())},
+	}.dump());
+}
 
+void UamQueryHandler::HandleResumeAgentRun(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string new_run_id;
+	std::string error;
+	if (!uam::AgentRunScheduler::ResumeInterrupted(
+	        m_app, payload.value("runId", ""), &new_run_id, &error))
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "Managed run could not be resumed."));
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"runId", new_run_id}, {"status", "queued"}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string raw_requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("commandSafetyTier", "")));
-	if (raw_requested != "off" && raw_requested != "acceptedits" && raw_requested != "low" && raw_requested != "medium" && raw_requested != "high" && raw_requested != "yolo")
+	if (raw_requested != "off" && raw_requested != "acceptedits" && raw_requested != "aireview" && raw_requested != "yolo")
 	{
-		cb->Failure(400, "Permission mode must be default, yolo, or auto-decide with low, medium, or high safety.");
+		cb->Failure(400, "Permission mode must be default, accept edits, AI Review, or YOLO.");
 		return;
 	}
-	const std::string requested = raw_requested == "acceptedits" ? uam::approval_modes::kAcceptEditsApprovalMode : raw_requested;
+	const std::string requested = raw_requested == "acceptedits" ? uam::approval_modes::kAcceptEditsApprovalMode : raw_requested == "aireview" ? "aiReview" : raw_requested;
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
+	const auto auto_approve_pending = [&]()
+	{
+		uam::AcpSessionState* pending_session = uam::FindAcpSessionForChat(m_app, chat->id);
+		if (pending_session == nullptr || pending_session->pending_permission.request_id_json.empty()) return;
+		std::string acp_error;
+		if (uam::TryAutoApprovePendingAcpPermission(m_app, chat->id, &acp_error))
+		{
+			pending_session->last_error.clear();
+		}
+		else if (!acp_error.empty())
+		{
+			pending_session->last_error = acp_error;
+		}
+	};
 	if (chat->command_safety_tier == requested)
 	{
-		cb->Success("{}");
+		auto_approve_pending();
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"commandSafetyTier", chat->command_safety_tier}}.dump());
 		return;
 	}
 
@@ -572,9 +836,10 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 			return;
 		}
 	}
+	auto_approve_pending();
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	cb->Success(nlohmann::json{{"commandSafetyTier", chat->command_safety_tier}}.dump());
 }
 
 void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

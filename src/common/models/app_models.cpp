@@ -30,18 +30,6 @@ MessageRole RoleFromString(std::string_view value)
 	return MessageRole::User;
 }
 
-std::string ViewModeToString(CenterViewMode mode)
-{
-	(void)mode;
-	return "cli";
-}
-
-CenterViewMode ViewModeFromString(std::string_view value)
-{
-	(void)value;
-	return CenterViewMode::CliConsole;
-}
-
 std::string GoalStatusToString(GoalStatus status)
 {
 	switch (status)

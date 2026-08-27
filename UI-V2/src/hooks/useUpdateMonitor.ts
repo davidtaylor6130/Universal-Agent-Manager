@@ -16,6 +16,7 @@ export function useUpdateMonitor() {
   const enabled = useAppStore((state) => state.updateChecksEnabled)
   const lastCheckedAt = useAppStore((state) => state.updateLastCheckedAt)
   const dismissedVersions = useAppStore((state) => state.dismissedUpdateVersions)
+  const cefStateHydrated = useAppStore((state) => state.lastAppliedStateRevision >= 0)
   const setUpdateSettings = useAppStore((state) => state.setUpdateSettings)
   const refreshCliProviderVersion = useAppStore((state) => state.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((state) => state.applyCliProviderVersion)
@@ -34,14 +35,17 @@ export function useUpdateMonitor() {
       const nextCatalog = await fetchLatestUpdateCatalog()
       setCatalog(nextCatalog)
       if (isCefContext()) {
-        await sendToCEF({
+        const response = await sendToCEF({
           action: 'refreshAllCliProviderVersions',
           requestId: createRequestId('refreshAllCliProviderVersions'),
         })
+        if (!response.ok) throw new Error(response.error || 'Provider version refresh failed.')
       } else {
         await Promise.all(versionManager.providers.map((provider) => refreshCliProviderVersion(provider.providerId)))
       }
-      await setUpdateSettings({ updateLastCheckedAt: nextCatalog.checkedAt })
+      if (!await setUpdateSettings({ updateLastCheckedAt: nextCatalog.checkedAt })) {
+        throw new Error('The update check completed, but its status could not be saved.')
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Update check failed.')
     } finally {
@@ -51,6 +55,7 @@ export function useUpdateMonitor() {
   }, [refreshCliProviderVersion, setUpdateSettings, versionManager.providers])
 
   useEffect(() => {
+    if (isCefContext() && !cefStateHydrated) return
     if (!enabled) {
       autoCheckAttemptedRef.current = false
       return
@@ -72,7 +77,7 @@ export function useUpdateMonitor() {
       autoCheckAttemptedRef.current = true
       void checkNow()
     }
-  }, [checkNow, checking, enabled, lastCheckedAt])
+  }, [cefStateHydrated, checkNow, checking, enabled, lastCheckedAt])
 
   const updates = useMemo(() => availableUpdates(
     catalog,
@@ -110,6 +115,7 @@ export function useUpdateMonitor() {
 
   return {
     updates,
+    hasCatalog: catalog !== null,
     checking,
     error,
     lastCheckedAt,

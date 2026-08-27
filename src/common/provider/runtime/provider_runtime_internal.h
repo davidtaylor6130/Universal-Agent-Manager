@@ -4,8 +4,11 @@
 #include "common/models/app_models.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_profile_constants.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/utils/command_line_words.h"
+#include "common/utils/env_utils.h"
+#include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 
@@ -20,8 +23,49 @@
 
 namespace uam::provider_runtime_internal
 {
-	inline constexpr std::string_view kGenericYoloFlag = "--yolo";
 	inline constexpr std::string_view kReferencedFilesHeading = "\n\nReferenced files:\n";
+	inline constexpr const char* kPreserveProviderChildSecretsEnv = "UAM_PRESERVE_PROVIDER_CHILD_SECRETS";
+
+	inline bool PreserveProviderChildSecrets()
+	{
+		const std::optional<std::string> value = uam::env::GetTrimmedString(kPreserveProviderChildSecretsEnv);
+		if (!value)
+		{
+			return false;
+		}
+		constexpr auto truthy = std::to_array<std::string_view>({"1", "true", "yes", "on"});
+		return uam::strings::ContainsEqualIgnoreCase(truthy, *value);
+	}
+
+	inline std::vector<std::pair<std::string, std::string>> ProviderChildEnvironmentOverrides(const ProviderProfile& profile)
+	{
+		if (PreserveProviderChildSecrets())
+		{
+			return {};
+		}
+
+		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(profile.id);
+		// OpenCode is intentionally multi-provider. Its selected model may legitimately use
+		// any of these credentials, so ownership cannot be narrowed at process launch.
+		if (provider_id == uam::provider_ids::kOpenCodeCli)
+		{
+			return {};
+		}
+
+		std::vector<std::pair<std::string, std::string>> overrides;
+		const auto scrub_unless = [&](const char* name, std::string_view owner)
+		{
+			if (provider_id != owner)
+			{
+				overrides.emplace_back(name, "");
+			}
+		};
+		scrub_unless("OPENAI_API_KEY", uam::provider_ids::kCodexCli);
+		scrub_unless("ANTHROPIC_API_KEY", uam::provider_ids::kClaudeCli);
+		scrub_unless("GEMINI_API_KEY", uam::provider_ids::kGeminiCli);
+		scrub_unless("GOOGLE_API_KEY", uam::provider_ids::kGeminiCli);
+		return overrides;
+	}
 
 	inline bool AnyTypeMatches(const std::vector<std::string>& types, std::string_view value)
 	{
@@ -91,13 +135,6 @@ namespace uam::provider_runtime_internal
 		return merged;
 	}
 
-	inline AppSettings MergeProviderSettingsNeverYolo(const ProviderProfile& profile, const AppSettings& settings)
-	{
-		AppSettings merged = MergeProviderSettings(profile, settings);
-		merged.provider_yolo_mode = false;
-		return merged;
-	}
-
 	inline std::string ReplaceAll(std::string src, std::string_view from, std::string_view to)
 	{
 		if (from.empty())
@@ -145,26 +182,67 @@ namespace uam::provider_runtime_internal
 		}
 	}
 
-	inline std::vector<std::string> BuildProviderFlagsArgv(const AppSettings& settings, std::string_view yolo_flag)
+	inline std::size_t PermissionBypassFlagSpan(const std::vector<std::string>& args, std::size_t index)
+	{
+		if (index >= args.size()) return 0;
+		const std::string option = uam::strings::ToLowerAscii(uam::strings::Trim(args[index]));
+		constexpr auto standalone = std::to_array<std::string_view>({
+		    "--allow-all", "--allow-all-paths", "--allow-all-tools", "--dangerously-disable-sandbox",
+		    "--dangerously-skip-permissions", "--full-auto", "--yolo", "--auto",
+		});
+		if (uam::ranges::Contains(standalone, std::string_view(option))) return 1;
+		constexpr auto assignments = std::to_array<std::string_view>({
+		    "--approval-mode=yolo", "--ask-for-approval=never", "--permission-mode=bypasspermissions",
+		    "--sandbox=danger-full-access",
+		});
+		if (uam::ranges::Contains(assignments, std::string_view(option))) return 1;
+		if (index + 1 >= args.size()) return 0;
+		const std::string value = uam::strings::ToLowerAscii(uam::strings::Trim(args[index + 1]));
+		if ((option == "--approval-mode" && value == "yolo") ||
+		    ((option == "--ask-for-approval" || option == "-a") && value == "never") ||
+		    (option == "--permission-mode" && value == "bypasspermissions") ||
+		    (option == "--sandbox" && value == "danger-full-access") ||
+		    (option == "-c" && ((value.find("approval_policy") != std::string::npos && value.find("never") != std::string::npos) ||
+		                        (value.find("sandbox_mode") != std::string::npos && value.find("danger-full-access") != std::string::npos))))
+		{
+			return 2;
+		}
+		return 0;
+	}
+
+	inline bool HasPermissionBypassExtraFlags(const AppSettings& settings)
+	{
+		const std::vector<std::string> args = uam::command_line::SplitWords(settings.provider_extra_flags);
+		for (std::size_t i = 0; i < args.size(); ++i)
+		{
+			if (PermissionBypassFlagSpan(args, i) != 0) return true;
+		}
+		return false;
+	}
+
+	inline std::vector<std::string> BuildProviderFlagsArgv(const AppSettings& settings)
 	{
 		const std::vector<std::string> extra_flags = uam::command_line::SplitWords(settings.provider_extra_flags);
-		std::string_view trimmed_yolo_flag = uam::strings::TrimAsciiView(yolo_flag);
 		std::vector<std::string> flags;
-		flags.reserve(extra_flags.size() + (settings.provider_yolo_mode && !trimmed_yolo_flag.empty() ? 1 : 0));
-
-		if (settings.provider_yolo_mode && !trimmed_yolo_flag.empty())
+		flags.reserve(extra_flags.size());
+		for (std::size_t i = 0; i < extra_flags.size();)
 		{
-			flags.emplace_back(trimmed_yolo_flag.data(), trimmed_yolo_flag.size());
+			const std::size_t rejected_span = PermissionBypassFlagSpan(extra_flags, i);
+			if (rejected_span != 0)
+			{
+				i += rejected_span;
+				continue;
+			}
+			flags.push_back(extra_flags[i++]);
 		}
-
-		AppendArgs(flags, extra_flags);
 		return flags;
 	}
 
 	inline std::vector<std::string> ProviderWorkerFlags(const ProviderProfile& profile, const AppSettings& settings)
 	{
-		const AppSettings provider_settings = MergeProviderSettingsNeverYolo(profile, settings);
-		return BuildProviderFlagsArgv(provider_settings, "");
+		(void)profile;
+		(void)settings;
+		return {};
 	}
 
 	inline bool AppendTrimmedOptionValue(std::vector<std::string>& argv, std::string_view option, std::string_view raw_value)
@@ -233,7 +311,7 @@ namespace uam::provider_runtime_internal
 
 	inline std::vector<std::string> BuildFlagsArgv(const AppSettings& settings)
 	{
-		return BuildProviderFlagsArgv(settings, kGenericYoloFlag);
+		return BuildProviderFlagsArgv(settings);
 	}
 
 	inline std::string BuildPrompt(std::string_view user_prompt, const std::vector<std::string>& files)

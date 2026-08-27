@@ -240,13 +240,23 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 		ChatDomainService().SelectChatById(m_app, selected_chat_id);
 		m_app.composer_text = composer_text;
 	}
-	m_app.status_line = result.imported_count == 0
-	                        ? "No new chats found."
-	                        : "Imported " + std::to_string(result.imported_count) + " chat" +
-	                              (result.imported_count == 1 ? "." : "s.");
+	const std::string error_detail = uam::strings::Join(result.errors, " ");
+	if (!result.success)
+	{
+		m_app.status_line = result.partial()
+		                        ? "Imported " + std::to_string(result.imported_count) + " chat" + (result.imported_count == 1 ? "" : "s") + ", but some history could not be read: " + error_detail
+		                        : "Could not rescan native history: " + error_detail;
+	}
+	else
+	{
+		m_app.status_line = result.imported_count == 0
+		                        ? "No new chats found."
+		                        : "Imported " + std::to_string(result.imported_count) + " chat" +
+		                              (result.imported_count == 1 ? "." : "s.");
+	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
+	cb->Success(nlohmann::json{{"success", result.success}, {"partial", result.partial()}, {"errors", result.errors}, {"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
 }
 
 void UamQueryHandler::HandlePreviewUnsortedWorkspaceFolders(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)

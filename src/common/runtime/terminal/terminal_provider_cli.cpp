@@ -8,6 +8,7 @@
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -64,6 +65,16 @@ std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& 
 	}
 
 	return "";
+}
+
+std::string ProviderInteractivePermissionFlagError(const AppState& app, const ProviderProfile& provider)
+{
+	const AppSettings settings = uam::provider_runtime_internal::MergeProviderSettings(provider, app.settings);
+	if (!uam::provider_runtime_internal::HasPermissionBypassExtraFlags(settings))
+	{
+		return {};
+	}
+	return "Terminal fallback permissions are controlled by the provider. Remove permission-bypass flags from provider settings and approve requests in the terminal.";
 }
 
 std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider)

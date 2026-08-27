@@ -68,7 +68,7 @@ const CUSTOM_CSS_PROPERTIES: Record<keyof ThemeColors, string> = {
 }
 
 const DERIVED_CSS_PROPERTIES = [
-  '--window-bg', '--surface-high', '--border', '--border-bright', '--text-3', '--accent-dim',
+  '--window-bg', '--surface-high', '--border', '--border-bright', '--text-2', '--text-3', '--accent-dim',
   '--accent-glow', '--sidebar-item-hover', '--sidebar-item-active', '--success-dim', '--warning-dim',
   '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection',
 ]
@@ -146,7 +146,8 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--surface-high': `color-mix(in srgb, ${surfaceUp} 92%, ${text})`,
         '--border': `color-mix(in srgb, ${text} 9%, transparent)`,
         '--border-bright': `color-mix(in srgb, ${text} 15%, transparent)`,
-        '--text-3': `color-mix(in srgb, ${textMuted} 68%, ${background})`,
+        '--text-2': `color-mix(in srgb, ${textMuted} 72%, ${text})`,
+        '--text-3': `color-mix(in srgb, ${textMuted} 82%, ${text})`,
         '--accent-dim': `color-mix(in srgb, ${accent} 13%, transparent)`,
         '--accent-glow': `color-mix(in srgb, ${accent} 22%, transparent)`,
         '--sidebar-item-hover': `color-mix(in srgb, ${text} 5%, transparent)`,

@@ -3,8 +3,8 @@
 // reset it deterministically via resetPushBuffersForTests().
 
 export const pendingRequestIdsByKey = new Map<string, string>()
-export const pendingCodexOptionsByChatId = new Map<string, { requestId: string; reasoningEffort: string; serviceTier: string }>()
-export const pendingModelByChatId = new Map<string, { requestId: string; modelId: string; reasoningEffort: string; serviceTier: string }>()
+export const pendingModelByChatId = new Map<string, { requestId: string; modelId: string; reasoningEffort: string; serviceTier: string; serviceTierExplicit: boolean }>()
+export const pendingViewModeBySessionId = new Map<string, 'chat' | 'cli'>()
 export const pendingCliTranscriptChunksBySessionId = new Map<string, { terminalId: string; chunks: string[] }>()
 export const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 32
 
@@ -23,8 +23,8 @@ export const pushFlushTimers: { cliTranscript: number | null; streamToken: numbe
 
 export function resetPushBuffersForTests(): void {
   pendingRequestIdsByKey.clear()
-  pendingCodexOptionsByChatId.clear()
   pendingModelByChatId.clear()
+  pendingViewModeBySessionId.clear()
   pendingCliTranscriptChunksBySessionId.clear()
   pendingStreamTokensByChatId.clear()
   if (pushFlushTimers.cliTranscript !== null && typeof window !== 'undefined') {

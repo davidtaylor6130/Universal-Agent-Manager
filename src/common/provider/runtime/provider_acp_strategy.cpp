@@ -38,6 +38,13 @@ void IProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, cons
 	if (agent_capabilities.is_object())
 	{
 		session.load_session_supported = JsonBooleanValueOr(agent_capabilities, "loadSession", false);
+		const nlohmann::json session_capabilities = JsonObjectValue(agent_capabilities, "sessionCapabilities");
+		session.resume_session_supported = session_capabilities.is_object() &&
+		                                   session_capabilities.contains("resume") &&
+		                                   session_capabilities["resume"].is_object();
+		const nlohmann::json mcp_capabilities = JsonObjectValue(agent_capabilities, "mcpCapabilities");
+		session.mcp_http_supported = JsonBooleanValueOr(mcp_capabilities, "http", false);
+		session.mcp_sse_supported = JsonBooleanValueOr(mcp_capabilities, "sse", false);
 	}
 }
 

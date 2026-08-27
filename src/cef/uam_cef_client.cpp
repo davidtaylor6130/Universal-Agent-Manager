@@ -104,7 +104,9 @@ void UamCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 		m_router->OnBeforeClose(browser);
 		m_router->RemoveHandler(m_queryHandler.get());
 		m_queryHandler.reset();
-		m_router = nullptr;
+		// CEF's router can begin destroying itself while its close callbacks unwind.
+		// The process is exiting, so drop our wrapper without re-entering Release().
+		(void)m_router.release();
 	}
 	m_browser = nullptr;
 	CefQuitMessageLoop();
