@@ -1813,12 +1813,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }
   const activeSlashGroups = slashOpen && slashGroup ? slashGroup.split('/').reduce<SlashCommand[]>((groups, _, index, parts) => {
     const path = parts.slice(0, index + 1).join('/')
-    const entries = groups.at(-1)?.groupEntries ?? slashCommands
+    const entries = groups[groups.length - 1]?.groupEntries ?? slashCommands
     const group = entries.find((command) => command.id === `md-group:${path}`)
     if (group) groups.push(group)
     return groups
   }, []) : []
-  const activeSlashGroup = activeSlashGroups.at(-1)
+  const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 	const nativeEvent = event.nativeEvent
