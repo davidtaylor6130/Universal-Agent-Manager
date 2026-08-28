@@ -855,3 +855,15 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Removed the isolated failed-host record and closed the test app. The Applications-installed build,
   frozen Computer Use bundle, and real remote machines remain untouched. Full positive remote
   execution acceptance still requires a configured macOS/arm64 SSH alias.
+
+## 2026-08-28 — Remote setup failure visibility GUI PASS
+
+- The real Colima rejection revealed that the setup preview remained above the completed error,
+  hiding the actionable result until the user manually cancelled. On any failed install, the shared
+  Settings workflow now dismisses the preview before presenting the backend error.
+- Added a focused regression for the failure transition, rebuilt only `Builds/tests`, and repeated
+  the real OpenSSH Linux/aarch64 rejection through the packaged GUI. The preview now closes
+  automatically and the exact compatibility error plus `error` host status are immediately visible.
+- Verification PASS: SettingsModal 45/45; full frontend 38/38 files and 559/559 tests; production
+  frontend build; packaged native build and signing. The isolated failed record was removed and the
+  test app closed; installed/frozen builds and Gemini remained untouched.

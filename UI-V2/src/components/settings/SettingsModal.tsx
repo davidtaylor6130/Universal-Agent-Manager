@@ -542,6 +542,7 @@ export function SettingsModal() {
     const response = await sendToCEF({ action: 'installRemoteHost', payload: remotePreview.host })
     setRemoteBusy(false)
     if (!response.ok) {
+      setRemotePreview(null)
       setRemoteMessage(response.error || 'Remote helper setup failed.')
       return
     }

@@ -216,6 +216,39 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('dismisses the setup preview so a failed compatibility check is visible', async () => {
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onFailure(500, 'This build supports only macOS/arm64.')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'colima')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    expect(host.textContent).not.toContain('Install helper on colima?')
+    expect(host.textContent).toContain('This build supports only macOS/arm64.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not claim a helper was installed when removing a failed remote host', async () => {
     useAppStore.setState({
       executionHosts: [
