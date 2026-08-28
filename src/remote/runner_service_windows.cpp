@@ -148,7 +148,7 @@ namespace uam::remote
 				if (GetLastError() != ERROR_PIPE_BUSY) break;
 				(void)WaitNamedPipeW(name.c_str(), 250);
 			}
-			return {};
+			return Handle();
 		}
 
 		bool WakeServer()

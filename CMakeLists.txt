@@ -322,6 +322,7 @@ elseif(UNIX)
   target_link_libraries(uam_runner PRIVATE Threads::Threads)
 endif()
 target_compile_definitions(uam_runner PRIVATE
+  NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_HEADLESS_RUNNER=1
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>

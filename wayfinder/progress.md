@@ -1062,3 +1062,47 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   RDP, while `ai.homelab.com:22` refuses the connection and `100.95.44.9:22` times out. Actual
   Windows helper execution therefore still requires action-time approval to connect and enable the
   Windows OpenSSH service/firewall rule; no host configuration was changed.
+
+## 2026-08-28 — Windows OpenSSH transport acceptance PASS
+
+- After explicit action-time authorization, connected to the saved **Gaming AI Desktop** Windows 11
+  Pro target through Microsoft Windows App. The user personally accepted the RDP certificate
+  warning; it was not bypassed by automation. Existing InferDeck/Codex terminals were left running
+  and untouched.
+- Read-only diagnosis confirmed `OpenSSH.Server~~~~0.0.1.0` was `NotPresent`. RDP clipboard sharing
+  was unavailable and the simulated keyboard remapped shifted punctuation, so the exact capability
+  name was entered through Windows On-Screen Keyboard rather than weakening or improvising the
+  command. Microsoft OpenSSH Server installed successfully with `RestartNeeded: False`.
+- Set the installed `sshd` service to automatic startup and started it. The installer-created
+  `OpenSSH-Server-In-TCP` rule was already enabled, inbound, `Allow`, and restricted to the Private
+  firewall profile, so no duplicate or broader firewall rule was created.
+- Windows verification shows TCP/22 listening on both `0.0.0.0` and `::`. Independent Mac-side
+  reachability verification to `ai.homelab.com:22` succeeded. The Windows account under test is
+  `dev-pc-16-core\\david`.
+- After separate explicit authorization, installed the dedicated `uam_windows_ed25519` public key
+  for the Windows administrator account with only `SYSTEM` and `Administrators` full-control ACLs.
+  The verified `uam-windows-ai` SSH config alias now authenticates non-interactively with strict host
+  key checking; an independent alias probe returned `dev-pc-16-core\\david`.
+
+## 2026-08-28 — Native Windows helper build and GUI preflight reached
+
+- A real MSVC runner-only build on the Windows 11 target exposed two cross-platform compile defects
+  that the macOS tests could not: Windows `min`/`max` macros broke standard-library calls, and MSVC
+  could not use an explicit handle constructor through `return {}`. Added `NOMINMAX` to the runner
+  target and returned `Handle()` explicitly at the shared pipe connection failure boundary.
+- The rebuilt native `uam-runner.exe` reports `4.5.7`. Its independently verified SHA-256 is
+  `ebb4f76119e28e61132a876fc71983daf1c6cd16c536760488c32d25e81c5196`; only the isolated
+  `Builds/remote-acceptance/UAM Remote Acceptance.app` received this artifact and was re-signed.
+  The installed Applications build and release draft PR remain untouched.
+- Read-only target inventory under `C:\\Users\\david` confirms existing `.codex`, OpenCode config and
+  data, `.claude`, `.gemini`, and `.copilot` directories. `opencode` and `codex` commands resolve on
+  the remote account; Claude and Copilot commands are absent. No Gemini CLI command was executed.
+- The real isolated GUI now displays the explicit remote-Computer-Use-disabled warning and has
+  reached the `Connect and install` confirmation for **Gaming AI Desktop** through the configured
+  `uam-windows-ai` alias. No helper file has been copied or executed through that GUI action yet.
+- The Debug runner and core test target rebuild successfully. The two runner-service tests fail only
+  inside the restricted shell because Unix-domain socket binding is denied; rerunning the identical
+  `uam_core_tests` outside that restriction passed in 54.95 seconds. `git diff --check` passes.
+- Remote-only provider history is a confirmed frontier item: a locally stored UAM chat with a saved
+  native session id can be resumed against the remote provider, but current `!remote` guards skip
+  provider-native discovery/import. Workspace-folder equality alone is not a safe chat identity.
