@@ -20,7 +20,7 @@ export interface ModelOption {
   detail: string
 }
 
-type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind'>>
+type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind' | 'configOptions'>>
 
 export const FRIENDLY_MODEL_LABELS = GEMINI_DEFAULT_MODEL_LABELS
 export const CODEX_SPEED_INHERIT_ID = '__uam_inherit__'
@@ -84,6 +84,14 @@ export function buildModelOptions(
     const option = modelOptionFromRuntime(model, caps.usesFriendlyModelLabels)
     return option ? [option] : []
   })
+  const configModelOptions = (acp?.configOptions ?? [])
+    .find((option) => option.category === 'model' || option.id === 'model')
+    ?.options.flatMap((choice) => {
+      const id = choice.value.trim()
+      if (!id) return []
+      const label = choice.name.trim() || titleFromModelId(id)
+      return [{ id, label, shortLabel: label.length <= 16 ? label : titleFromModelId(id), detail: choice.description.trim() || id }]
+    }) ?? []
   const fallbackOptions = caps.memoryModelIds.length > 0
     ? caps.memoryModelIds.filter(Boolean).map((id) => {
       const label = caps.memoryModelLabels[id]?.label ?? titleFromModelId(id)
@@ -95,8 +103,9 @@ export function buildModelOptions(
       }
     })
     : []
-  const baseOptions = runtimeOptions.length > 0
-    ? runtimeOptions
+  const reportedOptions = [...runtimeOptions, ...configModelOptions]
+  const baseOptions = reportedOptions.length > 0
+    ? reportedOptions
     : fallbackOptions
   const options: ModelOption[] = includeDefault
     ? [{

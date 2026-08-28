@@ -5387,6 +5387,7 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	source.id = "chat-source";
 	source.branch_root_chat_id = source.id;
 	source.title = "Source";
+	source.execution_host_id = "ssh-windows";
 	source.extra_flags = "--include-directories ../shared";
 	source.reviewer_model_id = "gpt-review";
 	source.messages.push_back(Message{MessageRole::User, "Original prompt"});
@@ -5402,6 +5403,7 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	UAM_ASSERT_EQ(edited->parent_chat_id, source.id);
 	UAM_ASSERT_EQ(edited->branch_from_message_index, 0);
 	UAM_ASSERT(edited->branch_message_edited);
+	UAM_ASSERT_EQ(edited->execution_host_id, source.execution_host_id);
 	UAM_ASSERT_EQ(edited->extra_flags, source.extra_flags);
 	UAM_ASSERT_EQ(edited->reviewer_model_id, source.reviewer_model_id);
 	UAM_ASSERT_EQ(edited->messages.size(), static_cast<std::size_t>(1));
@@ -5413,6 +5415,7 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	const auto saved_edited = std::ranges::find_if(saved, [edited_id = edited->id](const ChatSession& chat) { return chat.id == edited_id; });
 	UAM_ASSERT(saved_edited != saved.end());
 	UAM_ASSERT(saved_edited->branch_message_edited);
+	UAM_ASSERT_EQ(saved_edited->execution_host_id, source.execution_host_id);
 	UAM_ASSERT_EQ(saved_edited->reviewer_model_id, source.reviewer_model_id);
 	UAM_ASSERT_EQ(saved_edited->messages.front().content, std::string("Edited prompt"));
 
@@ -5420,6 +5423,7 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	const ChatSession* reverted = ChatDomainService().SelectedChat(app);
 	UAM_ASSERT(reverted != nullptr);
 	UAM_ASSERT(!reverted->branch_message_edited);
+	UAM_ASSERT_EQ(reverted->execution_host_id, source.execution_host_id);
 	UAM_ASSERT_EQ(reverted->messages.front().content, std::string("Original prompt"));
 	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
 }

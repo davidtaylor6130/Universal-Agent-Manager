@@ -1153,3 +1153,25 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   observe the SSH alias but miss the trailing `uam-runner` argument. Waiting for the expected final
   argument removed the race; the rebuilt native suite passes 6/6 targets, including all core tests,
   platform contracts, process containment, and Computer Use permission boundaries.
+
+## 2026-08-28 — Remote branch inheritance and target-owned model catalog PASS
+
+- The user's failed GUI branch exposed a real persistence defect: the new child retained the remote
+  Windows workspace but silently reset `execution_host_id` to `local`. `CreateBranchFromMessage`
+  now copies the source execution host before resolving the branch workspace. The regression checks
+  edited, saved/reloaded, and unedited branches.
+- Repeated the exact journey in the isolated build with Windows OpenCode and the independently
+  verified `opencode/big-pickle` model. The parent returned `PARENT_REMOTE_OK`; **Save to new
+  branch** returned `BRANCH_REMOTE_OK` in six seconds. Disk evidence confirms both chats persist
+  `ssh-uam-windows-ai`, `C:\Users\david\uam-windows-source-20260828`, and
+  `opencode/big-pickle`, with distinct native OpenCode session ids.
+- The same investigation found controller-catalog leakage: a remote model menu offered Mac-side
+  OpenCode fallbacks that Windows could reject. Remote chat serialization now excludes controller
+  fallbacks, new-chat discovery matches both workspace and execution host, and model selectors use
+  ACP's standard `model` config choices when `availableModels` is omitted.
+- Final GUI inspection shows the Windows helper-reported catalog directly, beginning with Big
+  Pickle, Hy3, Ling 3.0 Flash Fin, and MiMo V2.5; the invalid Mac-only DeepSeek entry is absent.
+  Direct Windows OpenCode and both UAM parent/branch prompts completed successfully.
+- Verification passes: focused model/new-chat coverage 27/27, full frontend 565/565, production UI
+  build, strict ad-hoc app-signature verification, and native CTest 6/6 outside the socket-restricted
+  sandbox. The installed Applications build and release draft PR remain untouched.

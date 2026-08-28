@@ -2605,6 +2605,18 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 	session->available_models.push_back(uam::AcpModelState{" ollama-r9700/qwen3-coder:30b ", "Runtime duplicate", ""});
 	session->available_models.push_back(uam::AcpModelState{" ollama-r9700/mistral-small3.2:24b ", " Mistral Small 3.2 24B ", ""});
 	app.acp_sessions.push_back(std::move(session));
+	ChatSession remote_chat;
+	remote_chat.id = "chat-remote";
+	remote_chat.provider_id = "opencode-cli";
+	remote_chat.execution_host_id = "ssh-windows";
+	remote_chat.workspace_directory = R"(C:\Users\david\repo)";
+	app.chats.push_back(std::move(remote_chat));
+	auto remote_session = std::make_unique<uam::AcpSessionState>();
+	remote_session->chat_id = "chat-remote";
+	remote_session->provider_id = "opencode-cli";
+	remote_session->running = true;
+	remote_session->available_models.push_back(uam::AcpModelState{"opencode/big-pickle", "Big Pickle", "Remote model"});
+	app.acp_sessions.push_back(std::move(remote_session));
 
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root);
@@ -2618,6 +2630,9 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 	UAM_ASSERT_EQ(acp["availableModels"][6].value("id", ""), std::string("opencode/nemotron-3-super-free"));
 	UAM_ASSERT_EQ(acp["availableModels"][7].value("id", ""), std::string("ollama-r9700/mistral-small3.2:24b"));
 	UAM_ASSERT_EQ(acp["availableModels"][7].value("name", ""), std::string("Mistral Small 3.2 24B"));
+	const nlohmann::json remote_acp = serialized["chats"][1]["acpSession"];
+	UAM_ASSERT_EQ(remote_acp["availableModels"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(remote_acp["availableModels"][0].value("id", ""), std::string("opencode/big-pickle"));
 }
 
 UAM_TEST(BackgroundCodexModelDiscoveryStopsAfterCachingModels)

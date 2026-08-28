@@ -681,6 +681,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.branch_from_message_index = message_index;
 	branch.branch_message_edited = replacement_content.has_value();
 	branch.linked_files = source.linked_files;
+	branch.execution_host_id = source.execution_host_id;
 	branch.model_id = source.model_id;
 	branch.reviewer_model_id = source.reviewer_model_id;
 	branch.reasoning_effort = source.reasoning_effort;

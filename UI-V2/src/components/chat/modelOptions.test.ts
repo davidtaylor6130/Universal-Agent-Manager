@@ -25,6 +25,23 @@ describe('reasoningEffortForModel', () => {
     expect(options[0]).toMatchObject({ id: '', label: 'Default' })
   })
 
+  it('uses ACP model config choices when the provider omits availableModels', () => {
+    const acp = {
+      availableModels: [],
+      configOptions: [{
+        id: 'model',
+        name: 'Model',
+        description: '',
+        category: 'model',
+        currentValue: 'opencode/big-pickle',
+        options: [{ value: 'opencode/big-pickle', name: 'Big Pickle', description: 'Remote model' }],
+      }],
+    } as AcpBinding
+
+    expect(buildModelOptions(acp, '', undefined, 'opencode-cli').map((option) => option.id))
+      .toEqual(['opencode/big-pickle'])
+  })
+
   it('keeps Copilot launch-time reasoning when ACP omits per-model efforts', () => {
     const acp = {
       availableModels: [{ id: 'gpt-5.1', name: 'GPT-5.1', supportedReasoningEfforts: [] }],

@@ -164,7 +164,7 @@ export function NewChatModal() {
 	const providerSessions = sessions.filter((session) => session.providerId === providerId)
 	const workspaceKey = (value: string | undefined) => (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 	const selectedWorkspace = isRemote ? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
-	const discoverySession = providerSessions.find((session) => workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
+	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)

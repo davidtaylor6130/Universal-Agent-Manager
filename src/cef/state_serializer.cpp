@@ -8,6 +8,7 @@
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -119,6 +120,8 @@ namespace uam
 		{
 			if (app.provider_model_catalog != nullptr)
 			{
+				if (!uam::strings::IsBlank(chat.execution_host_id) && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+					return app.provider_model_catalog->GetCachedProviderModels(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
 				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
 			}
 			return nlohmann::json::array();
@@ -131,6 +134,8 @@ namespace uam
 
 		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
 		{
+			if (!uam::strings::IsBlank(chat.execution_host_id) && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+				return chat.model_id;
 			if (app.provider_model_catalog != nullptr)
 			{
 				return app.provider_model_catalog->FallbackAcpCurrentModelForChat(chat.provider_id, chat.model_id);
