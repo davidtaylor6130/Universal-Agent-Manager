@@ -216,6 +216,27 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('does not claim a helper was installed when removing a failed remote host', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'ssh-colima', label: 'Colima', transport: 'ssh', sshAlias: 'colima', runnerStatus: 'error', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+      ],
+    })
+    window.cefQuery = ({ onSuccess }) => onSuccess('{}')
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+
+    const remove = host.querySelector('button[aria-label="Remove Colima"]') as HTMLButtonElement
+    await act(async () => { remove.click() })
+
+    expect(host.textContent).toContain('Any helper files on that machine were left untouched.')
+    expect(host.textContent).not.toContain('The remote helper was left installed.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Memory Settings') && button.textContent?.includes('Defaults and workers')

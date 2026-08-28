@@ -837,3 +837,21 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Remaining external gate: install and vivid end-to-end acceptance against an owner-selected exact
   `~/.ssh/config` alias. No alias is currently discoverable, so UAM will not guess a target. Matching
   Windows/Linux runner artifacts remain a later platform gate rather than an untested claim.
+
+## 2026-08-28 — Real OpenSSH compatibility rejection PASS
+
+- Followed the existing `Include` in `~/.ssh/config` and found the configured `colima` alias. A real
+  read-only OpenSSH call identified it as `Linux aarch64`; loopback port 22 itself is not running, so
+  Colima is the only currently available SSH target.
+- Drove the packaged test app through Remote Hosts with Computer Use, previewed `colima`, and invoked
+  the explicit setup action. UAM connected over real OpenSSH, reported that this build supports only
+  macOS/arm64 while the host is Linux/aarch64, recorded the host as `error`, and did not continue to
+  directory creation or copy. A separate read-only SSH assertion proved
+  `~/.local/share/uam/runner/4.5.7` does not exist on the VM.
+- Removing the failed host exposed inaccurate UI copy claiming a helper “was left installed” even
+  though the compatibility gate ran before installation. Changed the shared removal result to the
+  truthful “Any helper files on that machine were left untouched” and added a focused regression;
+  SettingsModal now passes 44/44 tests.
+- Removed the isolated failed-host record and closed the test app. The Applications-installed build,
+  frozen Computer Use bundle, and real remote machines remain untouched. Full positive remote
+  execution acceptance still requires a configured macOS/arm64 SSH alias.

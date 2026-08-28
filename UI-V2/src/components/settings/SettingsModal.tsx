@@ -557,7 +557,7 @@ export function SettingsModal() {
     setRemoteMessage('')
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteBusy(false)
-    setRemoteMessage(response.ok ? `${host.label} was removed from UAM. The remote helper was left installed.` : response.error || 'Remote host removal failed.')
+    setRemoteMessage(response.ok ? `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` : response.error || 'Remote host removal failed.')
   }
 
   useEffect(() => {
