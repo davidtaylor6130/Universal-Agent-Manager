@@ -314,7 +314,8 @@ namespace
 		}
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version),
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                               host.runner_directory),
 		    host.runner_version);
 		std::vector<std::filesystem::path> committed;
 		std::size_t index = 0;

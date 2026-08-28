@@ -95,10 +95,12 @@ namespace uam::remote
 #if defined(__APPLE__)
 		void RunLocalMcpRelay(std::stop_token stop_token, const std::string& ssh_alias,
 		                      const std::string& platform, const std::string& version,
+		                      const std::string& runner_directory,
 		                      DecodedProxySpec spec)
 		{
 			auto& process_service = uam::platform_macos_impl::GetMacProcessService();
-			RunnerClient channel(process_service, SshBridgeArgv(ssh_alias, platform, version),
+			RunnerClient channel(process_service, SshBridgeArgv(
+			                         ssh_alias, platform, version, runner_directory),
 			                     UAM_REMOTE_RUNNER_VERSION);
 			std::string error;
 			if (!channel.OpenChannel(spec.session_id, &error, true))
@@ -188,25 +190,27 @@ namespace uam::remote
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,
-	    const std::vector<std::string>& argv)
+	    const std::vector<std::string>& argv, const std::string& runner_directory)
 	{
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || argv.empty() ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(platform,
 		        working_directory.string()))
 			return {};
-		if (SshBridgeArgv(ssh_alias, platform, version).empty()) return {};
+		if (SshBridgeArgv(ssh_alias, platform, version, runner_directory).empty()) return {};
 		std::string command;
 		if (platform == "linux" || platform == "macos" || platform == "Linux" ||
 		    platform == "Darwin")
 		{
-			const std::string runner = "~/.local/share/uam/runner/" + version + "/uam-runner";
+			const std::string runner = "~/" + uam::execution_hosts::RunnerDirectory(
+			    platform, runner_directory) + "/" + version + "/uam-runner";
 			command = runner + " terminal " +
 			          BuildProcessProxySpec("terminal", working_directory, argv, {});
 		}
 		else if (platform == "windows" || platform == "Windows")
 		{
 			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-			          "-Command \"& (Join-Path $HOME '.uam/runner/" + version +
+			          "-Command \"& (Join-Path $HOME '" + uam::execution_hosts::RunnerDirectory(
+			              platform, runner_directory) + "/" + version +
 			          "/uam-runner.exe') terminal '" +
 			          BuildProcessProxySpec("terminal", working_directory, argv, {}) + "'\"";
 		}
@@ -305,7 +309,7 @@ namespace uam::remote
 	}
 
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
-	                    const std::string& version)
+	                    const std::string& version, const std::string& runner_directory)
 	{
 #if !defined(__APPLE__)
 		(void)ssh_alias;
@@ -315,6 +319,11 @@ namespace uam::remote
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias))
 		{
 			std::cerr << "Use one exact alias from ~/.ssh/config.\n";
+			return 2;
+		}
+		if (!uam::execution_hosts::IsSafeRunnerDirectory(runner_directory))
+		{
+			std::cerr << "The remote runner folder is invalid.\n";
 			return 2;
 		}
 		const auto encoded = uam::env::GetNonEmptyString(kRemoteProcessSpecEnvironment);
@@ -327,7 +336,7 @@ namespace uam::remote
 		}
 
 		RunnerClient client(uam::platform_macos_impl::GetMacProcessService(),
-		                    SshBridgeArgv(ssh_alias, platform, version),
+		                    SshBridgeArgv(ssh_alias, platform, version, runner_directory),
 		                    UAM_REMOTE_RUNNER_VERSION);
 		std::string error;
 		const std::string& session_id = spec->session_id;
@@ -395,6 +404,7 @@ namespace uam::remote
 							}
 							mcp_relay.reset();
 							mcp_relay.emplace(RunLocalMcpRelay, ssh_alias, platform, version,
+							                  runner_directory,
 							                  std::move(*mcp_spec));
 							continue;
 						}

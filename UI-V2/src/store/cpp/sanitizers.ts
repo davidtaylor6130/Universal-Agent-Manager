@@ -1477,6 +1477,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         platform: stringOr(entry.platform),
         architecture: stringOr(entry.architecture),
         lastSeenAt: stringOr(entry.lastSeenAt),
+        runnerDirectory: stringOr(entry.runnerDirectory),
       })
     }
   }

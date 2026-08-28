@@ -1106,3 +1106,50 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Remote-only provider history is a confirmed frontier item: a locally stored UAM chat with a saved
   native session id can be resumed against the remote provider, but current `!remote` guards skip
   provider-native discovery/import. Workspace-folder equality alone is not a safe chat identity.
+
+## 2026-08-28 — Remote old-chat boundary resolved from target evidence
+
+- Read-only Windows metadata inspection confirmed that provider state is inherited correctly under
+  the remote account, but there is no portable “config folder means chat” contract: Codex uses
+  JSONL plus multiple SQLite stores, current OpenCode uses a SQLite/WAL database, Claude has
+  project/session JSONL state, and Copilot has per-session directories plus SQLite state.
+- Rejected adding generic remote directory download or file-read calls to the runner. The runner can
+  already execute the selected provider with the user-approved account authority; exposing arbitrary
+  history-store reads would widen the protocol and still require provider-specific parsers.
+- The supported helper contract remains: UAM-owned transcripts stay on the desktop, while a saved
+  native session id is sent to the provider running under its remote account. Actual resume must be
+  proven during the provider acceptance pass. A folder path is only a workspace filter and must never
+  be treated as a unique session id.
+- OpenCode independently exposes a safe bounded discovery seam: `opencode session list --format
+  json --pure --max-count N` returned the schema `id,title,updated,created,projectId,directory` on the
+  target. This could support a separate explicit remote-history import workflow without reading its
+  database, but automatic import is not part of the helper transport and is not being smuggled into
+  the runner protocol.
+
+## 2026-08-28 — Configurable helper location and workspace machine badge
+
+- Replaced the remote setup preview with a dedicated confirmation modal. It explains the SSH
+  boundary, unsupported-platform stop condition, checksum verification and startup, then offers the
+  recommended per-user Linux/Windows locations or a validated custom folder below the remote home
+  directory. The chosen location is persisted and consumed by structured ACP, terminal fallback,
+  UAM-control, attachment staging, and helper reconnect paths.
+- The Windows GUI installed and ran helper `4.5.7` from the custom
+  `%USERPROFILE%\uam-helper\4.5.7` location. The configured-host card persisted `uam-helper` and
+  displayed the effective helper root. A shared bootstrap regression now protects the empty/default
+  choice from accidentally becoming the Linux default on Windows.
+- Settings-modal coverage passes 47/47, including custom-location transmission and traversal
+  rejection. The frontend production build passes. The native desktop target rebuilt and signed
+  successfully after the shared default-path correction.
+- Workspace rows now show a machine badge derived from their actual chats: local computer, one
+  remote computer, or multiple computers. This avoids permanently assigning a workspace to one host
+  when UAM intentionally allows mixed execution hosts. Chats and collection headers receive no such
+  badge. Focused sidebar/settings coverage passes 81/81 and the production frontend build passes.
+- Custom workspace/computer artwork is explicitly deferred. Duplicate GitHub issue searches for
+  `custom workspace icons` and `workspace icon computer icon` returned no matches. Future custom
+  icon support is tracked in GitHub issue #340; the current release remains intentionally limited
+  to the built-in local, remote, and mixed-computer badges.
+- The complete native CTest pass initially exposed one test-only race: the fake SSH process created
+  its argument capture file before writing the final remote command. The assertion could therefore
+  observe the SSH alias but miss the trailing `uam-runner` argument. Waiting for the expected final
+  argument removed the race; the rebuilt native suite passes 6/6 targets, including all core tests,
+  platform contracts, process containment, and Computer Use permission boundaries.

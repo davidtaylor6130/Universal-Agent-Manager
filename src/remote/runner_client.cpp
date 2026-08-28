@@ -52,9 +52,11 @@ namespace uam::remote
 
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
-	                                       const std::string& version)
+	                                       const std::string& version,
+	                                       const std::string& runner_directory)
 	{
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || version.empty() ||
+		    !uam::execution_hosts::IsSafeRunnerDirectory(runner_directory) ||
 		    !std::ranges::all_of(version, [](unsigned char character)
 		    { return std::isalnum(character) != 0 || character == '-' || character == '_' || character == '.'; }))
 			return {};
@@ -62,13 +64,15 @@ namespace uam::remote
 		if (platform == "linux" || platform == "macos" || platform == "Linux" ||
 		    platform == "Darwin")
 		{
-			const std::string runner = "~/.local/share/uam/runner/" + version + "/uam-runner";
-			command = runner + " start --socket ~/.local/share/uam/runner/uam.sock && exec " +
-			          runner + " bridge --socket ~/.local/share/uam/runner/uam.sock";
+			const std::string root = uam::execution_hosts::RunnerDirectory(platform, runner_directory);
+			const std::string runner = "~/" + root + "/" + version + "/uam-runner";
+			command = runner + " start --socket ~/" + root + "/uam.sock && exec " +
+			          runner + " bridge --socket ~/" + root + "/uam.sock";
 		}
 		else if (platform == "windows" || platform == "Windows")
 		{
-			const std::string runner = ".uam/runner/" + version + "/uam-runner.exe";
+			const std::string runner = uam::execution_hosts::RunnerDirectory(
+			    platform, runner_directory) + "/" + version + "/uam-runner.exe";
 			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
 			          "-Command \"& (Join-Path $HOME '" + runner +
 			          "') start; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "

@@ -16,6 +16,7 @@ export interface ExecutionHost {
   platform: string
   architecture: string
   lastSeenAt: string
+  runnerDirectory?: string
 }
 
 export interface ComputerUseActionResult {

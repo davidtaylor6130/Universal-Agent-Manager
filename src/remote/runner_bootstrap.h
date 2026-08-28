@@ -27,6 +27,7 @@ namespace uam::remote
 		std::string ssh_alias;
 		std::string version;
 		std::string install_directory;
+		std::string runner_directory;
 		std::string nonce;
 		std::vector<RunnerArtifact> artifacts;
 		std::vector<BootstrapStep> steps;
@@ -45,7 +46,8 @@ namespace uam::remote
 	                        const std::string& nonce,
 	                        std::vector<RunnerArtifact> artifacts,
 	                        BootstrapPlan& plan,
-	                        std::string* error_out = nullptr);
+	                        std::string* error_out = nullptr,
+	                        const std::string& runner_directory = {});
 	std::string BootstrapPlanPreview(const BootstrapPlan& plan);
 	BootstrapResult ExecuteBootstrapPlan(const BootstrapPlan& plan,
 	                                     std::stop_token stop_token = {});

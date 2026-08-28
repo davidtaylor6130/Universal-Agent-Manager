@@ -72,6 +72,10 @@ function workspaceKey(value: string | undefined) {
   return (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
+function validRunnerDirectory(value: string) {
+  return /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(value)
+}
+
 function latestProviderUsage(sessions: Session[], providerId: string, bindings: Record<string, AcpBinding>): AcpProviderUsage | null {
   let tokenUsage: AcpProviderUsage['tokenUsage'] = null
   let rateLimits: AcpProviderUsage['rateLimits'] = null
@@ -445,6 +449,8 @@ export function SettingsModal() {
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteMessage, setRemoteMessage] = useState('')
   const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
+  const [remoteCustomDirectory, setRemoteCustomDirectory] = useState(false)
+  const [remoteDirectory, setRemoteDirectory] = useState('uam-helper')
   const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
   const [agentImportProvider, setAgentImportProvider] = useState('opencode-cli')
   const [agentImportPath, setAgentImportPath] = useState('')
@@ -519,6 +525,7 @@ export function SettingsModal() {
       id: existing?.id ?? `ssh-${portableAlias}`,
       label,
       sshAlias,
+      runnerDirectory: existing?.runnerDirectory ?? '',
     }
     if (!portableAlias || !sshAlias) {
       setRemoteMessage('Enter one exact host alias from ~/.ssh/config.')
@@ -526,6 +533,8 @@ export function SettingsModal() {
     }
     setRemoteBusy(true)
     setRemoteMessage('')
+	setRemoteCustomDirectory(Boolean(host.runnerDirectory))
+	setRemoteDirectory(host.runnerDirectory || 'uam-helper')
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteBusy(false)
     if (!response.ok || !response.data) {
@@ -537,9 +546,11 @@ export function SettingsModal() {
 
   const installRemoteHost = async () => {
     if (!remotePreview || remoteBusy) return
+	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
+	if (remoteCustomDirectory && !validRunnerDirectory(runnerDirectory)) return
     setRemoteBusy(true)
     setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
-    const response = await sendToCEF({ action: 'installRemoteHost', payload: remotePreview.host })
+    const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
     setRemoteBusy(false)
     if (!response.ok) {
       setRemotePreview(null)
@@ -601,11 +612,15 @@ export function SettingsModal() {
         setOpenCliVersionMenu(null)
         return
       }
+	  if (remotePreview) {
+		setRemotePreview(null)
+		return
+	  }
       requestClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, remotePreview, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -1789,23 +1804,6 @@ export function SettingsModal() {
                   Preview setup
                 </Button>
               </div>
-              {remotePreview && (
-                <Notice
-                  tone="warning"
-                  title={`Install helper on ${remotePreview.host.label}?`}
-                  dismissLabel="Dismiss remote host setup preview"
-                  onDismiss={() => setRemotePreview(null)}
-                  actions={<>
-                    <Button size="sm" onClick={() => setRemotePreview(null)}>Cancel</Button>
-                    <Button size="sm" variant="primary" loading={remoteBusy} onClick={() => void installRemoteHost()}>Connect and install</Button>
-                  </>}
-                >
-                  <div className="grid gap-2">
-                    <span>This uses your existing OpenSSH authentication. UAM detects Ubuntu/Linux or Windows and its CPU architecture, selects the matching bundled helper, copies it into a private versioned user directory, verifies SHA-256, and starts it. Unsupported systems stop before anything is copied.</span>
-                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>{remotePreview.preview}</pre>
-                  </div>
-                </Notice>
-              )}
               {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--green)' : 'var(--text-2)' }}>{remoteMessage}</div>}
             </div>
           </SectionCard>
@@ -1821,6 +1819,7 @@ export function SettingsModal() {
                     <div className="mt-1" style={{ color: host.runnerStatus === 'ready' ? 'var(--green)' : host.runnerStatus === 'error' ? 'var(--red)' : 'var(--text-3)' }}>
                       {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
                     </div>
+					<div className="mt-1" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
@@ -2658,6 +2657,39 @@ export function SettingsModal() {
         </div>
 
       </div>
+      {remotePreview && (
+		<div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
+		  <div role="dialog" aria-modal="true" aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+			<div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+			  <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
+			  <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
+			</div>
+			<div className="grid gap-4 p-5 text-sm" style={{ color: 'var(--text-2)' }}>
+			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
+			  <fieldset className="grid gap-2">
+				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
+				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
+				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
+				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
+				</label>
+				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
+				  <input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
+				  <span className="min-w-0 flex-1"><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
+					<input aria-label="Remote helper folder" value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteCustomDirectory && !validRunnerDirectory(remoteDirectory.trim()) ? 'var(--red)' : 'var(--border)'}` }} />
+					<span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+					{remoteCustomDirectory && validRunnerDirectory(remoteDirectory.trim()) && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
+				  </span>
+				</label>
+			  </fieldset>
+			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
+			</div>
+			<div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+			  <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
+			  <Button size="sm" variant="primary" loading={remoteBusy} disabled={remoteCustomDirectory && !validRunnerDirectory(remoteDirectory.trim())} onClick={() => void installRemoteHost()}>Connect and install</Button>
+			</div>
+		  </div>
+		</div>
+	  )}
       {confirmDiscard && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
           <div role="alertdialog" aria-modal="true" aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>

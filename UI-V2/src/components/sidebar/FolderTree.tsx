@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server, Network } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -63,6 +63,7 @@ function reorderCollectionFolderReferences(
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
+  const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
   const runtimeStatusSignature = useAppStore((s) => sessions.map(({ id }) => {
     const cli = s.cliBindingBySessionId[id]
@@ -481,10 +482,17 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
   }
 
-  const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => (
-    <FolderRow
+  const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => {
+    const hostIds = [...new Set(sessionIds.map((id) => sessionsById.get(id)?.executionHostId || 'local'))]
+    const machineKind = hostIds.length > 1 ? 'mixed' : hostIds[0] === 'local' || hostIds.length === 0 ? 'local' : 'remote'
+    const machineLabel = hostIds.length > 1
+      ? `Runs on ${hostIds.map((id) => executionHosts.find((host) => host.id === id)?.label || id).join(', ')}`
+      : `Runs on ${executionHosts.find((host) => host.id === (hostIds[0] || 'local'))?.label || 'This computer'}`
+    return <FolderRow
       key={folder.id}
       folder={folder}
+      machineKind={machineKind}
+      machineLabel={machineLabel}
       sessionIds={sessionIds}
       shouldShowSessions={shouldShowSessions}
       hiddenPaneColors={shouldShowSessions ? [] : paneColorsForFolder(folder.id)}
@@ -527,7 +535,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         setFolderDropTarget(null)
       }}
     />
-  )
+  }
 
   return (
     <div ref={treeRef} className="select-none">
@@ -1362,6 +1370,8 @@ function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; lab
 
 interface FolderRowProps {
   folder: Folder
+  machineKind: 'local' | 'remote' | 'mixed'
+  machineLabel: string
   sessionIds: string[]
   shouldShowSessions: boolean
   hiddenPaneColors: string[]
@@ -1395,6 +1405,8 @@ interface FolderRowProps {
 
 const FolderRow = memo(function FolderRow({
   folder,
+  machineKind,
+  machineLabel,
   sessionIds,
   shouldShowSessions,
   hiddenPaneColors,
@@ -1519,6 +1531,15 @@ const FolderRow = memo(function FolderRow({
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}
         </span>
+        <Tooltip label={machineLabel}>
+          <span data-testid={`workspace-machine-${folder.id}`} role="img" aria-label={machineLabel} className="inline-flex shrink-0 items-center justify-center" style={{ width: 16, height: 16, color: 'var(--text-3)', fontSize: 13 }}>
+            {machineKind === 'mixed'
+              ? <Network size={13} aria-hidden />
+              : machineKind === 'remote'
+                ? <Server size={13} aria-hidden />
+                : <Monitor size={13} aria-hidden />}
+          </span>
+        </Tooltip>
         {folder.missing && (
           <span
             role="img"

@@ -94,11 +94,13 @@ namespace
 			if (!request_servers.is_array()) request_servers = nlohmann::json::array();
 			if (execution_host->platform == "windows" || execution_host->platform == "Windows")
 			{
+				const std::string runner_root = uam::execution_hosts::RunnerDirectory(
+				    execution_host->platform, execution_host->runner_directory);
 				request_servers.push_back({
 				    {"name", "uam-control"}, {"command", "powershell.exe"},
 				    {"args", nlohmann::json::array({
 				        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-				        "-Command", "& (Join-Path $HOME '.uam/runner/" +
+				        "-Command", "& (Join-Path $HOME '" + runner_root + "/" +
 				            execution_host->runner_version +
 				            "/uam-runner.exe') mcp --channel '" + channel_id + "'"})},
 				    {"env", nlohmann::json::array()},
@@ -106,12 +108,15 @@ namespace
 			}
 			else
 			{
+				const std::string runner_root = uam::execution_hosts::RunnerDirectory(
+				    execution_host->platform, execution_host->runner_directory);
 				request_servers.push_back({
 				    {"name", "uam-control"}, {"command", "/bin/sh"},
 				    {"args", nlohmann::json::array({
-				        "-c", "exec \"$HOME/.local/share/uam/runner/" +
+				        "-c", "exec \"$HOME/" + runner_root + "/" +
 				            execution_host->runner_version +
-				            "/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/.local/share/uam/runner/uam.sock\"",
+				            "/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/" + runner_root +
+				            "/uam.sock\"",
 				        "uam-control", channel_id})},
 				    {"env", nlohmann::json::array()},
 				});
@@ -454,7 +459,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 			process_working_directory = runner.parent_path();
 			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias,
 			                "--platform", execution_host->platform,
-			                "--version", execution_host->runner_version};
+			                "--version", execution_host->runner_version,
+			                "--directory", uam::execution_hosts::RunnerDirectory(
+			                    execution_host->platform, execution_host->runner_directory)};
 			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment,
 			                        uam::remote::BuildProcessProxySpec(
 			                            "acp-" + chat.id, workspace_root, launch_argv,

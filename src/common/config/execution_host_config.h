@@ -37,6 +37,45 @@ namespace uam::execution_hosts
 		       });
 	}
 
+	inline bool IsSafeRunnerDirectory(std::string_view value)
+	{
+		value = uam::strings::TrimAsciiView(value);
+		if (value.empty()) return true;
+		if (value.size() > 240 || value.front() == '/' || value.front() == '\\' ||
+		    value.back() == '/' || value.back() == '\\')
+			return false;
+		std::size_t segment_start = 0;
+		for (std::size_t index = 0; index <= value.size(); ++index)
+		{
+			if (index < value.size() && value[index] != '/' && value[index] != '\\')
+			{
+				const unsigned char character = static_cast<unsigned char>(value[index]);
+				if (std::isalnum(character) == 0 && character != '.' && character != '-' &&
+				    character != '_')
+					return false;
+				continue;
+			}
+			const std::string_view segment = value.substr(segment_start, index - segment_start);
+			if (segment.empty() || segment == "." || segment == "..") return false;
+			segment_start = index + 1;
+		}
+		return true;
+	}
+
+	inline std::string RunnerDirectory(std::string_view platform, std::string_view configured)
+	{
+		configured = uam::strings::TrimAsciiView(configured);
+		if (!configured.empty())
+		{
+			std::string normalized(configured);
+			std::ranges::replace(normalized, '\\', '/');
+			return normalized;
+		}
+		return platform == "windows" || platform == "Windows"
+		    ? ".uam/runner"
+		    : ".local/share/uam/runner";
+	}
+
 	inline bool IsAbsoluteRemotePath(std::string_view platform, std::string_view value)
 	{
 		value = uam::strings::TrimAsciiView(value);
@@ -97,6 +136,14 @@ namespace uam::execution_hosts
 		host.platform = Bounded(host.platform, 64);
 		host.architecture = Bounded(host.architecture, 64);
 		host.last_seen_at = Bounded(host.last_seen_at, 64);
+		host.runner_directory = Bounded(host.runner_directory, 240);
+		if (!IsSafeRunnerDirectory(host.runner_directory))
+		{
+			if (error != nullptr)
+				*error = "The helper folder must be a safe relative path under the remote user's home directory.";
+			return false;
+		}
+		std::ranges::replace(host.runner_directory, '\\', '/');
 		return true;
 	}
 
@@ -137,6 +184,7 @@ namespace uam::execution_hosts
 			    {"sshAlias", host.ssh_alias}, {"runnerStatus", host.runner_status},
 			    {"runnerVersion", host.runner_version}, {"platform", host.platform},
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
+			    {"runnerDirectory", host.runner_directory},
 			});
 		}
 		return result;
@@ -155,6 +203,7 @@ namespace uam::execution_hosts
 				    entry.value("sshAlias", ""), entry.value("runnerStatus", "uninstalled"),
 				    entry.value("runnerVersion", ""), entry.value("platform", ""),
 				    entry.value("architecture", ""), entry.value("lastSeenAt", ""),
+				    entry.value("runnerDirectory", ""),
 				});
 			}
 		}

@@ -3,6 +3,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/utils/base64.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 
@@ -38,6 +39,19 @@ namespace uam::remote
 		{
 			return {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
 			        "-o", "ConnectTimeout=10", alias, std::move(command)};
+		}
+
+		std::string PowerShellCommand(std::string_view script)
+		{
+			std::string utf16_le;
+			utf16_le.reserve(script.size() * 2);
+			for (const char character : script)
+			{
+				utf16_le.push_back(character);
+				utf16_le.push_back('\0');
+			}
+			return "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+			       "-EncodedCommand " + uam::base64::Encode(utf16_le);
 		}
 
 		bool RunStep(const BootstrapStep& step, std::string& output, std::string& diagnostic,
@@ -95,9 +109,15 @@ namespace uam::remote
 			service.CloseStdioProcessHandles(process);
 			if (exit_code != 0)
 			{
-				error = "Remote setup step failed: " + step.label;
-				const std::string detail = uam::strings::Trim(
-				    diagnostic.empty() ? output : diagnostic);
+				error = "Remote setup step failed (exit " + std::to_string(exit_code) + "): " +
+				        step.label;
+				std::string detail = uam::strings::Trim(output);
+				const std::string stderr_detail = uam::strings::Trim(diagnostic);
+				if (!stderr_detail.empty())
+				{
+					if (!detail.empty()) detail += " — ";
+					detail += stderr_detail;
+				}
 				if (!detail.empty()) error += " — " + detail;
 				return false;
 			}
@@ -114,7 +134,8 @@ namespace uam::remote
 	bool BuildBootstrapPlan(const std::string& ssh_alias, const std::string& version,
 	                        const std::string& nonce,
 	                        std::vector<RunnerArtifact> artifacts,
-	                        BootstrapPlan& plan, std::string* error_out)
+	                        BootstrapPlan& plan, std::string* error_out,
+	                        const std::string& runner_directory)
 	{
 		plan = {};
 		const auto fail = [error_out](std::string error)
@@ -126,6 +147,8 @@ namespace uam::remote
 			return fail("Use one exact alias from ~/.ssh/config.");
 		if (!IsToken(version, 64)) return fail("Runner version is invalid.");
 		if (!IsToken(nonce, 64)) return fail("Runner install nonce is invalid.");
+		if (!uam::execution_hosts::IsSafeRunnerDirectory(runner_directory))
+			return fail("The helper folder must be a safe relative path under the remote user's home directory.");
 		if (artifacts.empty()) return fail("No packaged remote runner artifacts are available.");
 		for (const RunnerArtifact& artifact : artifacts)
 		{
@@ -139,14 +162,17 @@ namespace uam::remote
 
 		plan.ssh_alias = ssh_alias;
 		plan.version = version;
-		plan.install_directory = "the selected host's private UAM runner directory";
+		plan.runner_directory = runner_directory;
+		std::ranges::replace(plan.runner_directory, '\\', '/');
+		plan.install_directory = plan.runner_directory.empty()
+		    ? "the recommended private UAM folder under the remote user's home directory"
+		    : "the remote user's home directory / " + plan.runner_directory;
 		plan.nonce = nonce;
 		plan.artifacts = std::move(artifacts);
 		plan.steps = {
 		    {"Check remote platform", SshCommand(ssh_alias, "uname -s && uname -m"), ""},
 		    {"Fallback Windows platform check",
-		     SshCommand(ssh_alias,
-		         "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"'Windows'; $env:PROCESSOR_ARCHITECTURE\""),
+		     SshCommand(ssh_alias, PowerShellCommand("'Windows'; $env:PROCESSOR_ARCHITECTURE")),
 		     ""},
 		};
 		return true;
@@ -168,7 +194,8 @@ namespace uam::remote
 	{
 		BootstrapResult result;
 		if (plan.steps.size() != 2 || plan.artifacts.empty() ||
-		    !uam::execution_hosts::IsSafeSshAlias(plan.ssh_alias))
+		    !uam::execution_hosts::IsSafeSshAlias(plan.ssh_alias) ||
+		    !uam::execution_hosts::IsSafeRunnerDirectory(plan.runner_directory))
 		{
 			result.error = "Remote setup plan is invalid.";
 			return result;
@@ -226,7 +253,9 @@ namespace uam::remote
 		std::vector<BootstrapStep> install_steps;
 		if (result.platform == "linux")
 		{
-			const std::string relative = ".local/share/uam/runner/" + plan.version;
+			const std::string root = uam::execution_hosts::RunnerDirectory(
+			    result.platform, plan.runner_directory);
+			const std::string relative = root + "/" + plan.version;
 			const std::string directory = "~/" + relative;
 			const std::string temporary = directory + "/uam-runner.tmp-" + plan.nonce;
 			const std::string installed = directory + "/uam-runner";
@@ -234,9 +263,9 @@ namespace uam::remote
 			    "set -eu; file=" + temporary + "; trap 'rm -f \"$file\"' EXIT; "
 			    "printf '%s  %s\\n' " + artifact->sha256 +
 			    " \"$file\" | sha256sum -c -; chmod 700 \"$file\"; "
-			    "\"$file\" stop --socket ~/.local/share/uam/runner/uam.sock; "
+			    "\"$file\" stop --socket ~/" + root + "/uam.sock; "
 			    "mv -f \"$file\" " + installed + "; " + installed +
-			    " start --socket ~/.local/share/uam/runner/uam.sock";
+			    " start --socket ~/" + root + "/uam.sock";
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
 			        "umask 077; mkdir -p " + directory), ""},
@@ -250,28 +279,30 @@ namespace uam::remote
 		}
 		else
 		{
-			const std::string relative = ".uam/runner/" + plan.version;
+			const std::string root = uam::execution_hosts::RunnerDirectory(
+			    result.platform, plan.runner_directory);
+			const std::string relative = root + "/" + plan.version;
 			const std::string temporary = relative + "/uam-runner.tmp-" + plan.nonce + ".exe";
-			const std::string installed = ".uam/runner/" + plan.version + "/uam-runner.exe";
-			const std::string verify =
-			    "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \""
+			const std::string installed = relative + "/uam-runner.exe";
+			const std::string verify = PowerShellCommand(
 			    "$file=Join-Path $HOME '" + temporary + "'; "
 			    "try { if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne '" +
 			    artifact->sha256 + "') { throw 'Runner checksum mismatch.' }; "
-			    "& $file stop; $installed=Join-Path $HOME '.uam/runner/" + plan.version +
-			    "/uam-runner.exe'; $moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
+			    "& $file stop; $installed=Join-Path $HOME '" + installed +
+			    "'; $moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
 			    "try { Move-Item -LiteralPath $file -Destination $installed -Force -ErrorAction Stop; $moved=$true } "
 			    "catch { Start-Sleep -Milliseconds 100 } }; if (-not $moved) { throw 'Runner service did not release its executable.' }; "
 			    "& $installed start; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } "
-			    "finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }\"";
+			    "finally { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }");
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
-			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path (Join-Path $HOME '" + relative + "') | Out-Null\""), ""},
+			        PowerShellCommand("New-Item -ItemType Directory -Force -Path (Join-Path $HOME '" +
+			                          relative + "') | Out-Null")), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
 			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify runner version", SshCommand(plan.ssh_alias,
-			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& (Join-Path $HOME '" + installed + "') --version\""),
+			        PowerShellCommand("& (Join-Path $HOME '" + installed + "') --version")),
 			        plan.version},
 			};
 		}

@@ -108,6 +108,32 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('shows the actual execution computer on workspace rows only', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'gaming-ai', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      sessions: Array.from({ length: 2 }, (_, index) => ({ ...makeSession(index + 1), executionHostId: 'gaming-ai' })),
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Gaming AI Desktop')
+    expect(host.querySelectorAll('[data-testid^="workspace-machine-"]')).toHaveLength(1)
+
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session, index) => index === 0 ? { ...session, executionHostId: 'local' } : session) })))
+    const mixedLabel = host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label') ?? ''
+    expect(mixedLabel).toContain('This computer')
+    expect(mixedLabel).toContain('Gaming AI Desktop')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not reclassify a workspace chat drag as a folder drag', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

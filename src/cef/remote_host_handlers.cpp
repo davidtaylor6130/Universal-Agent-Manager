@@ -27,6 +27,7 @@ namespace
 		host.id = payload.value("id", "");
 		host.label = payload.value("label", "");
 		host.ssh_alias = payload.value("sshAlias", "");
+		host.runner_directory = payload.value("runnerDirectory", "");
 		host.runner_status = "uninstalled";
 		return uam::execution_hosts::NormalizeRemote(host, &error);
 	}
@@ -67,7 +68,8 @@ namespace
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (nonce.empty()) nonce = uam::time::SteadyEpochNanosecondsTokenNow();
 		return uam::remote::BuildBootstrapPlan(host.ssh_alias, version, nonce,
-		                                         std::move(artifacts), plan, &error);
+		                                         std::move(artifacts), plan, &error,
+		                                         host.runner_directory);
 	}
 
 	auto FindMutableHost(std::vector<ExecutionHost>& hosts, const std::string& id)

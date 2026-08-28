@@ -37,6 +37,10 @@ int main(int argc, char** argv)
 	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
 	    std::string(argv[6]) == "--version")
 		return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7]);
+	if (argc == 10 && std::string(argv[1]) == "proxy" &&
+	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
+	    std::string(argv[6]) == "--version" && std::string(argv[8]) == "--directory")
+		return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7], argv[9]);
 	if (argc == 3 && std::string(argv[1]) == "terminal")
 		return uam::remote::RunTerminalProcess(argv[2]);
 #if defined(__APPLE__) || defined(__linux__)
@@ -70,7 +74,7 @@ int main(int argc, char** argv)
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")
 	{
-		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION | terminal SPEC | mcp --channel ID --socket PATH | --version\n";
+		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version\n";
 		return 2;
 	}
 

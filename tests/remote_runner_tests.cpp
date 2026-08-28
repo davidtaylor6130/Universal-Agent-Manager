@@ -203,7 +203,8 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	                                           artifacts, plan, &error));
 	UAM_ASSERT_EQ(plan.steps.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(plan.install_directory,
-	              std::string("the selected host's private UAM runner directory"));
+	              std::string("the recommended private UAM folder under the remote user's home directory"));
+	UAM_ASSERT(plan.runner_directory.empty());
 	UAM_ASSERT_EQ(plan.artifacts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(plan.artifacts.front().sha256, checksum);
 	const std::string preview = uam::remote::BootstrapPlanPreview(plan);
@@ -215,6 +216,10 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	                                            "install-1", artifacts, plan, &error));
 	UAM_ASSERT(!uam::remote::BuildBootstrapPlan("home-lab;touch-bad", "4.5.7",
 	                                            "install-1", artifacts, plan, &error));
+	UAM_ASSERT(!uam::remote::BuildBootstrapPlan("home-lab", "4.5.7", "install-1",
+	                                            artifacts, plan, &error, "../outside"));
+	UAM_ASSERT(!uam::remote::BuildBootstrapPlan("home-lab", "4.5.7", "install-1",
+	                                            artifacts, plan, &error, "/opt/uam"));
 	UAM_ASSERT(uam::remote::SshBridgeArgv("-oProxyCommand=bad", "linux", "4.5.7").empty());
 	const std::vector<std::string> windows_bridge =
 	    uam::remote::SshBridgeArgv("windows-lab", "windows", "4.5.7");
@@ -222,6 +227,10 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	UAM_ASSERT(windows_bridge.back().find("Join-Path $HOME '.uam/runner/4.5.7/uam-runner.exe'") !=
 	           std::string::npos);
 	UAM_ASSERT(windows_bridge.back().find("'$HOME") == std::string::npos);
+	const std::vector<std::string> custom_bridge =
+	    uam::remote::SshBridgeArgv("windows-lab", "windows", "4.5.7", "tools/uam");
+	UAM_ASSERT(custom_bridge.back().find("Join-Path $HOME 'tools/uam/4.5.7/uam-runner.exe'") !=
+	           std::string::npos);
 }
 
 #if defined(__APPLE__)
@@ -239,8 +248,11 @@ for arg in "$@"; do last=$arg; done
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
 case "$last" in
   "uname -s && uname -m") exit 1 ;;
-  *PROCESSOR_ARCHITECTURE*) printf 'Windows\nAMD64\n' ;;
-  *--version*) printf '4.5.7\n' ;;
+  *-EncodedCommand*)
+    lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
+    if [ "$lines" -eq 2 ]; then printf 'Windows\nAMD64\n'; fi
+    if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
+    ;;
 esac
 )"));
 	UAM_ASSERT(uam::io::WriteTextFile(scp, "#!/bin/sh\nexit 0\n"));
@@ -256,19 +268,36 @@ esac
 	std::string error;
 	UAM_ASSERT(uam::remote::BuildBootstrapPlan(
 	    "windows-lab", "4.5.7", "nonce-1",
-	    {{"windows", "x86_64", runner, std::string(64, 'a')}}, plan, &error));
+	    {{"windows", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
+	    "tools/uam"));
 	const uam::remote::BootstrapResult result =
 	    uam::remote::ExecuteBootstrapPlan(plan);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT_EQ(result.platform, std::string("windows"));
 	UAM_ASSERT_EQ(result.architecture, std::string("x86_64"));
 	const std::string commands = uam::io::ReadTextFile(log);
-	UAM_ASSERT(commands.find("Get-FileHash") != std::string::npos);
-	UAM_ASSERT(commands.find("Start-Sleep -Milliseconds 100") != std::string::npos);
-	UAM_ASSERT(commands.find(".uam/runner/4.5.7/uam-runner.exe") != std::string::npos);
-	UAM_ASSERT(commands.find("Join-Path $HOME '.uam/runner/4.5.7/uam-runner.exe'") !=
+	UAM_ASSERT(commands.find("-EncodedCommand") != std::string::npos);
+	UAM_ASSERT(commands.find("-Command \"") == std::string::npos);
+	std::string decoded_commands;
+	std::istringstream command_lines(commands);
+	for (std::string command; std::getline(command_lines, command);)
+	{
+		const std::string marker = "-EncodedCommand ";
+		const std::size_t offset = command.find(marker);
+		if (offset == std::string::npos) continue;
+		std::string utf16_le;
+		UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
+		for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
+			decoded_commands.push_back(utf16_le[index]);
+		decoded_commands.push_back('\n');
+	}
+	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Start-Sleep -Milliseconds 100") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $file)") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("tools/uam/4.5.7/uam-runner.exe") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Join-Path $HOME 'tools/uam/4.5.7/uam-runner.exe'") !=
 	           std::string::npos);
-	UAM_ASSERT(commands.find("'$HOME") == std::string::npos);
+	UAM_ASSERT(decoded_commands.find("'$HOME") == std::string::npos);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif

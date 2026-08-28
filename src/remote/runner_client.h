@@ -23,7 +23,8 @@ namespace uam::remote
 
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
-	                                       const std::string& version);
+	                                       const std::string& version,
+	                                       const std::string& runner_directory = {});
 
 	class RunnerClient
 	{

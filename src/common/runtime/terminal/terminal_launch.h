@@ -170,7 +170,8 @@ namespace uam
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();
 			launch_argv = uam::remote::BuildRemoteTerminalSshArgv(
 			    execution_host->ssh_alias, execution_host->platform,
-			    execution_host->runner_version, workspace_root, provider_argv);
+			    execution_host->runner_version, workspace_root, provider_argv,
+			    execution_host->runner_directory);
 			if (launch_argv.empty()) startup_error = "The remote terminal launch request is invalid.";
 		}
 		if (!startup_error.empty() ||

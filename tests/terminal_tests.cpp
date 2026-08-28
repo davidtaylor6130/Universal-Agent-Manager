@@ -60,7 +60,9 @@ UAM_TEST(CliTerminalRoutesRemoteChatsThroughSshWithoutLaunchingTheProviderLocall
 	chat.workspace_directory = temp.root.string();
 	uam::CliTerminalState terminal;
 	UAM_ASSERT(uam::StartCliTerminalForChat(app, terminal, chat, 24, 80));
-	for (int attempt = 0; attempt < 100 && !fs::exists(captured); ++attempt)
+	for (int attempt = 0; attempt < 100 &&
+	     (!fs::exists(captured) ||
+	      !uam::strings::Contains(uam::io::ReadTextFile(captured), "uam-runner")); ++attempt)
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	UAM_ASSERT(fs::exists(captured));
 	const std::string args = uam::io::ReadTextFile(captured);

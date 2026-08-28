@@ -354,6 +354,7 @@ struct ExecutionHost
 	std::string platform;
 	std::string architecture;
 	std::string last_seen_at;
+	std::string runner_directory;
 };
 
 /// <summary>

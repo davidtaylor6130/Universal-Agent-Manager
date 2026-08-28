@@ -65,7 +65,8 @@ UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
 	UAM_ASSERT(uam::execution_hosts::Find({}, "missing-remote") == nullptr);
 	std::vector<ExecutionHost> hosts = {
 	    {.id = "local", .label = "spoof", .transport = "ssh", .ssh_alias = "bad"},
-	    {.id = "lab", .label = "Home lab", .transport = "wrong", .ssh_alias = "uam-lab"},
+	    {.id = "lab", .label = "Home lab", .transport = "wrong", .ssh_alias = "uam-lab",
+	     .runner_directory = "helpers/uam"},
 	    {.id = "bad id", .label = "Dropped", .transport = "ssh", .ssh_alias = "bad"},
 	    {.id = "lab", .label = "Duplicate", .transport = "ssh", .ssh_alias = "other"},
 	};
@@ -75,6 +76,7 @@ UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
 	UAM_ASSERT_EQ(hosts[0].transport, std::string("local"));
 	UAM_ASSERT_EQ(hosts[1].id, std::string("lab"));
 	UAM_ASSERT_EQ(hosts[1].transport, std::string("ssh"));
+	UAM_ASSERT_EQ(hosts[1].runner_directory, std::string("helpers/uam"));
 
 	TempDir temp("uam-execution-host-settings");
 	AppSettings settings;
@@ -89,6 +91,7 @@ UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
 	UAM_ASSERT(SettingsStore::Load(path, loaded).loaded);
 	UAM_ASSERT_EQ(loaded.execution_hosts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.execution_hosts[1].ssh_alias, std::string("uam-lab"));
+	UAM_ASSERT_EQ(loaded.execution_hosts[1].runner_directory, std::string("helpers/uam"));
 }
 
 UAM_TEST(ComputerUseCodexLaunchSelectsExactlyOneController)

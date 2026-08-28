@@ -23,6 +23,8 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <fcntl.h>
+#include <io.h>
 #include <sddl.h>
 #include <windows.h>
 
@@ -145,8 +147,13 @@ namespace uam::remote
 				HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
 				                          nullptr, OPEN_EXISTING, 0, nullptr);
 				if (pipe != INVALID_HANDLE_VALUE) return Handle(pipe);
-				if (GetLastError() != ERROR_PIPE_BUSY) break;
-				(void)WaitNamedPipeW(name.c_str(), 250);
+				const DWORD error = GetLastError();
+				if (error == ERROR_PIPE_BUSY)
+					(void)WaitNamedPipeW(name.c_str(), 250);
+				else if (error == ERROR_FILE_NOT_FOUND)
+					Sleep(10);
+				else
+					break;
 			}
 			return Handle();
 		}
@@ -253,29 +260,69 @@ namespace uam::remote
 
 	int StopRunnerService()
 	{
-		Handle service = ConnectPipe();
-		if (service.Get() == INVALID_HANDLE_VALUE) return 0;
-		if (!WritePipeFrame(service.Get(), {{"id", "stop"}, {"type", "service.shutdown"}}))
-			return 2;
-		nlohmann::json response;
-		return ReadPipeFrame(service.Get(), response) == FrameReadResult::Ok &&
-		               response.value("ok", false) ? 0 : 2;
+		{
+			Handle service = ConnectPipe();
+			if (service.Get() == INVALID_HANDLE_VALUE) return 0;
+			if (!WritePipeFrame(service.Get(), {{"id", "stop"}, {"type", "service.shutdown"}}))
+				return 2;
+			nlohmann::json response;
+			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok ||
+			    !response.value("ok", false)) return 2;
+		}
+		for (int attempt = 0; attempt < 200; ++attempt)
+		{
+			Handle remaining = ConnectPipe();
+			if (remaining.Get() == INVALID_HANDLE_VALUE) return 0;
+			Sleep(10);
+		}
+		return 2;
 	}
 
 	int RunRunnerBridge()
 	{
+		if (_setmode(_fileno(stdin), _O_BINARY) == -1 ||
+		    _setmode(_fileno(stdout), _O_BINARY) == -1)
+		{
+			std::cerr << "Runner bridge could not enable binary stdio.\n";
+			return 2;
+		}
 		Handle service = ConnectPipe();
-		if (service.Get() == INVALID_HANDLE_VALUE) return 2;
+		if (service.Get() == INVALID_HANDLE_VALUE)
+		{
+			std::cerr << "Runner service pipe is unavailable (Windows error " << GetLastError()
+			          << ").\n";
+			return 2;
+		}
 		for (;;)
 		{
 			nlohmann::json request;
 			std::string error;
 			const FrameReadResult input = ReadFrame(std::cin, request, &error);
 			if (input == FrameReadResult::EndOfStream) return 0;
-			if (input != FrameReadResult::Ok || !WritePipeFrame(service.Get(), request)) return 2;
+			if (input != FrameReadResult::Ok)
+			{
+				std::cerr << (error.empty() ? "Runner bridge input frame is invalid." : error) << '\n';
+				return 2;
+			}
+			if (!WritePipeFrame(service.Get(), request))
+			{
+				std::cerr << "Runner bridge could not write to the service pipe (Windows error "
+				          << GetLastError() << ").\n";
+				return 2;
+			}
 			nlohmann::json response;
-			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok ||
-			    !WriteFrame(std::cout, response, &error)) return 2;
+			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok)
+			{
+				std::cerr << "Runner bridge could not read from the service pipe (Windows error "
+				          << GetLastError() << ").\n";
+				return 2;
+			}
+			if (!WriteFrame(std::cout, response, &error))
+			{
+				std::cerr << (error.empty() ? "Runner bridge could not write its response." : error)
+				          << '\n';
+				return 2;
+			}
 		}
 	}
 }

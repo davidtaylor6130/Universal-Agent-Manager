@@ -251,6 +251,82 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('installs into a validated custom folder selected in the setup modal', async () => {
+    let installPayload: Record<string, unknown> | null = null
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: 'Install UAM runner 4.5.7 at the recommended location\n1. Check remote platform',
+        }))
+        return
+      }
+      installPayload = parsed.payload
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'ai-desktop')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    const customChoice = host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1]
+    act(() => customChoice.click())
+    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, 'helpers/uam')
+      directory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('~/helpers/uam/4.5.7')
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+    expect(installPayload).toMatchObject({ runnerDirectory: 'helpers/uam' })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks a custom helper folder that escapes the remote home directory', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      actions.push(parsed.action)
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'ai-desktop')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    act(() => host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1].click())
+    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, '../outside')
+      directory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
+    expect(install.disabled).toBe(true)
+		expect(host.textContent).toContain('Relative path only')
+    expect(actions).toEqual(['previewRemoteHost'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not claim a helper was installed when removing a failed remote host', async () => {
     useAppStore.setState({
       executionHosts: [
