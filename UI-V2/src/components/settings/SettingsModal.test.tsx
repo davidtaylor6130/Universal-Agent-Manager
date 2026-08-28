@@ -318,9 +318,17 @@ describe('SettingsModal memory settings', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, '../outside')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    act(() => {
+      directory.select()
+      directory.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
     expect(install.disabled).toBe(true)
-		expect(host.textContent).toContain('Relative path only')
+		expect(directory.value).toBe('../outside')
+    expect(directory.closest('label')).toBeNull()
+    expect(directory.selectionStart).toBe(0)
+    expect(directory.selectionEnd).toBe('../outside'.length)
+		expect(host.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
     expect(actions).toEqual(['previewRemoteHost'])
 
     act(() => root.unmount())

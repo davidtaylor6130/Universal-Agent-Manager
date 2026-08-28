@@ -1227,3 +1227,18 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Remaining completion evidence is therefore unchanged: install and run the helper on the user's
   actual Ubuntu Server over an explicitly supplied SSH target, then repeat structured chat,
   attachment, concurrency, restart/resume, terminal, reconnect, and remote Computer Use rejection.
+
+## 2026-08-28 — Remote helper custom-folder validation UX fixed
+
+- User testing exposed two real setup-modal defects: an invalid custom helper folder only disabled
+  installation with generic guidance, and the text input was nested inside the radio option label,
+  allowing text-selection gestures to participate in radio activation.
+- The custom-folder field is now structurally separate from the radio label and retains its draft.
+  Validation identifies the exact correction for empty input, surrounding spaces, paths over 240
+  characters, `~`, leading or trailing separators, backslashes, empty segments, `.`/`..` segments,
+  and the first unsupported character. The error is connected with `aria-invalid`,
+  `aria-describedby`, and an alert role.
+- The regression check selects the entire invalid value, clicks the field, confirms that its value
+  and selection remain intact, confirms it is not nested in a label, and verifies the specific
+  `..` traversal explanation. Focused Settings coverage passes 47/47, the full frontend suite
+  passes 565/565, and the production frontend build passes.

@@ -72,8 +72,22 @@ function workspaceKey(value: string | undefined) {
   return (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
-function validRunnerDirectory(value: string) {
-  return /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(value)
+function runnerDirectoryError(rawValue: string) {
+  const value = rawValue.trim()
+  if (!value) return 'Enter a folder under the remote home directory, for example uam-helper.'
+  if (rawValue !== value) return 'Remove the leading or trailing spaces.'
+  if (value.length > 240) return `Shorten the folder path to 240 characters or fewer; it is currently ${value.length}.`
+  if (value.startsWith('~')) return 'Do not include ~. The folder is already placed under the remote home directory.'
+  if (value.startsWith('/') || value.startsWith('\\')) return 'Remove the leading slash. Enter a path relative to the remote home directory.'
+  if (value.endsWith('/') || value.endsWith('\\')) return 'Remove the trailing slash.'
+  if (value.includes('\\')) return 'Use / between folders instead of \\.'
+  const segments = value.split('/')
+  if (segments.some((segment) => segment.length === 0)) return 'Remove the empty folder segment created by //.'
+  if (segments.includes('..')) return 'Remove the .. segment; the helper must stay under the remote home directory.'
+  if (segments.includes('.')) return 'Remove the . segment and enter the folder name directly.'
+  const invalidCharacter = Array.from(value).find((character) => !/[A-Za-z0-9._\/-]/.test(character))
+  if (invalidCharacter) return `Remove “${invalidCharacter}”. Use only letters, numbers, dots, dashes, underscores, and /.`
+  return ''
 }
 
 function latestProviderUsage(sessions: Session[], providerId: string, bindings: Record<string, AcpBinding>): AcpProviderUsage | null {
@@ -451,6 +465,7 @@ export function SettingsModal() {
   const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
   const [remoteCustomDirectory, setRemoteCustomDirectory] = useState(false)
   const [remoteDirectory, setRemoteDirectory] = useState('uam-helper')
+  const remoteDirectoryValidation = remoteCustomDirectory ? runnerDirectoryError(remoteDirectory) : ''
   const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
   const [agentImportProvider, setAgentImportProvider] = useState('opencode-cli')
   const [agentImportPath, setAgentImportPath] = useState('')
@@ -547,7 +562,7 @@ export function SettingsModal() {
   const installRemoteHost = async () => {
     if (!remotePreview || remoteBusy) return
 	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
-	if (remoteCustomDirectory && !validRunnerDirectory(runnerDirectory)) return
+	if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
     setRemoteBusy(true)
     setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
@@ -2672,20 +2687,24 @@ export function SettingsModal() {
 				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
 				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
 				</label>
-				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
-				  <input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
-				  <span className="min-w-0 flex-1"><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
-					<input aria-label="Remote helper folder" value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteCustomDirectory && !validRunnerDirectory(remoteDirectory.trim()) ? 'var(--red)' : 'var(--border)'}` }} />
-					<span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-					{remoteCustomDirectory && validRunnerDirectory(remoteDirectory.trim()) && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-				  </span>
-				</label>
+				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
+				  <label className="flex cursor-pointer items-start gap-2">
+					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
+					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
+				  </label>
+				  <div className="ml-6">
+					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteDirectoryValidation ? 'var(--red)' : 'var(--border)'}` }} />
+					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--red)' }}>{remoteDirectoryValidation}</span>}
+					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
+				  </div>
+				</div>
 			  </fieldset>
 			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
 			</div>
 			<div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
 			  <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-			  <Button size="sm" variant="primary" loading={remoteBusy} disabled={remoteCustomDirectory && !validRunnerDirectory(remoteDirectory.trim())} onClick={() => void installRemoteHost()}>Connect and install</Button>
+			  <Button size="sm" variant="primary" loading={remoteBusy} disabled={Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
 			</div>
 		  </div>
 		</div>
