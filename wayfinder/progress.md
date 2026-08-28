@@ -1215,3 +1215,15 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   resume, OpenCode terminal fallback/retry, helper outage recovery, and remote Computer Use
   rejection. No source change was warranted by this acceptance batch; the installed Applications
   build and draft release PR remain untouched.
+
+## 2026-08-28 — Physical Ubuntu gate rechecked; local substitutes rejected
+
+- SSH configuration still contains only `uam-windows-ai`; no Linux target or alias has been supplied.
+- The packaged Linux ARM64 helper remains a valid AArch64 ELF at `Builds/linux-arm64/uam-runner` and
+  still matches SHA-256 `319a728dee435cb65005b806c4d1f3ece761b4bb9a592dbee971930ea016f9d8`.
+- A local Ubuntu-container fallback is not trustworthy without changing unrelated user state: Colima
+  is stopped, the reachable Docker daemon reports an I/O error for a missing/corrupt content blob,
+  and no QEMU AArch64 user emulator is installed. The container store was not restarted or repaired.
+- Remaining completion evidence is therefore unchanged: install and run the helper on the user's
+  actual Ubuntu Server over an explicitly supplied SSH target, then repeat structured chat,
+  attachment, concurrency, restart/resume, terminal, reconnect, and remote Computer Use rejection.
