@@ -68,10 +68,11 @@ namespace uam::remote
 		}
 		else if (platform == "windows" || platform == "Windows")
 		{
-			const std::string runner = "$HOME/.uam/runner/" + version + "/uam-runner.exe";
+			const std::string runner = ".uam/runner/" + version + "/uam-runner.exe";
 			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-			          "-Command \"& '" + runner + "' start; if ($LASTEXITCODE -ne 0) { exit "
-			          "$LASTEXITCODE }; & '" + runner + "' bridge\"";
+			          "-Command \"& (Join-Path $HOME '" + runner +
+			          "') start; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & "
+			          "(Join-Path $HOME '" + runner + "') bridge\"";
 		}
 		else return {};
 		return {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o",

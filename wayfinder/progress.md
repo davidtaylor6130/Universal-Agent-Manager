@@ -1007,12 +1007,58 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   used two clients but only one session, so it did not actually prove concurrent chats.
 - Tightened the existing Windows-only test without adding infrastructure: chat A now remains blocked
   on stdin, chat B independently runs and exits, the first bridge disconnects, and the second bridge
-  attaches to chat A and completes it through the preserved stdin channel. The attach request carries
-  an intentionally different command, so the expected output also proves that the original process
-  was resumed rather than replaced.
+  attaches to chat A using its exact launch identity and completes it through the preserved stdin
+  channel. The protocol deliberately rejects attach requests whose command, working directory, or
+  environment differs from the existing process.
 - The repository Debug build completed. The first native test run reported two POSIX runner-service
   failures because the restricted shell denied local Unix-domain socket binding with `Operation not
   permitted`; rerunning the identical suite with local socket permission passed 6/6 in 54.14 seconds.
   No GUI application was launched during build or verification.
 - This improves the Windows acceptance evidence but does not replace the remaining actual Windows 11
   execution gate.
+
+## 2026-08-28 — Windows SSH runner path expansion fixed before host acceptance
+
+- End-to-end Windows command audit found that the structured bridge and bootstrap version check used
+  `& '$HOME/.uam/...'`. PowerShell single-quoted strings do not expand `$HOME`, so a correctly
+  installed Windows helper could not be found by either path.
+- Changed both shared production commands to invoke the versioned helper through
+  `(Join-Path $HOME '.uam/runner/<version>/uam-runner.exe')`, matching the already-correct remote
+  terminal path. Focused tests now reject the literal `'$HOME` form and require `Join-Path` in both
+  bridge and bootstrap commands.
+- Corrected the new Windows reconnect test to reuse the exact original launch identity, matching the
+  runner's intentional session-conflict protection.
+
+## 2026-08-28 — Packaged native helper path added to release smoke gates
+
+- Confirmed CMake ships two distinct helper roles: the flat native helper that the GUI launches as
+  its local proxy, and architecture-specific artifacts copied to remote hosts. Existing package
+  smoke tests verified only the latter.
+- Extended both macOS and Windows package smoke scripts to require and checksum the flat native
+  helper at the exact `PackagedRunnerPath` layout and execute its side-effect-free `--version`
+  command. This closes the gap where a package could contain every upload artifact but still omit or
+  corrupt the helper the GUI needs to start remote sessions.
+
+## 2026-08-28 — Windows runner pipe now rejects remote clients
+
+- The named-pipe ACL already grants only the current Windows user, but the pipe mode did not
+  explicitly reject remote SMB named-pipe connections. A matching domain identity on another host
+  could therefore reach a local-only execution boundary when Windows file sharing allowed it.
+- Added native `PIPE_REJECT_REMOTE_CLIENTS` to the service pipe and extended the existing Windows
+  process-safety contract to require it. The SSH bridge still reaches the pipe locally after logging
+  into the helper host; no network-facing runner protocol was introduced.
+
+## 2026-08-28 — Windows preflight hardening verification PASS; host gate unchanged
+
+- Repository Debug build and the full native suite passed after the PowerShell path fix: 6/6 CTest
+  targets in 56.57 seconds, including the real fake-SSH Windows bootstrap flow and remote runner
+  integrations. The Windows containment contract passes with remote named-pipe rejection required.
+- The repo-built macOS package contains the flat native helper at the exact runtime path; its
+  side-effect-free version probe returned `4.5.7`, its SHA-256 matched
+  `d459da5ea4942a09f27fd39223b83bb3194f821301247edd0362c50e77fd91a8`, and strict deep code-signing
+  verification passed. macOS shell syntax, Windows PowerShell smoke-script parsing, and
+  `git diff --check` also pass. No GUI was launched.
+- Read-only reachability recheck confirms the Windows PC is online: `ai.homelab.com:3389` accepts
+  RDP, while `ai.homelab.com:22` refuses the connection and `100.95.44.9:22` times out. Actual
+  Windows helper execution therefore still requires action-time approval to connect and enable the
+  Windows OpenSSH service/firewall rule; no host configuration was changed.

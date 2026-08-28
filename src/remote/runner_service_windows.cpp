@@ -183,7 +183,7 @@ namespace uam::remote
 		{
 			Handle listener(CreateNamedPipeW(
 			    pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
-			    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+			    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
 			    PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &security));
 			if (listener.Get() == INVALID_HANDLE_VALUE) return 2;
 			const BOOL connected = ConnectNamedPipe(listener.Get(), nullptr) ||

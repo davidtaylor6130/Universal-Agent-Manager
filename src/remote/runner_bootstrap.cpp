@@ -252,7 +252,7 @@ namespace uam::remote
 		{
 			const std::string relative = ".uam/runner/" + plan.version;
 			const std::string temporary = relative + "/uam-runner.tmp-" + plan.nonce + ".exe";
-			const std::string installed = "$HOME/.uam/runner/" + plan.version + "/uam-runner.exe";
+			const std::string installed = ".uam/runner/" + plan.version + "/uam-runner.exe";
 			const std::string verify =
 			    "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \""
 			    "$file=Join-Path $HOME '" + temporary + "'; "
@@ -271,7 +271,7 @@ namespace uam::remote
 			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify runner version", SshCommand(plan.ssh_alias,
-			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& '" + installed + "' --version\""),
+			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& (Join-Path $HOME '" + installed + "') --version\""),
 			        plan.version},
 			};
 		}

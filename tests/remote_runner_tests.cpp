@@ -216,6 +216,12 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	UAM_ASSERT(!uam::remote::BuildBootstrapPlan("home-lab;touch-bad", "4.5.7",
 	                                            "install-1", artifacts, plan, &error));
 	UAM_ASSERT(uam::remote::SshBridgeArgv("-oProxyCommand=bad", "linux", "4.5.7").empty());
+	const std::vector<std::string> windows_bridge =
+	    uam::remote::SshBridgeArgv("windows-lab", "windows", "4.5.7");
+	UAM_ASSERT(!windows_bridge.empty());
+	UAM_ASSERT(windows_bridge.back().find("Join-Path $HOME '.uam/runner/4.5.7/uam-runner.exe'") !=
+	           std::string::npos);
+	UAM_ASSERT(windows_bridge.back().find("'$HOME") == std::string::npos);
 }
 
 #if defined(__APPLE__)
@@ -260,6 +266,9 @@ esac
 	UAM_ASSERT(commands.find("Get-FileHash") != std::string::npos);
 	UAM_ASSERT(commands.find("Start-Sleep -Milliseconds 100") != std::string::npos);
 	UAM_ASSERT(commands.find(".uam/runner/4.5.7/uam-runner.exe") != std::string::npos);
+	UAM_ASSERT(commands.find("Join-Path $HOME '.uam/runner/4.5.7/uam-runner.exe'") !=
+	           std::string::npos);
+	UAM_ASSERT(commands.find("'$HOME") == std::string::npos);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif
@@ -429,11 +438,11 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 	std::string error;
 	UAM_ASSERT(first.Connect(&error));
 	UAM_ASSERT(second.Connect(&error));
+	const std::vector<std::string> waiting_command = {
+	    "cmd.exe", "/d", "/v:on", "/s", "/c",
+	    "set /p value=& <nul set /p =!value!"};
 	UAM_ASSERT(first.StartProcess(
-	    "windows-chat-a", fs::temp_directory_path(),
-	    {"cmd.exe", "/d", "/v:on", "/s", "/c",
-	     "set /p value=& <nul set /p =!value!"},
-	    {}, &error));
+	    "windows-chat-a", fs::temp_directory_path(), waiting_command, {}, &error));
 	UAM_ASSERT(second.StartProcess(
 	    "windows-chat-b", fs::temp_directory_path(),
 	    {"cmd.exe", "/d", "/s", "/c", "<nul set /p =concurrent"}, {}, &error));
@@ -456,8 +465,7 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 	UAM_ASSERT(second.RemoveProcess("windows-chat-b", &error));
 	first.Disconnect();
 	UAM_ASSERT(second.StartProcess(
-	    "windows-chat-a", fs::temp_directory_path(),
-	    {"cmd.exe", "/d", "/s", "/c", "exit 99"}, {}, &error, true));
+	    "windows-chat-a", fs::temp_directory_path(), waiting_command, {}, &error, true));
 	uam::remote::ProcessPollResult attached;
 	UAM_ASSERT(second.PollProcess("windows-chat-a", attached, &error));
 	UAM_ASSERT(attached.running);

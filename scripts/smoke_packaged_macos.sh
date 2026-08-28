@@ -40,6 +40,8 @@ remote_root="$app_root/Contents/Resources/remote"
 [[ -x "$cef_framework" ]]
 [[ -x "$cef_helper" ]]
 for remote_file in \
+    "$remote_root/uam-runner" \
+    "$remote_root/uam-runner.sha256" \
     "$remote_root/linux-arm64/uam-runner" \
     "$remote_root/linux-arm64/uam-runner.sha256" \
     "$remote_root/linux-x86_64/uam-runner" \
@@ -50,6 +52,7 @@ do
     [[ -f "$remote_file" ]]
 done
 for remote_runner in \
+    "$remote_root/uam-runner" \
     "$remote_root/linux-arm64/uam-runner" \
     "$remote_root/linux-x86_64/uam-runner" \
     "$remote_root/windows-x86_64/uam-runner.exe"
@@ -58,6 +61,7 @@ do
     actual_hash=$(shasum -a 256 "$remote_runner" | awk '{print $1}')
     [[ "$actual_hash" == "$expected_hash" ]]
 done
+[[ -n "$("$remote_root/uam-runner" --version)" ]]
 codesign --verify --deep --strict "$app_root"
 
 if [[ -n "$expected_ui_dist" ]]; then
