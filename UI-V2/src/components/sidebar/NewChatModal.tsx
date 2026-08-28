@@ -14,6 +14,7 @@ export function NewChatModal() {
   const providers = useAppStore(useShallow((s) => s.providers))
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+	const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
 	const sessions = useAppStore(useShallow((s) => s.sessions))
 	const activeSessionId = useAppStore((s) => s.activeSessionId)
 	const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
@@ -35,6 +36,8 @@ export function NewChatModal() {
       ? defaultNewChatProviderId
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
+	const [executionHostId, setExecutionHostId] = useState('local')
+	const [remoteWorkspace, setRemoteWorkspace] = useState('')
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
   const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
   const [creatingChat, setCreatingChat] = useState(false)
@@ -96,18 +99,24 @@ export function NewChatModal() {
     return () => window.removeEventListener('keydown', handler)
   }, [requestClose])
 
+  const selectedFolder =
+    (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
+  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
+	const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId) ?? executionHosts[0]
+	const isRemote = selectedExecutionHost?.transport === 'ssh'
   const selectedProviderReadiness = cliVersionManager.providers.find((provider) => provider.providerId === providerId)
   const readinessStatus = selectedProviderReadiness?.status ?? 'unknown'
-  const structuredCreationBlocked = readinessStatus === 'checking' ||
+  const remoteUnavailable = isRemote && selectedExecutionHost?.runnerStatus !== 'ready'
+  const structuredCreationBlocked = remoteUnavailable || (!isRemote && (readinessStatus === 'checking' ||
     readinessStatus === 'installing' ||
     readinessStatus === 'known-incompatible' ||
-    readinessStatus === 'unavailable'
-  const terminalCreationBlocked = readinessStatus === 'unavailable' ||
-    (providerId === COPILOT_CLI_PROVIDER_ID && readinessStatus === 'known-incompatible')
+    readinessStatus === 'unavailable'))
+  const terminalCreationBlocked = remoteUnavailable || (!isRemote && (readinessStatus === 'unavailable' ||
+    (providerId === COPILOT_CLI_PROVIDER_ID && readinessStatus === 'known-incompatible')))
   const supportedInstallVersion = selectedProviderReadiness?.preferredVersion ||
     selectedProviderReadiness?.availableVersions.find((version) => version.preferred)?.version ||
     selectedProviderReadiness?.selectedVersion || ''
-  const readinessMessage = selectedProviderReadiness?.message || ({
+  const localReadinessMessage = selectedProviderReadiness?.message || ({
     unknown: 'Provider readiness has not been checked yet.',
     checking: 'Checking whether this provider CLI can start structured chats…',
     installing: 'Installing a supported provider CLI version…',
@@ -118,6 +127,11 @@ export function NewChatModal() {
     unavailable: 'This provider CLI is unavailable for structured chat.',
     'provider-managed': 'CLI compatibility is managed by this provider.',
   } as const)[readinessStatus]
+  const readinessMessage = isRemote
+    ? selectedExecutionHost?.runnerStatus === 'ready'
+      ? `Remote runner ${selectedExecutionHost.runnerVersion || 'ready'} on ${selectedExecutionHost.label}.`
+      : `Remote runner is ${selectedExecutionHost?.runnerStatus || 'unavailable'}. Configure it before starting chats.`
+    : localReadinessMessage
 
   const handleCreate = async (terminalFallback = false) => {
     if (creatingChatRef.current || folderId === null || !folders.some((folder) => folder.id === folderId)) {
@@ -129,7 +143,10 @@ export function NewChatModal() {
     setCreatingChat(true)
     setChatError('')
     const n = name.trim() || 'New chat'
-	const created = await addSession(n, folderId, providerId, selectedModelId, reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID), terminalFallback ? 'cli' : 'chat')
+	const effort = reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
+	const created = isRemote
+	  ? await addSession(n, folderId, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
+	  : await addSession(n, folderId, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
     if (!created) {
       creatingChatRef.current = false
       setCreatingChat(false)
@@ -137,12 +154,9 @@ export function NewChatModal() {
     }
   }
 
-  const selectedFolder =
-    (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
-  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
 	const providerSessions = sessions.filter((session) => session.providerId === providerId)
 	const workspaceKey = (value: string | undefined) => (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-	const selectedWorkspace = selectedFolder?.directory ?? ''
+	const selectedWorkspace = isRemote ? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
 	const discoverySession = providerSessions.find((session) => workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
@@ -159,17 +173,17 @@ export function NewChatModal() {
 	    )
 	  : []
   const requestModelDiscovery = () => {
-	if (!selectedWorkspace) return
+	if (!selectedWorkspace || isRemote) return
 	const discoveryKey = `${providerId}\n${workspaceKey(selectedWorkspace)}`
 	discoveryRequestedRef.current.add(discoveryKey)
 	void discoverProviderModels(discoverySession?.id ?? '', providerId, selectedWorkspace)
   }
   useEffect(() => {
 	const discoveryKey = `${providerId}\n${workspaceKey(selectedWorkspace)}`
-	if (structuredCreationBlocked || !selectedWorkspace || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
+	if (structuredCreationBlocked || isRemote || !selectedWorkspace || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
 	requestModelDiscovery()
   }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId, selectedWorkspace, structuredCreationBlocked])
-  const canCreate = selectedFolder !== null
+  const canCreate = selectedFolder !== null && Boolean(selectedWorkspace) && (!isRemote || selectedWorkspace.startsWith('/'))
 
   const createWorkspace = async () => {
     setCreatingWorkspace(true)
@@ -255,6 +269,47 @@ export function NewChatModal() {
             </div>
           )}
 
+          {executionHosts.length > 1 && (
+            <div>
+              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
+                Runs on
+              </label>
+              <MenuSelect
+                label="Execution host"
+                value={executionHostId}
+                options={executionHosts.map((host) => ({
+                  value: host.id,
+                  label: host.label,
+                  description: host.transport === 'local'
+                    ? 'This computer'
+                    : `${host.sshAlias} · ${host.runnerStatus}`,
+                }))}
+                onChange={(hostId) => {
+                  setExecutionHostId(hostId)
+                }}
+              />
+            </div>
+          )}
+
+          {isRemote && (
+            <div>
+              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
+                Remote workspace path
+              </label>
+              <input
+                type="text"
+                value={remoteWorkspace}
+                onChange={(event) => setRemoteWorkspace(event.target.value)}
+                placeholder="/absolute/path/on/selected/host"
+                className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              />
+              <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
+                Enter an absolute path interpreted only by {selectedExecutionHost?.label}. Computer Use is disabled for remote chats.
+              </p>
+            </div>
+          )}
+
           {!selectedFolder && (
             <div role="alert" className="rounded-lg p-3 animate-fade-in" style={{ background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))' }}>
               <div className="flex items-start gap-2">
@@ -319,7 +374,7 @@ export function NewChatModal() {
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              {readinessStatus !== 'checking' && readinessStatus !== 'installing' && (
+              {!isRemote && readinessStatus !== 'checking' && readinessStatus !== 'installing' && (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -330,7 +385,7 @@ export function NewChatModal() {
                   Check again
                 </Button>
               )}
-              {(readinessStatus === 'known-incompatible' || readinessStatus === 'unavailable') && supportedInstallVersion && (
+              {!isRemote && (readinessStatus === 'known-incompatible' || readinessStatus === 'unavailable') && supportedInstallVersion && (
                 <Button
                   variant="secondary"
                   size="sm"

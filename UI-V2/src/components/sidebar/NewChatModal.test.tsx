@@ -191,6 +191,44 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
+  it('creates a chat on a ready remote host without local model discovery', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      addSession,
+      discoverProviderModels,
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'home-lab', runnerStatus: 'ready', runnerVersion: '0.1.0', platform: 'linux', architecture: 'arm64', lastSeenAt: '' },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
+    const remoteHost = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Home lab'))
+    act(() => remoteHost?.click())
+    discoverProviderModels.mockClear()
+    const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
+      remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Create structured chat')
+    await act(async () => { create?.click(); await Promise.resolve() })
+
+    expect(discoverProviderModels).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Computer Use is disabled for remote chats.')
+    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat', 'lab', '/srv/project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {
     const addSession = vi.fn()
     useAppStore.setState({

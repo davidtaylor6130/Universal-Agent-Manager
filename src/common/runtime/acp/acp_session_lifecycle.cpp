@@ -8,6 +8,7 @@
 #include "app/uam_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -17,6 +18,7 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/string_utils.h"
+#include "remote/runner_proxy.h"
 
 #include <cstring>
 #include <filesystem>
@@ -43,6 +45,56 @@ namespace
 		{
 			return true;
 		}
+		const ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
+		if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+		{
+			if (!chat->uam_control_enabled) return true;
+			nlohmann::json local_request = {
+			    {"params", {{"mcpServers", nlohmann::json::array()}}}};
+			std::string error;
+			if (!UamControlService::AppendSessionMcpServer(
+			        app, session, *chat, method, local_request, &error))
+			{
+				session.last_error = std::move(error);
+				return false;
+			}
+			const nlohmann::json& local_server = local_request["params"]["mcpServers"].back();
+			std::vector<std::string> local_argv = {local_server.value("command", "")};
+			for (const nlohmann::json& argument : local_server.value("args", nlohmann::json::array()))
+				if (argument.is_string()) local_argv.push_back(argument.get<std::string>());
+			std::vector<std::pair<std::string, std::string>> local_environment;
+			for (const nlohmann::json& entry : local_server.value("env", nlohmann::json::array()))
+				if (entry.is_object() && entry.contains("name") && entry["name"].is_string() &&
+				    entry.contains("value") && entry["value"].is_string())
+					local_environment.emplace_back(entry["name"].get<std::string>(),
+					                               entry["value"].get<std::string>());
+			const std::string channel_id = "control-" + session.uam_control_capability_id;
+			const std::string control_line = uam::remote::BuildRemoteMcpControlLine(
+			    channel_id, std::filesystem::path(local_argv.front()).parent_path(),
+			    local_argv, local_environment);
+			std::string write_error;
+			if (control_line.empty() ||
+			    !PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+			        session, control_line.data(), control_line.size(), &write_error))
+			{
+				UamControlService::RevokeForSession(app, session);
+				session.last_error = write_error.empty()
+				    ? "Remote UAM control relay could not be configured."
+				    : std::move(write_error);
+				return false;
+			}
+			nlohmann::json& request_servers = request["params"]["mcpServers"];
+			if (!request_servers.is_array()) request_servers = nlohmann::json::array();
+			request_servers.push_back({
+			    {"name", "uam-control"}, {"command", "/bin/sh"},
+			    {"args", nlohmann::json::array({
+			                 "-c",
+			                 "exec \"$HOME/.local/share/uam/runner/current/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/.local/share/uam/runner/uam.sock\"",
+			                 "uam-control", channel_id})},
+			    {"env", nlohmann::json::array()},
+			});
+			return true;
+		}
 
 		std::string error;
 		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(
@@ -53,7 +105,6 @@ namespace
 			session.last_error = std::move(error);
 			return false;
 		}
-		const ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
 		if (chat != nullptr && uam::paths::HasGitWorktreeSource(*chat) &&
 		    uam::mcp_server_config::WorkspaceKey(chat->workspace_source_directory) != uam::mcp_server_config::WorkspaceKey(cwd))
 		{
@@ -249,9 +300,21 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 		return false;
 	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const ExecutionHost* execution_host =
+	    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	const bool remote = execution_host != nullptr && execution_host->id != uam::execution_hosts::kLocalHostId;
+	if (execution_host == nullptr || (remote && execution_host->runner_status != "ready"))
+	{
+		const std::string startup_error = remote ? "The selected remote runner is not ready. Recheck it in Settings."
+		                                         : "The selected execution host no longer exists.";
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out != nullptr) *error_out = startup_error;
+		return false;
+	}
 	const bool copilot = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli);
 	const bool opencode = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli);
-	if (copilot || opencode)
+	if (!remote && (copilot || opencode))
 	{
 		ProviderCliCompatibilityService().Poll(app);
 		const std::string compatibility_error = copilot ? CopilotLaunchBlockReason(app) : OpenCodeLaunchBlockReason(app);
@@ -323,28 +386,60 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	session.active_uam_agent_adapter_directory.clear();
 	if (!session.model_discovery_only && !session.active_uam_agent_instructions.empty())
 	{
-		ProviderAgentRuntimeAdapter adapter;
-		if (!AgentDefinitionService::PrepareRuntimeAdapter(
-		        app.data_root, chat.id, provider.id, session.active_uam_agent_id,
-		        session.active_uam_agent_instructions, &adapter, &startup_error))
+		if (remote)
 		{
-			session.lifecycle_state = kAcpLifecycleError;
-			session.last_error = startup_error;
-			if (error_out != nullptr) *error_out = startup_error;
-			return false;
+			session.active_uam_agent_execution_capability = "uam-prompt-injected";
 		}
-		session.active_uam_agent_execution_capability = adapter.execution_capability;
-		session.active_uam_agent_adapter_directory = adapter.directory;
-		launch_argv.insert(launch_argv.end(), adapter.launch_arguments.begin(), adapter.launch_arguments.end());
-		launch_environment.insert(launch_environment.end(), adapter.launch_environment.begin(),
-		                          adapter.launch_environment.end());
+		else
+		{
+			ProviderAgentRuntimeAdapter adapter;
+			if (!AgentDefinitionService::PrepareRuntimeAdapter(
+			        app.data_root, chat.id, provider.id, session.active_uam_agent_id,
+			        session.active_uam_agent_instructions, &adapter, &startup_error))
+			{
+				session.lifecycle_state = kAcpLifecycleError;
+				session.last_error = startup_error;
+				if (error_out != nullptr) *error_out = startup_error;
+				return false;
+			}
+			session.active_uam_agent_execution_capability = adapter.execution_capability;
+			session.active_uam_agent_adapter_directory = adapter.directory;
+			launch_argv.insert(launch_argv.end(), adapter.launch_arguments.begin(), adapter.launch_arguments.end());
+			launch_environment.insert(launch_environment.end(), adapter.launch_environment.begin(),
+			                          adapter.launch_environment.end());
+		}
 	}
-	const std::string launch_detail = "cwd=" + AcpWorkingDirectoryString(workspace_root) +
+	const std::string launch_detail = "host=" + execution_host->id +
+	                                  ", cwd=" + AcpWorkingDirectoryString(workspace_root) +
 	                                  ", argv=" + JoinAcpArgvForDiagnostics(launch_argv) +
 	                                  ", nativeSessionId=" + session.session_id;
 	AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
 	if (!session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
-	if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, launch_argv, &startup_error, launch_environment))
+	std::filesystem::path process_working_directory = workspace_root;
+	std::vector<std::string> process_argv = launch_argv;
+	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
+	if (remote)
+	{
+		const std::filesystem::path runner = uam::remote::PackagedRunnerPath();
+		std::error_code runner_error;
+		if (!std::filesystem::is_regular_file(runner, runner_error) || runner_error)
+		{
+			startup_error = "The packaged UAM remote runner is missing.";
+		}
+		else
+		{
+			process_working_directory = runner.parent_path();
+			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias};
+			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment,
+			                        uam::remote::BuildProcessProxySpec(
+			                            "acp-" + chat.id, workspace_root, launch_argv,
+			                            launch_environment)}};
+		}
+	}
+	if (!startup_error.empty() ||
+	    !PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	        session, process_working_directory, process_argv, &startup_error,
+	        process_environment))
 	{
 		session.lifecycle_state = kAcpLifecycleError;
 		session.last_error = startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;

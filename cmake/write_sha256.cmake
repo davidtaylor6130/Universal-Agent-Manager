@@ -1,0 +1,5 @@
+if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
+  message(FATAL_ERROR "INPUT and OUTPUT are required")
+endif()
+file(SHA256 "${INPUT}" hash)
+file(WRITE "${OUTPUT}" "${hash}\n")

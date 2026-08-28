@@ -677,3 +677,163 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Checkpoint verification PASS: frontend Vitest 38/38 files and 555/555 tests; production frontend
   build PASS; native CMake build PASS; native CTest 6/6 PASS in 54.24 seconds; `git diff --check`
   PASS. The frozen accepted bundle under `Builds/computer-use-remote/` was not rebuilt or modified.
+
+## 2026-08-28 — Computer Use checkpoint committed and remote boundary established
+
+- Preserved the accepted local Computer Use implementation in local commit `5f389de0` without
+  pushing it. The commit excludes the owner's unrelated untracked planning files and root
+  `node_modules/`; the frozen accepted bundle and Applications-installed build remain untouched.
+- Added a persisted execution-host model with one immutable `local` host and validated SSH host
+  records that store only an exact `~/.ssh/config` alias—never passwords, keys, or arbitrary SSH
+  arguments. Legacy chats migrate to `local`; new chats retain their selected host and workspace.
+- Kept the existing local New Chat behavior byte-for-byte at its bridge boundary. When more than
+  one host exists, New Chat exposes `Runs on`; a ready remote host accepts a path interpreted only
+  on that host, skips local provider discovery, and passes the host identity into chat creation.
+- Added backend no-fallback guards before terminal launch and ACP prompt routing. Until a runner is
+  connected, a remote chat fails explicitly instead of silently running on this Mac.
+- Disabled Computer Use fail-closed at every implemented remote boundary: UI guidance, enablement,
+  control-state persistence, ACP MCP injection, and Codex provider-native launch flags. A remote
+  chat cannot create Computer Use runtime files or launch either UAM or provider-native control.
+- Remote-boundary verification PASS: full frontend suite 38/38 files and 555/555 tests; focused New
+  Chat remote-host test 20/20; native CTest 6/6 in 50.40 seconds; focused host persistence and
+  Computer Use fail-closed tests PASS.
+
+## 2026-08-28 — Headless runner protocol slice PASS
+
+- Added a separate CEF-free `uam-runner` executable. Its first surface is intentionally only
+  `uam-runner bridge` over stdin/stdout plus `--version`; it opens no network listener and executes
+  no provider yet.
+- The bridge uses a four-byte big-endian length followed by one JSON object, capped at 1 MiB. It
+  rejects empty, oversized, truncated, non-object, and invalid JSON frames before dispatch.
+- Protocol negotiation requires a bounded request id, protocol version 1, and a bounded nonce that
+  is echoed in the response. The response reports runner version/platform/architecture and
+  explicitly advertises both `computerUse: false` and `processExecution: false`.
+- Unit coverage PASS for round-trip framing, protocol mismatch, oversized frames, truncated frames,
+  and the Computer Use capability boundary. A real subprocess smoke test against
+  `Builds/tests/uam-runner bridge` returned version `4.5.7`, macOS/arm64, the exact nonce, and
+  `computerUse: false` with a clean exit.
+- Next frontier: add the minimum typed process/session protocol behind this tested frame boundary,
+  then exercise it through a local fake transport before any SSH installation or remote mutation.
+
+## 2026-08-28 — Typed process bridge and reconnecting service PASS
+
+- Added the minimum process/session surface needed by both ACP and terminal transports:
+  `process.start`, `process.write`, `process.closeInput`, `process.poll`, `process.stop`, and
+  `process.remove`. Commands remain typed argv arrays; no local shell string is assembled.
+- The runner rejects unsafe or oversized session ids, paths, argv arrays, environment names/values,
+  writes, and duplicate/missing sessions. Process output is base64 encoded so terminal bytes cannot
+  corrupt JSON framing, and each poll is bounded below the 1 MiB protocol ceiling.
+- Removed an accidental GUI coupling discovered by the real runner build: the reusable macOS
+  parent-death watchdog now lives in its own headless source, while the runner compiles out the
+  desktop-only “open Terminal” method. `uam-runner` links neither CEF nor the React application.
+- Added a desktop-side runner client that validates response correlation ids, version and nonce,
+  requires `processExecution: true`, and rejects any runner that advertises Computer Use. Its SSH
+  argv uses one already-validated config alias and fixed OpenSSH safety options; it never accepts
+  passwords, key paths, or caller-supplied SSH arguments.
+- Added a user-owned Unix-socket service with mode `0600` and same-UID peer validation. `serve`
+  owns processes, `bridge` only relays framed requests, and `start` detaches the service so SSH
+  disconnection cannot destroy active jobs. `stop` performs an authenticated graceful shutdown.
+- A real bridge-subprocess test PASS launched and polled a typed child through the actual runner.
+  A separate service test PASS started a delayed job, destroyed the first bridge, connected a new
+  bridge, recovered the same session, received `persistent-ok`, and removed it. The sandbox blocks
+  Unix socket binding by policy, so the socket-only tests were rerun with the approved isolated
+  `/tmp` permission; the first restricted run correctly reported `Operation not permitted`.
+- Next frontier: checksum-verified user-space bootstrap over an exact SSH alias, followed by routing
+  UAM's ACP stdio path through this client. Background output spooling and Windows named-pipe parity
+  remain explicit gates before declaring long-disconnected jobs production-safe.
+
+## 2026-08-28 — Explicit SSH setup, ACP proxy, and disconnected output spool PASS
+
+- Added the explicit Settings workflow for remote hosts. UAM accepts only one exact
+  `~/.ssh/config` alias, shows every fixed `ssh`/`scp` setup step before mutation, and requires a
+  second **Connect and install** action. It stores no password, key path, or custom SSH argument.
+- The helper installs in a versioned user-owned directory under `~/.local/share/uam/runner`, is
+  SHA-256 verified before activation, and uses an atomic `current` symlink. Platform and CPU are
+  checked before the copy; this macOS/arm64 build fails before mutation on an incompatible host.
+- Added a nonblocking local proxy process between UAM's existing ACP stdio runtime and the SSH
+  runner. The CEF thread retains the proven local parser, permission, cancellation, and restart
+  paths; SSH latency cannot block UI polling. A reconnect attaches to the same runner-owned process
+  rather than starting a duplicate provider turn.
+- Kept remote Computer Use explicitly disabled in both Settings guidance and the existing backend
+  fail-closed gates. Removing a host is blocked while any chat still owns it, and removal leaves the
+  independently installed helper intact.
+- Closed the long-disconnect pipe-fill failure: the service continuously drains each child into
+  private bounded disk spools even with no bridge connected. A real service test disconnected the
+  first bridge, produced 512 KiB while absent, reconnected, recovered every byte plus the final
+  marker, and removed the session. The initial test exposed a partial-final-drain bug; `process.poll`
+  now remains logically running until all spooled output is delivered.
+- Verification PASS: Settings remote preview/explicit install test; real proxy/provider stdin/stdout
+  relay test; typed protocol tests; direct bridge test; and Unix-socket reconnect/spool test. All
+  builds stayed under `Builds/tests`; the accepted frozen bundle and Applications build were not
+  opened or modified. Gemini remained unlaunched and uncontacted.
+- Next frontier: terminal fallback parity, remote-safe UAM agent/MCP resource placement, Windows
+  service parity, then an owner-selected real SSH alias for installation and vivid GUI acceptance.
+
+## 2026-08-28 — Remote ACP, terminal, multi-chat, and explicit-stop integration PASS
+
+- End-to-end tracing found and removed a stale shared `SendAcpPrompt` rejection that prevented every
+  remote prompt from reaching the new proxy. Remote host readiness is now checked at the actual
+  launch boundary, so a missing/offline helper fails explicitly and never falls back to this Mac.
+- Remote OpenCode and Copilot launches no longer use this Mac's CLI-version verdict or write
+  provider-native agent adapters containing local paths. UAM-managed agent instructions are
+  prompt-injected for remote chats; a real fake-transport ACP test completed initialize,
+  `session/new`, prompt, streamed assistant output, and turn completion through `uam-runner proxy`.
+- Remote session setup omits local workspace MCP executables and the local UAM-control executable;
+  those paths cannot be validly handed to a remote provider. Computer Use remains rejected before
+  session creation. Remote-safe MCP/control placement remains an explicit unresolved parity gate.
+- Added terminal fallback through a forced OpenSSH PTY and the already-installed versioned runner.
+  Provider argv and remote cwd are encoded as validated JSON; no local provider environment or
+  native-history scan is used. The remote path must be absolute and New Chat no longer pre-fills it
+  from a local folder. Direct runner execution and a fake-SSH PTY launch both PASS.
+- Found and fixed a multi-chat service defect: the Unix-socket helper accepted only one active bridge
+  at a time, so one long-lived chat starved all others. It now handles concurrent same-UID bridges
+  against a locked shared process registry. A regression keeps chat A connected while chat B starts,
+  finishes, and is removed, then reconnects to recover chat A's complete 512 KiB spool.
+- Reconnect now validates cwd, argv, and environment before attaching to an existing session id, so
+  a changed provider configuration cannot silently bind to the wrong surviving process.
+- Added an out-of-band local proxy stop line. An unexpected SSH/bridge loss leaves the runner-owned
+  provider alive for reconnection, while UAM's explicit Stop path asks the helper to terminate and
+  remove that exact session before killing a stuck proxy. The marker is intercepted and never sent
+  to the provider; the real subprocess regression PASS.
+- Verification in this checkpoint: focused remote ACP boundary and full proxy ACP tests PASS;
+  terminal argv/direct-exec/PTY-routing tests PASS; explicit-stop and attach-conflict tests PASS;
+  concurrent bridge/reconnect/spool test PASS with the isolated Unix-socket permission; New Chat
+  frontend 20/20 and production frontend build PASS. Only `Builds/tests` was used; the frozen
+  Computer Use bundle and Applications build were untouched, and Gemini was not launched.
+- Next frontier: design and prove remote-safe UAM-control/custom MCP transport, run the complete
+  native/frontend regression and packaged test build, then perform install/GUI acceptance on an
+  owner-selected real SSH alias. Windows/Linux artifact parity remains blocked by the absence of
+  matching packaged runner binaries, not hidden behind a false compatibility claim.
+
+## 2026-08-28 — Remote UAM Control transport and full isolated regression PASS
+
+- Extended the existing authenticated runner service with bounded bidirectional byte channels;
+  remote UAM Control does not open another network listener or reverse port. The remote provider
+  receives only the versioned runner MCP shim, while the desktop relay owns the existing
+  capability-scoped UAM Control process and keeps local executable paths off the remote host.
+- Proved the real protocol rather than an echo substitute: MCP `initialize` crossed the remote shim,
+  shared helper service, SSH-side proxy boundary, and desktop relay; a real `goal_get` tool call was
+  then processed by `UamControlService` and returned with `isError: false`. Invalid base64 and all
+  channel size limits fail closed.
+- Kept custom user MCP servers out of remote chats for now. UAM cannot safely infer whether an
+  arbitrary configured executable/path belongs on the desktop or remote host; silently copying a
+  local path would be false parity. UAM-managed agents remain prompt-injected remotely and UAM
+  Control itself now has the explicit safe placement above.
+- The complete native suite exposed a legacy local-host regression: blank in-memory settings made
+  ordinary local ACP sessions look like an unknown host. Fixed it once in shared execution-host
+  lookup so blank/`local` resolves to the immutable built-in local host while unknown remote ids
+  still fail closed.
+- Full verification PASS: CTest 6/6 in 50.36 seconds; frontend Vitest 38/38 files and 557/557 tests;
+  production frontend build; native packaged app build; `git diff --check`; and strict deep
+  codesign verification. The standalone and packaged runner SHA-256 values both equal
+  `39931f478bf04c8197f89660bcc9dc53aceecacacf173b5e8aefaf6cf0b7bf9d`.
+- Computer Use GUI acceptance PASS against only
+  `Builds/tests/universal_agent_manager.app` with isolated data root
+  `/tmp/uam-remote-gui-20260828`: Remote Hosts is discoverable, the remote Computer Use prohibition
+  is explicit, setup previews every fixed SSH/SCP operation and checksum step, and mutation is
+  separately gated behind **Connect and install**. The preview was cancelled; no SSH connection or
+  remote mutation occurred. The Applications-installed build and frozen accepted Computer Use
+  bundle were untouched, and Gemini was not launched or contacted.
+- Remaining external gate: install and vivid end-to-end acceptance against an owner-selected exact
+  `~/.ssh/config` alias. No alias is currently discoverable, so UAM will not guess a target. Matching
+  Windows/Linux runner artifacts remain a later platform gate rather than an untested claim.

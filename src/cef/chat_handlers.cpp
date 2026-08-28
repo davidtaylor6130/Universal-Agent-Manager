@@ -8,6 +8,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -170,6 +171,13 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	const std::string default_provider_id = uam::query_handler_internal::DefaultNewChatProviderId(m_app, preferred_provider);
 	const std::string requested_provider_id = payload.value("providerId", default_provider_id);
 	const std::string provider_id = uam::query_handler_internal::ResolveNewChatProviderId(m_app, requested_provider_id, preferred_provider);
+	const std::string execution_host_id = uam::strings::Trim(payload.value("executionHostId", "local"));
+	const ExecutionHost* execution_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, execution_host_id);
+	if (execution_host == nullptr)
+	{
+		cb->Failure(400, "The selected execution host no longer exists.");
+		return;
+	}
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
 
 	const std::string target_folder_id = uam::query_handler_internal::ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
@@ -180,11 +188,27 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	}
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
+	chat.execution_host_id = execution_host->id;
 	if (!title.empty())
 	{
 		chat.title = title;
 	}
-	chat.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, chat));
+	if (execution_host->id == uam::execution_hosts::kLocalHostId)
+	{
+		chat.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, chat));
+	}
+	else
+	{
+		chat.workspace_directory = uam::strings::Trim(payload.value("workspaceDirectory", ""));
+		if (chat.workspace_directory.empty() || chat.workspace_directory.size() > 4096 ||
+		    !std::filesystem::path(chat.workspace_directory).is_absolute() ||
+		    std::ranges::any_of(chat.workspace_directory,
+		        [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+		{
+			cb->Failure(400, "An absolute remote workspace path is required.");
+			return;
+		}
+	}
 	const nlohmann::json* payload_defaults = uam::nlohmann_json::FindObjectField(payload, "defaults");
 	uam::query_handler_internal::ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
 

@@ -21,6 +21,7 @@
 #include <cstring>
 #include <iterator>
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -46,6 +47,7 @@
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "remote/runner_proxy.h"
 
 #include "common/runtime/terminal/terminal_lifecycle.h"
 
@@ -62,6 +64,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -71,6 +74,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -368,6 +372,8 @@ namespace uam
 				queued.uam_agent_execution_capability = uam::strings::NonEmptyOrFallback(
 				    run->execution_capability,
 				    AgentDefinitionService::ExecutionCapabilityForProvider(run->provider_id));
+				if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+					queued.uam_agent_execution_capability = "uam-prompt-injected";
 				return true;
 			}
 			const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
@@ -388,7 +394,9 @@ namespace uam
 			queued.uam_agent_delegates = agent->delegates;
 			queued.uam_agent_workspace_access = agent->workspace_access;
 			queued.uam_agent_execution_capability =
-			    AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id);
+			    chat.execution_host_id == uam::execution_hosts::kLocalHostId
+			        ? AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id)
+			        : "uam-prompt-injected";
 			return true;
 		}
 
@@ -674,6 +682,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool BuildQueuedAcpUserPrompt(AppState& app, ChatSession& chat, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, const std::string& goal_id, bool computer_use_mode, AcpQueuedUserPromptState& queued, std::string* error_out)
 		{
+			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId && computer_use_mode)
+			{
+				if (error_out != nullptr) *error_out = "Computer Use is disabled for remote execution hosts.";
+				return false;
+			}
 			queued.text = uam::strings::Trim(text);
 			if (queued.text.empty())
 			{
@@ -876,12 +889,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			if (handled) return true;
 		}
-		AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
 		AcpQueuedUserPromptState queued;
 		if (!BuildQueuedAcpUserPrompt(app, chat, text, markdown_store_files, attachments, goal_mode, goal_id, computer_use_mode, queued, error_out))
 		{
 			return false;
 		}
+		AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
 		if (uam::AcpSessionHasPendingCancel(session))
 		{
 			const std::string provider_id = session.provider_id;
@@ -911,7 +924,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 		const bool copilot = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli);
-		if (!session.running && !session.processing && copilot)
+		if (!session.running && !session.processing && copilot &&
+		    chat.execution_host_id == uam::execution_hosts::kLocalHostId)
 		{
 			const std::string compatibility_error = CopilotLaunchBlockReason(app);
 			if (IsCopilotCompatibilityCheckPending(app))
@@ -1421,14 +1435,32 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 		UamControlService::RevokeForSession(app, *session);
-		if (ChatSession* chat = ChatDomainService().FindChatById(app, chat_id); chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
 		{
 			acp_detail::SaveChatQuietly(app, *chat);
 		}
 
 		if (session->running)
 		{
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
+			auto& process_service = PlatformServicesFactory::Instance().process_service;
+			bool exited = false;
+			if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+			{
+				std::string ignored_error;
+				if (process_service.WriteToStdioProcess(
+				        *session, uam::remote::kRemoteStopControlLine.data(),
+				        uam::remote::kRemoteStopControlLine.size(), &ignored_error))
+				{
+					for (int attempt = 0; attempt < 100 && !exited; ++attempt)
+					{
+						exited = process_service.PollStdioProcessExited(*session);
+						if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					}
+				}
+			}
+			if (exited) process_service.CloseStdioProcessHandles(*session);
+			else process_service.StopStdioProcess(*session, true);
 		}
 
 		session->running = false;

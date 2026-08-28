@@ -184,6 +184,7 @@ namespace uam
 		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory)
 		{
 			session_json["id"] = session.id;
+			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
 			session_json["title"] = session.title;
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;

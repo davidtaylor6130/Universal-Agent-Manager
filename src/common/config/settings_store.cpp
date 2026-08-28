@@ -1,6 +1,7 @@
 #include "common/config/settings_store.h"
 
 #include "common/config/editor_file_associations.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
@@ -72,6 +73,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
+	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 
@@ -482,6 +484,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
+		uam::execution_hosts::Normalize(settings.execution_hosts);
 		uam::settings::NormalizeUamAgentPreferences(settings);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
@@ -551,6 +554,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
 	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
+	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 	WriteRawSetting(lines, kSettingsCompleteKey, "1");
@@ -759,6 +763,11 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.mcp_servers = uam::mcp_server_config::Parse(parsed);
+		}
+		else if (key == kExecutionHostsKey)
+		{
+			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
+			settings.execution_hosts = uam::execution_hosts::Parse(parsed);
 		}
 		else if (key == kFavoriteUamAgentIdsKey)
 		{

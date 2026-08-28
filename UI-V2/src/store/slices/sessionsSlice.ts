@@ -277,6 +277,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
     mcpServers: [] as McpServerConfiguration[],
+    executionHosts: [{
+      id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
+      runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
+    }] as AppState['executionHosts'],
     favoriteUamAgentIds: [] as string[],
     uamAgentCycleShortcut: 'shift+tab' as UamAgentCycleShortcut,
     uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
@@ -335,7 +339,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat') => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -358,7 +362,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const resp = await sendToCEF<{ chatId?: string }>({
           action: 'createSession',
-          payload: { title: name, folderId: selectedFolderId, providerId: requestedProviderId, defaults },
+          payload: {
+            title: name,
+            folderId: selectedFolderId,
+            providerId: requestedProviderId,
+            defaults,
+            ...(executionHostId === 'local' ? {} : { executionHostId, workspaceDirectory }),
+          },
         })
         if (!resp.ok) {
           console.error('[CEF] createSession failed:', resp.error)
@@ -387,6 +397,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const now = new Date()
       const session: Session = {
         id,
+        executionHostId,
         name,
         viewMode,
         folderId: selectedFolderId,

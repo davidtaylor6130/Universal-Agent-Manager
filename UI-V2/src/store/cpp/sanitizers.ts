@@ -830,6 +830,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
   if (!id) return null
   return {
     id,
+    executionHostId: stringOr(value.executionHostId).trim() || 'local',
     title: stringOr(value.title, 'Untitled'),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
@@ -1391,6 +1392,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       mcpServers: [],
+      executionHosts: [{
+        id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
+        runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
+      }],
       favoriteUamAgentIds: [],
       uamAgentCycleShortcut: 'shift+tab',
     }
@@ -1446,6 +1451,35 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
+  const executionHosts: NonNullable<CppSettings['executionHosts']> = [{
+    id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '',
+    runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
+  }]
+  const seenExecutionHostIds = new Set(['local'])
+  if (Array.isArray(value.executionHosts)) {
+    for (const entry of value.executionHosts) {
+      if (!isRecord(entry)) continue
+      const id = stringOr(entry.id).trim()
+      const sshAlias = stringOr(entry.sshAlias).trim()
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(sshAlias) || seenExecutionHostIds.has(id)) continue
+      seenExecutionHostIds.add(id)
+      const runnerStatus = ['uninstalled', 'installing', 'ready', 'offline', 'error'].includes(stringOr(entry.runnerStatus))
+        ? stringOr(entry.runnerStatus) as 'uninstalled' | 'installing' | 'ready' | 'offline' | 'error'
+        : 'uninstalled'
+      executionHosts.push({
+        id,
+        label: stringOr(entry.label).trim() || sshAlias,
+        transport: 'ssh',
+        sshAlias,
+        runnerStatus,
+        runnerVersion: stringOr(entry.runnerVersion),
+        platform: stringOr(entry.platform),
+        architecture: stringOr(entry.architecture),
+        lastSeenAt: stringOr(entry.lastSeenAt),
+      })
+    }
+  }
   const requestedUamAgentCycleShortcut = stringOr(value.uamAgentCycleShortcut).toLowerCase()
   const uamAgentCycleShortcut = ['shift+tab', 'control+shift+tab', 'alt+shift+tab', 'meta+shift+tab', 'disabled'].includes(requestedUamAgentCycleShortcut)
     ? requestedUamAgentCycleShortcut as CppSettings['uamAgentCycleShortcut']
@@ -1475,6 +1509,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     mcpServers,
+    executionHosts,
     favoriteUamAgentIds,
     uamAgentCycleShortcut,
   }

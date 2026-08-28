@@ -14263,6 +14263,8 @@ UAM_TEST(MacTerminalFastStopTerminatesProcessGroupChildren)
 
 int main(int argc, char** argv)
 {
+	if (argc == 2 && std::string_view(argv[1]) == "--uam-test-control-mcp")
+		return uam::UamControlService::RunStdioServerFromEnvironment();
 #if defined(__APPLE__)
 	if (const std::optional<int> watchdog_result = uam::platform::RunMacParentDeathWatchdogIfRequested(argc, argv); watchdog_result.has_value())
 	{

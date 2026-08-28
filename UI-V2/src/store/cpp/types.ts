@@ -7,7 +7,7 @@ import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
-import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState } from '../../types/session'
+import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
 export type AcpLifecycleState =
@@ -58,6 +58,7 @@ export interface ChatAttachmentInput {
 
 export interface CppChat {
   id: string
+  executionHostId?: string
   title: string
   folderId: string
   pinned?: boolean
@@ -562,6 +563,7 @@ export interface CppSettings {
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
   mcpServers?: McpServerConfiguration[]
+  executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
 }

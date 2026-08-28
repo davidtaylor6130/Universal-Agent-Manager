@@ -61,6 +61,11 @@ namespace uam::computer_use
 		return uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli);
 	}
 
+	bool AvailableForChat(const ChatSession& chat)
+	{
+		return chat.execution_host_id.empty() || chat.execution_host_id == "local";
+	}
+
 	std::string EffectiveBackend(const ChatSession& chat)
 	{
 		const std::string preference = BackendPreference(chat.computer_use_backend);
@@ -96,7 +101,7 @@ namespace uam::computer_use
 
 	nlohmann::json AcpMcpServers(const ChatSession& chat)
 	{
-		if (!UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
+		if (!AvailableForChat(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
 		{
 			return nlohmann::json::array();
 		}
@@ -114,6 +119,12 @@ namespace uam::computer_use
 
 	void AppendCodexMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
+		if (!AvailableForChat(chat))
+		{
+			argv.push_back("--disable");
+			argv.push_back("computer_use");
+			return;
+		}
 		if (!UsesUamBackend(chat))
 		{
 			argv.push_back(chat.computer_use_enabled ? "--enable" : "--disable");
@@ -145,7 +156,7 @@ namespace uam::computer_use
 
 	void AppendClaudeMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
-		if (UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
+		if (AvailableForChat(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
 		{
 			argv.push_back("--mcp-config");
 			argv.push_back(ClaudeMcpConfig(chat));
@@ -156,7 +167,7 @@ namespace uam::computer_use
 
 	void AppendGeminiMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat)
 	{
-		if (UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
+		if (AvailableForChat(chat) && UsesUamBackend(chat) && IsPortableMcpChatId(chat.id))
 		{
 			argv.push_back("--policy");
 			argv.push_back(GeminiPolicyPath().string());

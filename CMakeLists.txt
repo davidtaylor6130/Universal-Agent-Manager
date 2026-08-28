@@ -250,6 +250,7 @@ if(WIN32)
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_application_macos.mm
+    src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_services_macos_impl.cpp
     src/common/platform/platform_pty_macos.cpp
     src/common/platform/platform_process_macos.cpp
@@ -270,6 +271,57 @@ endif()
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
+
+add_executable(uam_runner
+  src/remote/runner_main.cpp
+  src/remote/runner_client.cpp
+  src/remote/runner_protocol.cpp
+  src/remote/runner_proxy.cpp
+  src/remote/runner_state.cpp
+)
+set_target_properties(uam_runner PROPERTIES
+  OUTPUT_NAME "uam-runner"
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  FOLDER "Remote"
+)
+target_include_directories(uam_runner PRIVATE src)
+target_link_libraries(uam_runner PRIVATE nlohmann_json::nlohmann_json)
+if(APPLE)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_parent_watchdog_macos.cpp
+    src/common/platform/platform_process_macos.cpp
+    src/remote/runner_service_posix.cpp
+  )
+  target_link_libraries(uam_runner PRIVATE
+    "-Wl,-framework,Security"
+    "-Wl,-framework,AppKit"
+    "-Wl,-framework,IOKit"
+    "-Wl,-framework,Foundation"
+  )
+elseif(WIN32)
+  target_sources(uam_runner PRIVATE src/common/platform/platform_process_windows.cpp)
+  target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32)
+endif()
+target_compile_definitions(uam_runner PRIVATE
+  UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
+  UAM_HEADLESS_RUNNER=1
+  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+  UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+)
+set(UAM_RUNNER_SHA256_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.sha256")
+add_custom_command(TARGET uam_runner POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=$<TARGET_FILE:uam_runner>
+    -DOUTPUT=${UAM_RUNNER_SHA256_FILE}
+    -P "${CMAKE_SOURCE_DIR}/cmake/write_sha256.cmake"
+  VERBATIM
+  COMMENT "Writing the remote runner checksum"
+)
 
 set(UAM_EXECUTABLE_KIND "")
 if(APPLE AND UAM_MACOS_BUNDLE)
@@ -321,6 +373,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
+  src/cef/remote_host_handlers.cpp
   src/cef/local_chat_bundle_handlers.cpp
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
@@ -381,6 +434,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/gemini_cli_compat.cpp
   ${UAM_PROVIDER_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
+  src/remote/runner_bootstrap.cpp
+  src/remote/runner_client.cpp
+  src/remote/runner_proxy.cpp
   src/common/platform/platform_services.cpp
 )
 
@@ -443,6 +499,7 @@ endif()
 
 target_compile_definitions(universal_agent_manager PRIVATE
   NOMINMAX
+  UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
@@ -758,6 +815,7 @@ add_custom_target(uam_ui_v2_build
   VERBATIM
 )
 add_dependencies(universal_agent_manager uam_ui_v2_build)
+add_dependencies(universal_agent_manager uam_runner)
 set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
 
 if(APPLE AND UAM_MACOS_BUNDLE)
@@ -783,6 +841,14 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/gemini-policy.toml"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:uam_runner>"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${UAM_RUNNER_SHA256_FILE}"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.sha256"
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
 else()
@@ -912,6 +978,7 @@ if(UAM_BUILD_TESTS)
   add_executable(uam_core_tests
     tests/core_tests.cpp
 	    tests/computer_use_tests.cpp
+    tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
     tests/acp_session_tests.cpp
     tests/terminal_tests.cpp
@@ -998,6 +1065,11 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
+    src/remote/runner_protocol.cpp
+    src/remote/runner_bootstrap.cpp
+    src/remote/runner_client.cpp
+    src/remote/runner_proxy.cpp
+    src/remote/runner_state.cpp
     src/common/platform/platform_services.cpp
   )
   set_target_properties(uam_core_tests PROPERTIES

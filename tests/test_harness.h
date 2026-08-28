@@ -26,6 +26,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/settings_normalization.h"
@@ -97,6 +98,11 @@
 #include "cef/state_serializer.h"
 #include "core/chat_import_utils.h"
 #include "core/gemini_cli_compat.h"
+#include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
+#include "remote/runner_client.h"
+#include "remote/runner_bootstrap.h"
+#include "remote/runner_state.h"
 
 #include <nlohmann/json.hpp>
 

@@ -4,6 +4,7 @@
 
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/settings_normalization.h"
@@ -118,6 +119,7 @@ namespace uam::settings_frontend_json
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
+		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
 		return settings_json;

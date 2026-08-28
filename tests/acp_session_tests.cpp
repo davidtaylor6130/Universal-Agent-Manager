@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/agent_definition_service.h"
 #include "app/runtime_activity.h"
+#include "app/uam_control_service.h"
 #include "common/config/mcp_server_config.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -166,6 +167,164 @@ UAM_TEST(AcpSendRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)
 	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, app.chats.front().id, {}, "build", "Do not delegate.", &run_id, &error));
 	UAM_ASSERT(app.agent_runs.empty());
 }
+
+UAM_TEST(RemoteAcpReachesTheHostBoundaryAndUsesPortableAgentInstructions)
+{
+	TempDir temp("uam-remote-acp-boundary");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "remote-opencode";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "missing-remote";
+	app.chats.push_back(std::move(chat));
+
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, "remote-opencode", "Run remotely.", {}, {}, false, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "execution host no longer exists"));
+	UAM_ASSERT_EQ(app.acp_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability,
+	              std::string("uam-prompt-injected"));
+
+	app.acp_sessions.clear();
+	error.clear();
+	UAM_ASSERT(!uam::SendAcpPrompt(app, "remote-opencode", "Use the desktop.", {}, {}, false,
+	                               &error, {}, true));
+	UAM_ASSERT(uam::strings::Contains(error, "Computer Use is disabled"));
+	UAM_ASSERT(app.acp_sessions.empty());
+}
+
+#if defined(__APPLE__)
+UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
+{
+	TempDir temp("uam-remote-acp-e2e");
+	const fs::path runner =
+	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
+	        .parent_path() / "uam-runner";
+	const fs::path ssh = temp.root / "ssh";
+	const fs::path opencode = temp.root / "opencode";
+	UAM_ASSERT(uam::io::WriteTextFile(
+	    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"remote-test","title":"Remote Test","version":"1"},"agentCapabilities":{"loadSession":true}}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"remote-session-1"}}'
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"remote-acp-ok"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      ;;
+  esac
+done
+)"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	fs::permissions(opencode, fs::perms::owner_read | fs::perms::owner_write |
+	                              fs::perms::owner_exec);
+	const std::string inherited_path =
+	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.provider_chat_defaults[uam::provider_ids::kOpenCodeCli].feature_preference = "uam";
+	ExecutionHost host;
+	host.id = "lab";
+	host.label = "Lab";
+	host.transport = "ssh";
+	host.ssh_alias = "home-lab";
+	host.runner_status = "ready";
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+
+	ChatSession chat;
+	chat.id = "remote-e2e";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "remote-e2e", "Answer through the runner.", {}, {},
+	                              false, &error));
+	for (int attempt = 0; attempt < 500; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (app.acp_sessions.front()->session_ready &&
+		    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 2)
+			break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.acp_sessions.front()->session_ready);
+	UAM_ASSERT(!app.acp_sessions.front()->processing);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("remote-acp-ok"));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability,
+	              std::string("uam-prompt-injected"));
+	UAM_ASSERT(uam::StopAcpSession(app, "remote-e2e"));
+}
+
+UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
+{
+	TempDir temp("uam-remote-control-setup");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "remote-control";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "lab";
+	chat.workspace_directory = temp.root.string();
+	chat.uam_control_enabled = true;
+	app.chats.push_back(std::move(chat));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+
+	uam::AcpSessionState session;
+	session.chat_id = app.chats.front().id;
+	session.provider_id = app.chats.front().provider_id;
+	session.running = true;
+	session.initialized = true;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    session, temp.root, {"/bin/cat"}, &error));
+	UAM_ASSERT(uam::acp_detail::SendSessionSetupIfReady(app, session, app.chats.front()));
+
+	std::string output;
+	std::array<char, 16 * 1024> buffer{};
+	for (int attempt = 0; attempt < 100 && output.find("\n{") == std::string::npos; ++attempt)
+	{
+		const std::ptrdiff_t read = PlatformServicesFactory::Instance().process_service
+		                                .ReadStdioProcessStdout(
+		                                    session, buffer.data(), buffer.size(), &error);
+		if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+		if (output.find("\n{") == std::string::npos)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const std::size_t newline = output.find('\n');
+	UAM_ASSERT(newline != std::string::npos);
+	UAM_ASSERT(output.starts_with(uam::remote::kRemoteMcpControlPrefix));
+	const nlohmann::json setup = nlohmann::json::parse(output.substr(newline + 1));
+	const nlohmann::json& servers = setup["params"]["mcpServers"];
+	UAM_ASSERT_EQ(servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(servers[0].value("name", ""), std::string("uam-control"));
+	UAM_ASSERT_EQ(servers[0].value("command", ""), std::string("/bin/sh"));
+	UAM_ASSERT(servers[0]["args"].dump().find("uam-runner\\\" mcp") != std::string::npos);
+	UAM_ASSERT(servers[0].dump().find("--uam-control-mcp") == std::string::npos);
+	UAM_ASSERT(!session.uam_control_capability_id.empty());
+
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+	uam::UamControlService::Shutdown(app);
+}
+#endif
 
 UAM_TEST(AcpSilentTurnCancelsThenStopsWithoutReplayingOrDroppingFuturePrompts)
 {

@@ -29,11 +29,11 @@ import {
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
-import type { Session } from '../../types/session'
+import type { ExecutionHost, Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
 import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
 import { ShellActionsSettings } from './ShellActionsSettings'
 import {
@@ -161,7 +161,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -188,6 +188,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings', icon: MessageSquare },
   { id: 'agents', label: 'Agents', detail: 'Favorites and composer shortcut', icon: ClipboardList },
   { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs', icon: TerminalSquare },
+  { id: 'remote-hosts', label: 'Remote Hosts', detail: 'SSH-connected UAM runners', icon: Server },
   { id: 'voice-input', label: 'Voice Input', detail: 'Speech-to-text provider', icon: Mic },
   { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers', icon: Brain },
   { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill', icon: MemoryStick },
@@ -396,6 +397,7 @@ export function SettingsModal() {
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
   const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
   const mcpServers = useAppStore(useShallow((s) => s.mcpServers))
+  const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const favoriteUamAgentIds = useAppStore(useShallow((s) => s.favoriteUamAgentIds))
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
   const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
@@ -438,6 +440,11 @@ export function SettingsModal() {
   const [mcpExecutable, setMcpExecutable] = useState('')
   const [mcpSaving, setMcpSaving] = useState(false)
   const [mcpMessage, setMcpMessage] = useState('')
+  const [remoteLabel, setRemoteLabel] = useState('')
+  const [remoteAlias, setRemoteAlias] = useState('')
+  const [remoteBusy, setRemoteBusy] = useState(false)
+  const [remoteMessage, setRemoteMessage] = useState('')
+  const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
   const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
   const [agentImportProvider, setAgentImportProvider] = useState('opencode-cli')
   const [agentImportPath, setAgentImportPath] = useState('')
@@ -502,6 +509,55 @@ export function SettingsModal() {
       ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}.`
       : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
     setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+  }
+
+  const previewRemoteHost = async (existing?: ExecutionHost) => {
+    const sshAlias = (existing?.sshAlias ?? remoteAlias).trim()
+    const label = (existing?.label ?? remoteLabel).trim() || sshAlias
+    const portableAlias = sshAlias.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+    const host = {
+      id: existing?.id ?? `ssh-${portableAlias}`,
+      label,
+      sshAlias,
+    }
+    if (!portableAlias || !sshAlias) {
+      setRemoteMessage('Enter one exact host alias from ~/.ssh/config.')
+      return
+    }
+    setRemoteBusy(true)
+    setRemoteMessage('')
+    const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
+    setRemoteBusy(false)
+    if (!response.ok || !response.data) {
+      setRemoteMessage(response.error || 'The remote setup preview could not be created.')
+      return
+    }
+    setRemotePreview(response.data)
+  }
+
+  const installRemoteHost = async () => {
+    if (!remotePreview || remoteBusy) return
+    setRemoteBusy(true)
+    setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
+    const response = await sendToCEF({ action: 'installRemoteHost', payload: remotePreview.host })
+    setRemoteBusy(false)
+    if (!response.ok) {
+      setRemoteMessage(response.error || 'Remote helper setup failed.')
+      return
+    }
+    setRemoteMessage(`${remotePreview.host.label} is ready.`)
+    setRemotePreview(null)
+    setRemoteAlias('')
+    setRemoteLabel('')
+  }
+
+  const removeRemoteHost = async (host: ExecutionHost) => {
+    if (remoteBusy) return
+    setRemoteBusy(true)
+    setRemoteMessage('')
+    const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
+    setRemoteBusy(false)
+    setRemoteMessage(response.ok ? `${host.label} was removed from UAM. The remote helper was left installed.` : response.error || 'Remote host removal failed.')
   }
 
   useEffect(() => {
@@ -1682,6 +1738,95 @@ export function SettingsModal() {
                   </ProviderDisclosureCard>
                 )
               })}
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    if (selectedSection === 'remote-hosts') {
+      const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Remote execution hosts"
+            description="Connect UAM to another computer through one existing SSH config alias. Credentials stay with OpenSSH; UAM copies and checksum-verifies its headless helper."
+          >
+            <div className="grid gap-4">
+              <Notice tone="info" title="Remote Computer Use is disabled" dismissLabel="Dismiss remote Computer Use notice">
+                Remote chats retain structured chat, permissions, cancellation, and provider controls. Screen observation and input stay disabled because UAM cannot safely supervise a remote desktop.
+              </Notice>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  Display name
+                  <input
+                    aria-label="Remote host display name"
+                    value={remoteLabel}
+                    maxLength={128}
+                    placeholder="AI desktop"
+                    onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                    className="rounded-lg px-3 py-2 outline-none"
+                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
+                  />
+                </label>
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  SSH config alias
+                  <input
+                    aria-label="SSH config alias"
+                    value={remoteAlias}
+                    maxLength={255}
+                    placeholder="ai-desktop"
+                    spellCheck={false}
+                    onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                    className="rounded-lg px-3 py-2 font-mono outline-none"
+                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
+                  />
+                </label>
+              </div>
+              <div className="flex justify-end">
+                <Button size="sm" leadingIcon={<Server size={14} />} loading={remoteBusy} disabled={!remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
+                  Preview setup
+                </Button>
+              </div>
+              {remotePreview && (
+                <Notice
+                  tone="warning"
+                  title={`Install helper on ${remotePreview.host.label}?`}
+                  dismissLabel="Dismiss remote host setup preview"
+                  onDismiss={() => setRemotePreview(null)}
+                  actions={<>
+                    <Button size="sm" onClick={() => setRemotePreview(null)}>Cancel</Button>
+                    <Button size="sm" variant="primary" loading={remoteBusy} onClick={() => void installRemoteHost()}>Connect and install</Button>
+                  </>}
+                >
+                  <div className="grid gap-2">
+                    <span>This uses your existing OpenSSH authentication. It first verifies that the host matches this build’s macOS architecture, then creates a private versioned directory under ~/.local/share/uam/runner, copies the helper, verifies SHA-256, and starts it.</span>
+                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>{remotePreview.preview}</pre>
+                  </div>
+                </Notice>
+              )}
+              {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--green)' : 'var(--text-2)' }}>{remoteMessage}</div>}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Configured hosts" description="New Chat shows Runs on after the first remote host is ready.">
+            <div className="grid gap-3">
+              {remoteHosts.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No remote hosts configured.</div>}
+              {remoteHosts.map((host) => (
+                <div key={host.id} className="flex items-start justify-between gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
+                  <div className="min-w-0 text-xs">
+                    <div className="font-medium" style={{ color: 'var(--text)' }}>{host.label}</div>
+                    <div className="mt-1 font-mono" style={{ color: 'var(--text-2)' }}>{host.sshAlias}</div>
+                    <div className="mt-1" style={{ color: host.runnerStatus === 'ready' ? 'var(--green)' : host.runnerStatus === 'error' ? 'var(--red)' : 'var(--text-3)' }}>
+                      {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
+                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => void removeRemoteHost(host)} />
+                  </div>
+                </div>
+              ))}
             </div>
           </SectionCard>
         </div>

@@ -193,6 +193,7 @@ struct AgentRun
 struct ChatSession
 {
 	std::string id;
+	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
 	std::string parent_chat_id;
@@ -342,6 +343,19 @@ struct McpServerConfiguration
 	bool enabled = true;
 };
 
+struct ExecutionHost
+{
+	std::string id = "local";
+	std::string label = "This computer";
+	std::string transport = "local";
+	std::string ssh_alias;
+	std::string runner_status = "ready";
+	std::string runner_version;
+	std::string platform;
+	std::string architecture;
+	std::string last_seen_at;
+};
+
 /// <summary>
 /// Persisted application settings.
 /// </summary>
@@ -382,6 +396,7 @@ struct AppSettings
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	std::vector<McpServerConfiguration> mcp_servers;
+	std::vector<ExecutionHost> execution_hosts;
 	std::vector<std::string> favorite_uam_agent_ids;
 	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";

@@ -137,6 +137,7 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
   return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+    (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     previous.name === next.name &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
@@ -195,6 +196,7 @@ export function sessionFromCppChat(
   const nextSession: Session = {
     uamControlEnabled: chat.uamControlEnabled ?? false,
     id: chat.id,
+    executionHostId: chat.executionHostId ?? 'local',
     name: chat.title || 'Untitled',
     viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,

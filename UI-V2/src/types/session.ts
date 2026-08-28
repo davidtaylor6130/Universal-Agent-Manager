@@ -6,6 +6,18 @@ export type ComputerUseControlState = 'running' | 'paused' | 'stopped'
 export type ComputerUseBackend = 'auto' | 'provider' | 'uam'
 export type ComputerUseEffectiveBackend = 'provider' | 'uam'
 
+export interface ExecutionHost {
+  id: string
+  label: string
+  transport: 'local' | 'ssh'
+  sshAlias: string
+  runnerStatus: 'uninstalled' | 'installing' | 'ready' | 'offline' | 'error'
+  runnerVersion: string
+  platform: string
+  architecture: string
+  lastSeenAt: string
+}
+
 export interface ComputerUseActionResult {
   ok: boolean
   error?: string
@@ -26,6 +38,7 @@ export interface ComputerUseState {
 
 export interface Session {
   id: string
+  executionHostId?: string
   name: string
   viewMode: ViewMode
   folderId: string | null

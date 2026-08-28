@@ -124,6 +124,7 @@ namespace uam
 		for (ChatSession& chat : app.chats)
 		{
 			chat.computer_use_enabled = false;
+			if (!uam::computer_use::AvailableForChat(chat)) continue;
 			if (!uam::computer_use::IsPortableMcpChatId(chat.id))
 				continue;
 			const std::filesystem::path control =
@@ -142,6 +143,12 @@ namespace uam
 		bool changed = false;
 		for (ChatSession& chat : app.chats)
 		{
+			if (!uam::computer_use::AvailableForChat(chat))
+			{
+				chat.computer_use_enabled = false;
+				changed = app.computer_use_by_chat_id.erase(chat.id) > 0 || changed;
+				continue;
+			}
 			if (!uam::computer_use::IsPortableMcpChatId(chat.id))
 			{
 				changed = app.computer_use_by_chat_id.erase(chat.id) > 0 || changed;
@@ -200,6 +207,13 @@ namespace uam
 		{
 			if (error != nullptr)
 				*error = "This chat identifier is not portable enough for computer use.";
+			return false;
+		}
+		const auto chat = std::ranges::find_if(app.chats,
+		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
+		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat))
+		{
+			if (error != nullptr) *error = "Computer Use is disabled for remote execution hosts.";
 			return false;
 		}
 

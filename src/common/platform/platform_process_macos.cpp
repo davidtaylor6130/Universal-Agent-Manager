@@ -509,6 +509,11 @@ class MacProcessService final : public IPlatformProcessService
 
 	bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override
 	{
+#if defined(UAM_HEADLESS_RUNNER)
+		(void)working_directory;
+		if (error_out != nullptr) *error_out = "Opening a local terminal is unavailable in the headless runner.";
+		return false;
+#else
 		if (working_directory.empty())
 		{
 			if (error_out != nullptr)
@@ -529,6 +534,7 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		return true;
+#endif
 	}
 };
 

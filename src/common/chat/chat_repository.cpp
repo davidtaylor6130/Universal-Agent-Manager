@@ -82,6 +82,7 @@ namespace
 	constexpr std::string_view kMessageBlockRequestIdField = "request_id";
 
 	constexpr std::string_view kChatIdField = "id";
+	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
@@ -637,7 +638,8 @@ namespace
 
 	bool ChatIdentityFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return lhs.id == rhs.id && lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id;
+		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
+		       lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id;
 	}
 
 	bool ChatBranchFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -789,6 +791,8 @@ namespace
 			return {std::nullopt, "contains an unsafe chat id"};
 		}
 
+		chat.execution_host_id = uam::strings::NonEmptyOrFallback(
+		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
@@ -1128,6 +1132,8 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 
 	JsonValue root = uam::json::Object();
 	uam::json::SetString(root, kChatIdField, chat.id);
+	uam::json::SetString(root, kChatExecutionHostIdField,
+	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
@@ -1453,6 +1459,7 @@ namespace
 
 	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
 	{
+		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
 		hydrated.pinned = summary.pinned;

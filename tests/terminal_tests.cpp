@@ -19,6 +19,56 @@ UAM_TEST(CliTerminalRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "Imported transcripts are read-only"));
 }
 
+#if defined(__APPLE__)
+UAM_TEST(CliTerminalRoutesRemoteChatsThroughSshWithoutLaunchingTheProviderLocally)
+{
+	TempDir temp("uam-remote-terminal-route");
+	const fs::path captured = temp.root / "ssh-argv.txt";
+	const fs::path ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(
+	    ssh, "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + ShellQuoteForTest(captured.string()) +
+	             "\nprintf 'remote-terminal-ready\\n'\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	const std::string inherited_path =
+	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
+
+	uam::AppState app;
+	app.data_root = temp.root;
+	ProviderProfile provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	provider.output_mode = uam::provider_profile_constants::kOutputModeCli;
+	provider.interactive_command = "/usr/bin/printf provider-must-stay-encoded";
+	app.provider_profiles = {provider};
+	app.settings.active_provider_id = provider.id;
+	ExecutionHost host;
+	host.id = "lab";
+	host.label = "Lab";
+	host.transport = "ssh";
+	host.ssh_alias = "home-lab";
+	host.runner_status = "ready";
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+
+	ChatSession chat;
+	chat.id = "remote-terminal-chat";
+	chat.provider_id = provider.id;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = temp.root.string();
+	uam::CliTerminalState terminal;
+	UAM_ASSERT(uam::StartCliTerminalForChat(app, terminal, chat, 24, 80));
+	for (int attempt = 0; attempt < 100 && !fs::exists(captured); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(captured));
+	const std::string args = uam::io::ReadTextFile(captured);
+	UAM_ASSERT(uam::strings::Contains(args, "home-lab"));
+	UAM_ASSERT(uam::strings::Contains(args, "uam-runner"));
+	UAM_ASSERT(uam::strings::Contains(args, "terminal"));
+	UAM_ASSERT(!uam::strings::Contains(args, "provider-must-stay-encoded"));
+	uam::StopCliTerminal(terminal, true, uam::CliTerminalStopMode::FastExit);
+}
+#endif
+
 UAM_TEST(CliTurnInactivityRecoveryIgnoresProviderOutputNoiseAndUsesInterruptGrace)
 {
 	uam::CliTerminalState terminal;

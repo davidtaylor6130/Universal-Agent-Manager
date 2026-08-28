@@ -144,6 +144,7 @@ function deserializeState(
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     mcpServers: McpServerConfiguration[]
+    executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
@@ -328,6 +329,7 @@ function deserializeState(
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     mcpServers: cpp.settings.mcpServers ?? [],
+    executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
@@ -502,6 +504,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
+    executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
     uamAgentsBySessionId: current.uamAgentsBySessionId,
@@ -665,6 +668,7 @@ export const useAppStore = create<AppState>((set, get) => {
             defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             mcpServers: current.mcpServers,
+            executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
@@ -905,6 +909,7 @@ export const useAppStore = create<AppState>((set, get) => {
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         mcpServers: current.mcpServers,
+        executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
         uamAgentsBySessionId: current.uamAgentsBySessionId,

@@ -852,6 +852,11 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	const bool enabled = payload.value("enabled", false);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
+	if (enabled && !uam::computer_use::AvailableForChat(*chat))
+	{
+		cb->Failure(409, "Computer Use is disabled for remote execution hosts.");
+		return;
+	}
 	const bool uses_uam_backend = uam::computer_use::UsesUamBackend(*chat);
 	if (enabled && uses_uam_backend)
 	{

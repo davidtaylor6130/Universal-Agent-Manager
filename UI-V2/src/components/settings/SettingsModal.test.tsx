@@ -109,6 +109,7 @@ describe('SettingsModal memory settings', () => {
         },
       ],
       mcpServers: [],
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }],
       markdownStoreDirectory: '/tmp/markdown-store',
       markdownStoreError: '',
       isMarkdownStoreOpen: false,
@@ -167,6 +168,53 @@ describe('SettingsModal memory settings', () => {
       cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
   }
+
+  function openRemoteHostsSection(host: HTMLElement) {
+    const button = Array.from(host.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.includes('Remote Hosts') && candidate.textContent?.includes('SSH-connected UAM runners')
+    )
+    expect(button).toBeTruthy()
+    act(() => button?.click())
+  }
+
+  it('previews the exact SSH setup before explicitly installing the helper', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      actions.push(parsed.action)
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform\n2. Copy runner',
+        }))
+        return
+      }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+
+    const label = host.querySelector('input[aria-label="Remote host display name"]') as HTMLInputElement
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(label, 'AI desktop')
+      label.dispatchEvent(new Event('input', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'ai-desktop')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))
+    await act(async () => { preview?.click() })
+
+    expect(actions).toEqual(['previewRemoteHost'])
+    expect(host.textContent).toContain('Install helper on AI desktop?')
+    expect(host.textContent).toContain('Check remote platform')
+    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
+    await act(async () => { install?.click() })
+    expect(actions).toEqual(['previewRemoteHost', 'installRemoteHost'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
 
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(

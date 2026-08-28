@@ -26,6 +26,71 @@ UAM_TEST(ComputerUseBackendPreferenceAndEffectiveRoutingAreConservative)
 	UAM_ASSERT_EQ(effective_backend("codex-cli", "provider"), std::string("provider"));
 }
 
+UAM_TEST(RemoteComputerUseFailsClosedBeforeProviderLaunchOrInput)
+{
+	ChatSession chat;
+	chat.id = "remote-chat";
+	chat.execution_host_id = "lab";
+	chat.provider_id = "codex-cli";
+	chat.computer_use_backend = "provider";
+	chat.computer_use_enabled = true;
+	UAM_ASSERT(!uam::computer_use::AvailableForChat(chat));
+
+	const auto arguments = uam::BuildAcpLaunchArgvForTests(chat);
+	const auto has_pair = [&arguments](std::string_view first, std::string_view second)
+	{
+		for (std::size_t index = 0; index + 1 < arguments.size(); ++index)
+			if (arguments[index] == first && arguments[index + 1] == second) return true;
+		return false;
+	};
+	UAM_ASSERT(has_pair("--disable", "computer_use"));
+	UAM_ASSERT(!std::ranges::any_of(arguments, [](const std::string& argument)
+	    { return argument.find("mcp_servers.uam-computer.") != std::string::npos; }));
+	UAM_ASSERT(uam::computer_use::AcpMcpServers(chat).empty());
+
+	TempDir temp("uam-remote-computer-use-disabled");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::ComputerUseService::SetControlState(app, chat.id, "running", &error));
+	UAM_ASSERT(error.find("remote") != std::string::npos);
+	UAM_ASSERT(!fs::exists(temp.root / "computer-use" / chat.id));
+}
+
+UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
+{
+	UAM_ASSERT_EQ(uam::execution_hosts::Find({}, "local")->id, std::string("local"));
+	UAM_ASSERT_EQ(uam::execution_hosts::Find({}, "")->id, std::string("local"));
+	UAM_ASSERT(uam::execution_hosts::Find({}, "missing-remote") == nullptr);
+	std::vector<ExecutionHost> hosts = {
+	    {.id = "local", .label = "spoof", .transport = "ssh", .ssh_alias = "bad"},
+	    {.id = "lab", .label = "Home lab", .transport = "wrong", .ssh_alias = "uam-lab"},
+	    {.id = "bad id", .label = "Dropped", .transport = "ssh", .ssh_alias = "bad"},
+	    {.id = "lab", .label = "Duplicate", .transport = "ssh", .ssh_alias = "other"},
+	};
+	uam::execution_hosts::Normalize(hosts);
+	UAM_ASSERT_EQ(hosts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(hosts[0].id, std::string("local"));
+	UAM_ASSERT_EQ(hosts[0].transport, std::string("local"));
+	UAM_ASSERT_EQ(hosts[1].id, std::string("lab"));
+	UAM_ASSERT_EQ(hosts[1].transport, std::string("ssh"));
+
+	TempDir temp("uam-execution-host-settings");
+	AppSettings settings;
+	settings.execution_hosts = hosts;
+	const fs::path path = temp.root / "settings.txt";
+	UAM_ASSERT(SettingsStore::Save(path, settings));
+	const std::string persisted = ReadFile(path);
+	UAM_ASSERT(persisted.find("uam-lab") != std::string::npos);
+	UAM_ASSERT(persisted.find("private") == std::string::npos);
+
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(path, loaded).loaded);
+	UAM_ASSERT_EQ(loaded.execution_hosts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.execution_hosts[1].ssh_alias, std::string("uam-lab"));
+}
+
 UAM_TEST(ComputerUseCodexLaunchSelectsExactlyOneController)
 {
 	const auto has_pair = [](const std::vector<std::string>& arguments,

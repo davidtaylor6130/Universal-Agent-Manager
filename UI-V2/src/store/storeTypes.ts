@@ -1,4 +1,4 @@
-import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
+import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
@@ -85,6 +85,7 @@ export interface AppState {
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
   mcpServers: McpServerConfiguration[]
+  executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
@@ -129,7 +130,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode) => Promise<boolean>
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
