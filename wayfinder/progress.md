@@ -867,3 +867,16 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Verification PASS: SettingsModal 45/45; full frontend 38/38 files and 559/559 tests; production
   frontend build; packaged native build and signing. The isolated failed record was removed and the
   test app closed; installed/frozen builds and Gemini remained untouched.
+
+## 2026-08-28 — Positive SSH acceptance externally blocked
+
+- Re-audited the live SSH configuration after all local and negative-transport work. The only
+  configured alias remains `colima`, supplied by the existing Colima include, and a fresh real SSH
+  probe still reports `Linux aarch64`.
+- This macOS package intentionally contains only its matching macOS/arm64 helper and correctly
+  rejects the Linux target before mutation. No reachable macOS/arm64 alias exists, so positive
+  install, ACP, terminal, reconnect, concurrent-chat, explicit-stop, and remote Computer Use
+  fail-closed GUI acceptance cannot be truthfully claimed yet.
+- Local work is preserved in commits `33f809a4`, `f1eafb3c`, and `e1fb10b1`; unrelated untracked
+  owner files remain excluded. Resume from this exact gate when an existing macOS/arm64 host is
+  available through a named `~/.ssh/config` alias.
