@@ -1242,3 +1242,33 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   and selection remain intact, confirms it is not nested in a label, and verifies the specific
   `..` traversal explanation. Focused Settings coverage passes 47/47, the full frontend suite
   passes 565/565, and the production frontend build passes.
+
+## 2026-08-28 — Physical Ubuntu x86-64 helper built; install awaiting per-command approval
+
+- Confirmed the supplied `uam-homelab` SSH alias reaches Ubuntu 24.04 on x86-64 as the unprivileged
+  `davidtaylor613` account. No package manager, Docker/Compose mutation, service restart, or write
+  under `/opt/containers` was used. OpenCode was only inventoried; no cloud-backed model or API was
+  run on the homelab.
+- Built the Linux x86-64 runner directly with the host's existing GCC toolchain inside
+  `/home/davidtaylor613/.cache/uam-build/4.5.7-9fa2f500-linux-x86_64`. The result is an x86-64 ELF
+  reporting version `4.5.7`, with SHA-256
+  `010a6f912ac41717be74d8d87d4baf86b07193f5ff9ebdd6d40fe69b2222fe55` and only standard glibc,
+  libstdc++, libgcc, and libm dependencies.
+- A pre-gate helper protocol smoke test launched the staged binary in direct bridge mode, negotiated
+  protocol v1, reported Linux/x86-64 with `computerUse:false` and `processExecution:true`, ran only
+  `/usr/bin/printf UAM_LINUX_RUNNER_OK` with `/opt/containers` as the read-only working directory,
+  and removed the in-memory process session. It created no file in `/opt/containers`.
+- Packaged Linux ARM64, Linux x86-64, and Windows x86-64 helpers into the local build. The desktop
+  app built and signed successfully. Native CTest passed 6/6 targets once the core test was rerun
+  outside the filesystem sandbox that blocks temporary Unix sockets; both apparent failures were
+  socket-creation restrictions and passed unchanged outside that sandbox.
+- Added the verified Linux x86-64 payload to the already-running isolated
+  `UAM Remote Acceptance Fresh` test bundle, re-signed it, and opened its local-only setup preview.
+  The configured `Homelab NAS` / `uam-homelab` entry is preserved, and the recommended install target
+  is `~/.local/share/uam/runner/4.5.7`. The Applications build and global chat data remain untouched.
+- New user safety gate: no command of any kind may be executed on the homelab without first showing
+  its exact text, effect, and writable scope and receiving written approval. Cloud-backed AI and
+  cloud APIs must never run on the homelab. Future functional AI tests must use the user's local AI
+  only, in a dedicated restrictive throwaway workspace, with every command separately approved.
+- Current stop point: the setup modal is open before **Connect and install**. No installation command
+  has run since the new per-command approval gate was established.
