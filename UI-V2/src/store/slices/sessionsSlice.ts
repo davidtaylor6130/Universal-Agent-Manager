@@ -1,4 +1,4 @@
-import type { Session, ViewMode } from '../../types/session'
+import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
@@ -136,6 +136,12 @@ let sessionCounter = 10
 
 function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
+}
+
+const computerUseSuccess: ComputerUseActionResult = { ok: true }
+
+function computerUseFailure(error?: string): ComputerUseActionResult {
+  return error ? { ok: false, error } : { ok: false }
 }
 
 function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
@@ -1386,6 +1392,73 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: false, error: response.error ?? 'Failed to change permission mode.' }
     },
 
+    setSessionComputerUseBackend: async (id: string, backend: ComputerUseBackend): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if (session.computerUseEnabled) return computerUseFailure('Turn off computer use before changing its control method.')
+      if ((session.computerUseBackend ?? 'auto') === backend) return computerUseSuccess
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setChatComputerUseBackend', payload: { chatId: id, backend } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUseBackend: backend,
+          computerUseTargetId: '',
+          computerUseTargetTitle: '',
+          computerUseTargetKind: 'window',
+          computerUseTargetInputMode: 'foreground',
+          updatedAt: new Date(),
+        } : candidate),
+      }))
+      return computerUseSuccess
+    },
+
+	setSessionComputerUseEnabled: async (id: string, enabled: boolean): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if ((session.computerUseEnabled ?? false) === enabled) return computerUseSuccess
+	  if (enabled && (session.computerUseEffectiveBackend ?? 'uam') === 'uam') {
+		return computerUseFailure('Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.')
+      }
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setChatComputerUseEnabled', payload: { chatId: id, enabled } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUseEnabled: enabled,
+          computerUse: {
+            enabled,
+            state: enabled ? 'running' : 'stopped',
+            history: candidate.computerUse?.history ?? [],
+          },
+          updatedAt: new Date(),
+        } : candidate),
+      }))
+      return computerUseSuccess
+    },
+
+    setSessionComputerUseControl: async (id: string, controlState: ComputerUseControlState): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if (!session.computerUseEnabled || (session.computerUseEffectiveBackend ?? 'uam') !== 'uam') return computerUseFailure()
+      if (session.computerUse?.state === controlState) return computerUseSuccess
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setComputerUseControl', payload: { chatId: id, state: controlState } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUse: { enabled: true, state: controlState, history: candidate.computerUse?.history ?? [] },
+        } : candidate),
+      }))
+      return computerUseSuccess
+    },
+
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
       return get().setSessionMemoryLevel(id, enabled ? 'strict' : 'off')
     },
@@ -1888,6 +1961,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             attachments,
             goalMode: goalId != null,
             goalId,
+            computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
             steerNow,
           },
         })

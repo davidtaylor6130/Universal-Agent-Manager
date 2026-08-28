@@ -233,6 +233,7 @@ endif()
 
 set(UAM_PLATFORM_SOURCES)
 set(UAM_PLATFORM_IMPL_SOURCES)
+set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
@@ -242,6 +243,9 @@ if(WIN32)
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
+  )
+  list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
+    src/computer_use/computer_use_platform_windows.cpp
   )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
@@ -253,8 +257,12 @@ elseif(APPLE)
     src/common/platform/platform_paths_macos.cpp
     src/common/platform/platform_dictation_macos.mm
   )
+  list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
+    src/computer_use/computer_use_platform_macos.mm
+  )
   set_source_files_properties(
     src/common/platform/platform_dictation_macos.mm
+    src/computer_use/computer_use_platform_macos.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
   )
 endif()
@@ -273,7 +281,10 @@ endif()
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_SOURCES}
   ${UAM_PLATFORM_IMPL_SOURCES}
+  ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
+	  src/computer_use/computer_use_mcp_config.cpp
+	  src/computer_use/computer_use_mcp_server.cpp
 	  src/app/agent_definition_service.cpp
 	  src/app/agent_run_ledger.cpp
 	  src/app/agent_run_scheduler.cpp
@@ -281,6 +292,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/application.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
+  src/app/computer_use_service.cpp
   src/app/git_worktree_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
@@ -406,6 +418,11 @@ if(APPLE)
     "-Wl,-framework,AVFoundation"
     "-Wl,-framework,Foundation"
     "-Wl,-framework,Speech"
+    "-Wl,-framework,ApplicationServices"
+    "-Wl,-framework,Carbon"
+    "-Wl,-framework,ImageIO"
+    "-Wl,-framework,QuartzCore"
+    "-Wl,-weak_framework,ScreenCaptureKit"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -415,6 +432,12 @@ elseif(WIN32)
     advapi32
     shell32
     windowsapp
+    gdi32
+    ole32
+    oleaut32
+    user32
+    uiautomationcore
+    windowscodecs
   )
 endif()
 
@@ -481,6 +504,16 @@ if(APPLE)
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
   <key>com.apple.security.cs.disable-library-validation</key><true/>
 </dict>
+</plist>")
+
+    # The Screen Recording + Accessibility companion never initializes CEF/V8.
+    # Keep its high-privilege process free of JIT and library-validation bypasses.
+    set(_computer_use_entitlements "${_cef_plists_dir}/computer-use.entitlements")
+    file(WRITE "${_computer_use_entitlements}"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict/>
 </plist>")
 
     # Write Info.plists and accumulate cmake_script content at configure time.
@@ -556,6 +589,44 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
 ")
     endforeach()
 
+    # Computer Use is a separate UI-element companion so macOS grants its
+    # screen-capture and accessibility permissions to the least-privileged process.
+    set(_computer_use_name "UAM Computer Use")
+    file(WRITE "${_cef_plists_dir}/computer-use-Info.plist"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>${_computer_use_name}</string>
+  <key>CFBundleIdentifier</key><string>com.universalagentmanager.desktop.computer-use</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>${_computer_use_name}</string>
+  <key>CFBundleDisplayName</key><string>${_computer_use_name}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
+  <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+</dict>
+</plist>")
+    string(APPEND _helper_script_content
+"
+set(_computer_use_dir \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app/Contents\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/MacOS\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/Frameworks\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/Resources\")
+file(COPY_FILE \"\${UAM_MAIN_EXE}\" \"\${_computer_use_dir}/MacOS/${_computer_use_name}\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${_cef_plists_dir}/computer-use-Info.plist\" \"\${_computer_use_dir}/Info.plist\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png\" \"\${_computer_use_dir}/Resources/SoftwareCursor.png\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/gemini-policy.toml\" \"\${_computer_use_dir}/Resources/gemini-policy.toml\" ONLY_IF_DIFFERENT)
+if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\")
+  file(CREATE_LINK \"../../../Chromium Embedded Framework.framework\"
+       \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\"
+       SYMBOLIC)
+endif()
+")
+
     # Sign the main executable binary with the JIT entitlement.
     # We sign only the binary (not the whole bundle) to avoid the sealed-resources
     # error caused by non-code assets (e.g. .woff fonts) inside the bundle.
@@ -563,6 +634,12 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
 "require_dictation_usage_descriptions(\"\${UAM_BUNDLE_CONTENTS}/Info.plist\")
 execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitlements}\"
   \"\${UAM_MAIN_EXE}\")
+execute_process(COMMAND codesign --force --sign - --entitlements \"${_computer_use_entitlements}\"
+  \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app\"
+  RESULT_VARIABLE _computer_use_sign_result)
+if(NOT _computer_use_sign_result EQUAL 0)
+  message(FATAL_ERROR \"Failed to sign the Computer Use companion\")
+endif()
 ")
 
     # Write the script to the build dir.
@@ -703,6 +780,9 @@ if(APPLE AND UAM_MACOS_BUNDLE)
       "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/gemini-policy.toml"
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
 else()
@@ -725,6 +805,9 @@ else()
       "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/gemini-policy.toml"
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
 endif()
@@ -784,7 +867,9 @@ endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND codesign --force --deep --sign - --entitlements "${_jit_entitlements}"
+    COMMAND codesign --force --sign -
+      "$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework"
+    COMMAND codesign --force --sign - --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
@@ -826,6 +911,7 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+	    tests/computer_use_tests.cpp
     tests/memory_tests.cpp
     tests/acp_session_tests.cpp
     tests/terminal_tests.cpp
@@ -833,12 +919,16 @@ if(UAM_BUILD_TESTS)
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
+	    ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
+	    src/computer_use/computer_use_mcp_config.cpp
+	    src/computer_use/computer_use_mcp_server.cpp
 	    src/app/agent_definition_service.cpp
 	    src/app/agent_run_ledger.cpp
 	    src/app/agent_run_scheduler.cpp
 	    src/app/uam_control_service.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
+    src/app/computer_use_service.cpp
     src/app/git_worktree_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
@@ -933,6 +1023,11 @@ if(UAM_BUILD_TESTS)
       "-Wl,-framework,AVFoundation"
       "-Wl,-framework,Foundation"
       "-Wl,-framework,Speech"
+      "-Wl,-framework,ApplicationServices"
+      "-Wl,-framework,Carbon"
+      "-Wl,-framework,ImageIO"
+      "-Wl,-framework,QuartzCore"
+      "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE
@@ -942,6 +1037,12 @@ if(UAM_BUILD_TESTS)
       advapi32
       shell32
       windowsapp
+      gdi32
+      ole32
+      oleaut32
+      user32
+      uiautomationcore
+      windowscodecs
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
@@ -983,5 +1084,9 @@ if(UAM_BUILD_TESTS)
   add_test(
     NAME uam_macos_process_spawn_contract
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_macos_process_spawn_contract.cmake
+  )
+  add_test(
+    NAME uam_computer_use_permission_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_computer_use_permission_contract.cmake
   )
 endif()

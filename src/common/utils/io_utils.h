@@ -4,6 +4,7 @@
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -57,6 +58,33 @@ namespace uam::io
 	inline bool TryReadTextFile(const std::filesystem::path& path, std::string& out)
 	{
 		return TryReadFile(path, out);
+	}
+
+	inline bool TryReadTextFile(
+	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
+	{
+		out.clear();
+		std::ifstream file(path, std::ios::in | std::ios::binary);
+		if (!file) return false;
+
+		std::array<char, 8192> buffer{};
+		while (file)
+		{
+			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			const std::size_t count = static_cast<std::size_t>(file.gcount());
+			if (out.size() > max_bytes || count > max_bytes - out.size())
+			{
+				out.clear();
+				return false;
+			}
+			out.append(buffer.data(), count);
+		}
+		if (file.bad())
+		{
+			out.clear();
+			return false;
+		}
+		return true;
 	}
 
 	inline std::string ReadTextFile(const std::filesystem::path& path)

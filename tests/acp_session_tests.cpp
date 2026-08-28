@@ -352,21 +352,24 @@ UAM_TEST(OpenCodeSessionNewLoadAndResumeReceiveSourceWorkspaceMcpServersInWorktr
 	const nlohmann::json session_new = capture_setup_request(false);
 	UAM_ASSERT_EQ(session_new.value("method", ""), std::string("session/new"));
 	UAM_ASSERT_EQ(session_new["params"].value("cwd", ""), worktree.string());
-	UAM_ASSERT_EQ(session_new["params"]["mcpServers"].size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(session_new["params"]["mcpServers"][0].value("name", ""), std::string("Computer Use"));
-	UAM_ASSERT_EQ(session_new["params"]["mcpServers"][0].value("command", ""), server.command);
+	UAM_ASSERT_EQ(session_new["params"]["mcpServers"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(session_new["params"]["mcpServers"][0].value("name", ""), std::string("uam-computer"));
+	UAM_ASSERT_EQ(session_new["params"]["mcpServers"][1].value("name", ""), std::string("Computer Use"));
+	UAM_ASSERT_EQ(session_new["params"]["mcpServers"][1].value("command", ""), server.command);
 
 	stored_chat.native_session_id = "native-opencode-session";
 	app.resolved_native_sessions_by_chat_id[stored_chat.id] = stored_chat.native_session_id;
 	const nlohmann::json session_load = capture_setup_request(true);
 	UAM_ASSERT_EQ(session_load.value("method", ""), std::string("session/load"));
 	UAM_ASSERT_EQ(session_load["params"]["sessionId"].get<std::string>(), stored_chat.native_session_id);
-	UAM_ASSERT_EQ(session_load["params"]["mcpServers"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(session_load["params"]["mcpServers"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(session_load["params"]["mcpServers"][0].value("name", ""), std::string("uam-computer"));
 
 	const nlohmann::json session_resume = capture_setup_request(true, true);
 	UAM_ASSERT_EQ(session_resume.value("method", ""), std::string("session/resume"));
 	UAM_ASSERT_EQ(session_resume["params"]["sessionId"].get<std::string>(), stored_chat.native_session_id);
-	UAM_ASSERT_EQ(session_resume["params"]["mcpServers"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(session_resume["params"]["mcpServers"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(session_resume["params"]["mcpServers"][0].value("name", ""), std::string("uam-computer"));
 }
 
 UAM_TEST(InvalidSavedSessionRetryKeepsWorkspaceMcpServers)
@@ -425,8 +428,9 @@ UAM_TEST(InvalidSavedSessionRetryKeepsWorkspaceMcpServers)
 
 	const nlohmann::json request = nlohmann::json::parse(output, nullptr, false);
 	UAM_ASSERT_EQ(request.value("method", ""), std::string("session/new"));
-	UAM_ASSERT_EQ(request["params"]["mcpServers"].size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(request["params"]["mcpServers"][0].value("name", ""), server.name);
+	UAM_ASSERT_EQ(request["params"]["mcpServers"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(request["params"]["mcpServers"][0].value("name", ""), std::string("uam-computer"));
+	UAM_ASSERT_EQ(request["params"]["mcpServers"][1].value("name", ""), server.name);
 }
 
 UAM_TEST(AcpWorkingDirectoryUsesUtf8)

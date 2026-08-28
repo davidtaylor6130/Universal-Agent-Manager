@@ -228,6 +228,15 @@ struct ChatSession
 	int goal_iteration_repair_attempts = 0;
 	bool uam_control_enabled = false;
 	std::string command_safety_tier = "off";
+	// Enablement and the selected OS target are intentionally runtime-only.
+	// Only the backend preference is persisted with the chat.
+	bool computer_use_enabled = false;
+	std::string computer_use_backend = "auto";
+	std::string computer_use_target_kind = "window";
+	std::string computer_use_target_id;
+	std::string computer_use_target_process_id;
+	std::string computer_use_target_title;
+	std::string computer_use_target_input_mode;
 	std::string model_id;
 	std::string reviewer_model_id;
 	std::string reasoning_effort;

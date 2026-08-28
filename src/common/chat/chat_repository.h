@@ -16,12 +16,13 @@ struct ChatStorageDeleteResult
 	std::error_code metadata_backup_file_error;
 	std::error_code summary_file_error;
 	std::error_code summary_backup_file_error;
+	std::error_code computer_use_directory_error;
 
 	bool Failed() const
 	{
 		return unsafe_chat_id || static_cast<bool>(legacy_directory_error) || static_cast<bool>(metadata_file_error) ||
 		       static_cast<bool>(metadata_backup_file_error) || static_cast<bool>(summary_file_error) ||
-		       static_cast<bool>(summary_backup_file_error);
+		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(computer_use_directory_error);
 	}
 };
 

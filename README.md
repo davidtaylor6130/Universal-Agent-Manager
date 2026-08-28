@@ -53,6 +53,8 @@ history for every provider; Gemini can additionally overlay its native JSON hist
 The detailed, release-gating capability matrix is maintained in
 [docs/provider-runtime-parity.md](docs/provider-runtime-parity.md).
 
+Computer-use architecture and review guidance: [docs/computer-use.md](docs/computer-use.md).
+
 ### View Definitions
 
 | View | Description |

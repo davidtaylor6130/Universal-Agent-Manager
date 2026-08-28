@@ -10,6 +10,7 @@
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/json_runtime.h"
 #include "common/utils/io_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <sstream>
@@ -265,5 +266,6 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildStructuredLaunchArgv(con
 	const std::string approval_mode = uam::approval_modes::GeminiProviderApprovalModeFromAppModeId(uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--approval-mode", approval_mode);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
+	uam::computer_use::AppendGeminiMcpLaunchArguments(argv, chat);
 	return argv;
 }

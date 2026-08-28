@@ -1,0 +1,82 @@
+name: Computer Use Companion
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/computer-use-companion.yml'
+      - 'CMakeLists.txt'
+      - 'src/computer_use/**'
+      - 'src/common/provider/**'
+      - 'src/common/runtime/acp/**'
+      - 'tests/core_tests.cpp'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runtime:
+    name: External-window runtime (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: Builds/companion/_deps
+          key: Windows-uam-computer-use-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: Windows-uam-computer-use-
+      - run: npm --prefix UI-V2 ci
+      - run: cmake -S . -B Builds/companion -DUAM_BUILD_TESTS=ON
+      - run: cmake --build Builds/companion --config Debug --target uam_core_tests
+      - name: Validate isolated external-window capture
+        shell: pwsh
+        run: |
+          $env:UAM_TEST_FILTER = 'ComputerUse'
+          & Builds/companion/Debug/uam_core_tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  provider-contract:
+    name: Provider contract (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Gemini CLI
+            package: '@google/gemini-cli@latest'
+            probe: 'gemini --help'
+            expected: '--acp'
+          - name: Codex CLI
+            package: '@openai/codex@latest'
+            probe: 'codex app-server --help'
+            expected: '--listen'
+          - name: Claude Code
+            package: '@anthropic-ai/claude-code@latest'
+            probe: 'claude --help'
+            expected: '--mcp-config'
+          - name: OpenCode
+            package: 'opencode-ai@latest'
+            probe: 'opencode acp --help'
+            expected: 'acp'
+          - name: GitHub Copilot CLI
+            package: '@github/copilot@latest'
+            probe: 'copilot --help'
+            expected: '--acp'
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global ${{ matrix.package }}
+      - name: Check UAM launch contract
+        shell: bash
+        run: |
+          output="$(${{ matrix.probe }} 2>&1)"
+          printf '%s\n' "$output"
+          grep -F -- '${{ matrix.expected }}' <<< "$output"

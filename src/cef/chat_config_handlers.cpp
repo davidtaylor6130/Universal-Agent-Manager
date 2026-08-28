@@ -5,6 +5,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/computer_use_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -12,6 +13,8 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "computer_use/computer_use_mcp_config.h"
+#include "computer_use/computer_use_platform.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/workspace_root.h"
 #include "common/paths/path_utils.h"
@@ -840,6 +843,130 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"commandSafetyTier", chat->command_safety_tier}}.dump());
+}
+
+void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> browser,
+    const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const bool enabled = payload.value("enabled", false);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	const bool uses_uam_backend = uam::computer_use::UsesUamBackend(*chat);
+	if (enabled && uses_uam_backend)
+	{
+		cb->Failure(409, "Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.");
+		return;
+	}
+
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+	if (enabled && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
+	{
+		cb->Failure(409, "Activate provider computer use after the current structured turn finishes.");
+		return;
+	}
+
+	if (!enabled)
+	{
+		// Turning computer use off is a safety boundary: terminate the provider first,
+		// even if the cooperative control file cannot be updated.
+		(void)uam::StopAcpSession(m_app, chat_id);
+		chat->computer_use_enabled = false;
+		if (uses_uam_backend)
+			(void)uam::ComputerUseService::SetControlState(m_app, chat_id, "stopped");
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success("{}");
+		return;
+	}
+
+	chat->computer_use_enabled = true;
+	(void)uam::StopAcpSession(m_app, chat_id);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("backend", "")));
+	if (requested != uam::computer_use::kBackendAuto && requested != uam::computer_use::kBackendProvider && requested != uam::computer_use::kBackendUam)
+	{
+		cb->Failure(400, "Computer-use backend must be auto, provider, or uam.");
+		return;
+	}
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	if (requested == uam::computer_use::kBackendProvider && !uam::computer_use::ProviderBackendAvailable(chat->provider_id))
+	{
+		cb->Failure(409, "Provider computer use is unavailable in this structured session.");
+		return;
+	}
+	if (chat->computer_use_enabled)
+	{
+		cb->Failure(409, "Turn off computer use before changing its control method.");
+		return;
+	}
+	if (uam::computer_use::BackendPreference(chat->computer_use_backend) == requested)
+	{
+		cb->Success("{}");
+		return;
+	}
+
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+	if (session != nullptr && uam::AcpSessionHasActiveTurn(*session))
+	{
+		cb->Failure(409, "Change the computer-use backend after the current turn finishes.");
+		return;
+	}
+
+	const ChatSession previous = *chat;
+	const std::string previous_updated_at = chat->updated_at;
+	chat->computer_use_backend = requested;
+	chat->computer_use_target_kind = "window";
+	chat->computer_use_target_id.clear();
+	chat->computer_use_target_process_id.clear();
+	chat->computer_use_target_title.clear();
+	chat->computer_use_target_input_mode.clear();
+	chat->updated_at = uam::time::TimestampNow();
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Computer-use control method updated.", "Computer-use control method changed in UI, but failed to save."))
+	{
+		*chat = previous;
+		chat->updated_at = previous_updated_at;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist the computer-use control method."));
+		return;
+	}
+
+	(void)uam::StopAcpSession(m_app, chat_id);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetComputerUseControl(CefRefPtr<CefBrowser> browser,
+    const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("state", "")));
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr) return;
+	if (!uam::computer_use::UsesUamBackend(*chat))
+	{
+		cb->Failure(409, "Use the provider's controls for provider computer use.");
+		return;
+	}
+	if (requested == "running" && !chat->computer_use_enabled)
+	{
+		cb->Failure(409, "Enable computer use before resuming it.");
+		return;
+	}
+
+	std::string error;
+	if (!uam::ComputerUseService::SetControlState(m_app, chat_id, requested, &error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

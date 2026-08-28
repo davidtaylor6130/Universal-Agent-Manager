@@ -153,6 +153,15 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.approvalMode ?? 'default') === next.approvalMode &&
     (previous.uamAgentId ?? 'build') === (next.uamAgentId ?? 'build') &&
     (previous.commandSafetyTier ?? 'off') === (next.commandSafetyTier ?? 'off') &&
+    (previous.computerUseEnabled ?? false) === (next.computerUseEnabled ?? false) &&
+    (previous.computerUseBackend ?? 'auto') === (next.computerUseBackend ?? 'auto') &&
+    (previous.computerUseEffectiveBackend ?? 'uam') === (next.computerUseEffectiveBackend ?? 'uam') &&
+    (previous.computerUseProviderAvailable ?? false) === (next.computerUseProviderAvailable ?? false) &&
+    (previous.computerUseTargetKind ?? 'window') === (next.computerUseTargetKind ?? 'window') &&
+    (previous.computerUseTargetId ?? '') === (next.computerUseTargetId ?? '') &&
+    (previous.computerUseTargetTitle ?? '') === (next.computerUseTargetTitle ?? '') &&
+    (previous.computerUseTargetInputMode ?? 'foreground') === (next.computerUseTargetInputMode ?? 'foreground') &&
+    JSON.stringify(previous.computerUse) === JSON.stringify(next.computerUse) &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
     (previous.memoryLevel ?? ((previous.memoryEnabled ?? true) ? 'strict' : 'off')) === next.memoryLevel &&
     (previous.smallModelMode ?? false) === (next.smallModelMode ?? false) &&
@@ -203,6 +212,15 @@ export function sessionFromCppChat(
     approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
     uamAgentId: chat.uamAgentId?.trim() || 'build',
     commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
+    computerUseEnabled: chat.computerUseEnabled ?? chat.computerUse?.enabled ?? false,
+    computerUseBackend: chat.computerUseBackend ?? 'auto',
+    computerUseEffectiveBackend: chat.computerUseEffectiveBackend ?? 'uam',
+    computerUseProviderAvailable: chat.computerUseProviderAvailable ?? false,
+    computerUseTargetKind: chat.computerUseTargetKind ?? 'window',
+    computerUseTargetId: chat.computerUseTargetId ?? '',
+    computerUseTargetTitle: chat.computerUseTargetTitle ?? '',
+    computerUseTargetInputMode: chat.computerUseTargetInputMode ?? 'foreground',
+    computerUse: chat.computerUse,
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
     smallModelMode: chat.smallModelMode ?? false,
@@ -820,6 +838,7 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
     return prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&
+      Boolean(prompt.computerUseMode) === Boolean(other.computerUseMode) &&
       Boolean(prompt.prioritySteer) === Boolean(other.prioritySteer) &&
       sameArrayEntries(prompt.markdownStoreFiles, other.markdownStoreFiles) &&
       attachmentsEquivalent(prompt.attachments, other.attachments)

@@ -308,6 +308,7 @@ namespace uam
 		bool append_user_message = true;
 		bool goal_mode = false;
 		std::string goal_id;
+		bool computer_use_mode = false;
 		bool priority_steer = false;
 	};
 
@@ -629,6 +630,27 @@ namespace uam
 		int repair_attempts = 0;
 	};
 
+	struct ComputerUseHistoryEntry
+	{
+		std::string time;
+		std::string action;
+		std::string status;
+		std::string detail;
+	};
+
+	struct ComputerUseRuntimeState
+	{
+		std::string state = "stopped";
+		std::string target_kind;
+		std::string target_id;
+		std::string target_process_id;
+		std::string target_title;
+		std::string target_input_mode;
+		std::vector<ComputerUseHistoryEntry> history;
+		std::string fingerprint;
+		std::string source_signature;
+	};
+
 	/// <summary>
 	/// Shared application state for the CEF/React provider CLI release slice.
 	/// </summary>
@@ -689,6 +711,7 @@ namespace uam
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
+		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::string memory_last_status;
 		MemoryActivityState memory_activity;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;

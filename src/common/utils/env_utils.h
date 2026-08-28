@@ -93,4 +93,13 @@ namespace uam::env
 
 		return GetTrimmedPath("HOME");
 	}
+
+	inline bool SetString(const char* name, const std::string& value)
+	{
+#if defined(_WIN32)
+		return _putenv_s(name, value.c_str()) == 0;
+#else
+		return setenv(name, value.c_str(), 1) == 0;
+#endif
+	}
 } // namespace uam::env

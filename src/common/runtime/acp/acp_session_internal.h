@@ -224,9 +224,10 @@ nlohmann::json BuildCodexInitializeRequest(int request_id);
 nlohmann::json BuildCodexInitializedNotification();
 nlohmann::json BuildCodexModelListRequest(int request_id);
 nlohmann::json BuildCodexRateLimitsReadRequest(int request_id);
-nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd);
-nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
-nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id, const std::string& cwd);
+nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat = nullptr);
+nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd, const ChatSession* chat = nullptr);
+nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id,
+	                                     const std::string& cwd, const ChatSession* chat = nullptr);
 nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd);
 nlohmann::json BuildCodexThreadResumeRequest(int request_id, const ChatSession& chat, const std::string& cwd);
 nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported);

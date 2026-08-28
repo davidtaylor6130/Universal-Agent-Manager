@@ -4909,4 +4909,66 @@ describe('useAppStore Gemini CLI slice', () => {
     const resumeRequest = requests.find((request) => request.action === 'resumeGoal')
     expect(resumeRequest?.payload).toEqual({ chatId: 'chat-1', goalId: 'goal-1' })
   })
+
+  it('routes enabled computer-use prompts and runtime controls through CEF', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    const now = new Date()
+    useAppStore.setState({
+      sessions: [{
+        id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now,
+		computerUseEnabled: true, computerUseEffectiveBackend: 'uam', computerUseTargetId: '42', computerUseTargetTitle: 'Fixture',
+		computerUse: { enabled: true, state: 'running', history: [] },
+      }],
+    })
+
+	await expect(useAppStore.getState().setSessionComputerUseControl('chat-1', 'paused')).resolves.toEqual({ ok: true })
+	await expect(useAppStore.getState().sendAcpPrompt('chat-1', 'Click Run')).resolves.toBe(true)
+
+    expect(requests).toEqual([
+	  expect.objectContaining({ action: 'setComputerUseControl', payload: { chatId: 'chat-1', state: 'paused' } }),
+	  expect.objectContaining({ action: 'sendAcpPrompt', payload: expect.objectContaining({ text: 'Click Run', computerUseMode: true }) }),
+    ])
+  })
+
+	it('keeps UAM computer use model-requested instead of user-enabled', async () => {
+	  const requests: Array<{ action: string }> = []
+	  window.cefQuery = ({ request, onSuccess }) => {
+		requests.push(JSON.parse(request))
+		onSuccess('{}')
+	  }
+	  const now = new Date()
+	  useAppStore.setState({ sessions: [{
+		id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now,
+		computerUseEffectiveBackend: 'uam',
+	  }] })
+
+	  await expect(useAppStore.getState().setSessionComputerUseEnabled('chat-1', true)).resolves.toEqual({
+		ok: false,
+		error: 'Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.',
+	  })
+	  expect(requests).toEqual([])
+	})
+
+  it('keeps provider computer use targetless and blocks UAM-only pause controls', async () => {
+    const requests: Array<{ action: string }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    const now = new Date()
+    useAppStore.setState({
+      sessions: [{
+        id: 'chat-1', name: 'Chat', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now,
+        computerUseEffectiveBackend: 'provider',
+      }],
+    })
+
+    await expect(useAppStore.getState().setSessionComputerUseEnabled('chat-1', true)).resolves.toEqual({ ok: true })
+    await expect(useAppStore.getState().setSessionComputerUseControl('chat-1', 'paused')).resolves.toEqual({ ok: false })
+    expect(requests).toHaveLength(1)
+  })
 })

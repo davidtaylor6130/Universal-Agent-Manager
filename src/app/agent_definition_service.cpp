@@ -679,13 +679,18 @@ namespace uam
 		if (provider == provider_ids::kOpenCodeCli)
 		{
 			const std::filesystem::path agents = adapter.directory / "agent";
+			const nlohmann::json permission{{"*", "ask"},
+			                                {"task", "deny"},
+			                                {"uam-computer_computer_observe", "allow"},
+			                                {"uam-computer_computer_action", "allow"}};
 			if (uam::paths::IsLinkOrReparsePointNoThrow(agents) || !uam::paths::CreateDirectoriesNoThrow(agents) ||
 			    !uam::io::WriteTextFile(adapter.directory / "opencode.json",
 			                            nlohmann::json{{"$schema", "https://opencode.ai/config.json"},
 			                                           {"default_agent", native_id}, {"subagent_depth", 0},
-			                                           {"permission", {{"*", "ask"}, {"task", "deny"}}}}.dump(2) + "\n") ||
+			                                           {"experimental", {{"mcp_timeout", 120000}}},
+			                                           {"permission", permission}}.dump(2) + "\n") ||
 			    !uam::io::WriteTextFile(agents / (native_id + ".md"),
-			                            "---\ndescription: UAM-managed agent\nmode: primary\npermission:\n  \"*\": ask\n  task: deny\n---\n" + instructions + "\n"))
+			                            "---\ndescription: UAM-managed agent\nmode: primary\npermission:\n  \"*\": ask\n  task: deny\n  uam-computer_computer_observe: allow\n  uam-computer_computer_action: allow\n---\n" + instructions + "\n"))
 			{
 				if (error_out != nullptr) *error_out = "Could not write the isolated OpenCode agent configuration.";
 				return false;

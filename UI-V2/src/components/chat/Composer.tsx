@@ -2,7 +2,7 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square, X, Check } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, X, Check } from 'lucide-react'
 import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -121,6 +121,7 @@ export function ComposerToolbar({
   permissionControlsDisabled,
   providerModes,
   uamAgents,
+  computerUseMode,
   memoryLevel,
   defaultMemoryLevel,
   memoryChipVisible,
@@ -137,6 +138,8 @@ export function ComposerToolbar({
   onSelectProviderMode,
   onSelectUamAgent,
   onSelectPermissionMode,
+  onToggleComputerUseMode,
+  onOpenComputerUse,
   onSelectMemoryLevel,
   onClearMemoryLevel,
   onToggleSmallModelMode,
@@ -180,6 +183,7 @@ export function ComposerToolbar({
   permissionControlsDisabled: boolean
   providerModes: Array<{ id: string; name: string; description?: string }>
   uamAgents: Array<{ id: string; name: string; description?: string }>
+  computerUseMode: boolean
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
   memoryChipVisible: boolean
@@ -196,6 +200,8 @@ export function ComposerToolbar({
   onSelectProviderMode: (modeId: string) => void
   onSelectUamAgent: (agentId: string) => void
   onSelectPermissionMode: (modeId: string) => void
+  onToggleComputerUseMode: () => void
+  onOpenComputerUse: () => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
   onClearMemoryLevel: () => void
   onToggleSmallModelMode: () => void
@@ -430,6 +436,19 @@ export function ComposerToolbar({
                 style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
               />
             </label>
+            <button
+              type="button"
+              role="menuitem"
+              title="Configure computer use"
+              aria-haspopup="dialog"
+              aria-pressed={computerUseMode}
+              onClick={() => { setOptionsOpen(false); onOpenComputerUse() }}
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: computerUseMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: computerUseMode ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : chipStyle.background, color: computerUseMode ? 'var(--text)' : 'var(--text-2)' }}
+            >
+              <MousePointer2 size={13} aria-hidden style={{ color: computerUseMode ? 'var(--accent)' : 'var(--text-3)' }} />
+              <span>Computer use…</span>
+            </button>
             {(hasReasoningEffort || caps.hasServiceTier || variantOptions.length > 0) && (
               <>
                 <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
@@ -597,6 +616,7 @@ export function ComposerToolbar({
       ) : <>
       <div className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
+        {computerUseMode && <ActiveModeChip label="Computer use" compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
         {featurePreference === 'uam' && uamAgentId !== 'build' && <ActiveModeChip label={`${uamAgentNextTurn ? 'Next agent' : 'UAM agent'}: ${selectedUamAgent?.name ?? uamAgentId}`} compactLabel={selectedUamAgent?.name ?? uamAgentId} icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectUamAgent('build')} />}
         {featurePreference === 'provider' && providerPlanActive && <ActiveModeChip label="Provider Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectProviderMode('default')} />}
         <ActiveModeChip

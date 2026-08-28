@@ -690,6 +690,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.approval_mode = source.approval_mode;
 	branch.uam_agent_id = source.uam_agent_id;
 	branch.command_safety_tier = source.command_safety_tier;
+	branch.computer_use_backend = source.computer_use_backend;
 	branch.memory_level = source.memory_level;
 	branch.memory_enabled = source.memory_enabled;
 	branch.small_model_mode = source.small_model_mode;

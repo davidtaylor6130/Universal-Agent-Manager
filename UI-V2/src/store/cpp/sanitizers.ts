@@ -362,6 +362,7 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
       : [],
     goalMode: Boolean(value.goalMode),
     goalId: stringOr(value.goalId),
+    ...(value.computerUseMode === true ? { computerUseMode: true } : {}),
     prioritySteer: typeof value.prioritySteer === 'boolean' ? value.prioritySteer : undefined,
   }
 }
@@ -850,6 +851,28 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
         ? value.commandSafetyTier
         : booleanOr(value.autoApproveCommands) || stringOr(value.approvalMode).trim() === 'yolo' ? 'yolo' : 'off'
     ),
+    computerUseEnabled: booleanOr(value.computerUseEnabled),
+    computerUseBackend: value.computerUseBackend === 'provider' || value.computerUseBackend === 'uam' ? value.computerUseBackend : 'auto',
+    computerUseEffectiveBackend: value.computerUseEffectiveBackend === 'provider' ? 'provider' : 'uam',
+    computerUseProviderAvailable: booleanOr(value.computerUseProviderAvailable),
+    computerUseTargetKind: value.computerUseTargetKind === 'screen' ? 'screen' : 'window',
+    computerUseTargetId: stringOr(value.computerUseTargetId),
+    computerUseTargetTitle: stringOr(value.computerUseTargetTitle),
+    computerUseTargetInputMode: value.computerUseTargetInputMode === 'background' ? 'background' : 'foreground',
+    computerUse: isRecord(value.computerUse)
+      ? {
+          enabled: booleanOr(value.computerUse.enabled),
+          state: value.computerUse.state === 'paused' || value.computerUse.state === 'stopped' ? value.computerUse.state : 'running',
+          history: Array.isArray(value.computerUse.history)
+            ? value.computerUse.history.flatMap((entry) => isRecord(entry) ? [{
+                time: stringOr(entry.time),
+                action: stringOr(entry.action),
+                status: stringOr(entry.status),
+                detail: stringOr(entry.detail),
+              }] : [])
+            : [],
+        }
+      : undefined,
     memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),

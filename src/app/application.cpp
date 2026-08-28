@@ -4,6 +4,7 @@
 #include "agent_run_scheduler.h"
 #include "chat_domain_service.h"
 #include "chat_lifecycle_service.h"
+#include "computer_use_service.h"
 #include "goal_service.h"
 #include "markdown_store_service.h"
 #include "persistence_coordinator.h"
@@ -324,6 +325,7 @@ void Application::PollTick()
 	uam::FlushPendingChatSaves(m_app);
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
+	const bool computer_use_changed = uam::ComputerUseService::Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const std::string folder_availability = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	const bool folder_availability_changed = folder_availability != m_workspaceFolderAvailabilityFingerprint;
@@ -350,7 +352,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
+	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -415,6 +417,7 @@ bool Application::InitializeState()
 		return false;
 	}
 	std::fprintf(stderr, "[storage] data_root=%s\n", uam::paths::Utf8PathString(m_app.data_root).c_str());
+	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 
 	std::string shell_action_error;
 	if (!ShellActionService::QueueLaunchRequest(m_app.data_root, m_launchArguments, &m_shellActionInvocation, &shell_action_error))
@@ -543,6 +546,11 @@ bool Application::InitializeState()
 		}
 		if (!hydrate_warning.empty())
 			m_app.status_line = hydrate_warning;
+	}
+	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
+	{
+		m_app.status_line =
+		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
 
 	if (settings_dirty)

@@ -791,6 +791,18 @@ UAM_TEST(ProviderAgentRuntimeAdaptersAreIsolatedExactAndPermissionMediated)
 	    uam::io::ReadTextFile(opencode.directory / "opencode.json"));
 	UAM_ASSERT_EQ(opencode_config["permission"].value("*", ""), std::string("ask"));
 	UAM_ASSERT_EQ(opencode_config["permission"].value("task", ""), std::string("deny"));
+	UAM_ASSERT_EQ(opencode_config["permission"].value("uam-computer_computer_observe", ""),
+	              std::string("allow"));
+	UAM_ASSERT_EQ(opencode_config["permission"].value("uam-computer_computer_action", ""),
+	              std::string("allow"));
+	UAM_ASSERT_EQ(opencode_config["experimental"].value("mcp_timeout", 0), 120000);
+	const std::string opencode_agent = uam::io::ReadTextFile(
+	    opencode.directory / "agent" /
+	    ("uam-" + opencode.directory.filename().string() + ".md"));
+	UAM_ASSERT(uam::strings::Contains(opencode_agent,
+	                                  "uam-computer_computer_observe: allow"));
+	UAM_ASSERT(uam::strings::Contains(opencode_agent,
+	                                  "uam-computer_computer_action: allow"));
 	UAM_ASSERT_EQ(opencode_config.value("subagent_depth", -1), 0);
 
 	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(
@@ -8290,7 +8302,11 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeOpenCodeCopilotAndUnknownExact
 	const auto opencode_environment = opencode.BuildStructuredLaunchEnvironment({}, {});
 	UAM_ASSERT_EQ(opencode_environment.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(opencode_environment.front().first, std::string("OPENCODE_PERMISSION"));
-	UAM_ASSERT_EQ(opencode_environment.front().second, std::string(R"({"*":"ask","task":"deny"})"));
+	const nlohmann::json opencode_permissions = nlohmann::json::parse(opencode_environment.front().second);
+	UAM_ASSERT_EQ(opencode_permissions.value("*", ""), std::string("ask"));
+	UAM_ASSERT_EQ(opencode_permissions.value("task", ""), std::string("deny"));
+	UAM_ASSERT_EQ(opencode_permissions.value("uam-computer_computer_observe", ""), std::string("allow"));
+	UAM_ASSERT_EQ(opencode_permissions.value("uam-computer_computer_action", ""), std::string("allow"));
 #else
 	UAM_ASSERT_EQ(std::string(opencode.RuntimeId()), std::string("unsupported"));
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsEnabledRuntimeId("opencode-cli"));
@@ -8730,7 +8746,8 @@ UAM_TEST(StructuredLaunchArgvIsProviderOwnedAndStable)
 		ChatSession chat;
 		chat.provider_id = "codex-cli";
 		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
-		UAM_ASSERT_EQ(argv, (std::vector<std::string>{"codex", "app-server", "--listen", "stdio://"}));
+		UAM_ASSERT_EQ(argv, (std::vector<std::string>{
+		    "codex", "--disable", "computer_use", "app-server", "--listen", "stdio://"}));
 	}
 #endif
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -8754,12 +8771,16 @@ UAM_TEST(StructuredLaunchArgvIsProviderOwnedAndStable)
 		ChatSession chat;
 		chat.provider_id = "gemini-cli";
 		chat.model_id = " gemini-2.5-pro ";
+		chat.id = "gemini-chat";
 		const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
-		UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(4));
+		UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(6));
 		UAM_ASSERT_EQ(argv[0], std::string("gemini"));
 		UAM_ASSERT_EQ(argv[1], std::string("--acp"));
 		UAM_ASSERT_EQ(argv[2], std::string("--model"));
 		UAM_ASSERT_EQ(argv[3], std::string("gemini-2.5-pro"));
+		UAM_ASSERT_EQ(argv[4], std::string("--policy"));
+		UAM_ASSERT_EQ(std::filesystem::path(argv[5]).filename().string(),
+		    std::string("gemini-policy.toml"));
 	}
 #endif
 }
@@ -10551,27 +10572,32 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	chat.native_session_id = "native-1";
 
 	const std::vector<std::string> default_argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(default_argv.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(default_argv.size(), static_cast<std::size_t>(4));
 	UAM_ASSERT_EQ(default_argv[0], std::string("gemini"));
 	UAM_ASSERT_EQ(default_argv[1], std::string("--acp"));
+	UAM_ASSERT_EQ(default_argv[2], std::string("--policy"));
+	UAM_ASSERT_EQ(std::filesystem::path(default_argv[3]).filename().string(),
+	    std::string("gemini-policy.toml"));
 
 	chat.model_id = " flash ";
 	const std::vector<std::string> selected_argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(selected_argv.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(selected_argv.size(), static_cast<std::size_t>(6));
 	UAM_ASSERT_EQ(selected_argv[0], std::string("gemini"));
 	UAM_ASSERT_EQ(selected_argv[1], std::string("--acp"));
 	UAM_ASSERT_EQ(selected_argv[2], std::string("--model"));
 	UAM_ASSERT_EQ(selected_argv[3], std::string("flash"));
+	UAM_ASSERT_EQ(selected_argv[4], std::string("--policy"));
 
 	chat.approval_mode = " plan ";
 	const std::vector<std::string> plan_argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(plan_argv.size(), static_cast<std::size_t>(6));
+	UAM_ASSERT_EQ(plan_argv.size(), static_cast<std::size_t>(8));
 	UAM_ASSERT_EQ(plan_argv[0], std::string("gemini"));
 	UAM_ASSERT_EQ(plan_argv[1], std::string("--acp"));
 	UAM_ASSERT_EQ(plan_argv[2], std::string("--approval-mode"));
 	UAM_ASSERT_EQ(plan_argv[3], std::string("plan"));
 	UAM_ASSERT_EQ(plan_argv[4], std::string("--model"));
 	UAM_ASSERT_EQ(plan_argv[5], std::string("flash"));
+	UAM_ASSERT_EQ(plan_argv[6], std::string("--policy"));
 
 	chat.approval_mode = " acceptEdits ";
 	const std::vector<std::string> accept_edits_argv = uam::BuildAcpLaunchArgvForTests(chat);
@@ -10581,7 +10607,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	chat.approval_mode = " plan ";
 	const std::string detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", chat);
 	UAM_ASSERT(detail.find("cwd=/tmp/project") != std::string::npos);
-	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash") != std::string::npos);
+	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash --policy") != std::string::npos);
 	UAM_ASSERT(detail.find("nativeSessionId=native-1") != std::string::npos);
 
 	ChatSession codex_chat;
@@ -10590,13 +10616,16 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	codex_chat.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
 	codex_chat.model_id = "gpt-5.4";
 	const std::vector<std::string> codex_argv = uam::BuildAcpLaunchArgvForTests(codex_chat);
-	UAM_ASSERT_EQ(codex_argv.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(codex_argv.size(), static_cast<std::size_t>(16));
 	UAM_ASSERT_EQ(codex_argv[0], std::string("codex"));
-	UAM_ASSERT_EQ(codex_argv[1], std::string("app-server"));
-	UAM_ASSERT_EQ(codex_argv[2], std::string("--listen"));
-	UAM_ASSERT_EQ(codex_argv[3], std::string("stdio://"));
+	UAM_ASSERT_EQ(codex_argv[1], std::string("--disable"));
+	UAM_ASSERT_EQ(codex_argv[2], std::string("computer_use"));
+	UAM_ASSERT_EQ(codex_argv[13], std::string("app-server"));
+	UAM_ASSERT_EQ(codex_argv[14], std::string("--listen"));
+	UAM_ASSERT_EQ(codex_argv[15], std::string("stdio://"));
 	const std::string codex_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", codex_chat);
-	UAM_ASSERT(codex_detail.find("argv=codex app-server --listen stdio://") != std::string::npos);
+	UAM_ASSERT(codex_detail.find("argv=codex --disable computer_use") != std::string::npos);
+	UAM_ASSERT(codex_detail.find("app-server --listen stdio://") != std::string::npos);
 	UAM_ASSERT(codex_detail.find("nativeSessionId=6a6f0f3b-1a0b-4a9c-8a01-111111111111") != std::string::npos);
 
 	ChatSession claude_chat;
@@ -10606,7 +10635,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	claude_chat.model_id = "sonnet";
 	claude_chat.approval_mode = "plan";
 	const std::vector<std::string> claude_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
-	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(13));
+	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(17));
 	UAM_ASSERT_EQ(claude_argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(claude_argv[1], std::string("-p"));
 	UAM_ASSERT_EQ(claude_argv[2], std::string("--output-format"));
@@ -10620,6 +10649,10 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(claude_argv[10], std::string("sonnet"));
 	UAM_ASSERT_EQ(claude_argv[11], std::string("--resume"));
 	UAM_ASSERT_EQ(claude_argv[12], std::string("claude-session-2"));
+	UAM_ASSERT_EQ(claude_argv[13], std::string("--mcp-config"));
+	UAM_ASSERT(nlohmann::json::parse(claude_argv[14])["mcpServers"].contains("uam-computer"));
+	UAM_ASSERT_EQ(claude_argv[15], std::string("--allowedTools"));
+	UAM_ASSERT_EQ(claude_argv[16], std::string("mcp__uam-computer__computer_observe,mcp__uam-computer__computer_action"));
 	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
 	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
 
@@ -10649,12 +10682,13 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	copilot_chat.native_session_id = "copilot-session-1";
 	copilot_chat.reasoning_effort = "max";
 	const std::vector<std::string> copilot_argv = uam::BuildAcpLaunchArgvForTests(copilot_chat);
-	UAM_ASSERT_EQ(copilot_argv.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(copilot_argv.size(), static_cast<std::size_t>(6));
 	UAM_ASSERT_EQ(copilot_argv[0], std::string("copilot"));
 	UAM_ASSERT_EQ(copilot_argv[1], std::string("--acp"));
 	UAM_ASSERT_EQ(copilot_argv[2], std::string("--stdio"));
 	UAM_ASSERT_EQ(copilot_argv[3], std::string("--effort"));
 	UAM_ASSERT_EQ(copilot_argv[4], std::string("max"));
+	UAM_ASSERT_EQ(copilot_argv[5], std::string("--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)"));
 	const std::string copilot_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", copilot_chat);
 	UAM_ASSERT(copilot_detail.find("argv=copilot --acp --stdio --effort max") != std::string::npos);
 	UAM_ASSERT(copilot_detail.find("nativeSessionId=copilot-session-1") != std::string::npos);

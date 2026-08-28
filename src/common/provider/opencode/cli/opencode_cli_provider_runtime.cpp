@@ -75,7 +75,8 @@ std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::Bui
 {
 	// OpenCode ACP does not reliably forward child-session permission requests, so
 	// disable Task until the provider can mediate those requests without hanging.
-	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny"})"}};
+	// UAM's own native target grant is the approval boundary for these exact tools.
+	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"allow","uam-computer_computer_action":"allow"})"}};
 }
 
 std::string OpenCodeCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const

@@ -1,5 +1,6 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
@@ -108,6 +109,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", ClaudeStructuredPermissionMode(chat));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
+	uam::computer_use::AppendClaudeMcpLaunchArguments(argv, chat);
 	return argv;
 }
 

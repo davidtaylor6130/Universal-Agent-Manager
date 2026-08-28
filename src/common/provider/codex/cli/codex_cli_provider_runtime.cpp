@@ -1,5 +1,6 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -96,9 +97,12 @@ std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const Provider
 	return argv;
 }
 
-std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
+std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
-	return {"codex", "app-server", "--listen", "stdio://"};
+	std::vector<std::string> argv = {"codex"};
+	uam::computer_use::AppendCodexMcpLaunchArguments(argv, chat);
+	uam::provider_runtime_internal::AppendLiteralArgs(argv, {"app-server", "--listen", "stdio://"});
+	return argv;
 }
 
 nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const

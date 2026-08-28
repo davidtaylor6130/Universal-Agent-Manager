@@ -1560,6 +1560,8 @@ summary,
 .uam-switch input:focus-visible + .uam-switch__track { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
+.uam-computer-use-switch .uam-switch__track { background: color-mix(in srgb, var(--surface-high) 72%, transparent); backdrop-filter: blur(12px); }
+.uam-computer-use-switch input:checked + .uam-switch__track { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 56%, var(--purple))); border-color: color-mix(in srgb, white 24%, var(--accent)); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent); }
 
 .uam-dictation-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
 .uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; animation: uam-dictation-bar .72s ease-in-out infinite alternate; }

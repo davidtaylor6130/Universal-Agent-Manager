@@ -25,6 +25,7 @@
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -200,6 +201,14 @@ namespace uam
 			session_json["uamAgentId"] = uam::strings::NonEmptyOrFallback(session.uam_agent_id, "build");
 			session_json["uamControlEnabled"] = session.uam_control_enabled;
 			session_json["commandSafetyTier"] = session.command_safety_tier;
+			session_json["computerUseEnabled"] = session.computer_use_enabled;
+			session_json["computerUseBackend"] = uam::computer_use::BackendPreference(session.computer_use_backend);
+			session_json["computerUseEffectiveBackend"] = uam::computer_use::EffectiveBackend(session);
+			session_json["computerUseProviderAvailable"] = uam::computer_use::ProviderBackendAvailable(session.provider_id);
+			session_json["computerUseTargetKind"] = session.computer_use_target_kind;
+			session_json["computerUseTargetId"] = session.computer_use_target_id;
+			session_json["computerUseTargetTitle"] = session.computer_use_target_title;
+			session_json["computerUseTargetInputMode"] = session.computer_use_target_input_mode;
 			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
 			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
 			session_json["smallModelMode"] = session.small_model_mode;
@@ -214,6 +223,27 @@ namespace uam
 			session_json["messageCount"] = MessageCountForFrontend(session);
 			session_json["messagesDigest"] = MessageDigestForFingerprint(session);
 			session_json["activeGoalId"] = session.active_goal_id.empty() ? nullptr : nlohmann::json(session.active_goal_id);
+		}
+
+		nlohmann::json SerializeComputerUseState(const AppState& app, const ChatSession& chat)
+		{
+			nlohmann::json result = {
+			    {"enabled", chat.computer_use_enabled},
+			    {"state", chat.computer_use_enabled ? "running" : "stopped"},
+			    {"history", nlohmann::json::array()},
+			};
+			if (!uam::computer_use::UsesUamBackend(chat)) return result;
+			const auto found = app.computer_use_by_chat_id.find(chat.id);
+			if (found == app.computer_use_by_chat_id.end()) return result;
+			result["state"] = found->second.state;
+			for (const ComputerUseHistoryEntry& entry : found->second.history)
+			{
+				result["history"].push_back({
+				    {"time", entry.time}, {"action", entry.action},
+				    {"status", entry.status}, {"detail", entry.detail},
+				});
+			}
+			return result;
 		}
 
 		nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
@@ -286,6 +316,7 @@ namespace uam
 			    {"attachments", std::move(attachments)},
 			    {"goalMode", prompt.goal_mode},
 			    {"goalId", prompt.goal_id},
+			    {"computerUseMode", prompt.computer_use_mode},
 			    {"prioritySteer", prompt.priority_steer},
 			};
 		}
@@ -924,6 +955,7 @@ namespace uam
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
+			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
 
 			// Serialize goals for fingerprint
 			if (!chat.goals.empty())
@@ -1257,6 +1289,7 @@ namespace uam
 
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
+			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
 			chats_arr.push_back(std::move(chat_json));
 		}
 		j["chats"] = chats_arr;

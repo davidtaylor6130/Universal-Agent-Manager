@@ -7,6 +7,7 @@ import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState } from '../../types/session'
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
 export type AcpLifecycleState =
@@ -74,6 +75,15 @@ export interface CppChat {
   uamAgentId?: string
   uamControlEnabled?: boolean
   commandSafetyTier?: 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
+  computerUseEnabled?: boolean
+  computerUseBackend?: ComputerUseBackend
+  computerUseEffectiveBackend?: ComputerUseEffectiveBackend
+  computerUseProviderAvailable?: boolean
+  computerUseTargetKind?: 'window' | 'screen'
+  computerUseTargetId?: string
+  computerUseTargetTitle?: string
+  computerUseTargetInputMode?: 'background' | 'foreground'
+  computerUse?: ComputerUseState
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
   smallModelMode?: boolean
@@ -283,6 +293,7 @@ export interface AcpQueuedPrompt {
   attachments: Attachment[]
   goalMode: boolean
   goalId: string
+  computerUseMode?: boolean
   prioritySteer?: boolean
 }
 

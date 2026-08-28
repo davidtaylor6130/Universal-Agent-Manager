@@ -67,7 +67,9 @@ namespace
 			}
 			for (nlohmann::json& server : source_servers) servers.push_back(std::move(server));
 		}
-		request["params"]["mcpServers"] = std::move(servers);
+		nlohmann::json& request_servers = request["params"]["mcpServers"];
+		if (!request_servers.is_array()) request_servers = nlohmann::json::array();
+		for (nlohmann::json& server : servers) request_servers.push_back(std::move(server));
 		if (chat != nullptr && !UamControlService::AppendSessionMcpServer(
 		                         app, session, *chat, method, request, &error))
 		{
@@ -406,7 +408,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.resume_session_supported && !uam::strings::IsBlank(resume_chat.native_session_id))
 	{
 		method = uam::acp_methods::kSessionResume;
-		msg = BuildResumeSessionRequest(id, resume_chat.native_session_id, cwd);
+		msg = BuildResumeSessionRequest(id, resume_chat.native_session_id, cwd, &resume_chat);
 	}
 	else
 	{
@@ -469,7 +471,7 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	session.ignore_session_updates_until_ready = false;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
-	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd);
+	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &chat);
 	if (!AddWorkspaceMcpServers(app, session, uam::acp_methods::kSessionNew, cwd,
 	                            retry_request))
 	{

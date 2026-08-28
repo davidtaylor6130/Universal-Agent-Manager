@@ -54,10 +54,10 @@ nlohmann::json IProviderRuntime::OnAcpBuildSetupRequest(int request_id, const Ch
 	if (can_load && !uam::strings::IsBlank(chat.native_session_id))
 	{
 		out_method = uam::acp_methods::kSessionLoad;
-		return BuildLoadSessionRequest(request_id, chat.native_session_id, cwd);
+		return BuildLoadSessionRequest(request_id, chat.native_session_id, cwd, &chat);
 	}
 	out_method = uam::acp_methods::kSessionNew;
-	return BuildNewSessionRequest(request_id, cwd);
+	return BuildNewSessionRequest(request_id, cwd, &chat);
 }
 
 std::string IProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const

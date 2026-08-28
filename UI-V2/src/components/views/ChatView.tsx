@@ -1,7 +1,7 @@
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
-import { Session } from '../../types/session'
+import type { ComputerUseActionResult, Session } from '../../types/session'
 import { MarkdownContent } from '../markdown/Markdown'
 import {
   useAppStore,
@@ -94,8 +94,9 @@ import {
   providerConfigVariantOptions,
   type DictationState,
 } from '../chat/Composer'
+import { ComputerUseModal } from '../chat/ComputerUseModal'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
@@ -456,6 +457,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
+  const [computerUseModalOpen, setComputerUseModalOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
@@ -487,6 +489,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const steeringTimeoutRef = useRef<number | null>(null)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
+    computerUseModalOpen ||
     s.isNewChatModalOpen ||
     s.isSettingsOpen ||
     s.memoryLibraryScope !== null ||
@@ -568,6 +571,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const favoriteUamAgentIds = useAppStore(useShallow((s) => s.favoriteUamAgentIds))
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
+  const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
+  const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
+  const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
+  const computerUseEffectiveBackend = session.computerUseEffectiveBackend ?? 'uam'
+  const computerUseMode = Boolean(session.computerUseEnabled)
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
@@ -1638,6 +1646,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     setGoalError('')
   }
 
+  const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
+    return setSessionComputerUseEnabled(session.id, active)
+  }
+
   // Slash command palette: typing "/" at the start of an empty-ish draft opens
   // a traversable menu of UAM actions (Codex-style), filtered by what follows.
   const currentMemoryLevel: MemoryLevel = session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off')
@@ -1694,6 +1706,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
+        { id: 'computer', label: '/computer', hint: `Configure computer use · ${computerUseEffectiveBackend === 'provider' ? 'Provider built-in' : 'UAM controlled'}`, icon: <MousePointer2 size={15} />, run: () => setComputerUseModalOpen(true) },
         {
           id: 'memory',
           label: '/memory',
@@ -1721,7 +1734,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, computerUseEffectiveBackend, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -2736,6 +2749,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               permissionControlsDisabled={permissionControlsDisabled}
               providerModes={providerModes}
               uamAgents={uamAgents}
+              computerUseMode={computerUseMode}
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
               memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
@@ -2768,6 +2782,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               onSelectProviderMode={(modeId) => void setSessionApprovalMode(session.id, modeId)}
               onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
+              onToggleComputerUseMode={() => void setComputerUseActive(false)}
+              onOpenComputerUse={() => setComputerUseModalOpen(true)}
               onSelectMemoryLevel={(level) => {
                 setMemoryChipExplicit(true)
                 void setSessionMemoryLevel(session.id, level)
@@ -2850,6 +2866,26 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
           </div>
         </form>
       </div>
+      {computerUseModalOpen && (
+        <ComputerUseModal
+          active={computerUseMode}
+          enabled={session.computerUseEnabled ?? false}
+          disabled={runtimeBlocksControlChanges}
+          backend={session.computerUseBackend ?? 'auto'}
+          effectiveBackend={computerUseEffectiveBackend}
+          providerAvailable={session.computerUseProviderAvailable ?? false}
+          providerName={currentProviderName}
+          modelLabel={currentModel.label}
+          targetKind={session.computerUseTargetKind ?? 'window'}
+          targetTitle={session.computerUseTargetTitle ?? ''}
+          targetInputMode={session.computerUseTargetInputMode ?? 'foreground'}
+          state={session.computerUse?.state ?? (session.computerUseEnabled ? 'running' : 'stopped')}
+          onClose={() => setComputerUseModalOpen(false)}
+          onSetActive={setComputerUseActive}
+          onSetBackend={(backend) => setSessionComputerUseBackend(session.id, backend)}
+          onSetControl={(state) => setSessionComputerUseControl(session.id, state)}
+        />
+      )}
     </div>
   )
 })

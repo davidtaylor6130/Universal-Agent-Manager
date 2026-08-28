@@ -1,6 +1,7 @@
 #include "chat_lifecycle_service.h"
 
 #include "app/chat_domain_service.h"
+#include "app/computer_use_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -725,6 +726,12 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 	}
 	chat->native_session_id.clear();
+	chat->computer_use_enabled = false;
+	chat->computer_use_target_kind = "window";
+	chat->computer_use_target_id.clear();
+	chat->computer_use_target_process_id.clear();
+	chat->computer_use_target_title.clear();
+	chat->computer_use_target_input_mode.clear();
 	ChatHistorySyncService().ForgetResolvedNativeSessionForChat(app, chat->id);
 	chat->updated_at = uam::time::TimestampNow();
 
@@ -742,6 +749,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		return ChatProviderSwitchResult::SaveFailed;
 	}
 
+	(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
 	(void)StopAcpSession(app, chat->id);
 	std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat->id; });
 	StopAndEraseCliTerminalForChat(app, chat->id, false);

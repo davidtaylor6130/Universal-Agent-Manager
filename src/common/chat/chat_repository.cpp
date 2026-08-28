@@ -14,6 +14,7 @@
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <limits>
@@ -110,6 +111,7 @@ namespace
 	constexpr std::string_view kChatGoalIterationRepairAttemptsField = "goal_iteration_repair_attempts";
 	constexpr std::string_view kChatAutoApproveCommandsField = "auto_approve_commands";
 	constexpr std::string_view kChatCommandSafetyTierField = "commandSafetyTier";
+	constexpr std::string_view kChatComputerUseBackendField = "computer_use_backend";
 	constexpr std::string_view kChatModelIdField = "model_id";
 	constexpr std::string_view kChatReviewerModelIdField = "reviewer_model_id";
 	constexpr std::string_view kChatReasoningEffortField = "reasoning_effort";
@@ -682,6 +684,7 @@ namespace
 	{
 		if (lhs.approval_mode != rhs.approval_mode || lhs.uam_agent_id != rhs.uam_agent_id ||
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
+		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
 		    lhs.goal_iteration_goal_id != rhs.goal_iteration_goal_id ||
 		    lhs.goal_iteration_turn_kind != rhs.goal_iteration_turn_kind ||
@@ -818,6 +821,8 @@ namespace
 		const std::string persisted_command_safety_tier = JsonStringOrEmpty(root.Find(kChatCommandSafetyTierField));
 		chat.command_safety_tier = uam::command_safety::NormalizeTier(
 		    persisted_command_safety_tier.empty() && legacy_auto_approve_commands ? "yolo" : persisted_command_safety_tier);
+		chat.computer_use_backend = uam::computer_use::BackendPreference(
+		    JsonStringOrEmpty(root.Find(kChatComputerUseBackendField)));
 		if (chat.approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
 		{
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
@@ -1155,6 +1160,8 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatGoalIterationTurnKindField, chat.goal_iteration_turn_kind);
 	uam::json::SetNumber(root, kChatGoalIterationRepairAttemptsField, static_cast<double>(chat.goal_iteration_repair_attempts));
 	uam::json::SetString(root, kChatCommandSafetyTierField, uam::command_safety::NormalizeTier(chat.command_safety_tier));
+	uam::json::SetString(root, kChatComputerUseBackendField,
+	    uam::computer_use::BackendPreference(chat.computer_use_backend));
 	uam::json::SetString(root, kChatModelIdField, chat.model_id);
 	uam::json::SetString(root, kChatReviewerModelIdField, chat.reviewer_model_id);
 	uam::json::SetString(root, kChatReasoningEffortField, chat.reasoning_effort);
@@ -1313,6 +1320,8 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
 	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
+	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
+	    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
 	return result;
 }
 
@@ -1464,6 +1473,13 @@ namespace
 		hydrated.active_goal_id = summary.active_goal_id;
 		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;
+		hydrated.computer_use_enabled = summary.computer_use_enabled;
+		hydrated.computer_use_backend = summary.computer_use_backend;
+		hydrated.computer_use_target_kind = summary.computer_use_target_kind;
+		hydrated.computer_use_target_id = summary.computer_use_target_id;
+		hydrated.computer_use_target_process_id = summary.computer_use_target_process_id;
+		hydrated.computer_use_target_title = summary.computer_use_target_title;
+		hydrated.computer_use_target_input_mode = summary.computer_use_target_input_mode;
 		hydrated.model_id = summary.model_id;
 		hydrated.reviewer_model_id = summary.reviewer_model_id;
 		hydrated.reasoning_effort = summary.reasoning_effort;
