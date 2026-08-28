@@ -990,3 +990,29 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   existing console session, so it is held for explicit action-time authorization.
 - The repository branch, isolated acceptance bundle, installed Applications build, draft PR, and
   remote machines were otherwise unchanged during this discovery step.
+
+## 2026-08-28 — Repository-only application boundary reconfirmed
+
+- A GUI launch mistakenly targeted the installed user application instead of the isolated test
+  bundle. Interaction stopped immediately; a process check confirmed that no UAM process remained
+  running.
+- All subsequent GUI acceptance work is restricted to
+  `Builds/remote-acceptance/UAM Remote Acceptance.app` (bundle id
+  `com.universalagentmanager.desktop.remoteacceptance`). Its executable path will be verified before
+  every launch. The installed Applications build remains outside the test scope.
+
+## 2026-08-28 — Windows concurrency test now matches its claim
+
+- Audit found that `WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutdown`
+  used two clients but only one session, so it did not actually prove concurrent chats.
+- Tightened the existing Windows-only test without adding infrastructure: chat A now remains blocked
+  on stdin, chat B independently runs and exits, the first bridge disconnects, and the second bridge
+  attaches to chat A and completes it through the preserved stdin channel. The attach request carries
+  an intentionally different command, so the expected output also proves that the original process
+  was resumed rather than replaced.
+- The repository Debug build completed. The first native test run reported two POSIX runner-service
+  failures because the restricted shell denied local Unix-domain socket binding with `Operation not
+  permitted`; rerunning the identical suite with local socket permission passed 6/6 in 54.14 seconds.
+  No GUI application was launched during build or verification.
+- This improves the Windows acceptance evidence but does not replace the remaining actual Windows 11
+  execution gate.

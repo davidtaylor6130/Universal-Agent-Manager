@@ -429,24 +429,42 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 	std::string error;
 	UAM_ASSERT(first.Connect(&error));
 	UAM_ASSERT(second.Connect(&error));
-	const std::vector<std::string> command = {
-	    "cmd.exe", "/d", "/s", "/c", "ping -n 2 127.0.0.1 >nul & <nul set /p =reconnected"};
-	UAM_ASSERT(first.StartProcess("windows-chat", fs::temp_directory_path(), command,
-	                              {}, &error));
-	UAM_ASSERT(second.StartProcess("windows-chat", fs::temp_directory_path(), command,
-	                               {}, &error, true));
-	first.Disconnect();
-	std::string output;
-	for (int attempt = 0; attempt < 500; ++attempt)
+	UAM_ASSERT(first.StartProcess(
+	    "windows-chat-a", fs::temp_directory_path(),
+	    {"cmd.exe", "/d", "/v:on", "/s", "/c",
+	     "set /p value=& <nul set /p =!value!"},
+	    {}, &error));
+	UAM_ASSERT(second.StartProcess(
+	    "windows-chat-b", fs::temp_directory_path(),
+	    {"cmd.exe", "/d", "/s", "/c", "<nul set /p =concurrent"}, {}, &error));
+	auto poll_until_exit = [&](const std::string& session_id)
 	{
-		uam::remote::ProcessPollResult poll;
-		UAM_ASSERT(second.PollProcess("windows-chat", poll, &error));
-		output += poll.standard_output;
-		if (!poll.running) break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
-	UAM_ASSERT_EQ(output, std::string("reconnected"));
-	UAM_ASSERT(second.RemoveProcess("windows-chat", &error));
+		std::string output;
+		bool exited = false;
+		for (int attempt = 0; attempt < 500 && !exited; ++attempt)
+		{
+			uam::remote::ProcessPollResult poll;
+			UAM_ASSERT(second.PollProcess(session_id, poll, &error));
+			output += poll.standard_output;
+			exited = !poll.running;
+			if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(exited);
+		return output;
+	};
+	UAM_ASSERT_EQ(poll_until_exit("windows-chat-b"), std::string("concurrent"));
+	UAM_ASSERT(second.RemoveProcess("windows-chat-b", &error));
+	first.Disconnect();
+	UAM_ASSERT(second.StartProcess(
+	    "windows-chat-a", fs::temp_directory_path(),
+	    {"cmd.exe", "/d", "/s", "/c", "exit 99"}, {}, &error, true));
+	uam::remote::ProcessPollResult attached;
+	UAM_ASSERT(second.PollProcess("windows-chat-a", attached, &error));
+	UAM_ASSERT(attached.running);
+	UAM_ASSERT(second.WriteProcess("windows-chat-a", "reconnected\r\n", &error));
+	UAM_ASSERT(second.CloseProcessInput("windows-chat-a", &error));
+	UAM_ASSERT_EQ(poll_until_exit("windows-chat-a"), std::string("reconnected"));
+	UAM_ASSERT(second.RemoveProcess("windows-chat-a", &error));
 	run_runner("stop");
 	second.Disconnect();
 }
