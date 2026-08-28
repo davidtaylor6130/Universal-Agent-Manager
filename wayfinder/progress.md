@@ -975,3 +975,18 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   reconnect/concurrency/process-tree containment, packaged install, prompt, attachment, terminal,
   and remote Computer Use rejection. No reachable Windows SSH host is currently configured, so this
   remains explicitly blocked rather than inferred from contract/fake-transport tests.
+
+## 2026-08-28 — Windows 11 target located; SSH enablement requires approval
+
+- Read-only inspection of Microsoft Windows App found the existing **Gaming AI Desktop** Windows
+  target at `ai.homelab.com` and its saved Tailscale address `100.95.44.9`. No RDP connection was
+  started and no saved credential was read or changed.
+- The LAN hostname is reachable but actively refuses TCP/22; the Tailscale address times out on
+  TCP/22. The Mac has no local Windows VM, Windows cross-toolchain, or Wine environment that could
+  provide equivalent named-pipe/process-tree evidence.
+- The remaining route is to connect through the saved RDP entry and, if absent, install/enable
+  Windows OpenSSH Server, set `sshd` to start automatically, and permit inbound TCP/22 on the
+  intended Windows firewall profile. This creates persistent network access and may interrupt an
+  existing console session, so it is held for explicit action-time authorization.
+- The repository branch, isolated acceptance bundle, installed Applications build, draft PR, and
+  remote machines were otherwise unchanged during this discovery step.
