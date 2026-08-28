@@ -7,6 +7,7 @@ interface ComputerUseModalProps {
   active: boolean
   enabled: boolean
   disabled: boolean
+  remoteDisabled?: boolean
   backend: ComputerUseBackend
   effectiveBackend: ComputerUseEffectiveBackend
   providerAvailable: boolean
@@ -26,6 +27,7 @@ export function ComputerUseModal({
   active,
   enabled,
   disabled,
+  remoteDisabled = false,
   backend,
   effectiveBackend,
   providerAvailable,
@@ -96,7 +98,9 @@ export function ComputerUseModal({
   }
 
   const effectiveLabel = effectiveBackend === 'provider' ? 'Provider built-in' : 'UAM controlled'
-  const automaticStatus = backend === 'auto'
+  const automaticStatus = remoteDisabled
+    ? 'Remote Computer Use is disabled.'
+    : backend === 'auto'
     ? `Automatic currently uses ${effectiveLabel}.`
     : `Using ${effectiveLabel}.`
 
@@ -158,7 +162,11 @@ export function ComputerUseModal({
               {automaticStatus}
               {active && <span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Turn computer use off before changing this method.</span>}
             </div>
-            {providerAvailable ? (
+            {remoteDisabled ? (
+              <span style={{ color: 'var(--text-3)' }}>
+                Remote chats keep provider, terminal, file, and tool workflows, but cannot observe or control a desktop. Run this chat locally to use Computer Use.
+              </span>
+            ) : providerAvailable ? (
               <span style={{ color: 'var(--text-3)' }}>
                 Provider built-in is an unprobed preview for Codex structured sessions. UAM does not verify the installed Codex version supports it. Automatic uses UAM.
               </span>
@@ -210,9 +218,11 @@ export function ComputerUseModal({
                     : 'color-mix(in srgb, var(--surface-up) 78%, transparent)',
                 }}
               >
-                <span className="font-medium" style={{ color: 'var(--text)' }}>{active ? 'AI control approved' : 'Ready for an AI request'}</span>
+                <span className="font-medium" style={{ color: 'var(--text)' }}>{remoteDisabled ? 'Remote Computer Use is disabled' : active ? 'AI control approved' : 'Ready for an AI request'}</span>
                 <span style={{ color: 'var(--text-3)' }}>
-                  {active
+                  {remoteDisabled
+                    ? 'UAM will reject Computer Use requests for this remote chat. No remote screen or input session can start.'
+                    : active
                     ? `${targetTitle || 'Approved target'} · ${targetKind === 'screen' ? 'full display' : targetInputMode === 'background' ? 'background window control' : 'foreground window control'}`
                     : 'Ask the AI to use Computer Use. It chooses the target and UAM asks you once to Allow or Deny.'}
                 </span>
@@ -230,7 +240,7 @@ export function ComputerUseModal({
                 )}
               </section>
 
-              <section
+              {!remoteDisabled && <section
                 className="grid gap-1 rounded-lg px-3 py-3"
                 style={{ border: '1px solid var(--border)', background: 'color-mix(in srgb, var(--surface-up) 78%, transparent)' }}
               >
@@ -238,9 +248,9 @@ export function ComputerUseModal({
                 <span style={{ color: 'var(--text-3)' }}>
                   UAM sends bounded screenshots and accessibility labels from only the approved target to {providerName} ({modelLabel}). Typed content is redacted from UAM action history.
                 </span>
-              </section>
+              </section>}
 
-              <section
+              {!remoteDisabled && <section
                 className="grid gap-1 rounded-lg px-3 py-3"
                 style={{ border: '1px solid var(--border)', background: 'color-mix(in srgb, var(--surface-up) 78%, transparent)' }}
               >
@@ -248,7 +258,7 @@ export function ComputerUseModal({
                 <span style={{ color: 'var(--text-3)' }}>
                   The AI names the target and UAM asks once before granting it. Allow gives that chat target-scoped control without repeated UAM prompts until you pause, stop, or the target closes.
                 </span>
-              </section>
+              </section>}
 
               {enabled && (
                 <section className="flex items-center gap-2 border-t pt-4" style={{ borderColor: 'var(--border)' }}>

@@ -34,10 +34,30 @@ app_exe="$app_root/Contents/MacOS/universal_agent_manager"
 packaged_ui="$app_root/Contents/Resources/UI-V2/dist"
 cef_framework="$app_root/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"
 cef_helper="$app_root/Contents/Frameworks/universal_agent_manager Helper.app/Contents/MacOS/universal_agent_manager Helper"
+remote_root="$app_root/Contents/Resources/remote"
 [[ -x "$app_exe" ]]
 [[ -f "$packaged_ui/index.html" ]]
 [[ -x "$cef_framework" ]]
 [[ -x "$cef_helper" ]]
+for remote_file in \
+    "$remote_root/linux-arm64/uam-runner" \
+    "$remote_root/linux-arm64/uam-runner.sha256" \
+    "$remote_root/linux-x86_64/uam-runner" \
+    "$remote_root/linux-x86_64/uam-runner.sha256" \
+    "$remote_root/windows-x86_64/uam-runner.exe" \
+    "$remote_root/windows-x86_64/uam-runner.sha256"
+do
+    [[ -f "$remote_file" ]]
+done
+for remote_runner in \
+    "$remote_root/linux-arm64/uam-runner" \
+    "$remote_root/linux-x86_64/uam-runner" \
+    "$remote_root/windows-x86_64/uam-runner.exe"
+do
+    expected_hash=$(tr -d '[:space:]' < "$remote_runner.sha256")
+    actual_hash=$(shasum -a 256 "$remote_runner" | awk '{print $1}')
+    [[ "$actual_hash" == "$expected_hash" ]]
+done
 codesign --verify --deep --strict "$app_root"
 
 if [[ -n "$expected_ui_dist" ]]; then

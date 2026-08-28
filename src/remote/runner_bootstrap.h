@@ -14,11 +14,21 @@ namespace uam::remote
 		std::string expected_output;
 	};
 
+	struct RunnerArtifact
+	{
+		std::string platform;
+		std::string architecture;
+		std::filesystem::path path;
+		std::string sha256;
+	};
+
 	struct BootstrapPlan
 	{
 		std::string ssh_alias;
 		std::string version;
 		std::string install_directory;
+		std::string nonce;
+		std::vector<RunnerArtifact> artifacts;
 		std::vector<BootstrapStep> steps;
 	};
 
@@ -31,10 +41,9 @@ namespace uam::remote
 	};
 
 	bool BuildBootstrapPlan(const std::string& ssh_alias,
-	                        const std::filesystem::path& local_runner,
 	                        const std::string& version,
-	                        const std::string& sha256,
 	                        const std::string& nonce,
+	                        std::vector<RunnerArtifact> artifacts,
 	                        BootstrapPlan& plan,
 	                        std::string* error_out = nullptr);
 	std::string BootstrapPlanPreview(const BootstrapPlan& plan);

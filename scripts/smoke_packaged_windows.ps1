@@ -16,9 +16,24 @@ foreach ($required in @(
     (Join-Path $packageRoot 'libcef.dll'),
     (Join-Path $packageRoot 'icudtl.dat'),
     (Join-Path $packageRoot 'resources.pak'),
-    (Join-Path $packageRoot 'locales')
+    (Join-Path $packageRoot 'locales'),
+    (Join-Path $packageRoot 'remote/linux-arm64/uam-runner'),
+    (Join-Path $packageRoot 'remote/linux-arm64/uam-runner.sha256'),
+    (Join-Path $packageRoot 'remote/linux-x86_64/uam-runner'),
+    (Join-Path $packageRoot 'remote/linux-x86_64/uam-runner.sha256'),
+    (Join-Path $packageRoot 'remote/windows-x86_64/uam-runner.exe'),
+    (Join-Path $packageRoot 'remote/windows-x86_64/uam-runner.sha256')
 )) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Packaged Windows artifact is missing $required." }
+}
+foreach ($remoteRunner in @(
+    (Join-Path $packageRoot 'remote/linux-arm64/uam-runner'),
+    (Join-Path $packageRoot 'remote/linux-x86_64/uam-runner'),
+    (Join-Path $packageRoot 'remote/windows-x86_64/uam-runner.exe')
+)) {
+    $expectedHash = (Get-Content -LiteralPath ($remoteRunner + '.sha256') -Raw).Trim()
+    $actualHash = (Get-FileHash -LiteralPath $remoteRunner -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) { throw "Packaged remote runner checksum mismatch: $remoteRunner." }
 }
 
 function Get-TreeDigest([string] $Root) {

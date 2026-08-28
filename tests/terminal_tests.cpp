@@ -47,6 +47,9 @@ UAM_TEST(CliTerminalRoutesRemoteChatsThroughSshWithoutLaunchingTheProviderLocall
 	host.transport = "ssh";
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
+	host.runner_version = "4.5.7";
+	host.platform = "linux";
+	host.architecture = "arm64";
 	app.settings.execution_hosts = {host};
 	uam::execution_hosts::Normalize(app.settings.execution_hosts);
 

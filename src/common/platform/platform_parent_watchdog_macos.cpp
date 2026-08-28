@@ -6,7 +6,6 @@
 
 #include <libproc.h>
 #include <signal.h>
-#include <sys/event.h>
 #include <unistd.h>
 
 namespace uam::platform
@@ -40,12 +39,17 @@ namespace uam::platform
 
 		const pid_t parent_pid = static_cast<pid_t>(parent_value);
 		const pid_t child_pid = static_cast<pid_t>(child_value);
-		const int queue = kqueue();
-		struct kevent change
+		struct proc_bsdinfo child_info
 		{
 		};
-		EV_SET(&change, child_pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
-		const bool armed = queue >= 0 && kevent(queue, &change, 1, nullptr, 0, nullptr) == 0;
+		const auto child_matches = [&]()
+		{
+			return proc_pidinfo(child_pid, PROC_PIDTBSDINFO, 0, &child_info,
+			                    sizeof(child_info)) == sizeof(child_info) &&
+			       child_info.pbi_start_tvsec == start_seconds &&
+			       child_info.pbi_start_tvusec == start_microseconds;
+		};
+		const bool armed = child_matches();
 		const char ready = armed ? '1' : '0';
 		(void)write(3, &ready, 1);
 		(void)close(3);
@@ -53,33 +57,12 @@ namespace uam::platform
 
 		for (;;)
 		{
-			struct kevent event
-			{
-			};
-			const struct timespec timeout = {0, 100 * 1000 * 1000};
-			const int event_count = kevent(queue, nullptr, 0, &event, 1, &timeout);
-			if (event_count > 0) return 0;
-			if (event_count < 0 && errno != EINTR)
+			(void)usleep(100 * 1000);
+			if (!child_matches()) return 0;
+			if (getppid() != parent_pid)
 			{
 				(void)kill(-child_pid, SIGKILL);
 				(void)kill(child_pid, SIGKILL);
-				return 1;
-			}
-			if (getppid() != parent_pid)
-			{
-				struct proc_bsdinfo current_child_info
-				{
-				};
-				const bool same_process = proc_pidinfo(
-				    child_pid, PROC_PIDTBSDINFO, 0, &current_child_info,
-				    sizeof(current_child_info)) == sizeof(current_child_info) &&
-				    current_child_info.pbi_start_tvsec == start_seconds &&
-				    current_child_info.pbi_start_tvusec == start_microseconds;
-				if (same_process)
-				{
-					(void)kill(-child_pid, SIGKILL);
-					(void)kill(child_pid, SIGKILL);
-				}
 				return 0;
 			}
 		}

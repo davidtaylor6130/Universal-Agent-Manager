@@ -576,6 +576,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseEffectiveBackend = session.computerUseEffectiveBackend ?? 'uam'
   const computerUseMode = Boolean(session.computerUseEnabled)
+  const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
@@ -2870,7 +2871,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         <ComputerUseModal
           active={computerUseMode}
           enabled={session.computerUseEnabled ?? false}
-          disabled={runtimeBlocksControlChanges}
+          disabled={runtimeBlocksControlChanges || remoteComputerUseDisabled}
+          remoteDisabled={remoteComputerUseDisabled}
           backend={session.computerUseBackend ?? 'auto'}
           effectiveBackend={computerUseEffectiveBackend}
           providerAvailable={session.computerUseProviderAvailable ?? false}

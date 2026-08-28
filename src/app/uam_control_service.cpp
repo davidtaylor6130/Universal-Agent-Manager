@@ -791,6 +791,8 @@ namespace uam
 			for (std::filesystem::directory_iterator it(capability.directory / "requests", list_error), end;
 			     !list_error && it != end; it.increment(list_error))
 			{
+				const std::string name = uam::paths::Utf8PathString(it->path().filename());
+				if (name.find(uam::io::kTempWritePathSuffix) != std::string::npos) continue;
 				if (files.size() == kMaxQueuedRequests)
 				{
 					queue_overflow = true;

@@ -4,7 +4,11 @@
 
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
+#endif
+#if defined(__APPLE__) || defined(__linux__)
 #include "remote/runner_service_posix.h"
+#elif defined(_WIN32)
+#include "remote/runner_service_windows.h"
 #endif
 
 #include <nlohmann/json.hpp>
@@ -29,12 +33,13 @@ int main(int argc, char** argv)
 		std::cout << UAM_REMOTE_RUNNER_VERSION << '\n';
 		return 0;
 	}
-	if (argc == 4 && std::string(argv[1]) == "proxy" &&
-	    std::string(argv[2]) == "--alias")
-		return uam::remote::RunProcessProxy(argv[3]);
+	if (argc == 8 && std::string(argv[1]) == "proxy" &&
+	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
+	    std::string(argv[6]) == "--version")
+		return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7]);
 	if (argc == 3 && std::string(argv[1]) == "terminal")
 		return uam::remote::RunTerminalProcess(argv[2]);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 	if (argc == 6 && std::string(argv[1]) == "mcp" &&
 	    std::string(argv[2]) == "--channel" && std::string(argv[4]) == "--socket")
 		return uam::remote::RunRemoteMcpShim(argv[3], argv[5]);
@@ -49,10 +54,23 @@ int main(int argc, char** argv)
 		if (std::string(argv[1]) == "bridge")
 			return uam::remote::RunRunnerBridge(argv[3]);
 	}
+#elif defined(_WIN32)
+	if (argc == 4 && std::string(argv[1]) == "mcp" &&
+	    std::string(argv[2]) == "--channel")
+		return uam::remote::RunRemoteMcpShim(argv[3]);
+	if (argc == 2)
+	{
+		if (std::string(argv[1]) == "serve")
+			return uam::remote::RunRunnerService(UAM_REMOTE_RUNNER_VERSION);
+		if (std::string(argv[1]) == "start")
+			return uam::remote::StartRunnerService(UAM_REMOTE_RUNNER_VERSION);
+		if (std::string(argv[1]) == "stop") return uam::remote::StopRunnerService();
+		if (std::string(argv[1]) == "bridge") return uam::remote::RunRunnerBridge();
+	}
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")
 	{
-		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS | terminal SPEC | mcp --channel ID --socket PATH | --version\n";
+		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION | terminal SPEC | mcp --channel ID --socket PATH | --version\n";
 		return 2;
 	}
 

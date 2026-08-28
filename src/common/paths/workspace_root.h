@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/paths/path_utils.h"
+#include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 #include "common/utils/string_utils.h"
@@ -50,6 +51,9 @@ namespace uam::paths
 		{
 			return {};
 		}
+		if (chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+		    !uam::strings::IsBlank(chat.workspace_directory))
+			return std::filesystem::path(uam::strings::Trim(chat.workspace_directory));
 
 		std::filesystem::path workspace_root;
 

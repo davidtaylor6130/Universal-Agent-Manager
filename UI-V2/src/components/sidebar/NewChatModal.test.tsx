@@ -197,6 +197,8 @@ describe('NewChatModal', () => {
     useAppStore.setState({
       addSession,
       discoverProviderModels,
+	  folders: [],
+	  newChatFolderId: null,
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
         { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'home-lab', runnerStatus: 'ready', runnerVersion: '0.1.0', platform: 'linux', architecture: 'arm64', lastSeenAt: '' },
@@ -223,11 +225,46 @@ describe('NewChatModal', () => {
 
     expect(discoverProviderModels).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Computer Use is disabled for remote chats.')
-    expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat', 'lab', '/srv/project')
+	expect(host.textContent).not.toContain('A workspace is required')
+    expect(addSession).toHaveBeenCalledWith('New chat', null, 'gemini-cli', '', '', 'chat', 'lab', '/srv/project')
 
     act(() => root.unmount())
     host.remove()
   })
+
+	it('accepts Windows drive and UNC workspace paths for a ready remote host', async () => {
+	  const addSession = vi.fn().mockResolvedValue(true)
+	  useAppStore.setState({
+		addSession,
+		folders: [],
+		newChatFolderId: null,
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+		  { id: 'windows', label: 'Windows PC', transport: 'ssh', sshAlias: 'windows-pc', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+		.find((option) => option.textContent?.includes('Windows PC'))?.click())
+	  const input = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
+	  const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+		.find((button) => button.textContent === 'Create structured chat')!
+	  for (const path of ['C:\\work\\project', '\\\\server\\share']) {
+		act(() => {
+		  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, path)
+		  input.dispatchEvent(new Event('input', { bubbles: true }))
+		})
+		expect(create().disabled).toBe(false)
+	  }
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
 
   it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {
     const addSession = vi.fn()

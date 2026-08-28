@@ -64,6 +64,13 @@ namespace uam::remote
 						                                     &read_error)
 						    : service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(),
 						                                     &read_error);
+						if (read == -1)
+						{
+							error = read_error.empty() ? "Remote setup output could not be read."
+							                           : std::move(read_error);
+							service.StopStdioProcess(process, true);
+							return false;
+						}
 						if (read <= 0) break;
 						std::string& destination = standard_error ? diagnostic : output;
 						if (destination.size() + static_cast<std::size_t>(read) > 1024 * 1024)
@@ -104,13 +111,10 @@ namespace uam::remote
 		}
 	}
 
-	bool BuildBootstrapPlan(const std::string& ssh_alias,
-	                        const std::filesystem::path& local_runner,
-	                        const std::string& version,
-	                        const std::string& sha256,
+	bool BuildBootstrapPlan(const std::string& ssh_alias, const std::string& version,
 	                        const std::string& nonce,
-	                        BootstrapPlan& plan,
-	                        std::string* error_out)
+	                        std::vector<RunnerArtifact> artifacts,
+	                        BootstrapPlan& plan, std::string* error_out)
 	{
 		plan = {};
 		const auto fail = [error_out](std::string error)
@@ -121,45 +125,29 @@ namespace uam::remote
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias))
 			return fail("Use one exact alias from ~/.ssh/config.");
 		if (!IsToken(version, 64)) return fail("Runner version is invalid.");
-		if (!IsSha256(sha256)) return fail("Runner checksum is invalid.");
 		if (!IsToken(nonce, 64)) return fail("Runner install nonce is invalid.");
-		std::error_code status_error;
-		if (!std::filesystem::is_regular_file(local_runner, status_error) || status_error)
-			return fail("The packaged runner artifact is missing.");
-
-		const std::string relative_version_directory = ".local/share/uam/runner/" + version;
-		const std::string remote_version_directory = "~/" + relative_version_directory;
-		const std::string temporary = remote_version_directory + "/uam-runner.tmp-" + nonce;
-		const std::string installed = remote_version_directory + "/uam-runner";
-		const std::string verify =
-		    "set -eu; file=" + temporary + "; "
-		    "if command -v shasum >/dev/null 2>&1; then printf '%s  %s\\n' " + sha256 +
-		    " \"$file\" | shasum -a 256 -c -; "
-		    "elif command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\\n' " + sha256 +
-		    " \"$file\" | sha256sum -c -; else echo 'No SHA-256 verifier is available.' >&2; exit 69; fi; "
-		    "chmod 700 \"$file\"; mv -f \"$file\" " + installed + "; "
-		    "ln -sfn " + version + " ~/.local/share/uam/runner/current; "
-		    "~/.local/share/uam/runner/current/uam-runner stop --socket ~/.local/share/uam/runner/uam.sock; "
-		    "i=0; while [ -S ~/.local/share/uam/runner/uam.sock ] && [ \"$i\" -lt 50 ]; do i=$((i+1)); sleep 0.1; done; "
-		    "~/.local/share/uam/runner/current/uam-runner start --socket ~/.local/share/uam/runner/uam.sock";
+		if (artifacts.empty()) return fail("No packaged remote runner artifacts are available.");
+		for (const RunnerArtifact& artifact : artifacts)
+		{
+			std::error_code status_error;
+			if ((artifact.platform != "linux" && artifact.platform != "windows") ||
+			    (artifact.architecture != "arm64" && artifact.architecture != "x86_64") ||
+			    !IsSha256(artifact.sha256) ||
+			    !std::filesystem::is_regular_file(artifact.path, status_error) || status_error)
+				return fail("A packaged remote runner artifact is invalid.");
+		}
 
 		plan.ssh_alias = ssh_alias;
 		plan.version = version;
-		plan.install_directory = remote_version_directory;
+		plan.install_directory = "the selected host's private UAM runner directory";
+		plan.nonce = nonce;
+		plan.artifacts = std::move(artifacts);
 		plan.steps = {
 		    {"Check remote platform", SshCommand(ssh_alias, "uname -s && uname -m"), ""},
-		    {"Create private runner directory",
-		     SshCommand(ssh_alias, "umask 077; mkdir -p " + remote_version_directory), ""},
-		    {"Copy runner",
-		     {"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-		      local_runner.string(), ssh_alias + ":" + relative_version_directory +
-		                                 "/uam-runner.tmp-" + nonce},
-		     ""},
-		    {"Verify and activate runner", SshCommand(ssh_alias, verify), ""},
-		    {"Verify runner version",
+		    {"Fallback Windows platform check",
 		     SshCommand(ssh_alias,
-		                "~/.local/share/uam/runner/current/uam-runner --version"),
-		     version},
+		         "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"'Windows'; $env:PROCESSOR_ARCHITECTURE\""),
+		     ""},
 		};
 		return true;
 	}
@@ -169,59 +157,129 @@ namespace uam::remote
 		std::ostringstream preview;
 		preview << "Install UAM runner " << plan.version << " on SSH alias " << plan.ssh_alias
 		        << " at " << plan.install_directory << "\n";
-		for (std::size_t index = 0; index < plan.steps.size(); ++index)
-			preview << index + 1 << ". " << plan.steps[index].label << ": "
-			        << uam::shell::JoinEscapedArgs(plan.steps[index].argv) << '\n';
+		preview << "1. Detect Linux or Windows and CPU architecture over SSH.\n"
+		        << "2. Select the matching bundled helper; unsupported targets stop before copying.\n"
+		        << "3. Copy to a private versioned user directory.\n"
+		        << "4. Verify SHA-256, activate, restart, and verify the exact version.\n";
 		return preview.str();
 	}
 
 	BootstrapResult ExecuteBootstrapPlan(const BootstrapPlan& plan, std::stop_token stop_token)
 	{
 		BootstrapResult result;
-		if (plan.steps.size() != 5 || !uam::execution_hosts::IsSafeSshAlias(plan.ssh_alias))
+		if (plan.steps.size() != 2 || plan.artifacts.empty() ||
+		    !uam::execution_hosts::IsSafeSshAlias(plan.ssh_alias))
 		{
 			result.error = "Remote setup plan is invalid.";
 			return result;
 		}
-		for (std::size_t index = 0; index < plan.steps.size(); ++index)
+		std::string output;
+		std::string diagnostic;
+		std::string probe_error;
+		bool unix_probe = RunStep(plan.steps[0], output, diagnostic, probe_error, stop_token);
+		if (!unix_probe)
 		{
-			std::string output;
-			std::string diagnostic;
-			if (!RunStep(plan.steps[index], output, diagnostic, result.error, stop_token))
-				return result;
-			if (index == 0)
+			output.clear();
+			diagnostic.clear();
+			if (!RunStep(plan.steps[1], output, diagnostic, result.error, stop_token))
 			{
-				std::istringstream values(output);
-				std::getline(values, result.platform);
-				std::getline(values, result.architecture);
-				result.platform = uam::strings::Trim(result.platform);
-				result.architecture = uam::strings::Trim(result.architecture);
-				if (result.platform.empty() || result.architecture.empty())
-				{
-					result.error = "Remote platform detection returned an invalid response.";
-					return result;
-				}
-#if defined(__APPLE__)
-#if defined(__aarch64__) || defined(__arm64__)
-				constexpr std::string_view local_architecture = "arm64";
-#elif defined(__x86_64__)
-				constexpr std::string_view local_architecture = "x86_64";
-#else
-				constexpr std::string_view local_architecture = "unknown";
-#endif
-				if (result.platform != "Darwin" || result.architecture != local_architecture)
-				{
-					result.error = "This build can install its runner only on "
-					               "macOS/" + std::string(local_architecture) +
-					               "; the SSH host reported " + result.platform + "/" +
-					               result.architecture + ".";
-					return result;
-				}
-#else
-				result.error = "SSH runner installation is not yet available from this platform.";
+				result.error = "Remote host is not a supported Ubuntu/Linux or Windows OpenSSH host.";
 				return result;
-#endif
 			}
+		}
+		std::istringstream values(output);
+		std::getline(values, result.platform);
+		std::getline(values, result.architecture);
+		result.platform = uam::strings::Trim(result.platform);
+		result.architecture = uam::strings::Trim(result.architecture);
+		if (result.platform == "Linux") result.platform = "linux";
+		else if (result.platform == "Windows") result.platform = "windows";
+		else
+		{
+			result.error = "Remote host is not Ubuntu/Linux or Windows.";
+			return result;
+		}
+		std::ranges::transform(result.architecture, result.architecture.begin(),
+		                       [](unsigned char character)
+		                       { return static_cast<char>(std::tolower(character)); });
+		if (result.architecture == "aarch64" || result.architecture == "arm64")
+			result.architecture = "arm64";
+		else if (result.architecture == "x86_64" || result.architecture == "amd64")
+			result.architecture = "x86_64";
+		else
+		{
+			result.error = "Remote CPU architecture is unsupported: " + result.architecture + ".";
+			return result;
+		}
+		const auto artifact = std::ranges::find_if(plan.artifacts, [&](const RunnerArtifact& value)
+		{
+			return value.platform == result.platform &&
+			       value.architecture == result.architecture;
+		});
+		if (artifact == plan.artifacts.end())
+		{
+			result.error = "This UAM build does not contain a runner for " + result.platform +
+			               "/" + result.architecture + ".";
+			return result;
+		}
+
+		std::vector<BootstrapStep> install_steps;
+		if (result.platform == "linux")
+		{
+			const std::string relative = ".local/share/uam/runner/" + plan.version;
+			const std::string directory = "~/" + relative;
+			const std::string temporary = directory + "/uam-runner.tmp-" + plan.nonce;
+			const std::string installed = directory + "/uam-runner";
+			const std::string verify =
+			    "set -eu; file=" + temporary + "; trap 'rm -f \"$file\"' EXIT; "
+			    "printf '%s  %s\\n' " + artifact->sha256 +
+			    " \"$file\" | sha256sum -c -; chmod 700 \"$file\"; "
+			    "\"$file\" stop --socket ~/.local/share/uam/runner/uam.sock; "
+			    "mv -f \"$file\" " + installed + "; " + installed +
+			    " start --socket ~/.local/share/uam/runner/uam.sock";
+			install_steps = {
+			    {"Create private runner directory", SshCommand(plan.ssh_alias,
+			        "umask 077; mkdir -p " + directory), ""},
+			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
+			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" +
+			        relative + "/uam-runner.tmp-" + plan.nonce}, ""},
+			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
+			    {"Verify runner version", SshCommand(plan.ssh_alias, installed + " --version"),
+			        plan.version},
+			};
+		}
+		else
+		{
+			const std::string relative = ".uam/runner/" + plan.version;
+			const std::string temporary = relative + "/uam-runner.tmp-" + plan.nonce + ".exe";
+			const std::string installed = "$HOME/.uam/runner/" + plan.version + "/uam-runner.exe";
+			const std::string verify =
+			    "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \""
+			    "$file=Join-Path $HOME '" + temporary + "'; "
+			    "try { if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne '" +
+			    artifact->sha256 + "') { throw 'Runner checksum mismatch.' }; "
+			    "& $file stop; $installed=Join-Path $HOME '.uam/runner/" + plan.version +
+			    "/uam-runner.exe'; $moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
+			    "try { Move-Item -LiteralPath $file -Destination $installed -Force -ErrorAction Stop; $moved=$true } "
+			    "catch { Start-Sleep -Milliseconds 100 } }; if (-not $moved) { throw 'Runner service did not release its executable.' }; "
+			    "& $installed start; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } "
+			    "finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }\"";
+			install_steps = {
+			    {"Create private runner directory", SshCommand(plan.ssh_alias,
+			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path (Join-Path $HOME '" + relative + "') | Out-Null\""), ""},
+			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
+			        "ConnectTimeout=10", artifact->path.string(), plan.ssh_alias + ":" + temporary}, ""},
+			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
+			    {"Verify runner version", SshCommand(plan.ssh_alias,
+			        "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"& '" + installed + "' --version\""),
+			        plan.version},
+			};
+		}
+		for (const BootstrapStep& step : install_steps)
+		{
+			output.clear();
+			diagnostic.clear();
+			if (!RunStep(step, output, diagnostic, result.error, stop_token)) return result;
 		}
 		result.ok = true;
 		return result;

@@ -48,6 +48,13 @@ namespace
 		const ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
 		if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
 		{
+			const ExecutionHost* execution_host = uam::execution_hosts::Find(
+			    app.settings.execution_hosts, chat->execution_host_id);
+			if (execution_host == nullptr || execution_host->runner_status != "ready")
+			{
+				session.last_error = "The selected remote runner is not ready.";
+				return false;
+			}
 			if (!chat->uam_control_enabled) return true;
 			nlohmann::json local_request = {
 			    {"params", {{"mcpServers", nlohmann::json::array()}}}};
@@ -85,14 +92,30 @@ namespace
 			}
 			nlohmann::json& request_servers = request["params"]["mcpServers"];
 			if (!request_servers.is_array()) request_servers = nlohmann::json::array();
-			request_servers.push_back({
-			    {"name", "uam-control"}, {"command", "/bin/sh"},
-			    {"args", nlohmann::json::array({
-			                 "-c",
-			                 "exec \"$HOME/.local/share/uam/runner/current/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/.local/share/uam/runner/uam.sock\"",
-			                 "uam-control", channel_id})},
-			    {"env", nlohmann::json::array()},
-			});
+			if (execution_host->platform == "windows" || execution_host->platform == "Windows")
+			{
+				request_servers.push_back({
+				    {"name", "uam-control"}, {"command", "powershell.exe"},
+				    {"args", nlohmann::json::array({
+				        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+				        "-Command", "& (Join-Path $HOME '.uam/runner/" +
+				            execution_host->runner_version +
+				            "/uam-runner.exe') mcp --channel '" + channel_id + "'"})},
+				    {"env", nlohmann::json::array()},
+				});
+			}
+			else
+			{
+				request_servers.push_back({
+				    {"name", "uam-control"}, {"command", "/bin/sh"},
+				    {"args", nlohmann::json::array({
+				        "-c", "exec \"$HOME/.local/share/uam/runner/" +
+				            execution_host->runner_version +
+				            "/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/.local/share/uam/runner/uam.sock\"",
+				        "uam-control", channel_id})},
+				    {"env", nlohmann::json::array()},
+				});
+			}
 			return true;
 		}
 
@@ -429,7 +452,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 		else
 		{
 			process_working_directory = runner.parent_path();
-			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias};
+			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias,
+			                "--platform", execution_host->platform,
+			                "--version", execution_host->runner_version};
 			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment,
 			                        uam::remote::BuildProcessProxySpec(
 			                            "acp-" + chat.id, workspace_root, launch_argv,

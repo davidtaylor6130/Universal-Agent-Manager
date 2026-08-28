@@ -880,3 +880,98 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Local work is preserved in commits `33f809a4`, `f1eafb3c`, and `e1fb10b1`; unrelated untracked
   owner files remain excluded. Resume from this exact gate when an existing macOS/arm64 host is
   available through a named `~/.ssh/config` alias.
+
+## 2026-08-28 — Cross-platform helper correction and Ubuntu edge acceptance PASS
+
+- Superseded the earlier same-platform packaging constraint. UAM now builds a headless runner on
+  Linux and Windows, selects an exact bundled `platform/architecture` artifact only after probing
+  the SSH host, verifies its SHA-256 before activation, and uses its exact app version rather than
+  a mutable `current` link. Unsupported targets still stop before copy.
+- Added a native Ubuntu/Linux process backend and rebuilt it inside the local Colima Ubuntu ARM64
+  VM. The live service passed two concurrent chats, bridge loss and attach-to-existing reconnect,
+  complete 512 KiB disconnected output recovery, a 512 KiB chunked attachment with end-to-end
+  digest verification, explicit `computerUse: false`, an attempted Computer Use request rejection,
+  process removal, and clean service shutdown.
+- Remote attachment staging now transfers local file/data bytes through the authenticated runner
+  instead of handing a Mac path to the remote provider. Uploads are bounded at 25 MiB, chunked,
+  written to owner-only temporary files, verified before atomic publication, never overwrite an
+  existing target, and remove already-committed siblings if a later attachment fails. Remote
+  directory attachment requests fail explicitly instead of pretending to be portable.
+- Added Windows 11 Pro parity through a same-user ACL-scoped named-pipe service, versioned
+  PowerShell bootstrap, SHA-256 verification, locked-executable replacement retry, typed process
+  bridge, terminal process-tree containment, and the UAM Control MCP relay. Windows paths remain
+  Windows-native when the controller is macOS; Linux paths remain Linux-native.
+- Fixed edge cases found during review: Windows terminal SSH commands now explicitly invoke
+  PowerShell instead of assuming a Unix remote shell; stopping the Windows service cancels every
+  connected bridge so an update cannot hang; Linux termination escalates without indefinite wait
+  and retains a reaper; helper startup allows ten seconds for slow disks/security scanning; failed
+  bootstrap verification removes its temporary upload.
+- Release/CI packaging now builds Linux x86_64, Linux ARM64, and Windows x86_64 helpers separately,
+  requires all three artifacts and checksums in each desktop package, and treats a missing artifact
+  as a hard failure. Local workflow YAML and macOS shell syntax validation pass. The repository app
+  build remains isolated under `Builds/tests`; the Applications-installed app and the frozen
+  Computer Use acceptance bundle remain untouched. Gemini was not launched or contacted.
+- Still open before completion: run the Windows named-pipe/reconnect/process-tree tests on an actual
+  Windows 11 Pro SSH host or Windows CI, then repeat the real packaged GUI install, remote prompt,
+  attachment, terminal, reconnect, and Computer Use fail-closed journeys. No Windows SSH alias is
+  currently discoverable, so that evidence will not be fabricated.
+
+## 2026-08-28 — Isolated Ubuntu packaged GUI acceptance PASS
+
+- Created a repository-only acceptance bundle at
+  `Builds/remote-acceptance/UAM Remote Acceptance.app` with bundle id
+  `com.universalagentmanager.desktop.remoteacceptance` and isolated data root
+  `/private/tmp/uam-remote-gui-final.o8breN`. All Computer Use actions targeted that exact bundle id.
+  The Applications-installed build and frozen Computer Use acceptance bundle were not modified.
+- Fixed first-remote-chat creation so an SSH-hosted chat can be created without choosing a local Mac
+  folder. Focused New Chat and store coverage passes 153/153. The resulting chat correctly appears
+  as an ordinary chat under **Unsorted**; **Active Chats** is only the running/attention projection,
+  not a second chat store or duplicate conversation.
+- Proved remote attachment staging through the packaged GUI. A 42-byte local file arrived at
+  `/tmp/uam-gui-workspace/.UAM/attachments/chat-1787935977528-989961/1787936050972338-0-uam-remote-gui-attachment.txt`
+  with mode `0600`, and the persisted prompt referenced the remote-relative path rather than the
+  original Mac path.
+- Proved structured OpenCode execution through the real SSH runner boundary with a test-only fake
+  provider on the Ubuntu ARM64 Colima host: initialize, `session/new`, prompt, `remote-gui-ok`, app
+  restart, and `session/load` all completed. A 30-second provider delay then proved two distinct
+  chats (`Ubuntu Attachment Acceptance` and `Ubuntu Concurrency Acceptance`) simultaneously appeared
+  as **2 running** in Active Chats and each retained its own prompt and response after completion.
+- The first packaged remote terminal attempt exposed `Failed to arm parent-death watchdog.` The
+  macOS watchdog no longer depends on `EVFILT_PROC` arming; it validates the exact child PID/start
+  identity and polls at 100 ms before killing only that process group when its parent dies. Packaged
+  terminal acceptance then returned `remote-terminal-ok` and echoed `terminal-ping` as
+  `remote-terminal-echo: terminal-ping` through the SSH helper.
+- Remote Computer Use already failed closed in the backend, but its dialog misleadingly described a
+  remote chat as ready for an AI request. The final GUI now states **Remote Computer Use is disabled**,
+  explains that no remote screen/input session can start, disables the control selector, and omits
+  the local-only Ready, privacy, and one-target-approval sections. The disabled selector remained
+  inert under a direct GUI click. Focused modal and Chat View coverage passes 98/98.
+
+## 2026-08-28 — Atomic UAM Control queue race fixed and full regression PASS
+
+- The first complete native run found an intermittent remote UAM Control failure. Repeated isolated
+  execution reproduced `Control manager is unavailable` and left a response named
+  `<request>.json.tmp.json`, proving the manager had consumed an in-progress atomic request temp.
+- Root cause: `ProcessPendingRequests` enumerated every request-directory entry. While the MCP process
+  atomically wrote `<id>.json.tmp.<token>`, the manager could classify that temporary file as a
+  malformed request and delete it before the writer renamed it. The provider then waited for a final
+  request that could never appear.
+- Fixed the shared manager boundary to ignore the existing atomic-write `.tmp.` filename pattern.
+  Added a deterministic regression that seeds an in-progress request temp and proves the manager
+  leaves it untouched, and changed the relay integration wait to require the complete `id:2` success
+  response instead of counting unrelated initialization newlines.
+- The exact MCP relay integration passed 20 consecutive runs after the fix. Full native CTest then
+  passed 6/6 in 61.79 seconds, including macOS parent-death, remote runner, Windows containment
+  contract, and Computer Use permission contract tests. Full frontend Vitest passed 38/38 files and
+  561/561 tests; the production frontend/native app build and strict deep code signature passed.
+- Release checks PASS: macOS shell syntax, Windows PowerShell parser, CI/release workflow YAML,
+  `git diff --check`, and Linux ARM64 runner checksum. The live Ubuntu runner digest remains
+  `319a728dee435cb65005b806c4d1f3ece761b4bb9a592dbee971930ea016f9d8`.
+- Refreshed and signed the isolated `UAM Remote Acceptance.app` from the final repository build and
+  left it closed. macOS locked before a redundant post-backend-change GUI relaunch; the final UI had
+  already been proven immediately beforehand, and the later change touched only the native
+  file-backed UAM Control queue.
+- Remaining external completion gate: actual Windows 11 Pro execution of the named-pipe service,
+  reconnect/concurrency/process-tree containment, packaged install, prompt, attachment, terminal,
+  and remote Computer Use rejection. No reachable Windows SSH host is currently configured, so this
+  remains explicitly blocked rather than inferred from contract/fake-transport tests.

@@ -5,6 +5,7 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/message_attachment_json.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -18,6 +19,7 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -289,6 +291,139 @@ namespace
 		}
 		return attachments;
 	}
+
+	struct RemoteAttachmentResult
+	{
+		bool ok = false;
+		int status = 500;
+		std::string error;
+		nlohmann::json attachments = nlohmann::json::array();
+	};
+
+	RemoteAttachmentResult StageRemoteAttachments(const nlohmann::json& items,
+	                                              const ExecutionHost& host,
+	                                              const std::string& chat_id,
+	                                              const std::string& workspace_root)
+	{
+		RemoteAttachmentResult result;
+		if (!uam::execution_hosts::IsPortableId(chat_id))
+		{
+			result.status = 400;
+			result.error = "Remote attachments require a portable chat id.";
+			return result;
+		}
+		uam::remote::RunnerClient client(
+		    PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version),
+		    host.runner_version);
+		std::vector<std::filesystem::path> committed;
+		std::size_t index = 0;
+		for (const nlohmann::json& item : items)
+		{
+			if (!item.is_object()) continue;
+			const std::string requested_kind = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kKindField});
+			const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
+			if (attachment_kind == attachment_frontend_fields::kDirectoryKind)
+			{
+				result.status = 400;
+				result.error = "Remote directory attachments are not supported; attach files instead.";
+				break;
+			}
+			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kPathField});
+			std::string bytes;
+			if (const nlohmann::json* data = uam::nlohmann_json::FindStringField(
+			        item, attachment_frontend_fields::kDataBase64Field); data != nullptr)
+			{
+				if (!uam::base64::Decode(data->get_ref<const std::string&>(), bytes))
+				{
+					result.status = 400;
+					result.error = "Attachment data is not valid base64.";
+					break;
+				}
+			}
+			else if (!source_path_text.empty())
+			{
+				const std::filesystem::path source = PlatformServicesFactory::Instance()
+				    .path_service.ExpandLeadingTildePath(source_path_text);
+				const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(source);
+				if (!size || !uam::paths::IsRegularFileNoThrow(source))
+				{
+					result.status = 400;
+					result.error = "File attachment does not exist: " + source_path_text;
+					break;
+				}
+				if (*size > kMaxAttachmentBytes)
+				{
+					result.status = 413;
+					result.error = "Attachment is larger than the 25 MB limit.";
+					break;
+				}
+				if (!uam::io::TryReadBinaryFile(source, bytes))
+				{
+					result.error = "Failed to read attachment: " + source_path_text;
+					break;
+				}
+			}
+			else
+			{
+				result.status = 400;
+				result.error = "File attachments require data or a filesystem path.";
+				break;
+			}
+			if (bytes.size() > kMaxAttachmentBytes)
+			{
+				result.status = 413;
+				result.error = "Attachment is larger than the 25 MB limit.";
+				break;
+			}
+
+			MessageAttachment attachment;
+			attachment.id = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kIdField});
+			if (attachment.id.empty()) attachment.id = AttachmentId();
+			const std::string fallback_name = source_path_text.empty()
+			    ? "attachment"
+			    : uam::paths::Utf8PathString(
+			          uam::paths::PathFromUtf8(source_path_text).filename());
+			attachment.name = SafeAttachmentName(
+			    uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(
+			        item, attachment_fields::kNameField), fallback_name), "attachment");
+			attachment.kind = attachment_kind;
+			attachment.mime_type = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_frontend_fields::kMimeTypeInputField});
+			const std::string relative = ".UAM/attachments/" + chat_id + "/" +
+			    uam::time::SystemEpochMicrosecondsTokenNow() + "-" +
+			    std::to_string(index) + "-" + attachment.name;
+			const std::filesystem::path target(uam::execution_hosts::JoinRemotePath(
+			    host.platform, workspace_root, relative));
+			std::string error;
+			if (!client.UploadFile("attachment-" + std::to_string(index) + "-" +
+			                       uam::time::SystemEpochMicrosecondsTokenNow(),
+			                       target, bytes, &error))
+			{
+				result.error = error.empty() ? "Remote attachment upload failed." : error;
+				break;
+			}
+			committed.push_back(target);
+			attachment.path = relative;
+			if (host.platform == "windows" || host.platform == "Windows")
+				std::ranges::replace(attachment.path, '/', '\\');
+			attachment.size_bytes = bytes.size();
+			attachment.copied = true;
+			result.attachments.push_back(AttachmentToJson(attachment));
+			++index;
+		}
+		if (!result.error.empty())
+		{
+			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
+				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			return result;
+		}
+		result.ok = true;
+		return result;
+	}
 } // namespace
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -480,6 +615,33 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	if (workspace_root.empty())
 	{
 		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+	const ExecutionHost* execution_host = uam::execution_hosts::Find(
+	    m_app.settings.execution_hosts, chat->execution_host_id);
+	const bool remote = execution_host != nullptr &&
+	                    execution_host->id != uam::execution_hosts::kLocalHostId;
+	if (remote)
+	{
+		if (execution_host->runner_status != "ready" ||
+		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
+		        workspace_root.string()))
+		{
+			cb->Failure(409, "The selected remote runner or workspace is not ready.");
+			return;
+		}
+		auto result = std::make_shared<RemoteAttachmentResult>();
+		uam::query_handler_async::RunAsyncCefQuery(
+		    cb,
+		    [items = *items, host = *execution_host, chat_id,
+		     workspace = workspace_root.string(), result]()
+		    {
+			    *result = StageRemoteAttachments(items, host, chat_id, workspace);
+			    return result->ok
+			        ? uam::query_handler_async::AsyncSuccess(
+			              {{"attachments", result->attachments}})
+			        : uam::query_handler_async::AsyncFailure(result->status, result->error);
+		    });
 		return;
 	}
 

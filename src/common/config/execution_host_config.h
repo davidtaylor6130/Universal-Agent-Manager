@@ -37,6 +37,33 @@ namespace uam::execution_hosts
 		       });
 	}
 
+	inline bool IsAbsoluteRemotePath(std::string_view platform, std::string_view value)
+	{
+		value = uam::strings::TrimAsciiView(value);
+		if (value.empty() || value.size() > 4096 ||
+		    std::ranges::any_of(value, [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+			return false;
+		if (platform == "windows" || platform == "Windows")
+			return (value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 &&
+			        value[1] == ':' && (value[2] == '\\' || value[2] == '/')) ||
+			       (value.size() >= 5 && value[0] == '\\' && value[1] == '\\');
+		return value.front() == '/';
+	}
+
+	inline std::string JoinRemotePath(std::string_view platform, std::string_view root,
+	                                  std::string_view relative)
+	{
+		const bool windows = platform == "windows" || platform == "Windows";
+		const char separator = windows ? '\\' : '/';
+		std::string result(uam::strings::TrimAsciiView(root));
+		while (result.size() > 1 && (result.back() == '/' || result.back() == '\\'))
+			result.pop_back();
+		if (!result.empty()) result.push_back(separator);
+		for (const char character : relative)
+			result.push_back(character == '/' || character == '\\' ? separator : character);
+		return result;
+	}
+
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);

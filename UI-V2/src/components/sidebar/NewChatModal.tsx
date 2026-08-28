@@ -7,6 +7,13 @@ import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities, pro
 import { Button, IconButton, MenuSelect } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 
+function isAbsoluteRemoteWorkspace(platform: string | undefined, value: string) {
+  const path = value.trim()
+  return platform?.toLowerCase() === 'windows'
+    ? /^[a-z]:[\\/]/i.test(path) || /^\\\\/.test(path)
+    : path.startsWith('/')
+}
+
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
@@ -134,7 +141,7 @@ export function NewChatModal() {
     : localReadinessMessage
 
   const handleCreate = async (terminalFallback = false) => {
-    if (creatingChatRef.current || folderId === null || !folders.some((folder) => folder.id === folderId)) {
+    if (creatingChatRef.current || (!isRemote && selectedFolder === null)) {
       return
     }
     if ((!terminalFallback && structuredCreationBlocked) || (terminalFallback && terminalCreationBlocked)) return
@@ -145,8 +152,8 @@ export function NewChatModal() {
     const n = name.trim() || 'New chat'
 	const effort = reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
 	const created = isRemote
-	  ? await addSession(n, folderId, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
-	  : await addSession(n, folderId, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
+	  ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
+	  : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
     if (!created) {
       creatingChatRef.current = false
       setCreatingChat(false)
@@ -183,7 +190,9 @@ export function NewChatModal() {
 	if (structuredCreationBlocked || isRemote || !selectedWorkspace || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
 	requestModelDiscovery()
   }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId, selectedWorkspace, structuredCreationBlocked])
-  const canCreate = selectedFolder !== null && Boolean(selectedWorkspace) && (!isRemote || selectedWorkspace.startsWith('/'))
+  const canCreate = isRemote
+    ? isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)
+    : selectedFolder !== null && Boolean(selectedWorkspace)
 
   const createWorkspace = async () => {
     setCreatingWorkspace(true)
@@ -310,7 +319,7 @@ export function NewChatModal() {
             </div>
           )}
 
-          {!selectedFolder && (
+          {!selectedFolder && !isRemote && (
             <div role="alert" className="rounded-lg p-3 animate-fade-in" style={{ background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))' }}>
               <div className="flex items-start gap-2">
                 <TriangleAlert size={16} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />

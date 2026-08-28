@@ -49,11 +49,21 @@ namespace uam::remote
 			std::string remote_to_desktop;
 			std::string desktop_to_remote;
 		};
+		struct Upload
+		{
+			std::filesystem::path target;
+			std::filesystem::path temporary;
+			std::uintmax_t expected_size = 0;
+			std::uintmax_t received_size = 0;
+			std::uint64_t digest = 0;
+			std::string expected_digest;
+		};
 
 	  private:
 		std::mutex m_stateMutex;
 		std::filesystem::path m_spoolDirectory;
 		std::unordered_map<std::string, std::unique_ptr<Process>> m_processes;
 		std::unordered_map<std::string, Channel> m_channels;
+		std::unordered_map<std::string, Upload> m_uploads;
 	};
 }

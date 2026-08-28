@@ -242,6 +242,9 @@ done
 	host.transport = "ssh";
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
+	host.runner_version = "4.5.7";
+	host.platform = "linux";
+	host.architecture = "arm64";
 	app.settings.execution_hosts = {host};
 	uam::execution_hosts::Normalize(app.settings.execution_hosts);
 
@@ -278,6 +281,17 @@ UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost host;
+	host.id = "lab";
+	host.label = "Lab";
+	host.transport = "ssh";
+	host.ssh_alias = "home-lab";
+	host.runner_status = "ready";
+	host.runner_version = "4.5.7";
+	host.platform = "linux";
+	host.architecture = "arm64";
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
 	ChatSession chat;
 	chat.id = "remote-control";
 	chat.provider_id = uam::provider_ids::kOpenCodeCli;

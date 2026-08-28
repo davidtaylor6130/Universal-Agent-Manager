@@ -45,5 +45,12 @@ it('leaves UAM target choice to the AI and exposes only revocation after approva
   await act(async () => stop?.click())
   expect(onSetActive).toHaveBeenCalledWith(false)
 
+  await act(async () => root.render(<ComputerUseModal {...props} disabled remoteDisabled />))
+  expect(host.textContent).toContain('Remote Computer Use is disabled')
+  expect(host.textContent).toContain('UAM will reject Computer Use requests for this remote chat')
+  expect(host.textContent).not.toContain('Ready for an AI request')
+  expect(host.textContent).not.toContain('One target approval')
+  expect(host.querySelector<HTMLSelectElement>('#computer-use-backend')?.disabled).toBe(true)
+
   await act(async () => root.unmount())
 })

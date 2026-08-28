@@ -1663,6 +1663,26 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+	it('creates an ungrouped remote CEF session when no local workspace exists', async () => {
+	  const requests: Array<{ action: string; payload?: unknown }> = []
+	  window.cefQuery = ({ request, onSuccess }) => {
+		requests.push(JSON.parse(request))
+		onSuccess('{}')
+	  }
+	  useAppStore.setState({
+		folders: [],
+		providers: [{ id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#f97316', description: '' }],
+	  })
+
+	  await useAppStore.getState().addSession('Remote', null, 'opencode-cli', '', '', 'chat', 'lab', '/srv/project')
+
+	  expect(requests).toHaveLength(1)
+	  expect(requests[0]).toMatchObject({
+		action: 'createSession',
+		payload: { title: 'Remote', folderId: '', providerId: 'opencode-cli', executionHostId: 'lab', workspaceDirectory: '/srv/project' },
+	  })
+	})
+
   it('creates edited and reverted message branches through CEF', async () => {
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {

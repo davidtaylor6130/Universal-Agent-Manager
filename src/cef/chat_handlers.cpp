@@ -180,11 +180,25 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	}
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
 
-	const std::string target_folder_id = uam::query_handler_internal::ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
-	if (target_folder_id.empty())
+	std::string target_folder_id;
+	if (execution_host->id == uam::execution_hosts::kLocalHostId)
 	{
-		cb->Failure(400, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "A workspace folder is required to create a chat."));
-		return;
+		target_folder_id = uam::query_handler_internal::ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
+		if (target_folder_id.empty())
+		{
+			cb->Failure(400, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "A workspace folder is required to create a chat."));
+			return;
+		}
+	}
+	else if (!requested_folder_id.empty())
+	{
+		const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, requested_folder_id);
+		if (folder == nullptr)
+		{
+			cb->Failure(400, "The selected workspace folder no longer exists.");
+			return;
+		}
+		target_folder_id = folder->id;
 	}
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
@@ -200,10 +214,8 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	else
 	{
 		chat.workspace_directory = uam::strings::Trim(payload.value("workspaceDirectory", ""));
-		if (chat.workspace_directory.empty() || chat.workspace_directory.size() > 4096 ||
-		    !std::filesystem::path(chat.workspace_directory).is_absolute() ||
-		    std::ranges::any_of(chat.workspace_directory,
-		        [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+		if (!uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
+		                                               chat.workspace_directory))
 		{
 			cb->Failure(400, "An absolute remote workspace path is required.");
 			return;

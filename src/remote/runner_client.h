@@ -21,7 +21,9 @@ namespace uam::remote
 		std::string standard_error;
 	};
 
-	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias);
+	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
+	                                       const std::string& platform,
+	                                       const std::string& version);
 
 	class RunnerClient
 	{
@@ -54,6 +56,12 @@ namespace uam::remote
 		bool PollChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr);
 		bool CloseChannel(const std::string& channel_id, std::string* error_out = nullptr);
+		bool UploadFile(const std::string& upload_id,
+		                const std::filesystem::path& remote_path,
+		                std::string_view bytes, std::string* error_out = nullptr);
+		bool RemoveFile(const std::string& request_id,
+		                const std::filesystem::path& remote_path,
+		                std::string* error_out = nullptr);
 		void Disconnect();
 
 	  private:

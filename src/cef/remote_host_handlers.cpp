@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <tuple>
+#include <vector>
 
 namespace
 {
@@ -32,13 +34,31 @@ namespace
 	bool BuildPlan(const ExecutionHost& host, uam::remote::BootstrapPlan& plan,
 	               std::string& error)
 	{
-		const std::filesystem::path runner = uam::remote::PackagedRunnerPath();
-		const auto checksum = uam::io::ReadFirstTextFileLine(runner.parent_path() /
-		                                                      "uam-runner.sha256");
-		if (!checksum)
+		const std::filesystem::path artifact_root =
+		    uam::remote::PackagedRunnerPath().parent_path();
+		std::vector<uam::remote::RunnerArtifact> artifacts;
+		for (const auto& [platform, architecture, executable] :
+		     std::vector<std::tuple<std::string, std::string, std::string>>{
+		         {"linux", "arm64", "uam-runner"},
+		         {"linux", "x86_64", "uam-runner"},
+		         {"windows", "x86_64", "uam-runner.exe"}})
 		{
-			error = "The packaged UAM remote runner checksum is missing.";
-			return false;
+			const std::filesystem::path directory = artifact_root /
+			    (platform + "-" + architecture);
+			const std::filesystem::path runner = directory / executable;
+			const auto checksum = uam::io::ReadFirstTextFileLine(directory /
+			                                                      "uam-runner.sha256");
+			std::error_code status_error;
+			const bool has_runner = std::filesystem::is_regular_file(runner, status_error) &&
+			                        !status_error;
+			if (!has_runner && !checksum) continue;
+			if (!has_runner || !checksum)
+			{
+				error = "A packaged UAM remote runner or checksum is missing.";
+				return false;
+			}
+			artifacts.push_back({platform, architecture, runner,
+			                     uam::strings::Trim(*checksum)});
 		}
 		std::string version = uam::constants::kAppVersion;
 		if (!version.empty() && (version.front() == 'V' || version.front() == 'v'))
@@ -46,8 +66,8 @@ namespace
 		std::string nonce =
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (nonce.empty()) nonce = uam::time::SteadyEpochNanosecondsTokenNow();
-		return uam::remote::BuildBootstrapPlan(
-		    host.ssh_alias, runner, version, uam::strings::Trim(*checksum), nonce, plan, &error);
+		return uam::remote::BuildBootstrapPlan(host.ssh_alias, version, nonce,
+		                                         std::move(artifacts), plan, &error);
 	}
 
 	auto FindMutableHost(std::vector<ExecutionHost>& hosts, const std::string& id)

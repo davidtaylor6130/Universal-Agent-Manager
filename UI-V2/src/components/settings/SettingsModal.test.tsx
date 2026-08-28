@@ -207,6 +207,8 @@ describe('SettingsModal memory settings', () => {
 
     expect(actions).toEqual(['previewRemoteHost'])
     expect(host.textContent).toContain('Install helper on AI desktop?')
+    expect(host.textContent).toContain('detects Ubuntu/Linux or Windows')
+    expect(host.textContent).toContain('Unsupported systems stop before anything is copied')
     expect(host.textContent).toContain('Check remote platform')
     const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
     await act(async () => { install?.click() })
@@ -226,7 +228,7 @@ describe('SettingsModal memory settings', () => {
         }))
         return
       }
-      onFailure(500, 'This build supports only macOS/arm64.')
+      onFailure(500, 'This UAM build does not contain a runner for linux/s390x.')
     }
     const { host, root } = renderModal()
     openRemoteHostsSection(host)
@@ -243,7 +245,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).not.toContain('Install helper on colima?')
-    expect(host.textContent).toContain('This build supports only macOS/arm64.')
+    expect(host.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()

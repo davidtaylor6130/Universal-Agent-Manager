@@ -6462,6 +6462,27 @@ UAM_TEST(ResolveWorkspaceRootPathPrefersGitWorktreeDirectory)
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, chat), uam::paths::AbsolutePathNoThrow(temp.root / "repo"));
 }
 
+UAM_TEST(RemoteWorkspacePathsRemainNativeToTheTargetHost)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.execution_host_id = "remote";
+	chat.workspace_directory = "C:\\Users\\builder\\project";
+	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, chat).string(),
+	              chat.workspace_directory);
+	UAM_ASSERT(uam::execution_hosts::IsAbsoluteRemotePath(
+	    "windows", chat.workspace_directory));
+	UAM_ASSERT_EQ(uam::execution_hosts::JoinRemotePath(
+	                  "windows", chat.workspace_directory, ".UAM/attachments/file.txt"),
+	              std::string("C:\\Users\\builder\\project\\.UAM\\attachments\\file.txt"));
+	UAM_ASSERT(uam::execution_hosts::IsAbsoluteRemotePath("linux", "/srv/project"));
+	UAM_ASSERT_EQ(uam::execution_hosts::JoinRemotePath(
+	                  "linux", "/srv/project/", ".UAM\\attachments\\file.txt"),
+	              std::string("/srv/project/.UAM/attachments/file.txt"));
+	UAM_ASSERT(!uam::execution_hosts::IsAbsoluteRemotePath("windows", "relative\\project"));
+	UAM_ASSERT(!uam::execution_hosts::IsAbsoluteRemotePath("linux", "relative/project"));
+}
+
 UAM_TEST(RelativePathIfInsideRootUsesPathSegments)
 {
 	TempDir temp("uam-path-relative");

@@ -3,14 +3,17 @@
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
+#include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
 
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <random>
+#include <ranges>
 #include <string>
 #include <thread>
 
@@ -47,13 +50,33 @@ namespace uam::remote
 		}
 	}
 
-	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias)
+	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
+	                                       const std::string& platform,
+	                                       const std::string& version)
 	{
-		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias)) return {};
+		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || version.empty() ||
+		    !std::ranges::all_of(version, [](unsigned char character)
+		    { return std::isalnum(character) != 0 || character == '-' || character == '_' || character == '.'; }))
+			return {};
+		std::string command;
+		if (platform == "linux" || platform == "macos" || platform == "Linux" ||
+		    platform == "Darwin")
+		{
+			const std::string runner = "~/.local/share/uam/runner/" + version + "/uam-runner";
+			command = runner + " start --socket ~/.local/share/uam/runner/uam.sock && exec " +
+			          runner + " bridge --socket ~/.local/share/uam/runner/uam.sock";
+		}
+		else if (platform == "windows" || platform == "Windows")
+		{
+			const std::string runner = "$HOME/.uam/runner/" + version + "/uam-runner.exe";
+			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+			          "-Command \"& '" + runner + "' start; if ($LASTEXITCODE -ne 0) { exit "
+			          "$LASTEXITCODE }; & '" + runner + "' bridge\"";
+		}
+		else return {};
 		return {"ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o",
 		        "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o",
-		        "ServerAliveCountMax=2", ssh_alias,
-		        "~/.local/share/uam/runner/current/uam-runner start --socket ~/.local/share/uam/runner/uam.sock && exec ~/.local/share/uam/runner/current/uam-runner bridge --socket ~/.local/share/uam/runner/uam.sock"};
+		        "ServerAliveCountMax=2", ssh_alias, std::move(command)};
 	}
 
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
@@ -129,11 +152,13 @@ namespace uam::remote
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner request failed." : error;
+			Disconnect();
 			return false;
 		}
 		if (response.value("id", "") != request_id)
 		{
 			if (error_out != nullptr) *error_out = "The remote runner response id does not match the request.";
+			Disconnect();
 			return false;
 		}
 		if (!response.value("ok", false))
@@ -262,6 +287,59 @@ namespace uam::remote
 		nlohmann::json response;
 		return Request({{"type", "channel.close"}, {"channelId", channel_id}}, response,
 		               error_out);
+	}
+
+	bool RunnerClient::UploadFile(const std::string& upload_id,
+	                              const std::filesystem::path& remote_path,
+	                              std::string_view bytes, std::string* error_out)
+	{
+		if (!Connect(error_out)) return false;
+		const auto abort = [&]
+		{
+			nlohmann::json ignored;
+			if (!m_connected) (void)Connect(nullptr);
+			if (m_connected)
+				(void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored,
+				              nullptr);
+		};
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		uam::hashing::UpdateFnv1a64(
+		    digest, reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
+		nlohmann::json response;
+		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id},
+		              {"path", remote_path.string()}, {"size", bytes.size()},
+		              {"digest", uam::hashing::Hex64Padded(digest)}},
+		             response, error_out))
+		{
+			abort();
+			return false;
+		}
+		for (std::size_t offset = 0; offset < bytes.size(); offset += 256 * 1024)
+		{
+			const std::string_view chunk = bytes.substr(offset, 256 * 1024);
+			if (!Request({{"type", "file.write"}, {"uploadId", upload_id},
+			              {"dataBase64", uam::base64::Encode(chunk)}}, response, error_out))
+			{
+				abort();
+				return false;
+			}
+		}
+		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response,
+		             error_out))
+		{
+			abort();
+			return false;
+		}
+		return true;
+	}
+
+	bool RunnerClient::RemoveFile(const std::string& request_id,
+	                              const std::filesystem::path& remote_path,
+	                              std::string* error_out)
+	{
+		nlohmann::json response;
+		return Request({{"type", "file.remove"}, {"uploadId", request_id},
+		                {"path", remote_path.string()}}, response, error_out);
 	}
 
 	bool RunnerClient::CloseProcessInput(const std::string& session_id, std::string* error_out)

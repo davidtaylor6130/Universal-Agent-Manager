@@ -344,7 +344,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
         : null
-      if (!selectedFolderId) {
+      const isRemote = executionHostId !== 'local'
+      if (!selectedFolderId && !isRemote) {
         console.error('[UAM] createSession requires a workspace folder')
         return false
       }
@@ -364,7 +365,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'createSession',
           payload: {
             title: name,
-            folderId: selectedFolderId,
+            folderId: selectedFolderId ?? '',
             providerId: requestedProviderId,
             defaults,
             ...(executionHostId === 'local' ? {} : { executionHostId, workspaceDirectory }),
@@ -402,6 +403,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         viewMode,
         folderId: selectedFolderId,
         providerId: requestedProviderId,
+		...(isRemote ? { workspaceDirectory } : {}),
         modelId: defaults.modelId,
         reviewerModelId: defaults.reviewerModelId,
         reasoningEffort: defaults.reasoningEffort,

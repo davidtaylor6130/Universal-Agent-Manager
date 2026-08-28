@@ -2,6 +2,7 @@
 
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
+#include "common/utils/hash_utils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -28,6 +29,11 @@ namespace uam::platform_windows_impl
 {
 	IPlatformProcessService& GetWindowsProcessService();
 }
+#elif defined(__linux__)
+namespace uam::platform_linux_impl
+{
+	IPlatformProcessService& GetLinuxProcessService();
+}
 #endif
 
 namespace uam::remote
@@ -43,6 +49,7 @@ namespace uam::remote
 		inline constexpr std::size_t kMaxWriteBytes = 256 * 1024;
 		inline constexpr std::size_t kMaxReadBytesPerStream = 256 * 1024;
 		inline constexpr std::size_t kMaxChannelBytes = 1024 * 1024;
+		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
 		inline constexpr std::uintmax_t kMaxSpoolBytesPerStream = 1024ull * 1024ull * 1024ull;
 
 		IPlatformProcessService& ProcessService()
@@ -51,8 +58,10 @@ namespace uam::remote
 			return uam::platform_macos_impl::GetMacProcessService();
 #elif defined(_WIN32)
 			return uam::platform_windows_impl::GetWindowsProcessService();
+#elif defined(__linux__)
+			return uam::platform_linux_impl::GetLinuxProcessService();
 #else
-#error "Remote process execution is implemented only on macOS and Windows."
+#error "Remote process execution is implemented only on macOS, Windows, and Linux."
 #endif
 		}
 
@@ -309,6 +318,12 @@ namespace uam::remote
 			if (process->drainer.joinable()) process->drainer.join();
 			ProcessService().CloseStdioProcessHandles(process->fields);
 		}
+		for (const auto& [upload_id, upload] : m_uploads)
+		{
+			(void)upload_id;
+			std::error_code remove_error;
+			std::filesystem::remove(upload.temporary, remove_error);
+		}
 		std::error_code cleanup_error;
 		if (!m_spoolDirectory.empty())
 			std::filesystem::remove_all(m_spoolDirectory, cleanup_error);
@@ -318,6 +333,116 @@ namespace uam::remote
 	{
 		std::scoped_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+		if (type.starts_with("file."))
+		{
+			if (!request.contains("uploadId") || !request["uploadId"].is_string() ||
+			    !IsSessionId(request["uploadId"].get_ref<const std::string&>()))
+				return ProcessError(request, "invalid_request",
+				                    "A portable bounded uploadId is required.");
+			const std::string upload_id = request["uploadId"].get<std::string>();
+			if (type == "file.remove")
+			{
+				if (!request.contains("path") || !request["path"].is_string())
+					return ProcessError(request, "invalid_request", "A file path is required.");
+				const std::string path_text = request["path"].get<std::string>();
+				const std::filesystem::path path(path_text);
+				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
+					return ProcessError(request, "invalid_request", "The file path is invalid.");
+				std::error_code error;
+				if (!std::filesystem::is_regular_file(path, error) || error ||
+				    !std::filesystem::remove(path, error) || error)
+					return ProcessError(request, "remove_failed", "The staged file could not be removed.");
+				return ProcessSuccess(request, nlohmann::json::object());
+			}
+			if (type == "file.begin")
+			{
+				if (m_uploads.contains(upload_id))
+					return ProcessError(request, "upload_exists",
+					                    "An upload already uses this uploadId.");
+				if (!request.contains("path") || !request["path"].is_string() ||
+				    !request.contains("size") ||
+				    (!request["size"].is_number_unsigned() &&
+				     (!request["size"].is_number_integer() ||
+				      request["size"].get<std::int64_t>() < 0)) ||
+				    !request.contains("digest") || !request["digest"].is_string())
+					return ProcessError(request, "invalid_request",
+					                    "Upload path, size, and digest are required.");
+				const std::string path_text = request["path"].get<std::string>();
+				const std::uintmax_t size = request["size"].is_number_unsigned()
+				    ? request["size"].get<std::uintmax_t>()
+				    : static_cast<std::uintmax_t>(request["size"].get<std::int64_t>());
+				const std::string digest = request["digest"].get<std::string>();
+				const std::filesystem::path target(path_text);
+				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !target.is_absolute() ||
+				    size > kMaxUploadBytes || digest.size() != 16 ||
+				    !std::ranges::all_of(digest, [](unsigned char character)
+				    { return std::isxdigit(character) != 0 && !std::isupper(character); }))
+					return ProcessError(request, "invalid_request", "Upload metadata is invalid.");
+				std::error_code error;
+				std::filesystem::create_directories(target.parent_path(), error);
+				if (error || std::filesystem::exists(target, error) || error)
+					return ProcessError(request, "target_unavailable",
+					                    "The upload target already exists or cannot be created.");
+				const std::filesystem::path temporary =
+				    target.parent_path() / (".uam-upload-" + upload_id + ".tmp");
+				std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+				if (!stream)
+					return ProcessError(request, "target_unavailable",
+					                    "The upload temporary file could not be created.");
+				std::filesystem::permissions(
+				    temporary, std::filesystem::perms::owner_read |
+				                   std::filesystem::perms::owner_write,
+				    std::filesystem::perm_options::replace, error);
+				m_uploads.emplace(upload_id, Upload{target, temporary, size, 0,
+				                                          uam::hashing::kFnv1a64OffsetBasis,
+				                                          digest});
+				return ProcessSuccess(request, {{"uploadId", upload_id}});
+			}
+			const auto found = m_uploads.find(upload_id);
+			if (found == m_uploads.end())
+				return ProcessError(request, "upload_not_found", "The upload does not exist.");
+			Upload& upload = found->second;
+			if (type == "file.abort")
+			{
+				std::error_code error;
+				std::filesystem::remove(upload.temporary, error);
+				m_uploads.erase(found);
+				return ProcessSuccess(request, nlohmann::json::object());
+			}
+			if (type == "file.write")
+			{
+				if (!request.contains("dataBase64") || !request["dataBase64"].is_string())
+					return ProcessError(request, "invalid_request", "dataBase64 is required.");
+				std::string decoded;
+				if (!uam::base64::Decode(request["dataBase64"].get_ref<const std::string&>(), decoded) ||
+				    decoded.size() > kMaxWriteBytes ||
+				    decoded.size() > upload.expected_size - upload.received_size)
+					return ProcessError(request, "invalid_request", "Upload data is invalid or too large.");
+				std::ofstream stream(upload.temporary, std::ios::binary | std::ios::app);
+				stream.write(decoded.data(), static_cast<std::streamsize>(decoded.size()));
+				if (!stream)
+					return ProcessError(request, "write_failed", "Upload data could not be written.");
+				uam::hashing::UpdateFnv1a64(upload.digest,
+				    reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
+				upload.received_size += decoded.size();
+				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
+			}
+			if (type == "file.commit")
+			{
+				if (upload.received_size != upload.expected_size ||
+				    uam::hashing::Hex64Padded(upload.digest) != upload.expected_digest)
+					return ProcessError(request, "digest_mismatch",
+					                    "Upload size or digest verification failed.");
+				std::error_code error;
+				std::filesystem::rename(upload.temporary, upload.target, error);
+				if (error)
+					return ProcessError(request, "commit_failed", "Upload could not be committed.");
+				const std::string path = upload.target.string();
+				m_uploads.erase(found);
+				return ProcessSuccess(request, {{"path", path}});
+			}
+			return ProcessError(request, "unsupported_request", "Unknown runner file request.");
+		}
 		if (type.starts_with("channel."))
 		{
 			if (!request.contains("channelId") || !request["channelId"].is_string() ||

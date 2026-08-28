@@ -1801,7 +1801,7 @@ export function SettingsModal() {
                   </>}
                 >
                   <div className="grid gap-2">
-                    <span>This uses your existing OpenSSH authentication. It first verifies that the host matches this build’s macOS architecture, then creates a private versioned directory under ~/.local/share/uam/runner, copies the helper, verifies SHA-256, and starts it.</span>
+                    <span>This uses your existing OpenSSH authentication. UAM detects Ubuntu/Linux or Windows and its CPU architecture, selects the matching bundled helper, copies it into a private versioned user directory, verifies SHA-256, and starts it. Unsupported systems stop before anything is copied.</span>
                     <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>{remotePreview.preview}</pre>
                   </div>
                 </Notice>

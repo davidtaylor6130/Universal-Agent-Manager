@@ -360,12 +360,12 @@ namespace uam::remote
 			(void)dup2(log, STDERR_FILENO);
 			if (input > STDERR_FILENO) (void)close(input);
 			if (log > STDERR_FILENO) (void)close(log);
-			(void)chdir("/");
+			if (chdir("/") != 0) _exit(2);
 			const int result = RunRunnerService(socket_path, runner_version);
 			_exit(result);
 		}
 
-		for (int attempt = 0; attempt < 100; ++attempt)
+		for (int attempt = 0; attempt < 200; ++attempt)
 		{
 			if (SocketIsReachable(socket_path)) return 0;
 			int status_value = 0;
@@ -374,9 +374,9 @@ namespace uam::remote
 				std::cerr << "Runner service exited during startup.\n";
 				return 2;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		}
-		std::cerr << "Runner service did not become ready within one second.\n";
+		std::cerr << "Runner service did not become ready within ten seconds.\n";
 		return 2;
 	}
 

@@ -23,16 +23,32 @@
 #define UAM_REMOTE_RUNNER_VERSION "development"
 #endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 #include <fcntl.h>
+#if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #include <unistd.h>
+#if defined(__APPLE__)
 namespace uam::platform_macos_impl
 {
 	IPlatformProcessService& GetMacProcessService();
 }
+#else
+namespace uam::platform_linux_impl
+{
+	IPlatformProcessService& GetLinuxProcessService();
+}
+#endif
 #elif defined(_WIN32)
+#include "common/platform/platform_services_windows_impl_internal.h"
+#include <deque>
+#include <mutex>
 #include <windows.h>
+namespace uam::platform_windows_impl
+{
+	IPlatformProcessService& GetWindowsProcessService();
+}
 #endif
 
 namespace uam::remote
@@ -71,17 +87,18 @@ namespace uam::remote
 				return std::nullopt;
 			}
 			if (result.session_id.empty() || result.argv.empty() ||
-			    !result.working_directory.is_absolute())
+			    result.working_directory.empty())
 				return std::nullopt;
 			return result;
 		}
 
 #if defined(__APPLE__)
 		void RunLocalMcpRelay(std::stop_token stop_token, const std::string& ssh_alias,
+		                      const std::string& platform, const std::string& version,
 		                      DecodedProxySpec spec)
 		{
 			auto& process_service = uam::platform_macos_impl::GetMacProcessService();
-			RunnerClient channel(process_service, SshBridgeArgv(ssh_alias),
+			RunnerClient channel(process_service, SshBridgeArgv(ssh_alias, platform, version),
 			                     UAM_REMOTE_RUNNER_VERSION);
 			std::string error;
 			if (!channel.OpenChannel(spec.session_id, &error, true))
@@ -143,6 +160,7 @@ namespace uam::remote
 		const std::filesystem::path executable = std::filesystem::weakly_canonical(buffer);
 		if (executable.parent_path().filename() == "MacOS")
 			return executable.parent_path().parent_path() / "Resources" / "remote" / "uam-runner";
+		return executable.parent_path() / "uam-runner";
 #elif defined(_WIN32)
 		std::array<wchar_t, 32768> buffer{};
 		const DWORD size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -152,7 +170,6 @@ namespace uam::remote
 #else
 		return {};
 #endif
-		return executable.parent_path() / "uam-runner";
 	}
 
 	std::string BuildProcessProxySpec(
@@ -169,17 +186,34 @@ namespace uam::remote
 	}
 
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
-	    const std::string& ssh_alias, const std::filesystem::path& working_directory,
+	    const std::string& ssh_alias, const std::string& platform,
+	    const std::string& version, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv)
 	{
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || argv.empty() ||
-		    !working_directory.is_absolute())
+		    !uam::execution_hosts::IsAbsoluteRemotePath(platform,
+		        working_directory.string()))
 			return {};
+		if (SshBridgeArgv(ssh_alias, platform, version).empty()) return {};
+		std::string command;
+		if (platform == "linux" || platform == "macos" || platform == "Linux" ||
+		    platform == "Darwin")
+		{
+			const std::string runner = "~/.local/share/uam/runner/" + version + "/uam-runner";
+			command = runner + " terminal " +
+			          BuildProcessProxySpec("terminal", working_directory, argv, {});
+		}
+		else if (platform == "windows" || platform == "Windows")
+		{
+			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+			          "-Command \"& (Join-Path $HOME '.uam/runner/" + version +
+			          "/uam-runner.exe') terminal '" +
+			          BuildProcessProxySpec("terminal", working_directory, argv, {}) + "'\"";
+		}
+		else return {};
 		return {"ssh", "-tt", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
 		        "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o",
-		        "ServerAliveCountMax=3", ssh_alias,
-		        "~/.local/share/uam/runner/current/uam-runner", "terminal",
-		        BuildProcessProxySpec("terminal", working_directory, argv, {})};
+		        "ServerAliveCountMax=3", ssh_alias, std::move(command)};
 	}
 
 	std::string BuildRemoteMcpControlLine(
@@ -194,7 +228,50 @@ namespace uam::remote
 
 	int RunTerminalProcess(const std::string& encoded_spec)
 	{
-#if !defined(__APPLE__)
+#if defined(_WIN32)
+		std::string decoded;
+		if (!uam::base64::Decode(encoded_spec, decoded)) return 2;
+		const nlohmann::json spec = nlohmann::json::parse(decoded, nullptr, false);
+		if (!spec.is_object() || !spec.contains("cwd") || !spec["cwd"].is_string() ||
+		    !spec.contains("argv") || !spec["argv"].is_array() ||
+		    !spec.contains("environment") || !spec["environment"].is_object() ||
+		    !spec["environment"].empty()) return 2;
+		std::vector<std::string> arguments;
+		try { arguments = spec["argv"].get<std::vector<std::string>>(); }
+		catch (...) { return 2; }
+		if (arguments.empty()) return 2;
+		const std::filesystem::path cwd = spec["cwd"].get<std::string>();
+		if (!cwd.is_absolute()) return 2;
+		const auto launch = uam::platform_windows_impl::BuildWindowsLaunchCommand(arguments);
+		std::wstring command = uam::platform_windows_impl::WideFromUtf8(launch.command_line);
+		STARTUPINFOW startup{};
+		startup.cb = sizeof(startup);
+		startup.dwFlags = STARTF_USESTDHANDLES;
+		startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+		startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+		startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+		PROCESS_INFORMATION process{};
+		if (command.empty() || !CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+		    CREATE_SUSPENDED, nullptr, cwd.c_str(), &startup, &process)) return 70;
+		HANDLE job = nullptr;
+		std::string job_error;
+		if (!uam::platform_windows_impl::CreateKillOnCloseJobForProcess(
+		        process.hProcess, &job, &job_error))
+		{
+			TerminateProcess(process.hProcess, 70);
+			CloseHandle(process.hThread);
+			CloseHandle(process.hProcess);
+			return 70;
+		}
+		(void)ResumeThread(process.hThread);
+		CloseHandle(process.hThread);
+		(void)WaitForSingleObject(process.hProcess, INFINITE);
+		DWORD exit_code = 70;
+		(void)GetExitCodeProcess(process.hProcess, &exit_code);
+		CloseHandle(process.hProcess);
+		CloseHandle(job);
+		return static_cast<int>(exit_code);
+#elif !defined(__APPLE__) && !defined(__linux__)
 		(void)encoded_spec;
 		std::cerr << "Remote terminal execution is not yet available on this platform.\n";
 		return 70;
@@ -204,7 +281,8 @@ namespace uam::remote
 		const nlohmann::json spec = nlohmann::json::parse(decoded, nullptr, false);
 		if (!spec.is_object() || !spec.contains("cwd") || !spec["cwd"].is_string() ||
 		    !spec.contains("argv") || !spec["argv"].is_array() ||
-		    !spec.value("environment", nlohmann::json::object()).empty())
+		    !spec.contains("environment") || !spec["environment"].is_object() ||
+		    !spec["environment"].empty())
 			return 2;
 		std::vector<std::string> arguments;
 		try
@@ -226,7 +304,8 @@ namespace uam::remote
 #endif
 	}
 
-	int RunProcessProxy(const std::string& ssh_alias)
+	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
+	                    const std::string& version)
 	{
 #if !defined(__APPLE__)
 		(void)ssh_alias;
@@ -248,7 +327,8 @@ namespace uam::remote
 		}
 
 		RunnerClient client(uam::platform_macos_impl::GetMacProcessService(),
-		                    SshBridgeArgv(ssh_alias), UAM_REMOTE_RUNNER_VERSION);
+		                    SshBridgeArgv(ssh_alias, platform, version),
+		                    UAM_REMOTE_RUNNER_VERSION);
 		std::string error;
 		const std::string& session_id = spec->session_id;
 		if (!client.Connect(&error) ||
@@ -314,7 +394,8 @@ namespace uam::remote
 								return 70;
 							}
 							mcp_relay.reset();
-							mcp_relay.emplace(RunLocalMcpRelay, ssh_alias, std::move(*mcp_spec));
+							mcp_relay.emplace(RunLocalMcpRelay, ssh_alias, platform, version,
+							                  std::move(*mcp_spec));
 							continue;
 						}
 						if (!write_remote(line))
@@ -379,14 +460,19 @@ namespace uam::remote
 	int RunRemoteMcpShim(const std::string& channel_id,
 	                     const std::filesystem::path& socket_path)
 	{
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__linux__)
 		(void)channel_id;
 		(void)socket_path;
 		return 70;
 #else
-		const std::filesystem::path executable =
-		    uam::platform_macos_impl::GetMacProcessService().ResolveCurrentExecutablePath();
-		RunnerClient channel(uam::platform_macos_impl::GetMacProcessService(),
+		auto& process_service =
+#if defined(__APPLE__)
+		    uam::platform_macos_impl::GetMacProcessService();
+#else
+		    uam::platform_linux_impl::GetLinuxProcessService();
+#endif
+		const std::filesystem::path executable = process_service.ResolveCurrentExecutablePath();
+		RunnerClient channel(process_service,
 		                     {executable.string(), "bridge", "--socket", socket_path.string()},
 		                     UAM_REMOTE_RUNNER_VERSION);
 		std::string error;
@@ -429,6 +515,93 @@ namespace uam::remote
 		(void)channel.CloseChannel(channel_id);
 		if (!error.empty()) std::cerr << error << '\n';
 		return 70;
+#endif
+	}
+
+	int RunRemoteMcpShim(const std::string& channel_id)
+	{
+#if !defined(_WIN32)
+		(void)channel_id;
+		return 70;
+#else
+		auto& process_service = uam::platform_windows_impl::GetWindowsProcessService();
+		const std::filesystem::path executable = process_service.ResolveCurrentExecutablePath();
+		RunnerClient channel(process_service, {executable.string(), "bridge"},
+		                     UAM_REMOTE_RUNNER_VERSION);
+		std::string error;
+		if (!channel.OpenChannel(channel_id, &error, true)) return 70;
+		std::mutex input_mutex;
+		std::deque<std::string> input;
+		std::atomic<bool> input_closed{false};
+		std::atomic<bool> input_failed{false};
+		std::size_t input_bytes = 0;
+		std::jthread reader([&]
+		{
+			std::array<char, 16 * 1024> bytes{};
+			for (;;)
+			{
+				DWORD read = 0;
+				if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), bytes.data(),
+				              static_cast<DWORD>(bytes.size()), &read, nullptr) || read == 0) break;
+				std::scoped_lock lock(input_mutex);
+				if (input_bytes + read > 1024 * 1024)
+				{
+					input_failed.store(true, std::memory_order_release);
+					break;
+				}
+				input.emplace_back(bytes.data(), read);
+				input_bytes += read;
+			}
+			input_closed.store(true, std::memory_order_release);
+		});
+		for (;;)
+		{
+			std::string pending;
+			{
+				std::scoped_lock lock(input_mutex);
+				if (!input.empty())
+				{
+					pending = std::move(input.front());
+					input_bytes -= pending.size();
+					input.pop_front();
+				}
+			}
+			if (!pending.empty() && !channel.WriteChannel(
+			        channel_id, "remoteToDesktop", pending, &error))
+			{
+				input_failed.store(true, std::memory_order_release);
+				break;
+			}
+			std::string output;
+			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error))
+			{
+				input_failed.store(true, std::memory_order_release);
+				break;
+			}
+			if (!output.empty())
+			{
+				std::size_t offset = 0;
+				while (offset < output.size())
+				{
+					DWORD written = 0;
+					if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), output.data() + offset,
+					               static_cast<DWORD>(output.size() - offset), &written,
+					               nullptr) || written == 0)
+					{
+						input_failed.store(true, std::memory_order_release);
+						break;
+					}
+					offset += written;
+				}
+				if (input_failed.load(std::memory_order_acquire)) break;
+			}
+			if (input_closed.load(std::memory_order_acquire) && pending.empty()) break;
+			if (pending.empty() && output.empty()) Sleep(10);
+		}
+		(void)channel.CloseChannel(channel_id);
+		(void)CancelSynchronousIo(reader.native_handle());
+		reader.join();
+		return !input_failed.load(std::memory_order_acquire) && error.empty() ? 0 : 70;
 #endif
 	}
 }

@@ -5,11 +5,15 @@ endif()
 project(universal_agent_manager VERSION 4.5.7 LANGUAGES C CXX)
 set(UAM_PRODUCT_VERSION "${PROJECT_VERSION}")
 
+option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
+set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "" CACHE PATH
+  "Directory containing linux-arm64, linux-x86_64, and windows-x86_64 runner folders.")
+
 if(APPLE)
   enable_language(OBJCXX)
 endif()
 
-if(NOT WIN32 AND NOT APPLE)
+if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
 
@@ -136,6 +140,8 @@ set(CMAKE_FOLDER "")
 # CEF (Chromium Embedded Framework) — platform-aware prebuilt download
 # ---------------------------------------------------------------------------
 
+if(NOT UAM_RUNNER_ONLY)
+
 # Platform-specific CEF versions (latest stable from cef-builds.spotifycdn.com).
 if(WIN32)
   set(CEF_PLATFORM "windows64")
@@ -190,6 +196,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cef_binary)
 set(BUILD_SHARED_LIBS ${_saved_bsl} CACHE BOOL "" FORCE)
 set(CMAKE_FOLDER "")
+endif()
 
 # FetchContent_MakeAvailable already processes the CEF CMakeLists.txt, which
 # builds libcef_dll_wrapper and creates the libcef_dll_wrapper target.
@@ -301,8 +308,18 @@ if(APPLE)
     "-Wl,-framework,Foundation"
   )
 elseif(WIN32)
-  target_sources(uam_runner PRIVATE src/common/platform/platform_process_windows.cpp)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_process_windows.cpp
+    src/remote/runner_service_windows.cpp
+  )
   target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32)
+elseif(UNIX)
+  find_package(Threads REQUIRED)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_process_linux.cpp
+    src/remote/runner_service_posix.cpp
+  )
+  target_link_libraries(uam_runner PRIVATE Threads::Threads)
 endif()
 target_compile_definitions(uam_runner PRIVATE
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
@@ -322,6 +339,10 @@ add_custom_command(TARGET uam_runner POST_BUILD
   VERBATIM
   COMMENT "Writing the remote runner checksum"
 )
+
+if(UAM_RUNNER_ONLY)
+  return()
+endif()
 
 set(UAM_EXECUTABLE_KIND "")
 if(APPLE AND UAM_MACOS_BUNDLE)
@@ -819,6 +840,22 @@ add_dependencies(universal_agent_manager uam_runner)
 set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
 
 if(APPLE AND UAM_MACOS_BUNDLE)
+  set(UAM_REMOTE_ARTIFACT_DEST
+    "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote")
+else()
+  set(UAM_REMOTE_ARTIFACT_DEST "$<TARGET_FILE_DIR:universal_agent_manager>/remote")
+endif()
+set(UAM_REMOTE_ARTIFACT_COPY_COMMAND)
+if(UAM_REMOTE_RUNNER_ARTIFACT_DIR)
+  if(NOT IS_DIRECTORY "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}")
+    message(FATAL_ERROR "UAM_REMOTE_RUNNER_ARTIFACT_DIR is not a directory.")
+  endif()
+  list(APPEND UAM_REMOTE_ARTIFACT_COPY_COMMAND
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}" "${UAM_REMOTE_ARTIFACT_DEST}")
+endif()
+
+if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E remove_directory
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
@@ -849,6 +886,7 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${UAM_RUNNER_SHA256_FILE}"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.sha256"
+	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
 else()
@@ -874,6 +912,15 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
       "$<TARGET_FILE_DIR:universal_agent_manager>/gemini-policy.toml"
+	COMMAND ${CMAKE_COMMAND} -E make_directory
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "$<TARGET_FILE:uam_runner>"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/$<TARGET_FILE_NAME:uam_runner>"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_SHA256_FILE}"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.sha256"
+	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
 endif()
@@ -1135,6 +1182,7 @@ if(UAM_BUILD_TESTS)
     )
   endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
+  add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
   if(APPLE)
     add_executable(uam_macos_application_tests
