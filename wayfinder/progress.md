@@ -1175,3 +1175,43 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Verification passes: focused model/new-chat coverage 27/27, full frontend 565/565, production UI
   build, strict ad-hoc app-signature verification, and native CTest 6/6 outside the socket-restricted
   sandbox. The installed Applications build and release draft PR remain untouched.
+
+## 2026-08-28 — Windows GUI attachment, concurrency, resume, terminal, reconnect, and remote-CU PASS
+
+- The later report that a branch produced nothing mapped to the pre-fix test chat
+  `chat-1787951001440-1feef8`, which had already persisted the old defect as
+  `execution_host_id: local`. No newly created post-fix branch was missing from storage. A genuinely
+  fresh Windows/OpenCode/Big Pickle chat created with local inference unavailable returned
+  `FRESH_REMOTE_OK` in six seconds, while the post-fix child had already returned
+  `BRANCH_REMOTE_OK`. Existing malformed test data was not silently rewritten.
+- GUI attachment acceptance used the native file picker with
+  `/private/tmp/uam-remote-attachment.txt`. UAM staged it under the selected Windows workspace as
+  `.UAM\attachments\chat-1787951713213-c9a418\1787952178571680-0-uam-remote-attachment.txt`;
+  OpenCode's remote file tool read it and returned the exact token
+  `UAM_REMOTE_ATTACHMENT_TOKEN_4412394C`. Independent SSH verification found the 37-byte staged
+  file with identical contents. The tool's empty argument object is an OpenCode presentation shape:
+  the path arrived as the tool-call name and the result text reached the model.
+- Real GUI concurrency used two independent remote chats. Chat A waited on approval for a harmless
+  20-second Windows PowerShell sleep while Chat B returned `CONCURRENT_B_OK`; Active Chats showed
+  `1 running · 1 attention`. After approval, Chat A returned `CONCURRENT_A_OK`. The Active Chats row
+  and normal sidebar row were confirmed as two views of the same chat, not duplicate sessions.
+- Restarted only `Builds/UAM Remote Acceptance 2.app` against the same temporary data root. The
+  saved chat resumed through ACP `session/resume` with the exact native id
+  `ses_fb5bb4beeffe5XXgyvpV0xojQg` and returned `RESTART_RESUME_REMOTE_OK`.
+- Remote terminal fallback was repeated with OpenCode explicitly selected; Gemini and Claude were
+  excluded. The real OpenCode TUI launched on Windows, displayed the remote
+  `~\uam-windows-source-20260828` workspace, exited cleanly through Ctrl-C/Ctrl-D, then launched and
+  exited cleanly again through Retry. No model prompt was submitted. A discarded default-provider
+  attempt failed before any provider process with a non-reproducing watchdog-arm error and is not
+  counted as provider evidence.
+- Reversibly stopped the Windows helper service while the saved structured chat was idle. UAM
+  observed bridge exit code 70, scheduled reconnect, restarted the helper one second later, resumed
+  the same native OpenCode session, and returned `HELPER_RECONNECT_OK` on the next prompt.
+- Invoking `/computer` in the remote chat opened a fail-closed dialog: the selector was disabled,
+  the UI stated **Remote Computer Use is disabled**, and it explicitly promised that no remote
+  screen/input session could start. No Computer Use request was sent to the Windows helper.
+- Windows GUI acceptance now passes for fresh chat creation without local inference, branch host
+  inheritance, target-owned model discovery, attachments, concurrent sessions, app restart/native
+  resume, OpenCode terminal fallback/retry, helper outage recovery, and remote Computer Use
+  rejection. No source change was warranted by this acceptance batch; the installed Applications
+  build and draft release PR remain untouched.
