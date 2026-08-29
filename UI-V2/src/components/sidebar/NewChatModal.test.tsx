@@ -191,7 +191,7 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
-  it('discovers models on the selected remote host only after an explicit request', async () => {
+  it('uses explicit ephemeral discovery on the selected remote host even when a matching chat exists', async () => {
     const addSession = vi.fn().mockResolvedValue(true)
     const discoverProviderModels = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
@@ -200,6 +200,17 @@ describe('NewChatModal', () => {
 	  providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#22c55e', description: '' }],
 	  defaultNewChatProviderId: 'opencode-cli',
 	  providerChatDefaults: { 'opencode-cli': { modelId: 'controller-default', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' } },
+	  sessions: [{
+		id: 'existing-remote-chat',
+		name: 'Existing remote chat',
+		viewMode: 'chat',
+		folderId: null,
+		providerId: 'opencode-cli',
+		executionHostId: 'lab',
+		workspaceDirectory: '/srv/project',
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	  }],
 	  folders: [],
 	  newChatFolderId: null,
       executionHosts: [

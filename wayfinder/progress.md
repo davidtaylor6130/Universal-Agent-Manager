@@ -1552,3 +1552,30 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   the owner's unrelated untracked files remain excluded.
 - Status: `IN_PROGRESS` — the exact promptless Homelab discovery action is awaiting its separately
   requested written approval; completion cannot be claimed from local/fake-transport evidence.
+
+## 2026-08-29 — Approved Homelab discovery exposed existing-chat reuse; stopped and fixed locally
+
+- Used the user's one-time approval only for the isolated repository bundle
+  `Builds/remote-discovery-acceptance/UAM Remote Discovery Acceptance.app`, isolated data root
+  `/private/tmp/uam-remote-discovery.VdZNbJ`, host `ssh-uam-homelab`, workspace
+  `/home/davidtaylor613/uam-acceptance-linux-20260828`, and OpenCode. The GUI selected the intended
+  host and provider and invoked the explicit remote-model discovery action.
+- The physical trace did not send a prompt, invoke inference or a tool, enable Computer Use, mutate
+  the workspace, or touch Docker, Compose, packages, or services. It did, however, violate the
+  narrower approved wire contract: the New Chat UI found a matching saved chat and passed its id,
+  causing `initialize`, `session/resume`, `session/set_mode`, and `session/set_model` instead of the
+  expected ephemeral `initialize` and `session/new`. The isolated app was stopped immediately.
+- Root cause was confined to the New Chat discovery caller. Remote pre-chat discovery must never
+  inherit a saved chat merely because provider, machine, and path match. The caller now always passes
+  an empty chat id for a remote host, preserving existing-chat discovery only for local sessions and
+  forcing the established ephemeral backend path remotely.
+- Added a rendered regression with a matching existing remote OpenCode chat. The explicit action
+  still has to call discovery with an empty chat id and the selected host/workspace. Verification
+  passed: focused NewChatModal 21/21; full frontend 38 files / 568 tests; production repository build;
+  refreshed unique acceptance bundle id; and deep/strict signature verification.
+- The pre-fix acceptance bundle was preserved recoverably at
+  `/private/tmp/UAM Remote Discovery Acceptance.pre-fix-20260829T0025.app`. The Applications build,
+  global UAM data, draft PR, and unrelated owner files remain untouched.
+- Status: `IN_PROGRESS` — the defect is fixed and verified locally. The consumed physical approval
+  does not authorize a retry; any further Homelab connection requires a new, separately written,
+  exact-command approval.

@@ -194,7 +194,7 @@ export function NewChatModal() {
 	if (!selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
 	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
 	discoveryRequestedRef.current.add(discoveryKey)
-	void discoverProviderModels(discoverySession?.id ?? '', providerId, selectedWorkspace, executionHostId)
+	void discoverProviderModels(isRemote ? '' : discoverySession?.id ?? '', providerId, selectedWorkspace, executionHostId)
   }
   useEffect(() => {
 	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
