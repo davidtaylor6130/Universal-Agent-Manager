@@ -1533,3 +1533,22 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `IN_PROGRESS` — local proof is complete. The next step remains the separately approved
   physical Homelab OpenCode discovery using the isolated acceptance bundle; no physical connection
   was made during this audit.
+
+## 2026-08-29 — Latest-checkpoint completion audit remains green
+
+- Re-read the complete Wayfinder ledger instead of narrowing completion to the pending discovery
+  button. Physical acceptance already covers UAM's local Computer Use engine and provider-driven
+  OpenCode integration, plus Ubuntu and Windows helper installation, structured execution,
+  permission-mediated tools, attachments, terminal fallback, restart/resume, bridge reconnect,
+  concurrent chats, target-native paths, and remote Computer Use rejection. The current remaining
+  evidence gap is specifically the explicit pre-chat remote model-discovery journey added after
+  those runs.
+- Re-ran the entire frontend suite at the latest checkpoint: 38 files and 568 tests passed. Re-ran
+  the full native CTest suite with local Unix-socket permission: 6/6 passed in 56.03 seconds,
+  including core/runner integration, macOS application/process contracts, Windows containment, and
+  the Computer Use permission contract.
+- No SSH connection, provider process, Applications-installed build, global UAM data, draft PR, or
+  remote machine was touched. The repository branch still contains only the intended commits and
+  the owner's unrelated untracked files remain excluded.
+- Status: `IN_PROGRESS` — the exact promptless Homelab discovery action is awaiting its separately
+  requested written approval; completion cannot be claimed from local/fake-transport evidence.
