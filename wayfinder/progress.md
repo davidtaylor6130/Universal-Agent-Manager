@@ -1458,3 +1458,43 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `IN_PROGRESS` — the workspace machine invariant is closed locally. The broader approved
   remote-helper goal continues, and any physical Homelab step still requires separate exact-command
   approval.
+
+## 2026-08-29 — Controller-history isolation audit and remote-discovery gate prepared
+
+- Resumed the full Computer Use/remote-helper goal from `9dcbcb7d` and audited every remaining
+  controller-native history path after the one-workspace/one-machine correction. The audit found a
+  real cross-machine risk: remote chats could still participate in local native-session matching,
+  overlay reconciliation, deletion tombstones, and terminal history rebinding when a target path or
+  provider-native session id happened to match controller data.
+- Native-session open/link services now reject remote source chats at their shared boundary. Local
+  Codex/OpenCode terminal history rebinding runs only for controller-local chats. The UI returns a
+  direct `Remote provider history is not available on this computer` error instead of searching the
+  Mac and returning a misleading result.
+- Native overlay indexes and import identities ignore remote chat authority. A local native-history
+  refresh cannot overwrite a remote chat, import its workspace metadata into a local chat, drop it
+  from the sidebar, or let deletion of it tombstone controller-native provider history.
+- Portable transcript import now resets `execution_host_id` to `local` alongside the existing
+  stripping of native session ids, folders, workspaces, attachments, approvals, and active-agent
+  authority. An imported read-only transcript can no longer retain a stale machine id from another
+  UAM instance.
+- Added focused regressions for remote open/link rejection, remote preservation during a colliding
+  native overlay, remote tombstone isolation, passive transcript machine normalization, the real
+  fake-SSH remote ACP/model-discovery route, remote terminal routing, remote Computer Use rejection,
+  workspace action rejection, recovery separation, and cross-machine move rejection. Every focused
+  check passed.
+- Verification passed: full native CTest 6/6 outside the Unix-socket sandbox; production frontend
+  build; packaged repository app and nested Computer Use helper signing; final deep/strict signature
+  verification; and `git diff --check`. The frontend source was unchanged and its immediately prior
+  full suite remains 38 files / 568 tests.
+- Prepared a new repository-only signed acceptance bundle at
+  `Builds/remote-discovery-acceptance/UAM Remote Discovery Acceptance.app` with unique bundle id
+  `com.universalagentmanager.desktop.remotediscoveryacceptance` and copied isolated data root
+  `/private/tmp/uam-remote-discovery.VdZNbJ`. A read-only Computer Use launch confirmed that exact
+  bundle and data root; it was then closed without model discovery, SSH, a provider process, or a
+  Homelab action. The Applications build and draft PR remain untouched.
+- Status: `IN_PROGRESS` — the remaining physical gate is the explicit Homelab pre-chat discovery
+  action. It will start only `opencode acp` in
+  `/home/davidtaylor613/uam-acceptance-linux-20260828`, send ACP `initialize` and `session/new`, read
+  the target-owned model/config catalog, and stop. It sends no prompt, performs no inference or tool
+  call, writes no workspace file, and does not touch Docker, Compose, `/opt/containers`, packages, or
+  services. This action still requires separate written approval before execution.

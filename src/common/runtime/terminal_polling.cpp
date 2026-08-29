@@ -487,6 +487,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	bool changed = false;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const ChatSession* terminal_chat = FindChatForCliTerminal(app, terminal);
+	const bool terminal_is_controller_local = terminal_chat != nullptr &&
+	    uam::paths::IsControllerLocalWorkspace(*terminal_chat);
 	const int previous_chat_message_count = (terminal_chat != nullptr) ? static_cast<int>(terminal_chat->messages.size()) : -1;
 	const bool terminal_uses_native_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
@@ -630,7 +632,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	const bool sync_interval_elapsed = now - terminal.last_sync_time_s > kCliNativeHistoryRefreshIntervalSeconds;
 	const bool should_refresh_native_history = terminal_uses_native_history && sync_interval_elapsed;
-	if (terminal.running && !terminal_uses_native_history && terminal_uses_codex_cli && CliTerminalAttachedSessionId(terminal).empty() && terminal_chat != nullptr && sync_interval_elapsed)
+	if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && terminal_uses_codex_cli && CliTerminalAttachedSessionId(terminal).empty() && sync_interval_elapsed)
 	{
 		terminal.last_sync_time_s = now;
 		ChatSession* codex_chat = FindChatForCliTerminal(app, terminal);
@@ -653,7 +655,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			changed = true;
 		}
 	}
-	else if (terminal.running && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && terminal_chat != nullptr && sync_interval_elapsed)
+	else if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && sync_interval_elapsed)
 	{
 		const std::vector<ChatSession> local_now = ChatRepository::LoadLocalChatSummaries(app.data_root);
 		const bool retry_without_snapshot = terminal.session_ids_before.empty();

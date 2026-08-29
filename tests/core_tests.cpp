@@ -5215,6 +5215,7 @@ UAM_TEST(LocalChatBundleImportStripsLocalExecutionAuthority)
 	exported.title = "Portable transcript";
 	exported.provider_id = "codex-cli";
 	exported.native_session_id = "provider-session";
+	exported.execution_host_id = "ssh-remote";
 	exported.folder_id = "local-folder";
 	exported.workspace_directory = "/private/tmp/sensitive";
 	exported.workspace_isolation_kind = "gitWorktree";
@@ -5246,6 +5247,7 @@ UAM_TEST(LocalChatBundleImportStripsLocalExecutionAuthority)
 	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(target, exported.id);
 	UAM_ASSERT(imported.has_value());
 	UAM_ASSERT(imported->native_session_id.empty());
+	UAM_ASSERT_EQ(imported->execution_host_id, std::string("local"));
 	UAM_ASSERT(imported->folder_id.empty());
 	UAM_ASSERT(imported->workspace_directory.empty());
 	UAM_ASSERT(imported->workspace_isolation_kind.empty());
@@ -10006,6 +10008,92 @@ UAM_TEST(OpenCodeFindOrImportNativeSessionChatForOpenPrefersNewerLoadedRawDuplic
 	UAM_ASSERT_EQ(reused->native_session_id, std::string("agent-session-1"));
 	UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id[reused->id], std::string("agent-session-1"));
 #endif
+}
+
+UAM_TEST(RemoteChatsCannotLinkOrOpenControllerNativeHistory)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	uam::AppState app;
+	ChatSession remote;
+	remote.id = "chat-1700000000000-remote";
+	remote.provider_id = uam::provider_ids::kOpenCodeCli;
+	remote.execution_host_id = "homelab";
+	remote.workspace_directory = "/srv/project";
+	app.chats.push_back(remote);
+
+	ChatSession local_native;
+	local_native.id = "local-native";
+	local_native.provider_id = uam::provider_ids::kOpenCodeCli;
+	local_native.native_session_id = "agent-session-1";
+	local_native.workspace_directory = remote.workspace_directory;
+	app.chats.push_back(local_native);
+
+	const ProviderProfile provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	UAM_ASSERT(ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(
+	               app, app.chats.front(), provider, local_native.native_session_id) == nullptr);
+	UAM_ASSERT(ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(
+	               app, app.chats.front(), provider, local_native.native_session_id) == nullptr);
+	UAM_ASSERT(!NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(
+	                app.chats.front(), {local_native}).has_value());
+	UAM_ASSERT(app.resolved_native_sessions_by_chat_id.empty());
+#endif
+}
+
+UAM_TEST(ControllerNativeHistoryCannotOverlayOrDropRemoteChats)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-remote-native-overlay-isolation");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession remote;
+	remote.id = "chat-remote";
+	remote.title = "Remote";
+	remote.provider_id = uam::provider_ids::kOpenCodeCli;
+	remote.native_session_id = "agent-session-1";
+	remote.folder_id = "remote-folder";
+	remote.execution_host_id = "homelab";
+	remote.workspace_directory = "/srv/project";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, remote));
+
+	ChatSession controller_native;
+	controller_native.id = "controller-native";
+	controller_native.title = "Controller";
+	controller_native.provider_id = uam::provider_ids::kOpenCodeCli;
+	controller_native.native_session_id = remote.native_session_id;
+	controller_native.folder_id = "local-folder";
+	controller_native.execution_host_id = "local";
+	controller_native.workspace_directory = (temp.root / "project").string();
+	std::vector<ChatSession> native_chats{controller_native};
+
+	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+	const ChatSession* preserved_remote = ChatDomainService().FindChatById(app, remote.id);
+	const ChatSession* preserved_local = ChatDomainService().FindChatById(app, controller_native.id);
+	UAM_ASSERT(preserved_remote != nullptr);
+	UAM_ASSERT(preserved_local != nullptr);
+	UAM_ASSERT_EQ(preserved_remote->execution_host_id, std::string("homelab"));
+	UAM_ASSERT_EQ(preserved_remote->workspace_directory, std::string("/srv/project"));
+	UAM_ASSERT_EQ(preserved_local->execution_host_id, std::string("local"));
+	UAM_ASSERT_EQ(preserved_local->folder_id, std::string("local-folder"));
+#endif
+}
+
+UAM_TEST(DeletingRemoteChatsCannotTombstoneControllerNativeHistory)
+{
+	TempDir temp("uam-remote-native-tombstone-isolation");
+	ChatSession remote;
+	remote.provider_id = uam::provider_ids::kOpenCodeCli;
+	remote.native_session_id = "agent-session-1";
+	remote.execution_host_id = "homelab";
+	remote.workspace_directory = "/srv/project";
+
+	std::vector<std::string> added_keys;
+	UAM_ASSERT(ChatHistorySyncService().AddNativeImportTombstones(
+	    temp.root, {remote}, added_keys));
+	UAM_ASSERT(added_keys.empty());
+	UAM_ASSERT(!uam::paths::PathExistsNoThrow(
+	    temp.root / "native-import-tombstones.json"));
 }
 
 UAM_TEST(ForgetResolvedNativeSessionForChatClearsProviderSwitchResidualMapping)

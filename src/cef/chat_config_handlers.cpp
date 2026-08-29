@@ -60,6 +60,11 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	{
 		return;
 	}
+	if (!uam::paths::IsControllerLocalWorkspace(*source_chat))
+	{
+		cb->Failure(409, "Remote provider history is not available on this computer.");
+		return;
+	}
 
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *source_chat);
 	if (!ProviderRuntime::UsesNativeOverlayHistory(provider) && !ProviderRuntime::UsesLocalHistory(provider))

@@ -181,6 +181,10 @@ namespace
 		for (const ChatSession& chat : local_chats)
 		{
 			import_index.existing_ids.insert(chat.id);
+			if (!uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				continue;
+			}
 			if (!uam::strings::IsBlank(chat.native_session_id))
 			{
 				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
@@ -818,7 +822,9 @@ namespace
 
 	bool LocalChatIsRepresentedByNativeOverlay(const uam::AppState& app, const ChatSession& chat)
 	{
-		if (NativeSessionLinkService().IsLocalDraftChatId(chat.id) || uam::strings::IsBlank(chat.provider_id))
+		if (!uam::paths::IsControllerLocalWorkspace(chat) ||
+		    NativeSessionLinkService().IsLocalDraftChatId(chat.id) ||
+		    uam::strings::IsBlank(chat.provider_id))
 		{
 			return false;
 		}
@@ -841,6 +847,10 @@ namespace
 
 		for (ChatSession& local_chat : local_chats)
 		{
+			if (!uam::paths::IsControllerLocalWorkspace(local_chat))
+			{
+				continue;
+			}
 			index.by_id[local_chat.id] = &local_chat;
 
 			if (!NativeSessionLinkService().HasRealNativeSessionId(local_chat))
@@ -1032,7 +1042,8 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 	std::unordered_set<std::string> candidate_keys;
 	for (const ChatSession& chat : chats)
 	{
-		if (!uam::strings::IsBlank(chat.native_session_id))
+		if (uam::paths::IsControllerLocalWorkspace(chat) &&
+		    !uam::strings::IsBlank(chat.native_session_id))
 		{
 			candidate_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
 		}
@@ -1847,6 +1858,10 @@ ChatSession* ChatHistorySyncService::FindInMemoryNativeSessionChatForOpen(uam::A
                                                                          const std::string& native_session_id,
                                                                          bool persist_resolved_mapping) const
 {
+	if (!uam::paths::IsControllerLocalWorkspace(source_chat))
+	{
+		return nullptr;
+	}
 	const std::string target_native_session_id = uam::strings::Trim(native_session_id);
 	if (target_native_session_id.empty())
 	{
@@ -1921,6 +1936,10 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
                                                                          const std::string& native_session_id,
                                                                          bool persist_provider_normalization) const
 {
+	if (!uam::paths::IsControllerLocalWorkspace(source_chat_reference))
+	{
+		return nullptr;
+	}
 	const std::string target_native_session_id = uam::strings::Trim(native_session_id);
 	if (target_native_session_id.empty())
 	{
@@ -2228,6 +2247,11 @@ void ChatHistorySyncService::ApplyLocalOverrides(uam::AppState& app, std::vector
 
 	for (const ChatSession& local_chat : local_chats)
 	{
+		if (!uam::paths::IsControllerLocalWorkspace(local_chat))
+		{
+			merged_chats.push_back(local_chat);
+			continue;
+		}
 		if (native_ids.contains(local_chat.id))
 		{
 			continue;

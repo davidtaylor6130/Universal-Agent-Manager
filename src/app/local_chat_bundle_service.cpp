@@ -511,6 +511,7 @@ namespace uam
 		void StripImportedExecutionAuthority(ChatSession& chat)
 		{
 			chat.native_session_id.clear();
+			chat.execution_host_id = "local";
 			chat.folder_id.clear();
 			chat.linked_files.clear();
 			chat.workspace_directory.clear();
