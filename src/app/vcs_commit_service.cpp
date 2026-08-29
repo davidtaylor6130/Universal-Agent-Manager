@@ -2,6 +2,7 @@
 
 #include "app/provider_resolution_service.h"
 #include "app/provider_worker_command.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -35,6 +36,16 @@ namespace uam
 		constexpr std::size_t kGitPorcelainPathOffset = 3;
 		constexpr std::size_t kSvnStatusCodeWidth = 7;
 		constexpr std::size_t kSvnStatusPathOffset = 7;
+		constexpr std::string_view kRemoteWorkspaceUnsupported =
+		    "Local VCS actions are unavailable for remote workspaces.";
+
+		bool IsRemoteWorkspace(const ChatSession& chat)
+		{
+			return uam::strings::NonEmptyOrFallback(
+			           uam::strings::Trim(chat.execution_host_id),
+			           std::string(uam::execution_hosts::kLocalHostId)) !=
+		    uam::execution_hosts::kLocalHostId;
+		}
 
 		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultCommandTimeoutMs)
 		{
@@ -996,6 +1007,12 @@ namespace uam
 	{
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
+		if (IsRemoteWorkspace(chat))
+		{
+			status.workspace_directory = uam::strings::Trim(chat.workspace_directory);
+			status.warning = std::string(kRemoteWorkspaceUnsupported);
+			return status;
+		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 		std::filesystem::path git_root = workspace;
@@ -1024,6 +1041,11 @@ namespace uam
 
 	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out, std::string_view comparison_ref) const
 	{
+		if (IsRemoteWorkspace(chat))
+		{
+			if (error_out != nullptr) *error_out = std::string(kRemoteWorkspaceUnsupported);
+			return "";
+		}
 		const std::string trimmed_path = uam::strings::Trim(path);
 		if (trimmed_path.empty())
 		{
@@ -1130,6 +1152,11 @@ namespace uam
 	VcsCommitMessageSuggestion VcsCommitService::GenerateMessage(const AppState& app, const ChatSession& chat, const VcsType type, const std::vector<std::string>& files) const
 	{
 		VcsCommitMessageSuggestion suggestion;
+		if (IsRemoteWorkspace(chat))
+		{
+			suggestion.error = std::string(kRemoteWorkspaceUnsupported);
+			return suggestion;
+		}
 		if (TrimmedFileSet(files).empty())
 		{
 			suggestion.error = "Select at least one changed file before generating a commit message.";

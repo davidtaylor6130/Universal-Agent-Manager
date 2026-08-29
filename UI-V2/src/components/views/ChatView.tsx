@@ -1135,7 +1135,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     : ''
   useEffect(() => {
     let cancelled = false
-    if (!completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
+    if (remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
 
     void getVcsCommitStatus(session.id, 'git', {
       includeLineStats: true,
@@ -1146,10 +1146,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       setRepositoryReview(session.id, status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
-  }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, session.id, workspaceDirectory])
+  }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
-  const workspaceActionsDisabled = workspaceActionBusy || Boolean(
+  const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
     acp?.pendingPermission ||
     acp?.pendingUserInput ||
@@ -2838,16 +2838,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                           Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
                         </div>
                       )}
-                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
-                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
-                      <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
-                      <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                      {!isGitWorktree ? (
-                        <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                      {remoteComputerUseDisabled ? (
+                        <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
+                          This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
+                        </div>
                       ) : (
                         <>
-                          <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
-                          <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                          {!isGitWorktree ? (
+                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                          ) : (
+                            <>
+                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
+                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                            </>
+                          )}
                         </>
                       )}
                     </ViewportMenu>

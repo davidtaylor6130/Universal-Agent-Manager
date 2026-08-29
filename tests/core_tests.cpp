@@ -881,7 +881,11 @@ UAM_TEST(AgentRunSchedulerLaunchesThePersistedDefinitionSnapshot)
 	ChatSession root;
 	root.id = "root-chat";
 	root.provider_id = app.provider_profiles.front().id;
+	root.folder_id = "remote-workspace";
+	root.execution_host_id = "ssh-homelab";
 	root.workspace_directory = workspace.string();
+	app.folders.push_back({root.folder_id, "Remote workspace", root.workspace_directory,
+	                       false, root.execution_host_id});
 	app.chats.push_back(root);
 
 	std::string run_id;
@@ -890,6 +894,9 @@ UAM_TEST(AgentRunSchedulerLaunchesThePersistedDefinitionSnapshot)
 	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("queued"));
 	UAM_ASSERT_EQ(app.queued_agent_run_ids.front(), run_id);
 	UAM_ASSERT(!app.chats.back().agent_run_id.empty());
+	UAM_ASSERT_EQ(app.chats.back().folder_id, root.folder_id);
+	UAM_ASSERT_EQ(app.chats.back().execution_host_id, root.execution_host_id);
+	UAM_ASSERT_EQ(app.chats.back().workspace_directory, root.workspace_directory);
 	UAM_ASSERT_EQ(uam::AgentRunLedger::LoadAll(app.data_root).runs.front().status, std::string("queued"));
 	const std::string transcript_id = app.chats.back().id;
 	const std::string saved_hash = app.agent_runs.front().definition_hash;
@@ -1130,8 +1137,13 @@ UAM_TEST(AgentRunSchedulerResumesInterruptedRunsAsNewDurableContinuations)
 	ChatSession root;
 	root.id = "resume-root";
 	root.provider_id = app.provider_profiles.front().id;
+	root.folder_id = "homelab-workspace";
+	root.execution_host_id = "ssh-homelab";
+	root.workspace_directory = "/opt/containers/project";
 	root.created_at = uam::time::TimestampNow();
 	root.updated_at = root.created_at;
+	app.folders.push_back({root.folder_id, "Homelab workspace", root.workspace_directory,
+	                       false, root.execution_host_id});
 	app.chats.push_back(root);
 
 	AgentRun old;
@@ -1158,6 +1170,9 @@ UAM_TEST(AgentRunSchedulerResumesInterruptedRunsAsNewDurableContinuations)
 	ChatSession durable;
 	durable.id = old.transcript_chat_id;
 	durable.provider_id = old.provider_id;
+	durable.folder_id = root.folder_id;
+	durable.execution_host_id = "ssh-nas";
+	durable.workspace_directory = "/stale/nas/path";
 	durable.agent_run_id = old.id;
 	durable.created_at = root.created_at;
 	durable.updated_at = root.updated_at;
@@ -1181,6 +1196,9 @@ UAM_TEST(AgentRunSchedulerResumesInterruptedRunsAsNewDurableContinuations)
 	UAM_ASSERT(resumed.task.find("Continue the interrupted") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.back().messages.back().content,
 	              std::string("Completed the first half."));
+	UAM_ASSERT_EQ(app.chats.back().folder_id, root.folder_id);
+	UAM_ASSERT_EQ(app.chats.back().execution_host_id, root.execution_host_id);
+	UAM_ASSERT_EQ(app.chats.back().workspace_directory, root.workspace_directory);
 	UAM_ASSERT(app.chats.back().native_session_id.empty());
 	UAM_ASSERT_EQ(app.queued_agent_run_ids.back(), resumed_id);
 	UAM_ASSERT(!uam::AgentRunScheduler::ResumeInterrupted(
@@ -1927,6 +1945,43 @@ UAM_TEST(CefBackgroundBridgeAndClipboardStayBounded)
 		UAM_ASSERT(production_source.find("osascript") == std::string::npos);
 		UAM_ASSERT(production_source.find("EscapeAppleScriptQuotedString") == std::string::npos);
 	}
+}
+
+UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string handlers = ReadFile(source_root / "src/cef/acp_handlers.cpp");
+	const std::size_t start = handlers.find(
+	    "void UamQueryHandler::HandleStageChatAttachments");
+	const std::size_t end = handlers.find(
+	    "void UamQueryHandler::HandleWriteClipboardText", start);
+	UAM_ASSERT(start != std::string::npos);
+	UAM_ASSERT(end != std::string::npos);
+	const std::string handler = handlers.substr(start, end - start);
+	const std::size_t lookup = handler.find("const ExecutionHost* execution_host");
+	const std::size_t missing_host = handler.find("if (execution_host == nullptr)", lookup);
+	const std::size_t local_write = handler.find(
+	    "CreateDirectoriesNoThrow(workspace_root", lookup);
+	UAM_ASSERT(lookup != std::string::npos);
+	UAM_ASSERT(missing_host != std::string::npos);
+	UAM_ASSERT(local_write != std::string::npos);
+	UAM_ASSERT(lookup < missing_host);
+	UAM_ASSERT(missing_host < local_write);
+}
+
+UAM_TEST(RemoteWorkspaceOpenActionsRejectBeforeTouchingLocalPaths)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string handlers = ReadFile(source_root / "src/cef/workspace_handlers.cpp");
+	const std::size_t lookup = handlers.find("const ExecutionHost* execution_host");
+	const std::size_t remote_guard = handlers.find(
+	    "execution_host->id != uam::execution_hosts::kLocalHostId", lookup);
+	const std::size_t resolve = handlers.find("ResolveWorkspaceRootPath", lookup);
+	UAM_ASSERT(lookup != std::string::npos);
+	UAM_ASSERT(remote_guard != std::string::npos);
+	UAM_ASSERT(resolve != std::string::npos);
+	UAM_ASSERT(lookup < remote_guard);
+	UAM_ASSERT(remote_guard < resolve);
 }
 
 UAM_TEST(SettingsStoreLoadsLegacyButWritesReleaseSliceOnly)
@@ -6485,6 +6540,53 @@ UAM_TEST(RemoteWorkspacePathsRemainNativeToTheTargetHost)
 	              std::string("/srv/project/.UAM/attachments/file.txt"));
 	UAM_ASSERT(!uam::execution_hosts::IsAbsoluteRemotePath("windows", "relative\\project"));
 	UAM_ASSERT(!uam::execution_hosts::IsAbsoluteRemotePath("linux", "relative/project"));
+}
+
+UAM_TEST(RemoteWorkspaceLocalVcsAndWorktreeActionsFailClosed)
+{
+	TempDir temp("uam-remote-workspace-local-actions");
+	uam::AppState app;
+	app.data_root = temp.root / "uam-data";
+	const fs::path local_collision = temp.root / "remote-looking-workspace";
+	fs::create_directories(local_collision);
+	UAM_ASSERT(uam::io::WriteTextFile(local_collision / "sentinel.txt", "unchanged"));
+
+	ChatSession chat;
+	chat.id = "remote-chat";
+	chat.execution_host_id = "ssh-remote";
+	chat.workspace_directory = local_collision.string();
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_source_directory = local_collision.string();
+	chat.workspace_worktree_directory = local_collision.string();
+	chat.messages.push_back(Message{MessageRole::Assistant, "done"});
+
+	const uam::GitWorktreeService worktrees;
+	const uam::GitWorktreeStatus worktree_status = worktrees.Status(app, chat);
+	UAM_ASSERT(!worktree_status.is_git_repository);
+	UAM_ASSERT(worktree_status.warning.find("remote") != std::string::npos);
+	UAM_ASSERT(worktrees.CreateForChat(app, chat).message.find("remote") != std::string::npos);
+	UAM_ASSERT(worktrees.DiscardChatChanges(app, chat).message.find("remote") != std::string::npos);
+	UAM_ASSERT(worktrees.PortChatChanges(app, chat).message.find("remote") != std::string::npos);
+	std::string checkpoint_reason;
+	UAM_ASSERT(!worktrees.CanCheckpointTurn(app, chat, &checkpoint_reason));
+	UAM_ASSERT(checkpoint_reason.find("remote") != std::string::npos);
+	UAM_ASSERT(worktrees.CreateTurnCheckpoint(app, chat, 0).message.find("remote") != std::string::npos);
+	UAM_ASSERT(worktrees.PreviewTurnRollback(app, chat, 0).message.find("remote") != std::string::npos);
+
+	const uam::VcsCommitService vcs;
+	const uam::VcsCommitStatus vcs_status = vcs.Status(app, chat);
+	UAM_ASSERT(!vcs_status.available);
+	UAM_ASSERT(vcs_status.warning.find("remote") != std::string::npos);
+	std::string diff_error;
+	UAM_ASSERT(vcs.Diff(app, chat, "sentinel.txt", uam::VcsType::Git, &diff_error).empty());
+	UAM_ASSERT(diff_error.find("remote") != std::string::npos);
+	UAM_ASSERT(vcs.Commit(app, chat, uam::VcsType::Git, "Must not run", {"sentinel.txt"})
+	               .error.find("remote") != std::string::npos);
+	UAM_ASSERT(vcs.GenerateMessage(app, chat, uam::VcsType::Git, {"sentinel.txt"})
+	               .error.find("remote") != std::string::npos);
+
+	UAM_ASSERT_EQ(ReadFile(local_collision / "sentinel.txt"), std::string("unchanged"));
+	UAM_ASSERT(!uam::paths::PathExistsNoThrow(app.data_root / "worktrees"));
 }
 
 UAM_TEST(RelativePathIfInsideRootUsesPathSegments)

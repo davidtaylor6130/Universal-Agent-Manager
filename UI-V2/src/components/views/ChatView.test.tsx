@@ -4570,6 +4570,27 @@ describe('ChatView', () => {
     useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
   })
 
+  it('does not offer controller-local workspace actions for a remote directory', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, executionHostId: 'ssh-lab', workspaceDirectory: '/srv/project' }
+        : session),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const menu = openWorkspaceActions(host)
+    expect(menu?.textContent).toContain('This directory lives on the remote computer')
+    expect(menu?.querySelector('[role="menuitem"]')).toBeNull()
+    expect(menu?.textContent).not.toContain('Open workspace')
+    expect(menu?.textContent).not.toContain('Create worktree')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('expires successful workspace feedback but keeps errors until dismissed', async () => {
     vi.useFakeTimers()
     const originalEditor = useAppStore.getState().openSessionWorkspaceEditor

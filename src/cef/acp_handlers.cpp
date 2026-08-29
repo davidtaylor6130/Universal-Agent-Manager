@@ -666,8 +666,12 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	}
 	const ExecutionHost* execution_host = uam::execution_hosts::Find(
 	    m_app.settings.execution_hosts, chat->execution_host_id);
-	const bool remote = execution_host != nullptr &&
-	                    execution_host->id != uam::execution_hosts::kLocalHostId;
+	if (execution_host == nullptr)
+	{
+		cb->Failure(409, "The chat's execution host no longer exists.");
+		return;
+	}
+	const bool remote = execution_host->id != uam::execution_hosts::kLocalHostId;
 	if (remote)
 	{
 		if (execution_host->runner_status != "ready" ||

@@ -1399,3 +1399,34 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   persistence; mixed-folder split; second-run migration idempotence; and `git diff --check`. The full
   native run inside the restricted filesystem passed every test except the two expected temporary
   Unix-socket tests; rerunning the core suite outside that filesystem sandbox passed 100% unchanged.
+
+## 2026-08-29 — Workspace machine ownership follow-up and controller-local fail-closed audit
+
+- User hover testing correctly identified that the running acceptance UI still displayed the old
+  child-chat-derived mixed-machine tooltip. The repository source and current `Builds/tests` bundle
+  already render the machine solely from the workspace folder owner; the older main bundle was dated
+  August 27, before the August 29 invariant change. A fresh isolated GUI launch against a copied data
+  root visibly rendered Windows remote, local, and Homelab as three separate workspace rows with one
+  machine icon each. No SSH connection, remote command, provider, or Applications build was used.
+- Tracing every production chat constructor found one real route that could recreate a mixed folder:
+  a newly delegated managed-agent transcript defaulted to `local` even when its root chat belonged to
+  a remote workspace. New transcripts now inherit the root chat's folder, execution host, and target
+  directory. Resuming an older interrupted transcript also reasserts the current root workspace
+  authority, repairing stale pre-fix transcript metadata instead of carrying it forward.
+- Controller-local workspace actions now fail closed for remote chats before interpreting the
+  target-native path on the Mac. Finder/editor/local-terminal open actions are unavailable, local
+  Git/SVN status, diff, commit-message generation, commits, worktree creation, checkpoints, rollback,
+  discard, and port operations reject remote workspaces, and automatic local repository review is
+  skipped. The remote workspace menu explains that target-side work remains available through the
+  chat or CLI view.
+- Attachment staging now rejects a deleted or unknown execution host instead of silently treating its
+  target directory as local. A local path-collision regression proves that remote VCS/worktree calls
+  leave a same-named controller directory and sentinel file untouched.
+- Verification passed: managed-agent remote authority creation and stale-resume repair; mixed-machine
+  migration; attachment unknown-host rejection order; remote local-action rejection; focused
+  workspace tooltip/UI coverage; full frontend 38 files / 567 tests; production UI build; packaged
+  native app and nested helper signing; full native CTest 6/6 outside the temporary Unix-socket
+  sandbox; and `git diff --check`.
+- Status: `IN_PROGRESS` — continue the remote path/no-fallback audit and remaining local-only edge
+  cases before the next remote acceptance step. The physical Homelab remains untouched and every
+  future action there still requires its own exact-command approval.

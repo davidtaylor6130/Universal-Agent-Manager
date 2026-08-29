@@ -4,6 +4,7 @@
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/config/execution_host_config.h"
 
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -24,6 +25,18 @@ namespace
 		const ChatSession* chat = FindPayloadChatOrFail(app, payload, cb);
 		if (chat == nullptr)
 		{
+			return std::nullopt;
+		}
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(
+		    app.settings.execution_hosts, chat->execution_host_id);
+		if (execution_host == nullptr)
+		{
+			cb->Failure(409, "The chat's execution host no longer exists.");
+			return std::nullopt;
+		}
+		if (execution_host->id != uam::execution_hosts::kLocalHostId)
+		{
+			cb->Failure(409, "Local Finder, editor, and terminal actions are unavailable for remote workspaces.");
 			return std::nullopt;
 		}
 

@@ -2,6 +2,7 @@
 
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -25,6 +26,16 @@ namespace uam
 		constexpr int kDefaultGitCommandTimeoutMs = 120000;
 		constexpr std::uintmax_t kMaxManagedSnapshotBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 		constexpr std::size_t kMaxManagedSnapshotFiles = 100000;
+		constexpr std::string_view kRemoteWorkspaceUnsupported =
+		    "Local Git worktrees are unavailable for remote workspaces.";
+
+		bool IsRemoteWorkspace(const ChatSession& chat)
+		{
+			return uam::strings::NonEmptyOrFallback(
+			           uam::strings::Trim(chat.execution_host_id),
+			           std::string(uam::execution_hosts::kLocalHostId)) !=
+		    uam::execution_hosts::kLocalHostId;
+		}
 
 		struct SnapshotFile
 		{
@@ -567,6 +578,11 @@ namespace uam
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
 	{
 		GitWorktreeStatus status;
+		if (IsRemoteWorkspace(chat))
+		{
+			status.warning = std::string(kRemoteWorkspaceUnsupported);
+			return status;
+		}
 		status.isolated = uam::paths::IsGitWorktreeIsolated(chat);
 		status.source_directory = uam::strings::Trim(chat.workspace_source_directory);
 		status.worktree_directory = uam::strings::Trim(chat.workspace_worktree_directory);
@@ -592,6 +608,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateForChat(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (IsRemoteWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (result.status.isolated)
 		{
@@ -718,6 +739,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::DiscardChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (IsRemoteWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (!result.status.isolated)
 		{
@@ -753,6 +779,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::PortChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (IsRemoteWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (!result.status.isolated || result.status.worktree_missing)
 		{
@@ -857,6 +888,11 @@ namespace uam
 	bool GitWorktreeService::CanCheckpointTurn(const AppState& /*app*/, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const
 	{
 		if (reason_out != nullptr) reason_out->clear();
+		if (IsRemoteWorkspace(chat))
+		{
+			if (reason_out != nullptr) *reason_out = std::string(kRemoteWorkspaceUnsupported);
+			return false;
+		}
 		if (!uam::paths::IsGitWorktreeIsolated(chat))
 		{
 			if (reason_out != nullptr) *reason_out = "Automatic checkpoints require an available UAM isolated Git worktree.";
@@ -886,6 +922,11 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token) const
 	{
 		GitTurnCheckpointResult result;
+		if (IsRemoteWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		if (assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()) || chat.messages[assistant_message_index].role != MessageRole::Assistant)
 		{
 			result.message = "The completed assistant turn is unavailable for checkpointing.";
@@ -957,6 +998,11 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const
 	{
 		GitTurnCheckpointResult result;
+		if (IsRemoteWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		if (assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()))
 		{
 			result.message = "The requested turn is unavailable.";

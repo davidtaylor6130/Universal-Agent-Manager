@@ -305,6 +305,7 @@ namespace uam
 
 		ChatSession transcript = ChatDomainService().CreateNewChat(root_chat->folder_id, selected_provider);
 		transcript.title = "Agent: " + requested_agent;
+		transcript.execution_host_id = root_chat->execution_host_id;
 		transcript.workspace_directory = root_chat->workspace_directory;
 		transcript.model_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(model_id), root_chat->model_id);
 		transcript.reasoning_effort = root_chat->reasoning_effort;
@@ -498,6 +499,9 @@ namespace uam
 		    old_transcript->folder_id, interrupted->provider_id);
 		ChatSession transcript = *old_transcript;
 		transcript.id = fresh_identity.id;
+		transcript.folder_id = root_chat->folder_id;
+		transcript.execution_host_id = root_chat->execution_host_id;
+		transcript.workspace_directory = root_chat->workspace_directory;
 		transcript.native_session_id.clear();
 		transcript.parent_chat_id.clear();
 		transcript.branch_root_chat_id.clear();
