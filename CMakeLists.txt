@@ -3,7 +3,7 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 project(universal_agent_manager VERSION 4.8.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.8.0-alpha")
+set(UAM_PRODUCT_VERSION "4.8.0-alpha-2")
 
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "" CACHE PATH

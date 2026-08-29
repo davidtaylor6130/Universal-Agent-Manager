@@ -1692,3 +1692,19 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   session was touched. The isolated app was stopped after inspection.
 - Status: `COMPLETE` — implementation and non-physical acceptance are complete. Real Linux/Windows
   directory browsing remains a separately approved physical acceptance action.
+
+## 2026-08-29 — User application alpha-2 build installed
+
+- Incremented the product, UI package, lockfile, CI, and release version assertions from
+  `4.8.0-alpha` to `4.8.0-alpha-2`.
+- Produced a clean Release bundle at `Builds/user-app-alpha-2/universal_agent_manager.app`; the UI
+  build id is `4.8.0-alpha-2-Darwin-20260829T080656Z` and the bundled runner reports
+  `4.8.0-alpha-2`.
+- Closed the running user application normally, preserved the previous bundle at
+  `/private/tmp/universal_agent_manager-before-4.8.0-alpha-2.app`, and installed the verified build
+  at `/Users/davidtaylormacbookpro/Applications/universal_agent_manager.app` without changing the
+  application data root, chats, settings, SSH aliases, or keys.
+- Verification passed: clean native/UI build, installed `CFBundleShortVersionString`, bundled runner
+  `--version`, and deep/strict macOS code-signature verification all report the alpha-2 build as
+  valid.
+- Status: `COMPLETE`.
