@@ -19,6 +19,22 @@ export interface ExecutionHost {
   runnerDirectory?: string
 }
 
+export interface RemoteDirectoryEntry {
+  name: string
+  path: string
+}
+
+export interface RemoteDirectoryListing {
+  directory: string
+  parentDirectory: string
+  directories: RemoteDirectoryEntry[]
+  truncated: boolean
+}
+
+export type RemoteDirectoryBrowseResult =
+  | { ok: true; listing: RemoteDirectoryListing }
+  | { ok: false; error: string }
+
 export interface ComputerUseActionResult {
   ok: boolean
   error?: string

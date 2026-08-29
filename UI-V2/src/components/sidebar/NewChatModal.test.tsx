@@ -7,6 +7,7 @@ import { NewChatModal } from './NewChatModal'
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const originalDiscoverProviderModels = useAppStore.getState().discoverProviderModels
+const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 
 describe('NewChatModal', () => {
   beforeEach(() => {
@@ -25,6 +26,10 @@ describe('NewChatModal', () => {
       providerModelCatalogs: [],
       cliVersionManager: { providers: [] },
       discoverProviderModels: originalDiscoverProviderModels,
+      listRemoteDirectories: originalListRemoteDirectories,
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+      ],
     })
   })
 
@@ -323,6 +328,56 @@ describe('NewChatModal', () => {
 	  act(() => root.unmount())
 	  host.remove()
 	})
+
+  it('browses a remote workspace only after the user requests it', async () => {
+    const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
+      ok: true as const,
+      listing: {
+        directory,
+        parentDirectory: directory === '/' ? '' : '/',
+        directories: directory === '/' ? [{ name: 'srv', path: '/srv' }] : [],
+        truncated: false,
+      },
+    }))
+    useAppStore.setState({
+      folders: [],
+      newChatFolderId: null,
+      providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#fff', description: '' }],
+      defaultNewChatProviderId: 'opencode-cli',
+      listRemoteDirectories,
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes('Homelab'))?.click())
+    expect(listRemoteDirectories).not.toHaveBeenCalled()
+
+    await act(async () => {
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Browse')?.click()
+      await Promise.resolve()
+    })
+    expect(listRemoteDirectories).toHaveBeenCalledWith('lab', '/')
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'srv')?.click()
+      await Promise.resolve()
+    })
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Use this directory')?.click())
+
+    expect(host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')?.value).toBe('/srv')
+    act(() => root.unmount())
+    host.remove()
+  })
 
   it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {
     const addSession = vi.fn()

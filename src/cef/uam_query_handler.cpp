@@ -83,6 +83,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"previewRemoteHost", &UamQueryHandler::HandlePreviewRemoteHost},
 		{"installRemoteHost", &UamQueryHandler::HandleInstallRemoteHost},
 		{"removeRemoteHost", &UamQueryHandler::HandleRemoveRemoteHost},
+		{"listRemoteDirectories", &UamQueryHandler::HandleListRemoteDirectories},
 		{"browseMarkdownStoreDirectory", &UamQueryHandler::HandleBrowseMarkdownStoreDirectory},
 		{"setMarkdownStoreDirectory", &UamQueryHandler::HandleSetMarkdownStoreDirectory},
 		{"listMarkdownStoreEntries", &UamQueryHandler::HandleListMarkdownStoreEntries},

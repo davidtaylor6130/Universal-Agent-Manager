@@ -1,6 +1,7 @@
 #include "remote/runner_client.h"
 
 #include "common/config/execution_host_config.h"
+#include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
@@ -132,6 +133,7 @@ namespace uam::remote
 				*error_out = error.empty() ? "The remote runner handshake is incompatible." : error;
 			return false;
 		}
+		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
 		return true;
 	}
 
@@ -347,6 +349,67 @@ namespace uam::remote
 		                {"path", remote_path.string()}}, response, error_out);
 	}
 
+	bool RunnerClient::ListDirectories(const std::filesystem::path& remote_path,
+	                                   DirectoryListing& result,
+	                                   std::string* error_out)
+	{
+		if (!Connect(error_out)) return false;
+		if (!m_directoryBrowsing)
+		{
+			if (error_out != nullptr)
+				*error_out = "This remote helper does not support directory browsing. Reinstall the helper from this UAM build.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "directory.list"}, {"path", uam::paths::Utf8PathString(remote_path)}},
+		             response, error_out)) return false;
+		if (!response.contains("result") || !response["result"].is_object() ||
+		    !response["result"].contains("directories") ||
+		    !response["result"]["directories"].is_array() ||
+		    response["result"]["directories"].size() > 200)
+		{
+			if (error_out != nullptr) *error_out = "The remote runner returned an invalid directory listing.";
+			return false;
+		}
+
+		DirectoryListing parsed;
+		const nlohmann::json& value = response["result"];
+		if (!value.contains("directory") || !value["directory"].is_string() ||
+		    (value.contains("parentDirectory") && !value["parentDirectory"].is_string()) ||
+		    (value.contains("truncated") && !value["truncated"].is_boolean()))
+		{
+			if (error_out != nullptr) *error_out = "The remote runner returned invalid directory metadata.";
+			return false;
+		}
+		parsed.directory = value["directory"].get<std::string>();
+		parsed.parent_directory = value.value("parentDirectory", "");
+		parsed.truncated = value.value("truncated", false);
+		for (const nlohmann::json& entry : value["directories"])
+		{
+			if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string() ||
+			    !entry.contains("path") || !entry["path"].is_string())
+			{
+				if (error_out != nullptr) *error_out = "The remote runner returned an invalid directory entry.";
+				return false;
+			}
+			const std::string name = entry.value("name", "");
+			const std::string path = entry.value("path", "");
+			if (name.empty() || path.empty())
+			{
+				if (error_out != nullptr) *error_out = "The remote runner returned an empty directory entry.";
+				return false;
+			}
+			parsed.directories.emplace_back(name, path);
+		}
+		if (parsed.directory.empty())
+		{
+			if (error_out != nullptr) *error_out = "The remote runner returned an invalid directory path.";
+			return false;
+		}
+		result = std::move(parsed);
+		return true;
+	}
+
 	bool RunnerClient::CloseProcessInput(const std::string& session_id, std::string* error_out)
 	{
 		nlohmann::json response;
@@ -395,5 +458,6 @@ namespace uam::remote
 		m_processService.StopStdioProcess(m_bridge, true);
 		m_received.clear();
 		m_connected = false;
+		m_directoryBrowsing = false;
 	}
 }

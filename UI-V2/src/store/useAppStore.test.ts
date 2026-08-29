@@ -3465,6 +3465,37 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.cliTranscriptBySessionId['chat-folder']).toBeUndefined()
   })
 
+  it('sends the selected computer when creating a workspace', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess(JSON.stringify({
+        id: 'remote-workspace',
+        title: 'Containers',
+        directory: '/opt/containers',
+        executionHostId: 'homelab',
+        collapsed: false,
+      }))
+    }
+
+    await expect(useAppStore.getState().addFolder(
+      'Containers', null, '/opt/containers', 'homelab',
+    )).resolves.toBe(true)
+
+    expect(requests).toEqual([expect.objectContaining({
+      action: 'createFolder',
+      payload: {
+        title: 'Containers',
+        directory: '/opt/containers',
+        executionHostId: 'homelab',
+      },
+    })])
+    expect(useAppStore.getState().folders[0]).toMatchObject({
+      id: 'remote-workspace',
+      executionHostId: 'homelab',
+    })
+  })
+
   it('keeps folder state unchanged when CEF rejects folder delete', async () => {
     const now = new Date()
     const requests: Array<{ action: string; payload?: unknown }> = []

@@ -164,6 +164,7 @@ namespace uam::remote
 		        {"runnerVersion", runner_version}, {"platform", PlatformName()},
 		        {"architecture", ArchitectureName()},
 		        {"capabilities", {{"computerUse", false},
+		                          {"directoryBrowsing", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

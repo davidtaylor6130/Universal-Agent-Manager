@@ -16,6 +16,8 @@ function gridLayout(...sessionIds: string[]) {
 }
 
 const now = new Date('2026-01-01T12:00:00.000Z')
+const originalAddFolder = useAppStore.getState().addFolder
+const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 
 function makeFolder(): Folder {
   return {
@@ -55,6 +57,9 @@ describe('FolderTree', () => {
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {},
       resourceCollections: [],
+	  executionHosts: [
+		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+	  ],
       isNewChatModalOpen: false,
       newChatFolderId: null,
       openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -62,6 +67,8 @@ describe('FolderTree', () => {
       previewUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(null)),
       rebuildUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(true)),
       workspaceFolderRecoveryError: '',
+      addFolder: originalAddFolder,
+      listRemoteDirectories: originalListRemoteDirectories,
     })
   })
 
@@ -889,6 +896,88 @@ describe('FolderTree', () => {
     act(() => root.unmount())
     host.remove()
   })
+
+	it('creates a workspace with the selected execution computer', async () => {
+	  const addFolder = vi.fn(async () => true)
+	  useAppStore.setState({
+		addFolder,
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  const name = host.querySelector<HTMLInputElement>('input[placeholder="Folder name"]')!
+	  const directory = host.querySelector<HTMLInputElement>('input[placeholder="Absolute directory on selected computer"]')!
+	  const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+	  act(() => {
+		setInputValue?.call(name, 'Containers')
+		name.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  act(() => {
+		setInputValue?.call(directory, '/opt/containers')
+		directory.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+	  expect(create.disabled).toBe(false)
+	  await act(async () => create.click())
+
+	  expect(addFolder).toHaveBeenCalledWith('Containers', null, '/opt/containers', 'lab')
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
+	it('browses remote directories only after an explicit Browse action', async () => {
+	  const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
+		ok: true as const,
+		listing: {
+		  directory,
+		  parentDirectory: directory === '/' ? '' : '/',
+		  directories: directory === '/' ? [{ name: 'srv', path: '/srv' }] : [],
+		  truncated: false,
+		},
+	  }))
+	  useAppStore.setState({
+		listRemoteDirectories,
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  expect(listRemoteDirectories).not.toHaveBeenCalled()
+	  await act(async () => {
+		Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Browse')!.click()
+		await Promise.resolve()
+		await Promise.resolve()
+	  })
+	  expect(listRemoteDirectories).toHaveBeenCalledWith('lab', '/')
+	  await act(async () => {
+		Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'srv')!.click()
+		await Promise.resolve()
+		await Promise.resolve()
+	  })
+	  expect(listRemoteDirectories).toHaveBeenLastCalledWith('lab', '/srv')
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Use this directory')!.click())
+	  expect(host.querySelector<HTMLInputElement>('input[placeholder="Absolute directory on selected computer"]')!.value).toBe('/srv')
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
 
   it('opens the shared new-chat flow from the folder context menu', () => {
     const host = document.createElement('div')

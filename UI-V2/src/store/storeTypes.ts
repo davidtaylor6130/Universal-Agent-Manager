@@ -1,4 +1,4 @@
-import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
+import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
@@ -207,7 +207,7 @@ export interface AppState {
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
 
   // Folder actions
-  addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
+  addFolder: (name: string, parentId: string | null, directory: string, executionHostId?: string) => Promise<boolean>
   toggleFolder: (id: string) => void
   reorderFolders: (folderIds: string[]) => Promise<boolean>
   rescanFolderChats: (id: string) => Promise<boolean>
@@ -216,6 +216,7 @@ export interface AppState {
   renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
   deleteFolder: (id: string) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
+  listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
   createResourceCollection: (name: string) => Promise<ResourceCollection | null>
   renameResourceCollection: (collectionId: string, name: string) => Promise<boolean>
   deleteResourceCollection: (collectionId: string) => Promise<boolean>

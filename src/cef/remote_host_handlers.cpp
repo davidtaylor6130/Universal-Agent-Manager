@@ -10,6 +10,7 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "remote/runner_bootstrap.h"
+#include "remote/runner_client.h"
 #include "remote/runner_proxy.h"
 
 #include <algorithm>
@@ -200,4 +201,54 @@ void UamQueryHandler::HandleRemoveRemoteHost(CefRefPtr<CefBrowser> browser,
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser>,
+	                                               const nlohmann::json& payload,
+	                                               CefRefPtr<Callback> cb)
+{
+	const std::string host_id = uam::strings::Trim(payload.value("executionHostId", ""));
+	const std::string directory = uam::strings::Trim(payload.value("directory", ""));
+	const ExecutionHost* configured = uam::execution_hosts::Find(
+	    m_app.settings.execution_hosts, host_id);
+	if (configured == nullptr || configured->id == uam::execution_hosts::kLocalHostId)
+	{
+		cb->Failure(404, "Select a configured remote host.");
+		return;
+	}
+	if (configured->runner_status != "ready")
+	{
+		cb->Failure(409, "The selected remote helper is not ready.");
+		return;
+	}
+	if (!uam::execution_hosts::IsAbsoluteRemotePath(configured->platform, directory))
+	{
+		cb->Failure(400, "Enter an absolute path for the selected remote system.");
+		return;
+	}
+
+	const ExecutionHost host = *configured;
+	uam::query_handler_async::RunAsyncCefQuery(
+	    cb, [host, directory]()
+	    {
+		uam::remote::RunnerClient client(
+		    PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform,
+		                               host.runner_version, host.runner_directory),
+		    host.runner_version);
+		uam::remote::DirectoryListing listing;
+		std::string error;
+		if (!client.ListDirectories(directory, listing, &error))
+			return uam::query_handler_async::AsyncFailure(
+			    502, error.empty() ? "The remote directory could not be listed." : error);
+		nlohmann::json directories = nlohmann::json::array();
+		for (const auto& [name, path] : listing.directories)
+			directories.push_back({{"name", name}, {"path", path}});
+		return uam::query_handler_async::AsyncSuccess({
+		    {"directory", listing.directory},
+		    {"parentDirectory", listing.parent_directory},
+		    {"directories", std::move(directories)},
+		    {"truncated", listing.truncated},
+		});
+	    });
 }

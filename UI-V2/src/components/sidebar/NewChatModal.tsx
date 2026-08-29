@@ -6,13 +6,8 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
-
-function isAbsoluteRemoteWorkspace(platform: string | undefined, value: string) {
-  const path = value.trim()
-  return platform?.toLowerCase() === 'windows'
-    ? /^[a-z]:[\\/]/i.test(path) || /^\\\\/.test(path)
-    : path.startsWith('/')
-}
+import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
+import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
 export function NewChatModal() {
   const addSession = useAppStore((s) => s.addSession)
@@ -52,6 +47,7 @@ export function NewChatModal() {
   const [chatError, setChatError] = useState('')
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
+  const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
   const creatingChatRef = useRef(false)
   const discoveryRequestedRef = useRef(new Set<string>())
@@ -104,13 +100,17 @@ export function NewChatModal() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('[role="listbox"]'))) return
+        if (remoteBrowserOpen) {
+          setRemoteBrowserOpen(false)
+          return
+        }
 
         requestClose()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [requestClose])
+  }, [remoteBrowserOpen, requestClose])
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
@@ -329,15 +329,27 @@ export function NewChatModal() {
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Remote workspace path
               </label>
-              <input
-                type="text"
-                value={remoteWorkspace}
-                onChange={(event) => setRemoteWorkspace(event.target.value)}
-                readOnly={selectedFolder !== null}
-                placeholder="/absolute/path/on/selected/host"
-                className="w-full rounded-md px-3 py-2 text-sm outline-none"
-                style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)' }}
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={remoteWorkspace}
+                  onChange={(event) => setRemoteWorkspace(event.target.value)}
+                  readOnly={selectedFolder !== null}
+                  placeholder="/absolute/path/on/selected/host"
+                  className="min-w-0 flex-1 rounded-md px-3 py-2 text-sm outline-none"
+                  style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--font-mono)' }}
+                />
+                {!selectedFolder && (
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    disabled={selectedExecutionHost?.runnerStatus !== 'ready'}
+                    onClick={() => setRemoteBrowserOpen(true)}
+                  >
+                    Browse
+                  </Button>
+                )}
+              </div>
               <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
 				{selectedFolder ? 'This path is owned by the selected workspace.' : `Enter an absolute path interpreted only by ${selectedExecutionHost?.label}.`} Computer Use is disabled for remote chats.
               </p>
@@ -475,6 +487,18 @@ export function NewChatModal() {
 			</div>
 		  )}
         </div>
+
+        {remoteBrowserOpen && selectedExecutionHost && (
+          <RemoteDirectoryBrowser
+            host={selectedExecutionHost}
+            initialPath={remoteWorkspace}
+            onCancel={() => setRemoteBrowserOpen(false)}
+            onSelect={(directory) => {
+              setRemoteWorkspace(directory)
+              setRemoteBrowserOpen(false)
+            }}
+          />
+        )}
 
         {/* Footer */}
         {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--red)' }}>{chatError}</div>}

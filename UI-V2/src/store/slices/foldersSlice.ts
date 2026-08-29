@@ -1,4 +1,4 @@
-import type { Folder, WorkspaceFolderRecoveryPreview } from '../../types/session'
+import type { Folder, RemoteDirectoryBrowseResult, RemoteDirectoryListing, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
@@ -40,9 +40,9 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
 
-    addFolder: (name: string, _parentId: string | null, directory: string) => {
+    addFolder: (name: string, _parentId: string | null, directory: string, executionHostId = 'local') => {
       if (isCefContext()) {
-        return sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory } }).then((resp) => {
+        return sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory, executionHostId } }).then((resp) => {
           if (!resp.ok || !resp.data?.id) {
             if (!resp.ok) console.error('[CEF] createFolder failed:', resp.error)
             return false
@@ -77,7 +77,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         name,
         parentId: null,
         directory,
-        executionHostId: 'local',
+        executionHostId,
         isExpanded: true,
         createdAt: new Date(),
       }
@@ -293,6 +293,31 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
       const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
       return selectedPath.length > 0 ? selectedPath : null
+    },
+
+    listRemoteDirectories: async (executionHostId: string, directory: string): Promise<RemoteDirectoryBrowseResult> => {
+      if (!isCefContext()) {
+        return { ok: false, error: 'Remote directory browsing requires the desktop app.' }
+      }
+
+      const response = await sendToCEF<RemoteDirectoryListing>({
+        action: 'listRemoteDirectories',
+        payload: { executionHostId, directory },
+      })
+      if (!response.ok || !response.data) {
+        return { ok: false, error: response.error ?? 'The remote directory could not be listed.' }
+      }
+      const resultDirectory = typeof response.data.directory === 'string' ? response.data.directory.trim() : ''
+      const parentDirectory = typeof response.data.parentDirectory === 'string' ? response.data.parentDirectory.trim() : ''
+      const directories = Array.isArray(response.data.directories)
+        ? response.data.directories.flatMap((entry) => {
+          const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
+          const path = typeof entry?.path === 'string' ? entry.path.trim() : ''
+          return name && path ? [{ name, path }] : []
+        })
+        : []
+      if (!resultDirectory) return { ok: false, error: 'The remote helper returned an invalid directory listing.' }
+      return { ok: true, listing: { directory: resultDirectory, parentDirectory, directories, truncated: response.data.truncated === true } }
     },
 
     browseMarkdownStoreDirectory: async (currentValue: string) => {

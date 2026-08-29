@@ -21,6 +21,14 @@ namespace uam::remote
 		std::string standard_error;
 	};
 
+	struct DirectoryListing
+	{
+		std::string directory;
+		std::string parent_directory;
+		std::vector<std::pair<std::string, std::string>> directories;
+		bool truncated = false;
+	};
+
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
 	                                       const std::string& version,
@@ -63,6 +71,9 @@ namespace uam::remote
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
+		bool ListDirectories(const std::filesystem::path& remote_path,
+		                     DirectoryListing& result,
+		                     std::string* error_out = nullptr);
 		void Disconnect();
 
 	  private:
@@ -77,5 +88,6 @@ namespace uam::remote
 		std::string m_expectedVersion;
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
+		bool m_directoryBrowsing = false;
 	};
 }

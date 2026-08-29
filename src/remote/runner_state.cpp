@@ -1,5 +1,6 @@
 #include "remote/runner_state.h"
 
+#include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
@@ -49,6 +50,7 @@ namespace uam::remote
 		inline constexpr std::size_t kMaxWriteBytes = 256 * 1024;
 		inline constexpr std::size_t kMaxReadBytesPerStream = 256 * 1024;
 		inline constexpr std::size_t kMaxChannelBytes = 1024 * 1024;
+		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
 		inline constexpr std::uintmax_t kMaxSpoolBytesPerStream = 1024ull * 1024ull * 1024ull;
 
@@ -333,6 +335,64 @@ namespace uam::remote
 	{
 		std::scoped_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+		if (type == "directory.list")
+		{
+			if (!request.contains("path") || !request["path"].is_string())
+				return ProcessError(request, "invalid_request", "An absolute directory path is required.");
+			const std::string path_text = request["path"].get<std::string>();
+			const std::filesystem::path requested(path_text);
+			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !requested.is_absolute())
+				return ProcessError(request, "invalid_request", "An absolute bounded directory path is required.");
+
+			std::error_code error;
+			const std::filesystem::file_status status = std::filesystem::status(requested, error);
+			if (error == std::errc::permission_denied)
+				return ProcessError(request, "permission_denied", "Permission denied while opening the remote directory.");
+			if (error || !std::filesystem::exists(status))
+				return ProcessError(request, "not_found", "The remote directory does not exist.");
+			if (!std::filesystem::is_directory(status))
+				return ProcessError(request, "not_directory", "The selected remote path is not a directory.");
+
+			const std::filesystem::path directory = requested.lexically_normal();
+			std::vector<std::pair<std::string, std::string>> directories;
+			bool truncated = false;
+			std::filesystem::directory_iterator iterator(directory, error);
+			if (error == std::errc::permission_denied)
+				return ProcessError(request, "permission_denied", "Permission denied while listing the remote directory.");
+			if (error)
+				return ProcessError(request, "list_failed", "The remote directory could not be listed.");
+			const std::filesystem::directory_iterator end;
+			for (; iterator != end && !error; iterator.increment(error))
+			{
+				const std::filesystem::directory_entry& entry = *iterator;
+				std::error_code entry_error;
+				if (!entry.is_directory(entry_error) || entry_error) continue;
+				if (directories.size() == kMaxListedDirectories)
+				{
+					truncated = true;
+					break;
+				}
+				directories.emplace_back(uam::paths::Utf8PathString(entry.path().filename()),
+				                         uam::paths::Utf8PathString(entry.path().lexically_normal()));
+			}
+			if (error == std::errc::permission_denied)
+				return ProcessError(request, "permission_denied", "Permission denied while listing the remote directory.");
+			if (error)
+				return ProcessError(request, "list_failed", "The remote directory could not be listed.");
+			std::ranges::sort(directories, [](const auto& left, const auto& right)
+			{ return left.first < right.first; });
+			nlohmann::json entries = nlohmann::json::array();
+			for (const auto& [name, path] : directories)
+				entries.push_back({{"name", name}, {"path", path}});
+			const std::filesystem::path parent = directory.parent_path();
+			return ProcessSuccess(request,
+			                      {{"directory", uam::paths::Utf8PathString(directory)},
+			                       {"parentDirectory", parent == directory
+			                                               ? ""
+			                                               : uam::paths::Utf8PathString(parent)},
+			                       {"directories", std::move(entries)},
+			                       {"truncated", truncated}});
+		}
 		if (type.starts_with("file."))
 		{
 			if (!request.contains("uploadId") || !request["uploadId"].is_string() ||

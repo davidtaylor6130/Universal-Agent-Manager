@@ -1638,3 +1638,57 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   remains for this goal.
 - Status: `COMPLETE` — the branch is ready for the owner's review and remains deliberately separate
   from the draft release PR and installed working application.
+
+## 2026-08-29 — Workspace creation machine and remote-directory route
+
+- Destination: every new workspace visibly selects exactly one execution machine and one
+  target-native directory before it is persisted; the resulting workspace owns that immutable
+  `(execution host, directory)` identity and New Chat can use it without reinterpreting the path on
+  the controller Mac.
+- Constraints: preserve the one-workspace/one-machine invariant; remote Computer Use stays disabled;
+  opening the workspace flow must not connect, start a provider, create a directory, or mutate the
+  remote host; only an explicit **Browse** action may issue a read-only helper request.
+- Resolved Q-001 — where ownership belongs: the native `createFolder` boundary already validates and
+  persists `executionHostId`, but both frontend `addFolder` callers omit it and the non-CEF fallback
+  hardcodes `local`. Extend that existing boundary rather than adding a second workspace model.
+- Resolved Q-002 — how remote directory selection works: a plain absolute-path field remains the
+  escape hatch, while an explicit helper-backed browser lists only direct child directories for the
+  selected ready host. It returns bounded metadata only—no file contents, recursive scan, provider,
+  shell, Computer Use, upload, download, or directory creation.
+- Resolved Q-003 — how safety and failure behave: validate the selected host and target-native
+  absolute path at both controller and runner boundaries, cap response size, and surface exact
+  not-found/not-directory/permission/offline errors in the modal. Cancelling preserves no mutation.
+- Resolved Q-004 — verification boundary: cover host-aware folder creation, local-vs-remote picker
+  routing, Linux and Windows path navigation rules, bounded runner listing, and rendered modal
+  behavior with temporary directories and mocked CEF. Physical SSH browsing is a later explicit
+  acceptance action and is not authorized by this implementation task.
+- Status: `ROUTE_CLEAR` — next action is the host-aware creation slice plus the typed read-only
+  directory-list request and modal, followed by frontend/native regression tests and isolated GUI QA.
+
+## 2026-08-29 — Workspace machine selection and remote-directory browser implemented
+
+- Workspace creation now presents the configured execution computers, sends the selected
+  `executionHostId` through the existing `createFolder` boundary, and stores the same host in the
+  non-CEF development fallback. The existing native one-workspace/one-machine validation remains
+  the single source of truth.
+- Local workspaces retain the native directory picker. Remote workspaces retain direct absolute-path
+  entry and add a reusable helper-backed browser in both **New workspace** and **New Chat**. The UI
+  disables Browse for a non-ready helper and labels the selected remote path as target-owned.
+- The new `directory.list` runner request validates a bounded absolute path, verifies existence and
+  directory type, lists at most 200 direct child directories, uses target-native UTF-8 paths, and
+  returns explicit permission/not-found/not-directory/list errors. It never reads file contents,
+  recurses, writes, launches a provider, or exposes Computer Use.
+- The controller validates the host and path before an explicit Browse connection, rejects malformed
+  or oversized helper responses, and tells users to reinstall an older helper that does not advertise
+  the new `directoryBrowsing` capability.
+- Verification passed: 38 frontend files / 572 tests; production TypeScript/Vite build; native app,
+  runner, and test build; focused real-bridge and bounded-listing tests. Full CTest passed five
+  platform/contract targets in the sandbox; its two Unix-socket cases failed only at socket creation
+  and both passed unchanged outside the sandbox.
+- Isolated repository-build GUI QA used only `Builds/tests/gui-data` with a fake offline host. It
+  visibly confirmed the **Runs on** selector, local and QA Homelab choices, host status text, the
+  remote absolute-directory field, target ownership guidance, and disabled Browse while offline.
+  No real SSH connection, installed Applications build, global UAM data, provider, or Computer Use
+  session was touched. The isolated app was stopped after inspection.
+- Status: `COMPLETE` — implementation and non-physical acceptance are complete. Real Linux/Windows
+  directory browsing remains a separately approved physical acceptance action.

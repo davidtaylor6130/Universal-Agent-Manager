@@ -21,6 +21,7 @@ UAM_TEST(RemoteRunnerProtocolIsBoundedVersionedAndComputerUseFree)
 	UAM_ASSERT_EQ(response.value("nonce", ""), std::string("nonce-1"));
 	UAM_ASSERT_EQ(response.value("runnerVersion", ""), std::string("test-version"));
 	UAM_ASSERT(!response["capabilities"].value("computerUse", true));
+	UAM_ASSERT(!response["capabilities"].value("directoryBrowsing", true));
 	UAM_ASSERT(!response["capabilities"].value("processExecution", true));
 
 	const nlohmann::json mismatch = uam::remote::HandleRunnerRequest(
@@ -40,6 +41,50 @@ UAM_TEST(RemoteRunnerProtocolIsBoundedVersionedAndComputerUseFree)
 	UAM_ASSERT_EQ(uam::remote::ReadFrame(truncated, decoded, &error),
 	              uam::remote::FrameReadResult::Error);
 	UAM_ASSERT(error.find("truncated") != std::string::npos);
+}
+
+UAM_TEST(RemoteRunnerListsOnlyBoundedDirectChildDirectories)
+{
+	TempDir temp("uam-runner-directory-list");
+	for (int index = 0; index < 205; ++index)
+		fs::create_directory(temp.root / ("folder-" + std::to_string(1000 + index)));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "not-a-directory.txt", "ignored"));
+
+	uam::remote::RunnerState state;
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest(
+	    {{"id", "hello-list"}, {"type", "hello"},
+	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "list"}},
+	    "test-version", &state);
+	UAM_ASSERT(hello["capabilities"].value("directoryBrowsing", false));
+
+	const nlohmann::json listed = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-1"}, {"type", "directory.list"}, {"path", temp.root.string()}},
+	    "test-version", &state);
+	UAM_ASSERT(listed.value("ok", false));
+	UAM_ASSERT_EQ(listed["result"].value("directory", ""), temp.root.string());
+	UAM_ASSERT_EQ(listed["result"]["directories"].size(), static_cast<std::size_t>(200));
+	UAM_ASSERT(listed["result"].value("truncated", false));
+	std::string previous;
+	for (const nlohmann::json& entry : listed["result"]["directories"])
+	{
+		const std::string name = entry.value("name", "");
+		UAM_ASSERT(name.starts_with("folder-"));
+		UAM_ASSERT(previous.empty() || previous < name);
+		previous = name;
+	}
+
+	const nlohmann::json relative = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-2"}, {"type", "directory.list"}, {"path", "relative"}},
+	    "test-version", &state);
+	UAM_ASSERT(!relative.value("ok", true));
+	UAM_ASSERT_EQ(relative["error"].value("code", ""), std::string("invalid_request"));
+
+	const nlohmann::json file = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-3"}, {"type", "directory.list"},
+	     {"path", (temp.root / "not-a-directory.txt").string()}},
+	    "test-version", &state);
+	UAM_ASSERT(!file.value("ok", true));
+	UAM_ASSERT_EQ(file["error"].value("code", ""), std::string("not_directory"));
 }
 
 UAM_TEST(RemoteRunnerExecutesOnlyValidatedTypedProcessRequests)
@@ -341,6 +386,11 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 	UAM_ASSERT(!client.UploadFile("upload-2", uploaded, "must-not-overwrite", &error));
 	UAM_ASSERT(uam::io::TryReadBinaryFile(uploaded, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
+	uam::remote::DirectoryListing listing;
+	UAM_ASSERT(client.ListDirectories(upload.root, listing, &error));
+	UAM_ASSERT_EQ(listing.directory, upload.root.string());
+	UAM_ASSERT_EQ(listing.directories.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(listing.directories.front().first, std::string("nested"));
 	client.Disconnect();
 }
 

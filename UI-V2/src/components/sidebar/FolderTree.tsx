@@ -5,7 +5,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, Tooltip, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   buildChatSearchIndex,
@@ -18,6 +18,8 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
+import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
+import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -97,6 +99,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [newCollectionName, setNewCollectionName] = useState('')
   const [newFolderName, setNewFolderName] = useState('')
   const [newFolderDirectory, setNewFolderDirectory] = useState('')
+  const [newFolderExecutionHostId, setNewFolderExecutionHostId] = useState('local')
+  const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
+  const newFolderExecutionHost = executionHosts.find((host) => host.id === newFolderExecutionHostId) ?? executionHosts[0]
+  const newFolderIsRemote = newFolderExecutionHost?.transport === 'ssh'
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null)
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
@@ -125,6 +131,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const recoveryRequestRef = useRef(0)
 
   useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+
+  useEffect(() => {
+    if (!executionHosts.some((host) => host.id === newFolderExecutionHostId)) {
+      setNewFolderExecutionHostId(executionHosts[0]?.id ?? 'local')
+      setNewFolderDirectory('')
+    }
+  }, [executionHosts, newFolderExecutionHostId])
 
   useEffect(() => {
     if (!unsortedMenuPoint) return
@@ -353,13 +366,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const commitAddFolder = () => {
     const name = newFolderName.trim()
     const directory = newFolderDirectory.trim()
+    const executionHost = newFolderExecutionHost
 
-    if (!name || !directory) {
+    if (!name || !directory || !executionHost) {
+      return
+    }
+    if (executionHost.transport === 'ssh' && !isAbsoluteRemoteWorkspace(executionHost.platform, directory)) {
+      setActionError(`Enter an absolute ${executionHost.platform.toLowerCase() === 'windows' ? 'Windows' : 'Linux'} directory.`)
       return
     }
 
     setActionError('')
-    void addFolder(name, null, directory).then((created) => {
+    void addFolder(name, null, directory, executionHost.id).then((created) => {
       if (!created) {
         setActionError('The workspace could not be created. Check the directory and try again.')
         return
@@ -367,6 +385,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
       setNewFolderName('')
       setNewFolderDirectory('')
+      setNewFolderExecutionHostId('local')
       setAddingFolder(false)
     })
   }
@@ -426,6 +445,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }
 
   const chooseNewFolderDirectory = async () => {
+    const host = executionHosts.find((candidate) => candidate.id === newFolderExecutionHostId)
+    if (host?.transport === 'ssh') {
+      setRemoteBrowserOpen(true)
+      return
+    }
     const selectedPath = await browseFolderDirectory(newFolderDirectory)
     if (selectedPath) {
       setNewFolderDirectory(selectedPath)
@@ -767,6 +791,25 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               border: '1px solid var(--border)',
             }}
           >
+            {executionHosts.length > 1 && (
+              <div>
+                <label className="mb-1 block text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>Runs on</label>
+                <MenuSelect
+                  label="Workspace computer"
+                  value={newFolderExecutionHostId}
+                  options={executionHosts.map((host) => ({
+                    value: host.id,
+                    label: host.label,
+                    description: host.transport === 'local' ? 'This computer' : `${host.sshAlias} · ${host.runnerStatus}`,
+                  }))}
+                  onChange={(hostId) => {
+                    setNewFolderExecutionHostId(hostId)
+                    setNewFolderDirectory('')
+                    setActionError('')
+                  }}
+                />
+              </div>
+            )}
             <input
               autoFocus
               value={newFolderName}
@@ -776,6 +819,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 if (e.key === 'Escape') {
                   setNewFolderName('')
                   setNewFolderDirectory('')
+                  setNewFolderExecutionHostId('local')
                   setAddingFolder(false)
                 }
               }}
@@ -797,10 +841,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                   if (e.key === 'Escape') {
                     setNewFolderName('')
                     setNewFolderDirectory('')
+                    setNewFolderExecutionHostId('local')
                     setAddingFolder(false)
                   }
                 }}
-                placeholder="Workspace directory"
+                placeholder={newFolderIsRemote ? 'Absolute directory on selected computer' : 'Workspace directory'}
                 className="w-full flex-1 rounded px-2 py-1 text-xs outline-none"
                 style={{
                   background: 'var(--surface)',
@@ -812,11 +857,17 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               <Button
                 variant="secondary"
                 size="sm"
+                disabled={newFolderIsRemote && newFolderExecutionHost?.runnerStatus !== 'ready'}
                 onClick={() => { void chooseNewFolderDirectory() }}
               >
                 Browse
               </Button>
             </div>
+            {newFolderIsRemote && (
+              <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+                The path is interpreted only by {newFolderExecutionHost?.label}. Browse is read-only and requires a ready helper.
+              </p>
+            )}
             <div className="flex items-center justify-end gap-2">
               <Button
                 variant="ghost"
@@ -824,6 +875,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 onClick={() => {
                   setNewFolderName('')
                   setNewFolderDirectory('')
+                  setNewFolderExecutionHostId('local')
                   setAddingFolder(false)
                 }}
               >
@@ -892,6 +944,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           </div>
         )}
       </div>
+
+      {remoteBrowserOpen && newFolderExecutionHost?.transport === 'ssh' && (
+        <RemoteDirectoryBrowser
+          host={newFolderExecutionHost}
+          initialPath={newFolderDirectory}
+          onCancel={() => setRemoteBrowserOpen(false)}
+          onSelect={(directory) => {
+            setNewFolderDirectory(directory)
+            setRemoteBrowserOpen(false)
+          }}
+        />
+      )}
 
       {pendingDeleteFolder && (
         <DeleteFolderModal
