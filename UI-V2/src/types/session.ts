@@ -17,6 +17,7 @@ export interface ExecutionHost {
   architecture: string
   lastSeenAt: string
   runnerDirectory?: string
+  runnerProtocolVersion?: number
 }
 
 export interface RemoteDirectoryEntry {

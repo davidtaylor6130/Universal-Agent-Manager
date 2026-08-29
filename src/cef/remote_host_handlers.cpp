@@ -11,6 +11,7 @@
 #include "common/utils/time_utils.h"
 #include "remote/runner_bootstrap.h"
 #include "remote/runner_client.h"
+#include "remote/runner_protocol.h"
 #include "remote/runner_proxy.h"
 
 #include <algorithm>
@@ -155,6 +156,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    found->platform = result->platform;
 			    found->architecture = result->architecture;
 			    found->last_seen_at = uam::time::IsoUtcTimestampNow();
+			    found->runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 			    response = uam::query_handler_async::AsyncFailure(

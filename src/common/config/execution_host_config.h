@@ -206,6 +206,7 @@ namespace uam::execution_hosts
 			    {"runnerVersion", host.runner_version}, {"platform", host.platform},
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
+			    {"runnerProtocolVersion", host.runner_protocol_version},
 			});
 		}
 		return result;
@@ -225,6 +226,7 @@ namespace uam::execution_hosts
 				    entry.value("runnerVersion", ""), entry.value("platform", ""),
 				    entry.value("architecture", ""), entry.value("lastSeenAt", ""),
 				    entry.value("runnerDirectory", ""),
+				    entry.value("runnerProtocolVersion", 0),
 				});
 			}
 		}

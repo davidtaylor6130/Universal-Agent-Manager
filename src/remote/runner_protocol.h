@@ -10,7 +10,7 @@
 namespace uam::remote
 {
 	class RunnerState;
-	inline constexpr int kRunnerProtocolVersion = 1;
+	inline constexpr int kRunnerProtocolVersion = 2;
 	inline constexpr std::size_t kMaxRunnerFrameBytes = 1024 * 1024;
 
 	enum class FrameReadResult

@@ -1737,3 +1737,28 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `COMPLETE_WITH_PHYSICAL_ACCEPTANCE_PENDING` — implementation and local cross-platform
   evidence are complete. A real remote VCS status/diff/commit journey still requires the owner's
   explicitly approved disposable repository on a configured remote host.
+
+## 2026-08-29 — Installed alpha-2 Windows helper recovery accepted
+
+- The failed helper refresh had two independent root causes. The packaged Windows runner originally
+  depended on MinGW runtime DLLs that were not shipped; it is now statically linked. The installed
+  controller also still reported native `kAppVersion` as `V4.8.0-alpha` while CMake, the UI, and the
+  packaged runner reported `4.8.0-alpha-2`, so UAM copied and verified the helper in the wrong
+  version directory. The native and UI defaults now agree on `V4.8.0-alpha-2`.
+- Helper compatibility is no longer inferred from the display version alone. Protocol version 2 is
+  persisted per host, advertised with the required file-copy capability, verified after every
+  install, and used by Updates to surface stale or previously undetected helpers.
+- Rebuilt, signed, replaced, and reopened only
+  `/Users/davidtaylormacbookpro/Applications/universal_agent_manager.app`; chats, app data, SSH keys,
+  aliases, and remote-host definitions remained in their existing external stores.
+- Physical Windows acceptance passed through the installed app: **Update helper** completed and
+  removed Gaming AI Desktop from Updates; persisted state is `ready`, `windows/x86_64`, helper
+  `4.8.0-alpha-2`, protocol `2`; direct version/protocol probes returned the same values; and the
+  installed UAM runner proxy executed the harmless remote command `echo UAM_REMOTE_OK`, returned its
+  stdout, and exited 0. This exercises the same handshake, SSH bridge, typed process start, polling,
+  output, and cleanup route used by remote provider sessions.
+- Verification passed: focused 11-test update catalog suite, production TypeScript/Vite build,
+  signed native app/test build, and all six CTest targets. The homelab helper remained untouched and
+  no homelab command or connection occurred.
+- Status: `COMPLETE` — the installed alpha-2 build can update and execute through the Windows SSH
+  helper. Linux helper acceptance remains separately permission-gated.

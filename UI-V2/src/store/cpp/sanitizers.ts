@@ -1479,6 +1479,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         architecture: stringOr(entry.architecture),
         lastSeenAt: stringOr(entry.lastSeenAt),
         runnerDirectory: stringOr(entry.runnerDirectory),
+        runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
       })
     }
   }
@@ -1561,6 +1562,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
     appVersion: stringOr(value.appVersion),
+    runnerProtocolVersion: finiteNumberOr(value.runnerProtocolVersion, 0),
     folders,
     resourceCollections,
     chats,

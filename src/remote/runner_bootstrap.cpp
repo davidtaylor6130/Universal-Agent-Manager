@@ -6,6 +6,7 @@
 #include "common/utils/base64.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
+#include "remote/runner_protocol.h"
 
 #include <algorithm>
 #include <array>
@@ -186,7 +187,7 @@ namespace uam::remote
 		preview << "1. Detect Linux or Windows and CPU architecture over SSH.\n"
 		        << "2. Select the matching bundled helper; unsupported targets stop before copying.\n"
 		        << "3. Copy to a private versioned user directory.\n"
-		        << "4. Verify SHA-256, activate, restart, and verify the exact version.\n";
+		        << "4. Verify SHA-256, activate, restart, and verify version and protocol compatibility.\n";
 		return preview.str();
 	}
 
@@ -275,6 +276,9 @@ namespace uam::remote
 			    {"Verify and activate runner", SshCommand(plan.ssh_alias, verify), ""},
 			    {"Verify runner version", SshCommand(plan.ssh_alias, installed + " --version"),
 			        plan.version},
+			    {"Verify runner protocol", SshCommand(plan.ssh_alias,
+			        installed + " --protocol-version"),
+			        std::to_string(kRunnerProtocolVersion)},
 			};
 		}
 		else
@@ -304,6 +308,10 @@ namespace uam::remote
 			    {"Verify runner version", SshCommand(plan.ssh_alias,
 			        PowerShellCommand("& (Join-Path $HOME '" + installed + "') --version")),
 			        plan.version},
+			    {"Verify runner protocol", SshCommand(plan.ssh_alias,
+			        PowerShellCommand("& (Join-Path $HOME '" + installed +
+			                          "') --protocol-version")),
+			        std::to_string(kRunnerProtocolVersion)},
 			};
 		}
 		for (const BootstrapStep& step : install_steps)

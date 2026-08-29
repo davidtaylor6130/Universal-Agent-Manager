@@ -674,6 +674,7 @@ export interface VcsCommitMessageSuggestion {
 export interface CppAppState {
   stateRevision?: number
   appVersion?: string
+  runnerProtocolVersion?: number
   folders: CppFolder[]
   resourceCollections?: ResourceCollection[]
   chats: CppChat[]

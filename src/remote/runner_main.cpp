@@ -33,6 +33,11 @@ int main(int argc, char** argv)
 		std::cout << UAM_REMOTE_RUNNER_VERSION << '\n';
 		return 0;
 	}
+	if (argc == 2 && std::string(argv[1]) == "--protocol-version")
+	{
+		std::cout << uam::remote::kRunnerProtocolVersion << '\n';
+		return 0;
+	}
 	if (argc == 8 && std::string(argv[1]) == "proxy" &&
 	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
 	    std::string(argv[6]) == "--version")
@@ -74,7 +79,7 @@ int main(int argc, char** argv)
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")
 	{
-		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version\n";
+		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version | --protocol-version\n";
 		return 2;
 	}
 

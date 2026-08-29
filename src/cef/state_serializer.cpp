@@ -7,6 +7,7 @@
 
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
+#include "remote/runner_protocol.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -1319,6 +1320,7 @@ namespace uam
 		nlohmann::json j;
 		j["stateRevision"] = app.state_revision;
 		j["appVersion"] = uam::constants::kAppVersion;
+		j["runnerProtocolVersion"] = uam::remote::kRunnerProtocolVersion;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);

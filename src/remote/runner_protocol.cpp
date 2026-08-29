@@ -155,7 +155,8 @@ namespace uam::remote
 			                    "Remote process execution is unavailable in this context.");
 		if (!request.contains("protocolVersion") || !request["protocolVersion"].is_number_integer() ||
 		    request["protocolVersion"].get<int>() != kRunnerProtocolVersion)
-			return ErrorResponse(request, "protocol_mismatch", "Runner protocol version 1 is required.");
+			return ErrorResponse(request, "protocol_mismatch", "Runner protocol version " +
+			                     std::to_string(kRunnerProtocolVersion) + " is required.");
 		if (!request.contains("nonce") || !IsBoundedText(request["nonce"], 128))
 			return ErrorResponse(request, "invalid_request", "A bounded nonce is required.");
 
@@ -165,6 +166,7 @@ namespace uam::remote
 		        {"architecture", ArchitectureName()},
 		        {"capabilities", {{"computerUse", false},
 		                          {"directoryBrowsing", state != nullptr},
+		                          {"fileCopy", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

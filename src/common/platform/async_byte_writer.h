@@ -139,7 +139,11 @@ namespace uam::platform
 			m_worker.request_stop();
 			m_condition.notify_all();
 #if defined(_WIN32)
+		#if defined(__MINGW32__)
+			(void)CancelSynchronousIo(reinterpret_cast<HANDLE>(m_worker.native_handle()));
+		#else
 			(void)CancelSynchronousIo(m_worker.native_handle());
+		#endif
 #endif
 			if (m_worker.joinable())
 			{

@@ -22,6 +22,7 @@ UAM_TEST(RemoteRunnerProtocolIsBoundedVersionedAndComputerUseFree)
 	UAM_ASSERT_EQ(response.value("runnerVersion", ""), std::string("test-version"));
 	UAM_ASSERT(!response["capabilities"].value("computerUse", true));
 	UAM_ASSERT(!response["capabilities"].value("directoryBrowsing", true));
+	UAM_ASSERT(!response["capabilities"].value("fileCopy", true));
 	UAM_ASSERT(!response["capabilities"].value("processExecution", true));
 
 	const nlohmann::json mismatch = uam::remote::HandleRunnerRequest(
@@ -56,6 +57,7 @@ UAM_TEST(RemoteRunnerListsOnlyBoundedDirectChildDirectories)
 	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "list"}},
 	    "test-version", &state);
 	UAM_ASSERT(hello["capabilities"].value("directoryBrowsing", false));
+	UAM_ASSERT(hello["capabilities"].value("fileCopy", false));
 
 	const nlohmann::json listed = uam::remote::HandleRunnerRequest(
 	    {{"id", "list-1"}, {"type", "directory.list"}, {"path", temp.root.string()}},
@@ -297,6 +299,8 @@ case "$last" in
     lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
     if [ "$lines" -eq 2 ]; then printf 'Windows\nAMD64\n'; fi
     if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
+    if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"("; fi
     ;;
 esac
 )"));

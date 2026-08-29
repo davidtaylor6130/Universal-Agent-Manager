@@ -12,6 +12,7 @@ import {
 
 export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
+  const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
   const providers = useAppStore((state) => state.providers)
   const versionManager = useAppStore((state) => state.cliVersionManager)
   const executionHosts = useAppStore((state) => state.executionHosts)
@@ -84,8 +85,8 @@ export function useUpdateMonitor() {
 
   const updates = useMemo(() => [
     ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions),
-    ...availableRemoteHelperUpdates(appVersion, executionHosts, dismissedVersions),
-  ], [appVersion, catalog, dismissedVersions, executionHosts, providers, versionManager])
+    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
+  ], [appVersion, catalog, dismissedVersions, executionHosts, providers, runnerProtocolVersion, versionManager])
 
   const applyRemoteHelperUpdate = useCallback(async (hostId: string) => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)

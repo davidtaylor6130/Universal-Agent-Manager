@@ -72,21 +72,25 @@ export function compareVersions(left: string, right: string): number {
 
 export function availableRemoteHelperUpdates(
   appVersion: string,
+  expectedProtocolVersion: number,
   executionHosts: ExecutionHost[],
   dismissedVersions: Record<string, string>,
 ): AvailableUpdate[] {
   const latestVersion = cleanVersion(appVersion)
-  if (!latestVersion) return []
+  if (!latestVersion || expectedProtocolVersion <= 0) return []
   return executionHosts.flatMap((host) => {
     const currentVersion = cleanVersion(host.runnerVersion)
     const id = `remote-helper-${host.id}`
-    if (host.transport !== 'ssh' || !currentVersion || compareVersions(latestVersion, currentVersion) <= 0 || dismissedVersions[id] === latestVersion) return []
+    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}`
+    const versionOutdated = !currentVersion || compareVersions(latestVersion, currentVersion) > 0
+    const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
+    if (host.transport !== 'ssh' || (!versionOutdated && !protocolOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
       remoteHostId: host.id,
       name: `${host.label} SSH helper`,
-      currentVersion,
-      latestVersion,
+      currentVersion: currentVersion || 'Not detected',
+      latestVersion: updateVersion,
       url: '',
       installable: true,
     }]

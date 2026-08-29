@@ -68,6 +68,7 @@ export interface AppState {
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
   appVersion: string
+  runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
   updateChecksEnabled: boolean

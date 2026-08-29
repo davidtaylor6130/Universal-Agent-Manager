@@ -17,15 +17,23 @@ describe('update catalog', () => {
   })
 
   it('reports an older SSH helper independently of the online catalog', () => {
-    expect(availableRemoteHelperUpdates('4.8.0-alpha-2', [
+    expect(availableRemoteHelperUpdates('4.8.0-alpha-2', 2, [
       { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
       { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
     ], {})).toEqual([expect.objectContaining({
       id: 'remote-helper-lab',
       remoteHostId: 'lab',
       currentVersion: '4.8.0-alpha',
-      latestVersion: '4.8.0-alpha-2',
+      latestVersion: '4.8.0-alpha-2 · helper protocol 2',
     })])
+  })
+
+  it('reports a same-version or undetected helper with an obsolete protocol', () => {
+    expect(availableRemoteHelperUpdates('4.8.0-alpha-2', 2, [
+      { id: 'same', label: 'Same version', transport: 'ssh', sshAlias: 'same', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', runnerProtocolVersion: 1, platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      { id: 'missing', label: 'Undetected', transport: 'ssh', sshAlias: 'missing', runnerStatus: 'error', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+      { id: 'current', label: 'Current', transport: 'ssh', sshAlias: 'current', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', runnerProtocolVersion: 2, platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+    ], {}).map((update) => update.id)).toEqual(['remote-helper-same', 'remote-helper-missing'])
   })
 
   it('rejects malformed cached catalog entries', () => {

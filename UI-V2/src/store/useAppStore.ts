@@ -127,6 +127,7 @@ function deserializeState(
     acpSetupInactivityTimeoutSeconds: number
     acpTurnOutputLimitMiB: number
     appVersion: string
+    runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
     updateChecksEnabled: boolean
@@ -312,6 +313,7 @@ function deserializeState(
     acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
     acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
     appVersion: cpp.appVersion || existing.appVersion,
+    runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -651,6 +653,7 @@ export const useAppStore = create<AppState>((set, get) => {
             acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
             acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
             appVersion: current.appVersion,
+            runnerProtocolVersion: current.runnerProtocolVersion,
             showProviderIconsInSidebar: current.showProviderIconsInSidebar,
             showWorktreePathInSidebar: current.showWorktreePathInSidebar,
             updateChecksEnabled: current.updateChecksEnabled,
@@ -892,6 +895,7 @@ export const useAppStore = create<AppState>((set, get) => {
         acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
         acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
         appVersion: current.appVersion,
+        runnerProtocolVersion: current.runnerProtocolVersion,
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         updateChecksEnabled: current.updateChecksEnabled,

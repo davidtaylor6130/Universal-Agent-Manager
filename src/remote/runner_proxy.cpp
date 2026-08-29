@@ -609,7 +609,11 @@ namespace uam::remote
 			if (pending.empty() && output.empty()) Sleep(10);
 		}
 		(void)channel.CloseChannel(channel_id);
-		(void)CancelSynchronousIo(reader.native_handle());
+		#if defined(__MINGW32__)
+			(void)CancelSynchronousIo(reinterpret_cast<HANDLE>(reader.native_handle()));
+		#else
+			(void)CancelSynchronousIo(reader.native_handle());
+		#endif
 		reader.join();
 		return !input_failed.load(std::memory_order_acquire) && error.empty() ? 0 : 70;
 #endif

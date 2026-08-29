@@ -321,6 +321,13 @@ elseif(UNIX)
   )
   target_link_libraries(uam_runner PRIVATE Threads::Threads)
 endif()
+if(MSVC)
+  set_property(TARGET uam_runner PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+elseif(MINGW)
+  target_link_options(uam_runner PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 target_compile_definitions(uam_runner PRIVATE
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"

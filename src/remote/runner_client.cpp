@@ -125,6 +125,8 @@ namespace uam::remote
 		     response.value("runnerVersion", "") != m_expectedVersion) ||
 		    !response.value("capabilities", nlohmann::json::object())
 		         .value("processExecution", false) ||
+		    !response.value("capabilities", nlohmann::json::object())
+		         .value("fileCopy", false) ||
 		    response.value("capabilities", nlohmann::json::object())
 		        .value("computerUse", true))
 		{

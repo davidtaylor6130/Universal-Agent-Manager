@@ -226,7 +226,12 @@ namespace uam::remote
 		}
 		for (ClientThread& client : clients)
 			if (client.thread.joinable())
-				(void)CancelSynchronousIo(client.thread.native_handle());
+				#if defined(__MINGW32__)
+					(void)CancelSynchronousIo(
+					    reinterpret_cast<HANDLE>(client.thread.native_handle()));
+				#else
+					(void)CancelSynchronousIo(client.thread.native_handle());
+				#endif
 		return 0;
 	}
 
