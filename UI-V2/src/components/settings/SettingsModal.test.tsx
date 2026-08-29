@@ -280,7 +280,7 @@ describe('SettingsModal memory settings', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, 'helpers/uam')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(host.textContent).toContain('~/helpers/uam/4.5.7')
+    expect(host.textContent).toContain('~/helpers/uam/4.8.0-alpha')
     await act(async () => {
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
@@ -1151,7 +1151,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Build and release information')
-    expect(host.textContent).toContain('V4.5.7')
+    expect(host.textContent).toContain('V4.8.0-alpha')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {

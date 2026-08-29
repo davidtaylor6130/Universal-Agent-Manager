@@ -59,11 +59,11 @@ jobs:
       - run: cmake --build Builds/runner --config Release --target uam_runner --parallel 4
       - name: Smoke runner version (Linux)
         if: runner.os == 'Linux'
-        run: test "$(Builds/runner/uam-runner --version)" = "4.5.7"
+        run: test "$(Builds/runner/uam-runner --version)" = "4.8.0-alpha"
       - name: Smoke runner version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: if ((& Builds/runner/Release/uam-runner.exe --version) -ne '4.5.7') { throw 'Runner version mismatch.' }
+        run: if ((& Builds/runner/Release/uam-runner.exe --version) -ne '4.8.0-alpha') { throw 'Runner version mismatch.' }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
