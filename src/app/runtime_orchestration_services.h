@@ -2,10 +2,14 @@
 
 #include "common/state/app_state.h"
 
+#include <nlohmann/json_fwd.hpp>
+
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -14,6 +18,44 @@ bool PollPendingRuntimeCall(uam::AppState& app);
 class ChatHistorySyncService
 {
   public:
+	struct RemoteOpenCodeSession
+	{
+		std::string id;
+		std::string title;
+		std::string directory;
+		std::int64_t created_epoch_ms = 0;
+		std::int64_t updated_epoch_ms = 0;
+	};
+	struct RemoteOpenCodeTranscript
+	{
+		bool success = false;
+		std::string session_id;
+		std::string directory;
+		std::vector<Message> messages;
+		std::string error;
+	};
+	struct RemoteCodexSession
+	{
+		std::string id;
+		std::string title;
+		std::string directory;
+		std::int64_t created_epoch_seconds = 0;
+		std::int64_t updated_epoch_seconds = 0;
+	};
+	struct RemoteCodexDiscovery
+	{
+		std::vector<RemoteCodexSession> sessions;
+		std::string error;
+	};
+	struct RemoteCodexTranscript
+	{
+		bool success = false;
+		std::string session_id;
+		std::string directory;
+		std::vector<Message> messages;
+		std::string error;
+	};
+
 	struct ImportResult
 	{
 		int imported_count = 0;
@@ -38,6 +80,23 @@ class ChatHistorySyncService
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
+	ImportResult ImportRemoteOpenCodeChatsForFolder(
+	    uam::AppState& app, const std::string& folder_id,
+	    const std::vector<RemoteOpenCodeSession>& sessions) const;
+	RemoteOpenCodeTranscript LoadRemoteOpenCodeTranscript(
+	    const ExecutionHost& host, const ChatSession& chat) const;
+	static RemoteOpenCodeTranscript ParseRemoteOpenCodeTranscript(std::string_view output);
+	RemoteCodexDiscovery DiscoverRemoteCodexSessions(
+	    const ExecutionHost& host, const ChatFolder& folder) const;
+	ImportResult ImportRemoteCodexChatsForFolder(
+	    uam::AppState& app, const std::string& folder_id,
+	    const std::vector<RemoteCodexSession>& sessions) const;
+	RemoteCodexTranscript LoadRemoteCodexTranscript(
+	    const ExecutionHost& host, const ChatSession& chat) const;
+	static bool AppendRemoteCodexSessions(
+	    const nlohmann::json& result, std::vector<RemoteCodexSession>& sessions,
+	    std::string* error = nullptr);
+	static RemoteCodexTranscript ParseRemoteCodexTranscript(const nlohmann::json& result);
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;

@@ -1045,6 +1045,31 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('offers the same rescan action for a remote workspace', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'uam-windows-ai', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      folders: [{ ...makeFolder(), directory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
+      sessions: [{ ...makeSession(1), workspaceDirectory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    act(() => rescan?.click())
+
+    expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps a failed rescan visible instead of looking empty', async () => {
     useAppStore.setState({ rescanFolderChats: vi.fn(() => Promise.resolve(false)) })
     const host = document.createElement('div')

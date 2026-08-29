@@ -12,6 +12,7 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/execution_host_config.h"
 #include "common/constants/app_constants.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -34,13 +35,17 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "core/chat_import_utils.h"
+#include "remote/runner_client.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -54,6 +59,183 @@ namespace
 	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
 	constexpr const char* kMemoryWorkerPromptPrefix = "You are a non-interactive memory extraction function.";
 	constexpr const char* kNativeImportTombstonesFile = "native-import-tombstones.json";
+	constexpr std::size_t kRemoteOpenCodeMaxMessages = 10000;
+	constexpr std::size_t kRemoteCodexMaxSessions = 200;
+	constexpr std::size_t kRemoteCodexMaxMessages = 10000;
+
+	enum class CodexRpcReadResult
+	{
+		Waiting,
+		Success,
+		Failure,
+	};
+
+	CodexRpcReadResult TakeCodexRpcResponse(std::string& buffered, int expected_id,
+	                                      nlohmann::json& result, std::string& error)
+	{
+		for (;;)
+		{
+			const std::size_t newline = buffered.find('\n');
+			if (newline == std::string::npos) return CodexRpcReadResult::Waiting;
+			std::string line = buffered.substr(0, newline);
+			buffered.erase(0, newline + 1);
+			if (!line.empty() && line.back() == '\r') line.pop_back();
+			if (uam::strings::IsBlank(line)) continue;
+			const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+			if (!message.is_object())
+			{
+				error = "Codex app-server returned malformed JSON-RPC output.";
+				return CodexRpcReadResult::Failure;
+			}
+			if (!message.contains("id") || !message["id"].is_number_integer() ||
+			    message["id"].get<int>() != expected_id)
+				continue;
+			if (message.contains("error"))
+			{
+				const nlohmann::json& rpc_error = message["error"];
+				error = rpc_error.is_object()
+				    ? rpc_error.value("message", "Codex app-server rejected the history request.")
+				    : "Codex app-server rejected the history request.";
+				return CodexRpcReadResult::Failure;
+			}
+			if (!message.contains("result"))
+			{
+				error = "Codex app-server omitted the history result.";
+				return CodexRpcReadResult::Failure;
+			}
+			result = message["result"];
+			return CodexRpcReadResult::Success;
+		}
+	}
+
+	bool PollCodexRpcResponse(uam::remote::RunnerClient& client,
+	                          const std::string& process_id, int expected_id,
+	                          std::string& buffered, std::size_t& captured_bytes,
+	                          nlohmann::json& result, std::string& error,
+	                          const std::chrono::steady_clock::time_point deadline)
+	{
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (const CodexRpcReadResult ready =
+			        TakeCodexRpcResponse(buffered, expected_id, result, error);
+			    ready != CodexRpcReadResult::Waiting)
+				return ready == CodexRpcReadResult::Success;
+			uam::remote::ProcessPollResult polled;
+			if (!client.PollProcess(process_id, polled, &error)) return false;
+			captured_bytes += polled.standard_output.size() + polled.standard_error.size();
+			if (captured_bytes > uam::platform::kCapturedCommandMaxOutputBytes)
+			{
+				error = "Codex remote history exceeds UAM's 4 MiB safety limit.";
+				return false;
+			}
+			buffered += polled.standard_output;
+			if (const CodexRpcReadResult ready =
+			        TakeCodexRpcResponse(buffered, expected_id, result, error);
+			    ready != CodexRpcReadResult::Waiting)
+				return ready == CodexRpcReadResult::Success;
+			if (!polled.running)
+			{
+				error = "Codex app-server closed before returning remote history";
+				if (!uam::strings::IsBlank(polled.standard_error))
+					error += ": " + uam::strings::Trim(polled.standard_error);
+				return false;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		error = "Codex remote history request timed out.";
+		return false;
+	}
+
+	bool RunRemoteCodexRpc(uam::remote::RunnerClient& client,
+	                       const std::filesystem::path& working_directory,
+	                       std::string_view method, const nlohmann::json& params,
+	                       nlohmann::json& result, std::string& error)
+	{
+		std::string process_id = "codex-history-" +
+		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (process_id == "codex-history-")
+			process_id += uam::time::SteadyEpochNanosecondsTokenNow();
+		if (!client.StartProcess(process_id, working_directory,
+		                         {"codex", "app-server", "--stdio"}, {}, &error))
+			return false;
+		const auto cleanup = [&]
+		{
+			(void)client.StopProcess(process_id);
+			(void)client.RemoveProcess(process_id);
+		};
+		std::string buffered;
+		std::size_t captured_bytes = 0;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		const nlohmann::json initialize{
+		    {"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"},
+		    {"params", {{"clientInfo", {{"name", "uam-history"},
+		                                   {"version", std::string(uam::constants::kAppVersion).substr(1)}}},
+		                {"capabilities", {{"experimentalApi", true}}}}}};
+		if (!client.WriteProcess(process_id, initialize.dump() + "\n", &error) ||
+		    !PollCodexRpcResponse(client, process_id, 1, buffered, captured_bytes,
+		                          result, error, deadline))
+		{
+			cleanup();
+			return false;
+		}
+		const nlohmann::json initialized{
+		    {"jsonrpc", "2.0"}, {"method", "initialized"}, {"params", nullptr}};
+		const nlohmann::json request{
+		    {"jsonrpc", "2.0"}, {"id", 2}, {"method", method}, {"params", params}};
+		if (!client.WriteProcess(process_id, initialized.dump() + "\n" + request.dump() + "\n",
+		                         &error) ||
+		    !PollCodexRpcResponse(client, process_id, 2, buffered, captured_bytes,
+		                          result, error, deadline))
+		{
+			cleanup();
+			return false;
+		}
+		cleanup();
+		return true;
+	}
+
+	std::string IsoTimestampFromEpochMilliseconds(std::int64_t milliseconds)
+	{
+		if (milliseconds <= 0) return uam::time::IsoUtcTimestampNow();
+		const std::time_t seconds = static_cast<std::time_t>(milliseconds / 1000);
+		return uam::time::detail::FormatTimestamp(
+		    uam::time::detail::UtcTimeSnapshot(seconds), uam::time::kIsoUtcTimestampFormat);
+	}
+
+	std::string IsoTimestampFromEpochSeconds(std::int64_t seconds)
+	{
+		if (seconds <= 0) return uam::time::IsoUtcTimestampNow();
+		return uam::time::detail::FormatTimestamp(
+		    uam::time::detail::UtcTimeSnapshot(static_cast<std::time_t>(seconds)),
+		    uam::time::kIsoUtcTimestampFormat);
+	}
+
+	std::int64_t JsonIntegerOrZero(const nlohmann::json& value)
+	{
+		if (!value.is_number_integer()) return 0;
+		try
+		{
+			return value.get<std::int64_t>();
+		}
+		catch (...)
+		{
+			return 0;
+		}
+	}
+
+	int BoundedMessageTokenCount(const nlohmann::json& value)
+	{
+		const std::int64_t count = JsonIntegerOrZero(value);
+		return static_cast<int>(std::clamp<std::int64_t>(
+		    count, 0, std::numeric_limits<int>::max()));
+	}
+
+	void AppendTranscriptText(std::string& target, std::string_view text)
+	{
+		if (text.empty()) return;
+		if (!target.empty() && target.back() != '\n') target.push_back('\n');
+		target.append(text);
+	}
 
 	struct NativeImportTombstones
 	{
@@ -181,10 +363,6 @@ namespace
 		for (const ChatSession& chat : local_chats)
 		{
 			import_index.existing_ids.insert(chat.id);
-			if (!uam::paths::IsControllerLocalWorkspace(chat))
-			{
-				continue;
-			}
 			if (!uam::strings::IsBlank(chat.native_session_id))
 			{
 				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
@@ -1042,8 +1220,7 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 	std::unordered_set<std::string> candidate_keys;
 	for (const ChatSession& chat : chats)
 	{
-		if (uam::paths::IsControllerLocalWorkspace(chat) &&
-		    !uam::strings::IsBlank(chat.native_session_id))
+		if (!uam::strings::IsBlank(chat.native_session_id))
 		{
 			candidate_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
 		}
@@ -1265,6 +1442,527 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChats
 	(void)folder_id;
 #endif
 	return result;
+}
+
+ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportRemoteOpenCodeChatsForFolder(
+    uam::AppState& app, const std::string& folder_id,
+    const std::vector<RemoteOpenCodeSession>& sessions) const
+{
+	ImportResult result;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(
+	    app, uam::strings::Trim(folder_id));
+	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory) ||
+	    uam::paths::IsControllerLocalWorkspace(*matched_folder))
+	{
+		result.Fail("Remote OpenCode history scan requires a remote workspace folder.");
+		return result;
+	}
+	const ExecutionHost* host = uam::execution_hosts::Find(
+	    app.settings.execution_hosts, matched_folder->execution_host_id);
+	if (host == nullptr)
+	{
+		result.Fail("The remote execution host no longer exists.");
+		return result;
+	}
+	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; remote import stopped to avoid restoring deleted chats.");
+		return result;
+	}
+	for (const RemoteOpenCodeSession& session : sessions)
+	{
+		if (!uam::execution_hosts::IsPortableId(session.id) ||
+		    !uam::execution_hosts::RemotePathsMatch(host->platform, session.directory,
+		                                             matched_folder->directory))
+			continue;
+		++result.total_count;
+		ChatSession chat;
+		chat.id = session.id;
+		chat.title = uam::execution_hosts::Bounded(session.title, 256);
+		if (chat.title.empty()) chat.title = "OpenCode session " + session.id;
+		chat.provider_id = uam::provider_ids::kOpenCodeCli;
+		chat.native_session_id = session.id;
+		chat.folder_id = matched_folder->id;
+		chat.execution_host_id = matched_folder->execution_host_id;
+		chat.workspace_directory = matched_folder->directory;
+		chat.created_at = IsoTimestampFromEpochMilliseconds(session.created_epoch_ms);
+		chat.updated_at = IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms);
+		const std::optional<std::string> native_key = PrepareNativeChatForImport(
+		    app.data_root, import_index, chat, "");
+		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
+			++result.imported_count;
+		else if (native_key)
+			result.Fail("Failed to save imported OpenCode chat " + chat.native_session_id + ".");
+	}
+#else
+	(void)app;
+	(void)folder_id;
+	(void)sessions;
+	result.Fail("OpenCode support is disabled in this build.");
+#endif
+	return result;
+}
+
+ChatHistorySyncService::RemoteOpenCodeTranscript
+ChatHistorySyncService::ParseRemoteOpenCodeTranscript(std::string_view output)
+{
+	RemoteOpenCodeTranscript result;
+	const std::size_t first = output.find('{');
+	const std::size_t last = output.rfind('}');
+	if (first == std::string_view::npos || last == std::string_view::npos || last < first)
+	{
+		result.error = "OpenCode export did not contain JSON.";
+		return result;
+	}
+	const nlohmann::json root = nlohmann::json::parse(
+	    output.substr(first, last - first + 1), nullptr, false);
+	if (!root.is_object() || !root.contains("info") || !root["info"].is_object() ||
+	    !root.contains("messages") || !root["messages"].is_array() ||
+	    root["messages"].size() > kRemoteOpenCodeMaxMessages)
+	{
+		result.error = "OpenCode export returned invalid or oversized session data.";
+		return result;
+	}
+	const nlohmann::json& session_info = root["info"];
+	result.session_id = session_info.value("id", "");
+	result.directory = session_info.value("directory", "");
+	if (result.session_id.empty() || result.directory.empty())
+	{
+		result.error = "OpenCode export omitted the session identity or workspace.";
+		return result;
+	}
+
+	for (const nlohmann::json& entry : root["messages"])
+	{
+		if (!entry.is_object() || !entry.contains("info") || !entry["info"].is_object() ||
+		    !entry.contains("parts") || !entry["parts"].is_array())
+		{
+			result.error = "OpenCode export contained malformed message data.";
+			result.messages.clear();
+			return result;
+		}
+		const nlohmann::json& info = entry["info"];
+		const std::string role = info.value("role", "");
+		Message message;
+		if (role == "user") message.role = MessageRole::User;
+		else if (role == "assistant") message.role = MessageRole::Assistant;
+		else if (role == "system") message.role = MessageRole::System;
+		else continue;
+		message.provider = uam::provider_ids::kOpenCodeCli;
+		if (info.contains("time") && info["time"].is_object())
+		{
+			const std::int64_t created = JsonIntegerOrZero(info["time"].value("created", nlohmann::json{}));
+			message.created_at = IsoTimestampFromEpochMilliseconds(created);
+			const std::int64_t completed = JsonIntegerOrZero(info["time"].value("completed", nlohmann::json{}));
+			if (completed > created && created > 0)
+				message.processing_time_ms = static_cast<int>(std::min<std::int64_t>(
+				    completed - created, std::numeric_limits<int>::max()));
+		}
+		if (info.contains("tokens") && info["tokens"].is_object())
+		{
+			message.tokens_input = BoundedMessageTokenCount(
+			    info["tokens"].value("input", nlohmann::json{}));
+			message.tokens_output = BoundedMessageTokenCount(
+			    info["tokens"].value("output", nlohmann::json{}));
+		}
+		if (info.contains("cost") && info["cost"].is_number())
+			message.estimated_cost_usd = info["cost"].get<double>();
+
+		for (const nlohmann::json& part : entry["parts"])
+		{
+			if (!part.is_object()) continue;
+			const std::string type = part.value("type", "");
+			if (type == "text" && part.contains("text") && part["text"].is_string())
+			{
+				const std::string text = part["text"].get<std::string>();
+				AppendTranscriptText(message.content, text);
+				if (message.role == MessageRole::Assistant && !text.empty())
+					message.blocks.push_back({"assistant_text", text, "", ""});
+			}
+			else if (type == "reasoning" && part.contains("text") && part["text"].is_string())
+			{
+				const std::string text = part["text"].get<std::string>();
+				AppendTranscriptText(message.thoughts, text);
+				if (!text.empty()) message.blocks.push_back({"thought", text, "", ""});
+			}
+			else if (type == "tool")
+			{
+				ToolCall tool;
+				tool.id = uam::strings::NonEmptyOrFallback(
+				    part.value("callID", ""), part.value("id", ""));
+				tool.name = part.value("tool", "tool");
+				if (part.contains("state") && part["state"].is_object())
+				{
+					const nlohmann::json& state = part["state"];
+					if (state.contains("input")) tool.args_json = state["input"].dump();
+					if (state.contains("output") && state["output"].is_string())
+						tool.result_text = state["output"].get<std::string>();
+					tool.status = state.value("status", "completed");
+				}
+				if (tool.id.empty()) tool.id = "opencode-tool-" + std::to_string(message.tool_calls.size());
+				message.blocks.push_back({"tool_call", "", tool.id, ""});
+				message.tool_calls.push_back(std::move(tool));
+			}
+			else if (type == "file")
+			{
+				AppendTranscriptText(message.content,
+				    "[Attachment: " + uam::strings::NonEmptyOrFallback(
+				        part.value("filename", ""), part.value("name", "file")) + "]");
+			}
+		}
+		if (!message.content.empty() || !message.thoughts.empty() || !message.tool_calls.empty())
+			result.messages.push_back(std::move(message));
+	}
+	result.success = true;
+	return result;
+}
+
+ChatHistorySyncService::RemoteOpenCodeTranscript
+ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
+    const ExecutionHost& host, const ChatSession& chat) const
+{
+	RemoteOpenCodeTranscript result;
+	if (host.id == uam::execution_hosts::kLocalHostId || host.runner_status != "ready" ||
+	    !uam::execution_hosts::IsPortableId(chat.native_session_id) ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, chat.workspace_directory))
+	{
+		result.error = "The remote OpenCode session is not ready to load.";
+		return result;
+	}
+	uam::remote::RunnerClient client(
+	    PlatformServicesFactory::Instance().process_service,
+	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+	                               host.runner_directory),
+	    host.runner_version);
+	if (!client.Connect(&result.error)) return result;
+	const std::string process_id = "history-export-" +
+	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	if (!client.StartProcess(process_id, std::filesystem::path(chat.workspace_directory),
+	                         {"opencode", "export", chat.native_session_id, "--pure"}, {},
+	                         &result.error) || !client.CloseProcessInput(process_id, &result.error))
+	{
+		(void)client.StopProcess(process_id);
+		(void)client.RemoveProcess(process_id);
+		return result;
+	}
+	std::string output;
+	std::string diagnostic;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		uam::remote::ProcessPollResult polled;
+		if (!client.PollProcess(process_id, polled, &result.error)) break;
+		if (output.size() + polled.standard_output.size() >
+		        uam::platform::kCapturedCommandMaxOutputBytes ||
+		    diagnostic.size() + polled.standard_error.size() >
+		        uam::platform::kCapturedCommandMaxOutputBytes)
+		{
+			result.error = "The remote OpenCode transcript exceeds UAM's 4 MiB safety limit.";
+			break;
+		}
+		output += polled.standard_output;
+		diagnostic += polled.standard_error;
+		if (!polled.running)
+		{
+			(void)client.RemoveProcess(process_id);
+			if (polled.exit_code != 0)
+			{
+				result.error = "OpenCode could not export the remote session (exit " +
+				               std::to_string(polled.exit_code) + "): " +
+				               uam::strings::NonEmptyOrFallback(
+				                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
+				return result;
+			}
+			result = ParseRemoteOpenCodeTranscript(output);
+			if (result.success &&
+			    (result.session_id != chat.native_session_id ||
+			     !uam::execution_hosts::RemotePathsMatch(
+			         host.platform, result.directory, chat.workspace_directory)))
+			{
+				result = {};
+				result.error = "OpenCode exported a different session or workspace.";
+			}
+			return result;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	if (result.error.empty()) result.error = "Remote OpenCode transcript loading timed out.";
+	(void)client.StopProcess(process_id);
+	(void)client.RemoveProcess(process_id);
+	return result;
+}
+
+bool ChatHistorySyncService::AppendRemoteCodexSessions(
+    const nlohmann::json& result, std::vector<RemoteCodexSession>& sessions,
+    std::string* error)
+{
+	const nlohmann::json* data = uam::nlohmann_json::FindArrayField(result, "data");
+	if (data == nullptr || sessions.size() + data->size() > kRemoteCodexMaxSessions)
+	{
+		if (error != nullptr) *error = "Codex returned an invalid or oversized thread list.";
+		return false;
+	}
+	for (const nlohmann::json& value : *data)
+	{
+		if (!value.is_object() || !value.contains("id") || !value["id"].is_string() ||
+		    !value.contains("cwd") || !value["cwd"].is_string() ||
+		    !value.contains("preview") || !value["preview"].is_string() ||
+		    !value.contains("createdAt") || !value["createdAt"].is_number_integer() ||
+		    !value.contains("updatedAt") || !value["updatedAt"].is_number_integer())
+		{
+			if (error != nullptr) *error = "Codex returned malformed thread metadata.";
+			return false;
+		}
+		const std::string id = uam::codex::ValidThreadIdOrEmpty(value["id"].get<std::string>());
+		const std::string directory = value["cwd"].get<std::string>();
+		if (id.empty() || directory.empty() || directory.size() > 4096)
+		{
+			if (error != nullptr) *error = "Codex returned an invalid thread identity or workspace.";
+			return false;
+		}
+		if ((value.contains("ephemeral") && value["ephemeral"].is_boolean() &&
+		     value["ephemeral"].get<bool>()) ||
+		    (value.contains("parentThreadId") && value["parentThreadId"].is_string() &&
+		     !uam::strings::IsBlank(value["parentThreadId"].get_ref<const std::string&>())))
+			continue;
+		if (std::ranges::any_of(sessions, [&id](const RemoteCodexSession& session)
+		    { return session.id == id; }))
+			continue;
+		RemoteCodexSession session;
+		session.id = id;
+		session.directory = directory;
+		if (value.contains("name") && value["name"].is_string())
+			session.title = value["name"].get<std::string>();
+		if (uam::strings::IsBlank(session.title))
+			session.title = value["preview"].get<std::string>();
+		try
+		{
+			session.created_epoch_seconds = value["createdAt"].get<std::int64_t>();
+			session.updated_epoch_seconds = value["updatedAt"].get<std::int64_t>();
+		}
+		catch (const nlohmann::json::exception&)
+		{
+			if (error != nullptr) *error = "Codex returned an invalid thread timestamp.";
+			return false;
+		}
+		sessions.push_back(std::move(session));
+	}
+	return true;
+}
+
+ChatHistorySyncService::RemoteCodexDiscovery
+ChatHistorySyncService::DiscoverRemoteCodexSessions(
+    const ExecutionHost& host, const ChatFolder& folder) const
+{
+	RemoteCodexDiscovery discovery;
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	if (host.id == uam::execution_hosts::kLocalHostId || host.runner_status != "ready" ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, folder.directory))
+	{
+		discovery.error = "The remote Codex workspace is not ready to scan.";
+		return discovery;
+	}
+	uam::remote::RunnerClient client(
+	    PlatformServicesFactory::Instance().process_service,
+	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+	                               host.runner_directory),
+	    host.runner_version);
+	if (!client.Connect(&discovery.error)) return discovery;
+	for (const bool archived : {false, true})
+	{
+		const std::size_t remaining = kRemoteCodexMaxSessions - discovery.sessions.size();
+		if (remaining == 0) break;
+		nlohmann::json list_result;
+		const nlohmann::json params{
+		    {"archived", archived}, {"cwd", folder.directory},
+		    {"limit", remaining}, {"sortKey", "updated_at"},
+		    {"sortDirection", "desc"}};
+		if (!RunRemoteCodexRpc(client, std::filesystem::path(folder.directory),
+		                       "thread/list", params, list_result, discovery.error) ||
+		    !AppendRemoteCodexSessions(list_result, discovery.sessions, &discovery.error))
+			return discovery;
+	}
+#else
+	(void)host;
+	(void)folder;
+	discovery.error = "Codex support is disabled in this build.";
+#endif
+	return discovery;
+}
+
+ChatHistorySyncService::ImportResult
+ChatHistorySyncService::ImportRemoteCodexChatsForFolder(
+    uam::AppState& app, const std::string& folder_id,
+    const std::vector<RemoteCodexSession>& sessions) const
+{
+	ImportResult result;
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(
+	    app, uam::strings::Trim(folder_id));
+	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory) ||
+	    uam::paths::IsControllerLocalWorkspace(*matched_folder))
+	{
+		result.Fail("Remote Codex history scan requires a remote workspace folder.");
+		return result;
+	}
+	const ExecutionHost* host = uam::execution_hosts::Find(
+	    app.settings.execution_hosts, matched_folder->execution_host_id);
+	if (host == nullptr)
+	{
+		result.Fail("The remote execution host no longer exists.");
+		return result;
+	}
+	NativeImportIndex import_index = LoadNativeImportIndex(app.data_root);
+	if (!import_index.tombstones_available)
+	{
+		result.Fail("Native-history deletion records could not be read; remote import stopped to avoid restoring deleted chats.");
+		return result;
+	}
+	for (const RemoteCodexSession& session : sessions)
+	{
+		const std::string valid_id = uam::codex::ValidThreadIdOrEmpty(session.id);
+		if (valid_id.empty() || !uam::execution_hosts::RemotePathsMatch(
+		        host->platform, session.directory, matched_folder->directory))
+			continue;
+		++result.total_count;
+		ChatSession chat;
+		chat.id = valid_id;
+		chat.branch_root_chat_id = valid_id;
+		chat.title = uam::execution_hosts::Bounded(session.title, 256);
+		if (chat.title.empty()) chat.title = "Codex session " + valid_id;
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.native_session_id = valid_id;
+		chat.folder_id = matched_folder->id;
+		chat.execution_host_id = matched_folder->execution_host_id;
+		chat.workspace_directory = matched_folder->directory;
+		chat.created_at = IsoTimestampFromEpochSeconds(session.created_epoch_seconds);
+		chat.updated_at = IsoTimestampFromEpochSeconds(session.updated_epoch_seconds);
+		const std::optional<std::string> native_key = PrepareNativeChatForImport(
+		    app.data_root, import_index, chat, "");
+		if (native_key) chat.branch_root_chat_id = chat.id;
+		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
+			++result.imported_count;
+		else if (native_key)
+			result.Fail("Failed to save imported Codex chat " + valid_id + ".");
+	}
+#else
+	(void)app;
+	(void)folder_id;
+	(void)sessions;
+	result.Fail("Codex support is disabled in this build.");
+#endif
+	return result;
+}
+
+ChatHistorySyncService::RemoteCodexTranscript
+ChatHistorySyncService::ParseRemoteCodexTranscript(const nlohmann::json& result)
+{
+	RemoteCodexTranscript transcript;
+	const nlohmann::json* thread = uam::nlohmann_json::FindObjectField(result, "thread");
+	if (thread == nullptr || !thread->contains("id") || !(*thread)["id"].is_string() ||
+	    !thread->contains("cwd") || !(*thread)["cwd"].is_string() ||
+	    !thread->contains("turns") || !(*thread)["turns"].is_array())
+	{
+		transcript.error = "Codex returned malformed thread history.";
+		return transcript;
+	}
+	transcript.session_id = uam::codex::ValidThreadIdOrEmpty((*thread)["id"].get<std::string>());
+	transcript.directory = (*thread)["cwd"].get<std::string>();
+	if (transcript.session_id.empty() || transcript.directory.empty() ||
+	    (*thread)["turns"].size() > kRemoteCodexMaxMessages)
+	{
+		transcript.error = "Codex returned invalid or oversized thread history.";
+		return transcript;
+	}
+	for (const nlohmann::json& turn : (*thread)["turns"])
+	{
+		const nlohmann::json* items = uam::nlohmann_json::FindArrayField(turn, "items");
+		if (items == nullptr)
+		{
+			transcript.error = "Codex returned malformed turn history.";
+			transcript.messages.clear();
+			return transcript;
+		}
+		if (transcript.messages.size() + items->size() > kRemoteCodexMaxMessages)
+		{
+			transcript.error = "Codex thread history contains too many items.";
+			transcript.messages.clear();
+			return transcript;
+		}
+		for (const nlohmann::json& item : *items)
+		{
+			if (!item.is_object()) continue;
+			const std::string type = item.value("type", "");
+			Message message;
+			if (type == "userMessage")
+			{
+				message.role = MessageRole::User;
+				if (const nlohmann::json* content =
+				        uam::nlohmann_json::FindArrayField(item, "content"))
+				{
+					for (const nlohmann::json& part : *content)
+					{
+						if (part.is_object() && part.value("type", "") == "text" &&
+						    part.contains("text") && part["text"].is_string())
+							AppendTranscriptText(message.content, part["text"].get<std::string>());
+					}
+				}
+				if (IsCodexSyntheticUserMessage(message.content)) continue;
+			}
+			else if (type == "agentMessage" && item.contains("text") &&
+			         item["text"].is_string())
+			{
+				message.role = MessageRole::Assistant;
+				message.content = item["text"].get<std::string>();
+				if (!message.content.empty())
+					message.blocks.push_back({"assistant_text", message.content, "", ""});
+			}
+			else continue;
+			if (uam::strings::IsBlank(message.content)) continue;
+			message.provider = uam::provider_ids::kCodexCli;
+			transcript.messages.push_back(std::move(message));
+		}
+	}
+	transcript.success = true;
+	return transcript;
+}
+
+ChatHistorySyncService::RemoteCodexTranscript
+ChatHistorySyncService::LoadRemoteCodexTranscript(
+    const ExecutionHost& host, const ChatSession& chat) const
+{
+	RemoteCodexTranscript transcript;
+	const std::string valid_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	if (host.id == uam::execution_hosts::kLocalHostId || host.runner_status != "ready" ||
+	    valid_id.empty() ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, chat.workspace_directory))
+	{
+		transcript.error = "The remote Codex session is not ready to load.";
+		return transcript;
+	}
+	uam::remote::RunnerClient client(
+	    PlatformServicesFactory::Instance().process_service,
+	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+	                               host.runner_directory),
+	    host.runner_version);
+	if (!client.Connect(&transcript.error)) return transcript;
+	nlohmann::json read_result;
+	if (!RunRemoteCodexRpc(client, std::filesystem::path(chat.workspace_directory),
+	                       "thread/read", {{"threadId", valid_id}, {"includeTurns", true}},
+	                       read_result, transcript.error))
+		return transcript;
+	transcript = ParseRemoteCodexTranscript(read_result);
+	if (transcript.success &&
+	    (transcript.session_id != valid_id ||
+	     !uam::execution_hosts::RemotePathsMatch(
+	         host.platform, transcript.directory, chat.workspace_directory)))
+	{
+		transcript = {};
+		transcript.error = "Codex returned a different thread or workspace.";
+	}
+	return transcript;
 }
 
 void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const

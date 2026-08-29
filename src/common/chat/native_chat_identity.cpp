@@ -1,5 +1,6 @@
 #include "common/chat/native_chat_identity.h"
 
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/hash_utils.h"
@@ -56,6 +57,13 @@ namespace uam::chat_identity
 
 	std::string NativeWorkspaceForHistoryImport(const ChatSession& chat)
 	{
+		const std::string_view host = uam::strings::TrimAsciiView(chat.execution_host_id);
+		if (!host.empty() && host != uam::execution_hosts::kLocalHostId)
+		{
+			std::string workspace = uam::strings::Trim(chat.workspace_directory);
+			std::ranges::replace(workspace, '\\', '/');
+			return "remote:" + std::string(host) + ":" + workspace;
+		}
 		const fs::path workspace_path = TrimmedWorkspacePath(chat);
 		if (workspace_path.empty())
 		{

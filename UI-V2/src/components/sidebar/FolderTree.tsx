@@ -1668,7 +1668,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          {machineKind === 'local' && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />}
+          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </ViewportMenu>

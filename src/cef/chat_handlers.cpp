@@ -1,4 +1,5 @@
 #include "uam_query_handler.h"
+#include "uam_query_handler_async.h"
 #include "uam_query_handler_internal.h"
 
 #include "app/chat_domain_service.h"
@@ -14,6 +15,7 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -23,12 +25,20 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace
 {
+	struct RemoteChatTranscript
+	{
+		bool success = false;
+		std::vector<Message> messages;
+		std::string error;
+	};
+
 	std::string WorkspaceTitle(std::string_view directory)
 	{
 		std::string value(uam::strings::TrimAsciiView(directory));
@@ -43,6 +53,25 @@ namespace
 		return host.id == uam::execution_hosts::kLocalHostId
 		    ? FolderDirectoryMatches(uam::paths::PathFromUtf8(lhs), uam::paths::PathFromUtf8(rhs))
 		    : uam::execution_hosts::RemotePathsMatch(host.platform, lhs, rhs);
+	}
+
+	nlohmann::json SerializeChatMessagesResult(
+	    const ChatSession& chat, std::string_view known_digest)
+	{
+		const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
+		const std::string messages_digest = serialized.value("messagesDigest", "");
+		nlohmann::json result{{"chatId", chat.id}, {"messagesDigest", messages_digest}};
+		if (!known_digest.empty() && known_digest == messages_digest)
+		{
+			result["unchanged"] = true;
+			return result;
+		}
+
+		result["unchanged"] = false;
+		const nlohmann::json* messages =
+		    uam::nlohmann_json::FindArrayField(serialized, "messages");
+		result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
+		return result;
 	}
 }
 
@@ -114,7 +143,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string known_digest = payload.value("messagesDigest", "");
@@ -131,22 +160,95 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> /*browser*/, c
 		return;
 	}
 
-	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(*chat);
-	const std::string messages_digest = serialized.value("messagesDigest", "");
-	nlohmann::json result;
-	result["chatId"] = chat_id;
-	result["messagesDigest"] = messages_digest;
-	if (!known_digest.empty() && known_digest == messages_digest)
+	const std::string execution_host_id = uam::strings::NonEmptyOrFallback(
+	    uam::strings::Trim(chat->execution_host_id), uam::execution_hosts::kLocalHostId);
+	const std::string provider_id =
+	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id);
+	const bool hydrate_remote_chat = chat->messages.empty() &&
+	    execution_host_id != uam::execution_hosts::kLocalHostId &&
+	    !uam::strings::IsBlank(chat->native_session_id) &&
+	    (provider_id == uam::provider_ids::kOpenCodeCli ||
+	     provider_id == uam::provider_ids::kCodexCli);
+	if (!hydrate_remote_chat)
 	{
-		result["unchanged"] = true;
-		cb->Success(result.dump());
+		cb->Success(SerializeChatMessagesResult(*chat, known_digest).dump());
 		return;
 	}
 
-	result["unchanged"] = false;
-	const nlohmann::json* messages = uam::nlohmann_json::FindArrayField(serialized, "messages");
-	result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
-	cb->Success(result.dump());
+	const ExecutionHost* host = uam::execution_hosts::Find(
+	    m_app.settings.execution_hosts, execution_host_id);
+	if (host == nullptr || host->runner_status != "ready")
+	{
+		cb->Failure(409, "The chat's remote helper is not ready.");
+		return;
+	}
+
+	const ChatSession chat_snapshot = *chat;
+	const ExecutionHost host_snapshot = *host;
+	auto transcript = std::make_shared<RemoteChatTranscript>();
+	uam::query_handler_async::RunAsyncCefQuery(
+	    cb,
+	    [chat_snapshot, host_snapshot, provider_id, transcript]()
+	    {
+		    if (provider_id == uam::provider_ids::kCodexCli)
+		    {
+			    auto loaded = ChatHistorySyncService().LoadRemoteCodexTranscript(
+			        host_snapshot, chat_snapshot);
+			    transcript->success = loaded.success;
+			    transcript->messages = std::move(loaded.messages);
+			    transcript->error = std::move(loaded.error);
+		    }
+		    else
+		    {
+			    auto loaded = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(
+			        host_snapshot, chat_snapshot);
+			    transcript->success = loaded.success;
+			    transcript->messages = std::move(loaded.messages);
+			    transcript->error = std::move(loaded.error);
+		    }
+		    return transcript->success
+		        ? uam::query_handler_async::AsyncSuccess({{"ok", true}})
+		        : uam::query_handler_async::AsyncFailure(
+		              502, uam::strings::NonEmptyOrFallback(
+		                       transcript->error, "Failed to load the remote chat."));
+	    },
+	    [this, browser, chat_snapshot, known_digest, transcript](
+	        uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_snapshot.id);
+		    if (current == nullptr)
+		    {
+			    response = uam::query_handler_async::AsyncFailure(
+			        404, "Chat was removed while its remote history was loading.");
+			    return;
+		    }
+		    if (current->execution_host_id != chat_snapshot.execution_host_id ||
+		        current->workspace_directory != chat_snapshot.workspace_directory ||
+		        current->native_session_id != chat_snapshot.native_session_id ||
+		        current->provider_id != chat_snapshot.provider_id)
+		    {
+			    response = uam::query_handler_async::AsyncFailure(
+			        409, "Chat identity changed while its remote history was loading.");
+			    return;
+		    }
+		    if (current->messages.empty())
+		    {
+			    ChatSession hydrated = *current;
+			    hydrated.messages = std::move(transcript->messages);
+			    hydrated.messages_loaded = true;
+			    if (!ChatRepository::SaveChat(m_app.data_root, hydrated))
+			    {
+				    response = uam::query_handler_async::AsyncFailure(
+				        500, "Failed to save the loaded remote chat.");
+				    return;
+			    }
+			    *current = std::move(hydrated);
+			    uam::PushStateUpdateIfChanged(browser, m_app);
+		    }
+		    response = uam::query_handler_async::AsyncSuccess(
+		        SerializeChatMessagesResult(*current, known_digest));
+	    });
 }
 
 void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

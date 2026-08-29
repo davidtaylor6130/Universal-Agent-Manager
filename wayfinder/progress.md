@@ -1762,3 +1762,34 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   no homelab command or connection occurred.
 - Status: `COMPLETE` — the installed alpha-2 build can update and execute through the Windows SSH
   helper. Linux helper acceptance remains separately permission-gated.
+
+## 2026-08-29 — Windows remote history refresh and lazy transcript recovery
+
+- Resolved the remote-history blocker for both supported test providers without scraping their
+  databases. OpenCode uses its official bounded `session list` and per-session `export` commands;
+  Codex uses the official app-server `thread/list` and `thread/read` requests.
+- **Rescan chats** now discovers OpenCode and Codex history for the selected remote workspace,
+  imports only metadata-matching sessions, includes active and archived Codex threads, preserves
+  deleted-chat tombstones, scopes native identity to `(provider, machine, workspace, session)`, and
+  merges saved summaries back into the live sidebar without changing the selected chat or draft.
+- Opening an imported empty chat lazily retrieves only that transcript on a background worker. The
+  UI thread re-finds the chat and revalidates provider, machine, workspace, and native session before
+  applying it; persistence succeeds before in-memory state changes. Repeat opens use the local copy.
+- Trust-boundary limits are explicit: ready remote helper, target-native absolute path, exact returned
+  workspace/session, canonical Codex UUID, 30-second request timeout, 4 MiB captured output, at most
+  200 discovered Codex threads, and at most 10,000 transcript messages/items. Partial provider
+  failures remain visible while successful imports from the other provider are retained.
+- Physical Windows acceptance through the installed app passed. The existing 59 OpenCode InferDeck
+  chats became 101 after one rescan, importing 42 Codex threads. A second rescan remained at 101 with
+  no duplicates. A remote OpenCode transcript rendered and persisted 73 messages with 73 tool calls;
+  a remote Codex transcript rendered and persisted 88 messages. Restart restored the selected Codex
+  transcript immediately from local storage.
+- Verification passed: focused OpenCode/Codex parser, malformed/oversized input, UUID, machine-scope,
+  merge, and tombstone regressions; 38 frontend files / 578 tests; all six CTest targets outside the
+  Unix-socket sandbox; clean production UI/native package build; valid macOS signature; installed
+  `CFBundleShortVersionString` `4.8.0-alpha-2`.
+- Safety boundary: no provider inference was run, no remote files or provider state were changed, and
+  no homelab, Gemini, Claude, or Computer Use-over-remote action occurred. The only physical remote
+  operations were provider-owned read/list APIs through the already approved Windows helper.
+- Status: `COMPLETE` — remote OpenCode and Codex old chats can be refreshed, opened, persisted, and
+  restored through the Windows workspace UI.

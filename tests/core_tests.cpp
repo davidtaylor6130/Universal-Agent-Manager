@@ -5875,6 +5875,14 @@ UAM_TEST(NativeChatIdentityNamesWorkspacePoliciesExplicitly)
 
 	chat.provider_id.clear();
 	UAM_ASSERT_EQ(uam::chat_identity::NativeIdentityKeyForLocalDeduplication(chat), std::string("|workspace|native-1"));
+
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "gaming-ai";
+	chat.workspace_directory = R"(C:\Users\david\project)";
+	UAM_ASSERT_EQ(uam::chat_identity::NativeWorkspaceForHistoryImport(chat),
+	              std::string("remote:gaming-ai:C:/Users/david/project"));
+	UAM_ASSERT(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat).find(
+	               "remote:gaming-ai:") != std::string::npos);
 }
 
 UAM_TEST(ChatBranchingReparentsDeletedBranchChildren)
@@ -10079,7 +10087,7 @@ UAM_TEST(ControllerNativeHistoryCannotOverlayOrDropRemoteChats)
 #endif
 }
 
-UAM_TEST(DeletingRemoteChatsCannotTombstoneControllerNativeHistory)
+UAM_TEST(DeletingRemoteChatsTombstonesOnlyTheirMachineScopedIdentity)
 {
 	TempDir temp("uam-remote-native-tombstone-isolation");
 	ChatSession remote;
@@ -10091,9 +10099,232 @@ UAM_TEST(DeletingRemoteChatsCannotTombstoneControllerNativeHistory)
 	std::vector<std::string> added_keys;
 	UAM_ASSERT(ChatHistorySyncService().AddNativeImportTombstones(
 	    temp.root, {remote}, added_keys));
-	UAM_ASSERT(added_keys.empty());
-	UAM_ASSERT(!uam::paths::PathExistsNoThrow(
+	UAM_ASSERT_EQ(added_keys.size(), static_cast<std::size_t>(1));
+	ChatSession controller = remote;
+	controller.execution_host_id = "local";
+	UAM_ASSERT(added_keys.front() !=
+	           uam::chat_identity::NativeIdentityKeyForHistoryImport(controller));
+	UAM_ASSERT(uam::paths::PathExistsNoThrow(
 	    temp.root / "native-import-tombstones.json"));
+}
+
+UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-remote-opencode-history");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost remote_host;
+	remote_host.id = "gaming-ai";
+	remote_host.label = "Gaming AI Desktop";
+	remote_host.ssh_alias = "uam-windows-ai";
+	remote_host.transport = "ssh";
+	remote_host.runner_status = "ready";
+	remote_host.runner_version = "4.8.0-alpha-2";
+	remote_host.platform = "windows";
+	remote_host.architecture = "x86_64";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), remote_host};
+	ChatFolder folder;
+	folder.id = "remote-workspace";
+	folder.title = "Remote workspace";
+	folder.directory = R"(C:\Users\david\project)";
+	folder.execution_host_id = remote_host.id;
+	app.folders.push_back(folder);
+
+	const std::vector<ChatHistorySyncService::RemoteOpenCodeSession> sessions = {
+	    {"ses_remote_1", "Remote history", R"(c:\users\david\project\)",
+	     1787951665685, 1787952543219},
+	    {"ses_other", "Other workspace", R"(C:\Users\david\other)",
+	     1787951665685, 1787952543219},
+	};
+	const ChatHistorySyncService::ImportResult first =
+	    ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+	        app, folder.id, sessions);
+	UAM_ASSERT(first.success);
+	UAM_ASSERT_EQ(first.total_count, 1);
+	UAM_ASSERT_EQ(first.imported_count, 1);
+	std::vector<ChatSession> imported = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(imported.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(imported.front().provider_id, std::string(uam::provider_ids::kOpenCodeCli));
+	UAM_ASSERT_EQ(imported.front().execution_host_id, remote_host.id);
+	UAM_ASSERT_EQ(imported.front().workspace_directory, folder.directory);
+	UAM_ASSERT_EQ(imported.front().native_session_id, std::string("ses_remote_1"));
+	UAM_ASSERT_EQ(imported.front().title, std::string("Remote history"));
+	ChatHistorySyncService().MergeSidebarChatsPreservingCurrent(app);
+	const ChatSession* sidebar_import = ChatDomainService().FindChatById(
+	    app, imported.front().id);
+	UAM_ASSERT(sidebar_import != nullptr);
+	UAM_ASSERT_EQ(sidebar_import->native_session_id, std::string("ses_remote_1"));
+
+	const ChatHistorySyncService::ImportResult duplicate =
+	    ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+	        app, folder.id, sessions);
+	UAM_ASSERT_EQ(duplicate.imported_count, 0);
+
+	std::vector<std::string> tombstones;
+	UAM_ASSERT(ChatHistorySyncService().AddNativeImportTombstones(
+	    app.data_root, imported, tombstones));
+	UAM_ASSERT_EQ(tombstones.size(), static_cast<std::size_t>(1));
+	uam::paths::RemoveFileNoThrow(AppPaths::UamChatFilePath(
+	    app.data_root, imported.front().id));
+	const ChatHistorySyncService::ImportResult deleted =
+	    ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+	        app, folder.id, sessions);
+	UAM_ASSERT_EQ(deleted.imported_count, 0);
+	UAM_ASSERT(ChatRepository::LoadLocalChats(app.data_root).empty());
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeTranscriptParsesExportAndRejectsInvalidOrOversizedData)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const nlohmann::json exported = {
+	    {"info", {{"id", "ses_remote_1"}, {"directory", R"(C:\Users\david\project)"}}},
+	    {"messages", nlohmann::json::array({
+	         {{"info", {{"role", "user"},
+	                     {"time", {{"created", 1787951665685}}},
+	                     {"tokens", {{"input", 12}, {"output", 0}}}}},
+	          {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "Run the check"}}})}},
+	         {{"info", {{"role", "assistant"},
+	                     {"time", {{"created", 1787951666685}, {"completed", 1787951668185}}},
+	                     {"tokens", {{"input", 4}, {"output", 8}}},
+	                     {"cost", 0.25}}},
+	          {"parts", nlohmann::json::array({
+	                        {{"type", "reasoning"}, {"text", "Need the clock"}},
+	                        {{"type", "tool"},
+	                         {"callID", "call-date"},
+	                         {"tool", "bash"},
+	                         {"state", {{"status", "completed"},
+	                                    {"input", {{"command", "date"}}},
+	                                    {"output", "Saturday"}}}},
+	                        {{"type", "text"}, {"text", "It is Saturday"}},
+	                    })}},
+	     })},
+	};
+	const ChatHistorySyncService::RemoteOpenCodeTranscript parsed =
+	    ChatHistorySyncService::ParseRemoteOpenCodeTranscript(
+	        "Exporting session: ses_remote_1\n" + exported.dump() + "\n");
+	UAM_ASSERT(parsed.success);
+	UAM_ASSERT_EQ(parsed.session_id, std::string("ses_remote_1"));
+	UAM_ASSERT_EQ(parsed.directory, std::string(R"(C:\Users\david\project)"));
+	UAM_ASSERT_EQ(parsed.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(parsed.messages[0].role, MessageRole::User);
+	UAM_ASSERT_EQ(parsed.messages[0].content, std::string("Run the check"));
+	UAM_ASSERT_EQ(parsed.messages[0].tokens_input, 12);
+	UAM_ASSERT_EQ(parsed.messages[1].role, MessageRole::Assistant);
+	UAM_ASSERT_EQ(parsed.messages[1].content, std::string("It is Saturday"));
+	UAM_ASSERT_EQ(parsed.messages[1].thoughts, std::string("Need the clock"));
+	UAM_ASSERT_EQ(parsed.messages[1].processing_time_ms, 1500);
+	UAM_ASSERT_EQ(parsed.messages[1].blocks.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[0].type, std::string("thought"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[1].type, std::string("tool_call"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[2].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls[0].id, std::string("call-date"));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls[0].name, std::string("bash"));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls[0].result_text, std::string("Saturday"));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls[0].status, std::string("completed"));
+
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteOpenCodeTranscript("not json").success);
+	nlohmann::json oversized = {
+	    {"info", {{"id", "ses_remote_1"}, {"directory", "/workspace"}}},
+	    {"messages", nlohmann::json::array()},
+	};
+	for (int i = 0; i < 10001; ++i) oversized["messages"].push_back(nullptr);
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteOpenCodeTranscript(oversized.dump()).success);
+#endif
+}
+
+UAM_TEST(RemoteCodexMetadataParsesExactThreadsAndRejectsInvalidOrOversizedLists)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::string thread_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	const nlohmann::json result = {
+	    {"data", nlohmann::json::array({
+	         {{"id", thread_id}, {"cwd", R"(C:\Users\david\project)"},
+	          {"name", "Named thread"}, {"preview", "Preview"},
+	          {"createdAt", 1787951665}, {"updatedAt", 1787952543}},
+	         {{"id", "7b7f0f3b-1a0b-4a9c-8a01-222222222222"},
+	          {"cwd", R"(C:\Users\david\project)"}, {"preview", "Ephemeral"},
+	          {"createdAt", 1787951665}, {"updatedAt", 1787952543},
+	          {"ephemeral", true}},
+	     })},
+	};
+	std::vector<ChatHistorySyncService::RemoteCodexSession> sessions;
+	std::string error;
+	UAM_ASSERT(ChatHistorySyncService::AppendRemoteCodexSessions(
+	    result, sessions, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(sessions.front().id, thread_id);
+	UAM_ASSERT_EQ(sessions.front().title, std::string("Named thread"));
+	UAM_ASSERT_EQ(sessions.front().directory, std::string(R"(C:\Users\david\project)"));
+	UAM_ASSERT_EQ(sessions.front().created_epoch_seconds, std::int64_t{1787951665});
+	UAM_ASSERT_EQ(sessions.front().updated_epoch_seconds, std::int64_t{1787952543});
+
+	const nlohmann::json invalid = {
+	    {"data", nlohmann::json::array({
+	         {{"id", "not-a-thread-id"}, {"cwd", "/workspace"},
+	          {"preview", "Invalid"}, {"createdAt", 1}, {"updatedAt", 2}},
+	     })},
+	};
+	UAM_ASSERT(!ChatHistorySyncService::AppendRemoteCodexSessions(
+	    invalid, sessions, &error));
+	UAM_ASSERT(!error.empty());
+	nlohmann::json oversized = {{"data", nlohmann::json::array()}};
+	for (int i = 0; i < 201; ++i) oversized["data"].push_back(nullptr);
+	std::vector<ChatHistorySyncService::RemoteCodexSession> empty;
+	UAM_ASSERT(!ChatHistorySyncService::AppendRemoteCodexSessions(
+	    oversized, empty, &error));
+#endif
+}
+
+UAM_TEST(RemoteCodexTranscriptMapsMessagesAndRejectsMalformedOrOversizedHistory)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::string thread_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	const nlohmann::json result = {
+	    {"thread", {{"id", thread_id}, {"cwd", R"(C:\Users\david\project)"},
+	                {"turns", nlohmann::json::array({
+	                     {{"items", nlohmann::json::array({
+	                          {{"type", "userMessage"},
+	                           {"content", nlohmann::json::array({
+	                                {{"type", "text"}, {"text", "Review the service"}},
+	                            })}},
+	                          {{"type", "userMessage"},
+	                           {"content", nlohmann::json::array({
+	                                {{"type", "text"},
+	                                 {"text", "<environment_context>synthetic</environment_context>"}},
+	                            })}},
+	                          {{"type", "agentMessage"}, {"text", "Review complete"}},
+	                      })}},
+	                 })}}},
+	};
+	const ChatHistorySyncService::RemoteCodexTranscript parsed =
+	    ChatHistorySyncService::ParseRemoteCodexTranscript(result);
+	UAM_ASSERT(parsed.success);
+	UAM_ASSERT_EQ(parsed.session_id, thread_id);
+	UAM_ASSERT_EQ(parsed.directory, std::string(R"(C:\Users\david\project)"));
+	UAM_ASSERT_EQ(parsed.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(parsed.messages[0].role, MessageRole::User);
+	UAM_ASSERT_EQ(parsed.messages[0].content, std::string("Review the service"));
+	UAM_ASSERT_EQ(parsed.messages[0].provider, std::string(uam::provider_ids::kCodexCli));
+	UAM_ASSERT_EQ(parsed.messages[1].role, MessageRole::Assistant);
+	UAM_ASSERT_EQ(parsed.messages[1].content, std::string("Review complete"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[0].type, std::string("assistant_text"));
+
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteCodexTranscript(
+	    nlohmann::json{{"thread", nullptr}}).success);
+	nlohmann::json oversized = {
+	    {"thread", {{"id", thread_id}, {"cwd", "/workspace"},
+	                {"turns", nlohmann::json::array()}}},
+	};
+	for (int i = 0; i < 10001; ++i)
+		oversized["thread"]["turns"].push_back(nullptr);
+	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteCodexTranscript(oversized).success);
+#endif
 }
 
 UAM_TEST(ForgetResolvedNativeSessionForChatClearsProviderSwitchResidualMapping)
