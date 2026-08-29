@@ -1515,3 +1515,21 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `IN_PROGRESS` — no new product-code defect remained after the earlier shared ownership fix;
   this was isolated profile naming ambiguity. The physical Homelab discovery gate still requires
   separate exact-command approval.
+
+## 2026-08-29 — Remote discovery wire contract proven promptless
+
+- Re-audited the pre-chat discovery route before permitting any physical Homelab connection. An
+  ephemeral discovery chat has no messages, memory, Computer Use, command safety, or workspace MCP
+  servers. It starts the selected target provider only long enough to initialize ACP and create a
+  session, caches its returned model/config catalog under the execution-host/workspace scope, then
+  removes both the process state and ephemeral chat.
+- Strengthened the fake-SSH end-to-end regression to record every JSON-RPC request received by the
+  target-side OpenCode fixture. The complete wire sequence is now asserted to be exactly two
+  requests in order: `initialize`, then `session/new`. Any prompt, tool, MCP, configuration mutation,
+  or extra request fails the test.
+- Verification passed: rebuilt the test app and signed nested Computer Use helper; promptless remote
+  discovery; remote Computer Use fail-closed before provider launch/input; remote UAM-control shim
+  isolation; and ephemeral discovery cleanup.
+- Status: `IN_PROGRESS` — local proof is complete. The next step remains the separately approved
+  physical Homelab OpenCode discovery using the isolated acceptance bundle; no physical connection
+  was made during this audit.

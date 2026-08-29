@@ -283,10 +283,12 @@ UAM_TEST(RemoteModelDiscoveryUsesTheSelectedRunnerAndCachesOnlyItsCatalog)
 	        .parent_path() / "uam-runner";
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path opencode = temp.root / "opencode";
+	const fs::path request_log = temp.root / "discovery-requests.ndjson";
 	UAM_ASSERT(uam::io::WriteTextFile(
 	    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
 while IFS= read -r line; do
+	printf '%s\n' "$line" >> "$UAM_TEST_DISCOVERY_LOG"
   case "$line" in
     *'"method":"initialize"'*)
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"remote-model-test","title":"Remote Model Test","version":"1"},"agentCapabilities":{"loadSession":true}}}'
@@ -305,6 +307,7 @@ done
 	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
 	ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
 	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+	ScopedEnvVar discovery_log("UAM_TEST_DISCOVERY_LOG", request_log.string());
 
 	uam::AppState app;
 	app.data_root = temp.root / "data";
@@ -352,6 +355,15 @@ done
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT(app.model_discovery_chats.empty());
+	std::istringstream request_stream(uam::io::ReadTextFile(request_log));
+	std::vector<std::string> request_methods;
+	for (std::string line; std::getline(request_stream, line);)
+	{
+		request_methods.push_back(nlohmann::json::parse(line).value("method", ""));
+	}
+	UAM_ASSERT_EQ(request_methods.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(request_methods[0], std::string("initialize"));
+	UAM_ASSERT_EQ(request_methods[1], std::string("session/new"));
 }
 
 UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
