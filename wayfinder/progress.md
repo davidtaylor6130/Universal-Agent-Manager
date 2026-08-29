@@ -1579,3 +1579,62 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `IN_PROGRESS` — the defect is fixed and verified locally. The consumed physical approval
   does not authorize a retry; any further Homelab connection requires a new, separately written,
   exact-command approval.
+
+## 2026-08-29 — Corrected physical Homelab pre-chat discovery acceptance PASS
+
+- After fresh approval of the exact corrected action, launched only the uniquely identified
+  repository bundle with `/private/tmp/uam-remote-discovery.VdZNbJ`. Computer Use visibly confirmed
+  `Homelab Main PC`, `/home/davidtaylor613/uam-acceptance-linux-20260828`, and `OpenCode` before the
+  explicit **Discover remote models** action. Gemini and Claude were not selected or launched.
+- The real diagnostic trace matched the asserted wire contract exactly: a new
+  `model-discovery-ba1e4aa4-f582-4074-9471-84baba523bc3` with empty native session id started
+  `opencode acp`, then sent only ACP `initialize` and `session/new`. No `session/resume`, mode/model
+  mutation, prompt, inference, tool, UAM Control, MCP workspace server, or Computer Use request ran.
+- OpenCode 1.17.20 returned the Homelab-owned configuration. The New Chat model menu visibly showed
+  the target's OpenCode free choices, while the persisted cache is scoped to `opencode-cli`,
+  `ssh-uam-homelab`, and the exact Linux workspace. It records the target current model
+  `inferdeck/qwen3.8-27b` and 16 model choices; no controller-side fallback catalog was substituted.
+- Teardown passed: no further ACP request appeared after `session/new`; local proxy pid 79186 was
+  absent; no `model-discovery-*` chat or summary file exists; and the isolated app was closed. The
+  only isolated local files changed were the expected provider catalog plus ordinary CEF browser
+  state. The approved action did not request a remote workspace or tool operation; OpenCode may have
+  retained its normal provider-session metadata as disclosed before approval.
+- Re-ran the focused discovery, ephemeral cleanup, remote Computer Use fail-closed, bounded runner,
+  explicit-stop, and bridge concurrency checks. The concurrency test hit the known Unix-socket
+  sandbox restriction once and passed unchanged outside it. Final native CTest passed 6/6 in 42.57
+  seconds; the post-fix frontend suite remains 38 files / 568 tests; production build and unique app
+  signature remain verified.
+
+## 2026-08-29 — Full Computer Use and SSH-bridged remote-helper goal completion audit PASS
+
+- **Isolation:** current branch is `codex/computer-use-remote-helper`; no remote branch exists for
+  it and no push occurred. The Applications copy at
+  `/Users/davidtaylormacbookpro/Applications/universal_agent_manager.app` retains its 2026-08-21
+  modification time. GitHub PR #337 is still a draft on `codex/release-v4.5.7`. Global UAM data and
+  the owner's unrelated untracked files were not modified by this branch workflow.
+- **UAM-owned local Computer Use:** direct helper MCP acceptance proved the exact two-tool surface,
+  bounded observations, stale-frame rejection, target-specific grant, non-duplicated input,
+  pause/resume/stop, redacted history, and clean exit. Independent OpenCode/MiMo acceptance through
+  the UAM frontend proved provider-requested use of UAM's own helper; Qwen failures were separately
+  traced to the user's local InferDeck/OpenCode registration and not counted as UAM acceptance.
+- **Remote architecture:** the released shape is the approved SSH bridge to a versioned headless UAM
+  runner, with authenticated bounded typed requests, target-native paths, disconnected output spool,
+  explicit stop, reconnect, concurrent sessions, terminal fallback, file attachments, and portable
+  UAM Control. Linux x86-64/ARM64 and Windows x86-64 artifacts are packaged and checksum-gated.
+- **Physical targets:** Windows 11 Pro acceptance covers helper installation, native OpenCode model
+  catalog, parent/branch chats, attachment transfer, concurrent approvals, restart/native resume,
+  terminal retry, helper outage/reconnect, and remote Computer Use rejection. Ubuntu 24.04 x86-64
+  acceptance covers installation, transport, structured OpenCode execution, permission-mediated
+  `date` tool output, workspace identity, target-owned pre-chat model discovery, and teardown.
+- **Safety and data model:** remote Computer Use is absent from the runner protocol and fails closed
+  before provider launch or input; the GUI disables it explicitly. A workspace is one directory on
+  one machine; folder repair, branch inheritance, history isolation, model caches, attachments, and
+  controller-local actions all preserve or validate that authority. Remote paths cannot collide with
+  Mac paths to trigger local memory, VCS, history, shell, discovery, or filesystem behavior.
+- **Verification:** final source evidence is local commit `852bd020` atop the complete Computer Use
+  and remote-helper series. Frontend 568/568, native CTest 6/6, production packaging, nested helper
+  signing, final deep/strict signature verification, physical macOS/Windows/Ubuntu journeys, and the
+  corrected promptless Homelab discovery all pass. No required implementation or acceptance gate
+  remains for this goal.
+- Status: `COMPLETE` — the branch is ready for the owner's review and remains deliberately separate
+  from the draft release PR and installed working application.
