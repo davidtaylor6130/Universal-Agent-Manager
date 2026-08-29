@@ -1498,3 +1498,20 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   the target-owned model/config catalog, and stop. It sends no prompt, performs no inference or tool
   call, writes no workspace file, and does not touch Docker, Compose, `/opt/containers`, packages, or
   services. This action still requires separate written approval before execution.
+
+## 2026-08-29 — Ambiguous Homelab/NAS machine label corrected
+
+- Investigated the reported workspace tooltip before changing code. The persisted Linux workspace
+  has exactly one owner, `ssh-uam-homelab`; no NAS host id appears in its folder or chat authority.
+  The apparent two-machine association came from that single host's saved display label,
+  `Homelab NAS`.
+- Renamed the host to `Homelab Main PC` in both repository-only isolated acceptance data roots and
+  their recovery copies. The SSH alias, helper configuration, workspace owner, and remote machine
+  were not changed. No SSH connection or remote command was used.
+- Re-ran the rendered FolderTree suite (35/35) plus the native mixed-machine migration and remote
+  recovery regressions. They prove that a folder badge is derived only from its folder-owned host,
+  child chat state cannot redefine it, and identical path strings on different machines remain
+  separate workspaces.
+- Status: `IN_PROGRESS` — no new product-code defect remained after the earlier shared ownership fix;
+  this was isolated profile naming ambiguity. The physical Homelab discovery gate still requires
+  separate exact-command approval.
