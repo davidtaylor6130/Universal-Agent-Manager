@@ -184,10 +184,14 @@ function CompactWorkingSummary({
 }) {
   const [open, setOpen] = useState(active)
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
+  const lastToolEvent = events.slice().reverse().find((event) => event.type === 'tool_call')
+  const lastTool = lastToolEvent?.type === 'tool_call' ? toolById.get(lastToolEvent.toolCallId) : undefined
   const lastTextUpdate = events.slice().reverse().find(
     (event) => (event.type === 'thought' || event.type === 'assistant_text') && event.text.trim()
   )
-  const lastUpdate = lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
+  const lastUpdate = lastTool
+    ? `${lastTool.title || lastTool.id} · ${lastTool.status || 'pending'}`
+    : lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
     ? lastNonEmptyLine(lastTextUpdate.text) || 'Reasoning completed'
     : tools.length > 0
       ? `${active ? 'Using' : 'Used'} a tool`

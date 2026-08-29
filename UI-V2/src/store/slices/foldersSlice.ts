@@ -58,6 +58,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
               name: resp.data!.title,
               parentId: null,
               directory: resp.data!.directory ?? '',
+              executionHostId: resp.data!.executionHostId || 'local',
               isExpanded: !resp.data!.collapsed,
               createdAt: new Date(),
             }
@@ -76,6 +77,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         name,
         parentId: null,
         directory,
+        executionHostId: 'local',
         isExpanded: true,
         createdAt: new Date(),
       }

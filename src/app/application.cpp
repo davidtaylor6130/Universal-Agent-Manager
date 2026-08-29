@@ -516,7 +516,6 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, bundled_skills_ready ? configured_skills_root : fs::path{});
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
@@ -524,6 +523,8 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	uam::MigrateWorkspaceFolderOwnership(m_app);
+	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	if (const std::size_t paused_goals = uam::GoalService::PauseActiveGoalsAfterRestart(m_app);
 	    paused_goals > 0)
 	{

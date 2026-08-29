@@ -51,23 +51,24 @@ class ProviderModelCatalogService
 	nlohmann::json GetCachedCodexModels() const;
 
 	/// Persist a provider's latest successful runtime model discovery without replacing a valid cache on empty results.
-	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array());
+	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array(), std::string_view execution_host_id = "local");
 
 	/// Record a refresh failure while retaining the last successful provider cache.
-	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {});
+	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 
 	/// Return the isolated persistent cache for the provider's current configuration.
-	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}) const;
-	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}) const;
-	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}) const;
+	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	nlohmann::json GetCatalogScopes() const;
 	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
-	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {});
+	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	/// Start a user-requested discovery even when the cache is fresh.
-	bool BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory = {});
-	bool BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory = {});
-	bool IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory = {}) const;
-	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {});
-	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {});
+	bool BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	bool BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	bool IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 
 	/// Merge fallback models with runtime models (same logic as before).
 	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
@@ -101,6 +102,7 @@ class ProviderModelCatalogService
 	nlohmann::json m_persistent_catalogs;
 	std::map<std::string, std::string> m_catalog_key_by_provider_id;
 	std::map<std::string, std::string> m_refresh_error_by_provider_id;
+	std::map<std::string, nlohmann::json> m_scope_by_catalog_key;
 	std::set<std::string> m_pending_discovery_provider_ids;
 	std::set<std::string> m_refresh_attempted_provider_ids;
 
@@ -133,7 +135,7 @@ class ProviderModelCatalogService
 	nlohmann::json ReadConfiguredOpenCodeModels();
 	std::string ReadConfiguredOpenCodeDefaultModel();
 	nlohmann::json ReadCachedCodexModels();
-	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}) const;
+	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	void LoadPersistentCatalogs();
 	bool WritePersistentCatalogs() const;
 

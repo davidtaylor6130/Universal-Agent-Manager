@@ -249,7 +249,7 @@ export interface AppState {
   sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
   removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
   steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
-  discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string) => Promise<boolean>
+  discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>

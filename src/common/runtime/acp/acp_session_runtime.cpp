@@ -249,7 +249,8 @@ namespace uam
 				session.codex_thread_id.clear();
 				if (app.provider_model_catalog != nullptr)
 				{
-					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, message, AcpWorkspaceDirectory(app, chat));
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, message,
+					    AcpWorkspaceDirectory(app, chat), chat.execution_host_id);
 				}
 			}
 			else
@@ -1099,7 +1100,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 					{
 						models.push_back({{"id", model.id}, {"name", model.name}, {"description", model.description}, {"defaultReasoningEffort", model.default_reasoning_effort}, {"supportedReasoningEfforts", model.supported_reasoning_efforts}, {"additionalSpeedTiers", model.additional_speed_tiers}});
 					}
-					(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, models, AcpWorkspaceDirectory(app, *chat));
+					(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
+					    models, AcpWorkspaceDirectory(app, *chat), nlohmann::json::array(),
+					    chat->execution_host_id);
 				}
 				return true;
 			}
@@ -1120,7 +1123,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
-	bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, std::string* error_out)
+	bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id,
+		const std::string& workspace_directory, const std::string& execution_host_id,
+		std::string* error_out)
 	{
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 		const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id);
@@ -1141,6 +1146,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		chat.provider_id = provider->id;
 		chat.title = "Provider model discovery";
 		chat.workspace_directory = workspace;
+		chat.execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
 		chat.approval_mode = "default";
 		chat.command_safety_tier = "off";
 		chat.memory_enabled = false;
@@ -1157,19 +1164,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return false;
 	}
 
-	bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& blocked_reason)
+	bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id,
+		const std::string& provider_id, const std::string& workspace_directory,
+		const std::string& execution_host_id, const std::string& blocked_reason)
 	{
+		if (!uam::strings::IsBlank(execution_host_id) &&
+		    execution_host_id != uam::execution_hosts::kLocalHostId) return false;
 		if (!IsModelDiscoveryCompatibilityCheckPending(app, provider_id) || app.provider_model_catalog == nullptr) return false;
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 		const std::string workspace = uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(workspace_directory)).generic_string();
-		const auto existing = std::ranges::find_if(app.pending_model_discovery_retries, [&normalized_provider_id, &workspace](const PendingModelDiscoveryRetry& retry) {
-			return retry.provider_id == normalized_provider_id && retry.workspace_directory == workspace;
+		const std::string host = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
+		const auto existing = std::ranges::find_if(app.pending_model_discovery_retries, [&normalized_provider_id, &workspace, &host](const PendingModelDiscoveryRetry& retry) {
+			return retry.provider_id == normalized_provider_id && retry.workspace_directory == workspace &&
+			       retry.execution_host_id == host;
 		});
 		if (existing == app.pending_model_discovery_retries.end())
 		{
-			app.pending_model_discovery_retries.push_back({chat_id, normalized_provider_id, workspace});
+			app.pending_model_discovery_retries.push_back({chat_id, normalized_provider_id, workspace, host});
 		}
-		app.provider_model_catalog->RememberDiscoveryCompatibilityBlocked(normalized_provider_id, uam::strings::NonEmptyOrFallback(blocked_reason, "Waiting for provider compatibility check."), workspace);
+		app.provider_model_catalog->RememberDiscoveryCompatibilityBlocked(normalized_provider_id, uam::strings::NonEmptyOrFallback(blocked_reason, "Waiting for provider compatibility check."), workspace, host);
 		return true;
 	}
 
@@ -1195,16 +1209,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else
 				{
-					started = StartEphemeralAcpModelDiscovery(app, retry->provider_id, retry->workspace_directory, &launch_error);
+					started = StartEphemeralAcpModelDiscovery(app, retry->provider_id,
+					    retry->workspace_directory, retry->execution_host_id, &launch_error);
 				}
 			}
 			if (started)
 			{
-				app.provider_model_catalog->MarkDiscoveryLaunchStarted(retry->provider_id, retry->workspace_directory);
+				app.provider_model_catalog->MarkDiscoveryLaunchStarted(retry->provider_id,
+				    retry->workspace_directory, retry->execution_host_id);
 			}
 			else
 			{
-				app.provider_model_catalog->RememberRefreshFailure(retry->provider_id, uam::strings::NonEmptyOrFallback(compatibility_error, uam::strings::NonEmptyOrFallback(launch_error, "Provider model discovery retry failed.")), retry->workspace_directory);
+				app.provider_model_catalog->RememberRefreshFailure(retry->provider_id,
+				    uam::strings::NonEmptyOrFallback(compatibility_error,
+				        uam::strings::NonEmptyOrFallback(launch_error,
+				            "Provider model discovery retry failed.")),
+				    retry->workspace_directory, retry->execution_host_id);
 			}
 			retry = app.pending_model_discovery_retries.erase(retry);
 			changed = true;
@@ -2031,7 +2051,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.codex_thread_id.clear();
 					if (app.provider_model_catalog != nullptr)
 					{
-						app.provider_model_catalog->RememberRefreshFailure(session.provider_id, std::string(RuntimeDisplayName(session)) + " exited before model discovery completed.", AcpWorkspaceDirectory(app, chat));
+						app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
+						    std::string(RuntimeDisplayName(session)) +
+						        " exited before model discovery completed.",
+						    AcpWorkspaceDirectory(app, chat), chat.execution_host_id);
 					}
 					changed = true;
 					continue;

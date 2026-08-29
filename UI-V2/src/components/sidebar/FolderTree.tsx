@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server, Network } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -483,11 +483,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }
 
   const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => {
-    const hostIds = [...new Set(sessionIds.map((id) => sessionsById.get(id)?.executionHostId || 'local'))]
-    const machineKind = hostIds.length > 1 ? 'mixed' : hostIds[0] === 'local' || hostIds.length === 0 ? 'local' : 'remote'
-    const machineLabel = hostIds.length > 1
-      ? `Runs on ${hostIds.map((id) => executionHosts.find((host) => host.id === id)?.label || id).join(', ')}`
-      : `Runs on ${executionHosts.find((host) => host.id === (hostIds[0] || 'local'))?.label || 'This computer'}`
+    const hostId = folder.executionHostId || 'local'
+    const machineKind = hostId === 'local' ? 'local' : 'remote'
+    const machineLabel = `Runs on ${executionHosts.find((host) => host.id === hostId)?.label || hostId}`
     return <FolderRow
       key={folder.id}
       folder={folder}
@@ -1370,7 +1368,7 @@ function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; lab
 
 interface FolderRowProps {
   folder: Folder
-  machineKind: 'local' | 'remote' | 'mixed'
+  machineKind: 'local' | 'remote'
   machineLabel: string
   sessionIds: string[]
   shouldShowSessions: boolean
@@ -1533,11 +1531,9 @@ const FolderRow = memo(function FolderRow({
         </span>
         <Tooltip label={machineLabel}>
           <span data-testid={`workspace-machine-${folder.id}`} role="img" aria-label={machineLabel} className="inline-flex shrink-0 items-center justify-center" style={{ width: 16, height: 16, color: 'var(--text-3)', fontSize: 13 }}>
-            {machineKind === 'mixed'
-              ? <Network size={13} aria-hidden />
-              : machineKind === 'remote'
-                ? <Server size={13} aria-hidden />
-                : <Monitor size={13} aria-hidden />}
+            {machineKind === 'remote'
+              ? <Server size={13} aria-hidden />
+              : <Monitor size={13} aria-hidden />}
           </span>
         </Tooltip>
         {folder.missing && (
@@ -1605,7 +1601,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />
+          {machineKind === 'local' && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </ViewportMenu>
@@ -1640,6 +1636,7 @@ const FolderRow = memo(function FolderRow({
             <input
               value={editFolderDirectory}
               onChange={(e) => onEditDirectoryChange(e.target.value)}
+			  readOnly={machineKind === 'remote'}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') onCommitRename()
                 if (e.key === 'Escape') onCancelEdit()
@@ -1653,13 +1650,9 @@ const FolderRow = memo(function FolderRow({
                 fontFamily: 'inherit',
               }}
             />
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onChooseDirectory}
-            >
-              Browse
-            </Button>
+			{machineKind === 'local' && <Button variant="secondary" size="sm" onClick={onChooseDirectory}>
+			  Browse
+			</Button>}
           </div>
           <div className="flex items-center justify-end gap-2">
             <Button

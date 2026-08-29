@@ -11,6 +11,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -25,6 +26,25 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace
+{
+	std::string WorkspaceTitle(std::string_view directory)
+	{
+		std::string value(uam::strings::TrimAsciiView(directory));
+		while (value.size() > 1 && (value.back() == '/' || value.back() == '\\')) value.pop_back();
+		const std::size_t separator = value.find_last_of("/\\");
+		return uam::strings::NonEmptyOrFallback(
+		    separator == std::string::npos ? value : value.substr(separator + 1), "Workspace");
+	}
+
+	bool WorkspaceMatches(const ExecutionHost& host, std::string_view lhs, std::string_view rhs)
+	{
+		return host.id == uam::execution_hosts::kLocalHostId
+		    ? FolderDirectoryMatches(uam::paths::PathFromUtf8(lhs), uam::paths::PathFromUtf8(rhs))
+		    : uam::execution_hosts::RemotePathsMatch(host.platform, lhs, rhs);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Chat lifecycle handlers (session CRUD + select)
@@ -179,18 +199,11 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+	std::string requested_workspace = uam::strings::Trim(payload.value("workspaceDirectory", ""));
+	std::string auto_created_folder_id;
 
 	std::string target_folder_id;
-	if (execution_host->id == uam::execution_hosts::kLocalHostId)
-	{
-		target_folder_id = uam::query_handler_internal::ResolveRequestedNewChatFolderId(m_app, requested_folder_id);
-		if (target_folder_id.empty())
-		{
-			cb->Failure(400, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "A workspace folder is required to create a chat."));
-			return;
-		}
-	}
-	else if (!requested_folder_id.empty())
+	if (!requested_folder_id.empty())
 	{
 		const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, requested_folder_id);
 		if (folder == nullptr)
@@ -198,7 +211,47 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 			cb->Failure(400, "The selected workspace folder no longer exists.");
 			return;
 		}
+		const std::string folder_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(folder->execution_host_id), "local");
+		if (folder_host_id != execution_host->id)
+		{
+			cb->Failure(400, "The selected workspace belongs to a different computer.");
+			return;
+		}
+		if (!requested_workspace.empty() &&
+		    !WorkspaceMatches(*execution_host, folder->directory, requested_workspace))
+		{
+			cb->Failure(400, "The workspace path does not match the selected workspace.");
+			return;
+		}
 		target_folder_id = folder->id;
+		requested_workspace = folder->directory;
+	}
+	else if (execution_host->id == uam::execution_hosts::kLocalHostId)
+	{
+		cb->Failure(400, "A workspace folder is required to create a local chat.");
+		return;
+	}
+	else
+	{
+		if (!uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform, requested_workspace))
+		{
+			cb->Failure(400, "An absolute remote workspace path is required.");
+			return;
+		}
+		const auto existing = std::ranges::find_if(m_app.folders, [&](const ChatFolder& folder) {
+			return uam::strings::NonEmptyOrFallback(folder.execution_host_id, "local") == execution_host->id &&
+			       WorkspaceMatches(*execution_host, folder.directory, requested_workspace);
+		});
+		if (existing != m_app.folders.end()) target_folder_id = existing->id;
+		else if (!CreateFolder(m_app, WorkspaceTitle(requested_workspace), requested_workspace,
+		                       &auto_created_folder_id, execution_host->id))
+		{
+			cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(
+			    m_app.status_line, "Failed to create the remote workspace."));
+			return;
+		}
+		else target_folder_id = auto_created_folder_id;
 	}
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
@@ -213,13 +266,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	}
 	else
 	{
-		chat.workspace_directory = uam::strings::Trim(payload.value("workspaceDirectory", ""));
-		if (!uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
-		                                               chat.workspace_directory))
-		{
-			cb->Failure(400, "An absolute remote workspace path is required.");
-			return;
-		}
+		chat.workspace_directory = requested_workspace;
 	}
 	const nlohmann::json* payload_defaults = uam::nlohmann_json::FindObjectField(payload, "defaults");
 	uam::query_handler_internal::ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
@@ -233,15 +280,21 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	ChatHistorySyncService sync;
 	if (!sync.SaveChatWithStatus(m_app, created_chat, "", ""))
 	{
+		const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
+		    m_app.status_line, "Failed to persist new chat.");
 		uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, false);
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to persist new chat."));
+		if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
+		cb->Failure(500, failure);
 		return;
 	}
 
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
+		const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
+		    m_app.status_line, "Failed to persist new chat settings.");
 		uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, true);
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to persist new chat settings."));
+		if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
+		cb->Failure(500, failure);
 		return;
 	}
 

@@ -11187,6 +11187,7 @@ UAM_TEST(ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback)
 	folder.title = "Project=Alpha";
 	folder.directory = "workspace\none";
 	folder.collapsed = true;
+	folder.execution_host_id = "ssh-lab";
 
 	UAM_ASSERT(ChatFolderStore::Save(temp.root, {folder}));
 
@@ -11196,6 +11197,7 @@ UAM_TEST(ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback)
 	UAM_ASSERT_EQ(loaded.front().title, folder.title);
 	UAM_ASSERT_EQ(loaded.front().directory, folder.directory);
 	UAM_ASSERT(loaded.front().collapsed);
+	UAM_ASSERT_EQ(loaded.front().execution_host_id, folder.execution_host_id);
 
 	const std::string saved_folder_text = ReadFile(temp.root / "folders.txt");
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "folders.txt", "not-a-folder-entry\n"));
@@ -11217,6 +11219,68 @@ UAM_TEST(ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback)
 	UAM_ASSERT_EQ(crlf_loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(crlf_loaded.front().id, std::string("folder-two"));
 	UAM_ASSERT(crlf_loaded.front().collapsed);
+}
+
+UAM_TEST(MixedMachineWorkspaceMigrationSplitsChatsWithoutChangingTheirAuthority)
+{
+	TempDir temp("uam-workspace-host-migration");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles.push_back(ProviderProfileStore::DefaultOpenCodeProfile());
+	app.settings.execution_hosts = {
+	    uam::execution_hosts::LocalHost(),
+	    {"windows", "Windows", "ssh", "windows", "ready", "4.5.7", "windows", "x86_64", "", ""},
+	    {"homelab", "Homelab", "ssh", "homelab", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	};
+	app.folders.push_back({"mixed", "Legacy mixed workspace", "C:\\Work\\Project", false, ""});
+
+	const auto add_chat = [&](std::string id, std::string host, std::string directory) {
+		ChatSession chat;
+		chat.id = std::move(id);
+		chat.title = chat.id;
+		chat.provider_id = "opencode-cli";
+		chat.folder_id = "mixed";
+		chat.execution_host_id = std::move(host);
+		chat.workspace_directory = std::move(directory);
+		chat.messages.push_back(Message{MessageRole::User, "preserve me"});
+		chat.messages_loaded = true;
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		app.chats.push_back(std::move(chat));
+	};
+	add_chat("windows-1", "windows", "C:\\Work\\Project");
+	add_chat("windows-2", "windows", "c:/work/project/");
+	add_chat("windows-3", "windows", "C:/WORK/PROJECT");
+	add_chat("homelab-1", "homelab", "/opt/containers/project");
+	add_chat("local-1", "local", temp.root.string());
+
+	UAM_ASSERT(uam::MigrateWorkspaceFolderOwnership(app));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(3));
+	const ChatFolder* original = ChatDomainService().FindFolderById(app, "mixed");
+	UAM_ASSERT(original != nullptr);
+	UAM_ASSERT_EQ(original->execution_host_id, std::string("windows"));
+	UAM_ASSERT(uam::execution_hosts::RemotePathsMatch("windows", original->directory,
+	                                                  "C:\\Work\\Project"));
+
+	for (const ChatFolder& folder : app.folders)
+	{
+		for (const ChatSession& chat : app.chats)
+		{
+			if (chat.folder_id != folder.id) continue;
+			UAM_ASSERT_EQ(chat.execution_host_id,
+			              uam::strings::NonEmptyOrFallback(folder.execution_host_id, "local"));
+		}
+	}
+	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(persisted.size(), app.chats.size());
+	for (const ChatSession& chat : persisted)
+	{
+		UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(chat.messages.front().content, std::string("preserve me"));
+	}
+	const std::vector<ChatFolder> persisted_folders = ChatFolderStore::Load(temp.root);
+	UAM_ASSERT_EQ(persisted_folders.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(uam::MigrateWorkspaceFolderOwnership(app));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(3));
 }
 
 UAM_TEST(RemoveChatByIdTrimsRequestedChatId)

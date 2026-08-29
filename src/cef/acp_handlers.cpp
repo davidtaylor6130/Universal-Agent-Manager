@@ -503,10 +503,14 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 
 	std::string provider_id;
 	std::string workspace_directory;
+	std::string execution_host_id = std::string(uam::execution_hosts::kLocalHostId);
 	if (chat != nullptr)
 	{
 		provider_id = chat->provider_id;
 		workspace_directory = uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string();
+		execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(chat->execution_host_id),
+		    std::string(uam::execution_hosts::kLocalHostId));
 	}
 	else
 	{
@@ -517,54 +521,96 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 			cb->Failure(400, "A valid structured provider is required for model discovery.");
 			return;
 		}
+		execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(payload.value("executionHostId", "local")),
+		    std::string(uam::execution_hosts::kLocalHostId));
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(
+		    m_app.settings.execution_hosts, execution_host_id);
+		if (execution_host == nullptr)
+		{
+			cb->Failure(400, "The selected execution host no longer exists.");
+			return;
+		}
 		const std::string requested_workspace_text = uam::strings::Trim(payload.value("workspaceDirectory", ""));
 		if (requested_workspace_text.empty())
 		{
 			cb->Failure(400, "Model discovery requires a configured workspace folder.");
 			return;
 		}
-		const std::filesystem::path requested_workspace = uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(requested_workspace_text)));
-		const auto matching_folder = std::ranges::find_if(m_app.folders, [&requested_workspace](const ChatFolder& folder) {
-			const std::filesystem::path folder_workspace = uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory)));
-			return !requested_workspace.empty() && folder_workspace == requested_workspace;
-		});
-		if (matching_folder == m_app.folders.end())
+		if (execution_host->id != uam::execution_hosts::kLocalHostId)
 		{
-			cb->Failure(400, "Model discovery requires a configured workspace folder.");
-			return;
+			if (execution_host->runner_status != "ready")
+			{
+				cb->Failure(409, "The selected remote runner is not ready.");
+				return;
+			}
+			if (!uam::execution_hosts::IsAbsoluteRemotePath(
+			        execution_host->platform, requested_workspace_text))
+			{
+				cb->Failure(400, "Model discovery requires an absolute remote workspace path.");
+				return;
+			}
+			workspace_directory = requested_workspace_text;
 		}
-		workspace_directory = requested_workspace.generic_string();
+		else
+		{
+			const std::filesystem::path requested_workspace =
+			    uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(
+			        PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+			            requested_workspace_text)));
+			const auto matching_folder = std::ranges::find_if(
+			    m_app.folders, [&requested_workspace](const ChatFolder& folder) {
+				    const std::filesystem::path folder_workspace =
+				        uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(
+				            PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+				                folder.directory)));
+				    return !requested_workspace.empty() && folder_workspace == requested_workspace;
+			    });
+			if (matching_folder == m_app.folders.end())
+			{
+				cb->Failure(400, "Model discovery requires a configured workspace folder.");
+				return;
+			}
+			workspace_directory = requested_workspace.generic_string();
+		}
 	}
 	if (m_app.provider_model_catalog == nullptr)
 	{
 		cb->Failure(500, "Provider model catalog is unavailable.");
 		return;
 	}
-	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory);
+	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(
+	    provider_id, workspace_directory, execution_host_id);
 	if (!should_start)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory)}}.dump());
+		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id)}}.dump());
 		return;
 	}
 	std::string error;
 	const bool started = chat != nullptr
 	    ? uam::StartAcpModelDiscovery(m_app, chat->id, &error)
-	    : uam::StartEphemeralAcpModelDiscovery(m_app, provider_id, workspace_directory, &error);
+	    : uam::StartEphemeralAcpModelDiscovery(
+	          m_app, provider_id, workspace_directory, execution_host_id, &error);
 	if (!started)
 	{
-		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(m_app, chat == nullptr ? std::string{} : chat->id, provider_id, workspace_directory, error))
+		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(
+		        m_app, chat == nullptr ? std::string{} : chat->id, provider_id,
+		        workspace_directory, execution_host_id, error))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(nlohmann::json{{"started", false}, {"pending", true}, {"compatibilityBlocked", true}}.dump());
 			return;
 		}
-		m_app.provider_model_catalog->RememberRefreshFailure(provider_id, FailureDetailOrFallback(error, "Provider model discovery failed to start."), workspace_directory);
+		m_app.provider_model_catalog->RememberRefreshFailure(provider_id,
+		    FailureDetailOrFallback(error, "Provider model discovery failed to start."),
+		    workspace_directory, execution_host_id);
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(500, FailureDetailOrFallback(error, "Provider model discovery failed to start."));
 		return;
 	}
-	m_app.provider_model_catalog->MarkDiscoveryLaunchStarted(provider_id, workspace_directory);
+	m_app.provider_model_catalog->MarkDiscoveryLaunchStarted(
+	    provider_id, workspace_directory, execution_host_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"started", true}, {"pending", true}}.dump());
 }

@@ -406,12 +406,18 @@ namespace
 	{
 		std::string title;
 		std::string directory;
+		std::string execution_host_id;
 	};
 
-	bool ValidateFolderInput(uam::AppState& app, const std::string& title, const std::string& directory, FolderInput& input)
+	bool ValidateFolderInput(uam::AppState& app, const std::string& title,
+	                         const std::string& directory,
+	                         const std::string& execution_host_id,
+	                         FolderInput& input)
 	{
 		input.title = uam::strings::Trim(title);
 		input.directory = uam::strings::Trim(directory);
+		input.execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(execution_host_id), "local");
 
 		if (input.title.empty())
 		{
@@ -422,6 +428,20 @@ namespace
 		if (input.directory.empty())
 		{
 			app.status_line = "Folder directory is required.";
+			return false;
+		}
+
+		const ExecutionHost* host = uam::execution_hosts::Find(
+		    app.settings.execution_hosts, input.execution_host_id);
+		if (host == nullptr)
+		{
+			app.status_line = "The selected execution host no longer exists.";
+			return false;
+		}
+		if (host->id != uam::execution_hosts::kLocalHostId &&
+		    !uam::execution_hosts::IsAbsoluteRemotePath(host->platform, input.directory))
+		{
+			app.status_line = "An absolute remote workspace path is required.";
 			return false;
 		}
 
@@ -447,6 +467,35 @@ namespace
 	{
 		folder.title = input.title;
 		folder.directory = input.directory;
+		folder.execution_host_id = input.execution_host_id;
+	}
+
+	std::string WorkspaceOwnershipKey(const uam::AppState& app, std::string_view host_id,
+	                                  std::string_view directory)
+	{
+		const std::string host = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(host_id), "local");
+		if (host == uam::execution_hosts::kLocalHostId)
+		{
+			return host + "\n" + uam::paths::Utf8PathString(
+			    uam::paths::AbsolutePathNoThrow(
+			        uam::paths::ExpandTrimmedWorkspacePath(directory)));
+		}
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(
+		    app.settings.execution_hosts, host);
+		return host + "\n" + uam::execution_hosts::NormalizeRemotePath(
+		    execution_host == nullptr ? std::string_view{} : execution_host->platform,
+		    directory);
+	}
+
+	std::string WorkspaceTitle(std::string_view directory, std::string_view fallback)
+	{
+		std::string value(uam::strings::TrimAsciiView(directory));
+		while (value.size() > 1 && (value.back() == '/' || value.back() == '\\')) value.pop_back();
+		const std::size_t separator = value.find_last_of("/\\");
+		const std::string title = uam::strings::Trim(
+		    separator == std::string::npos ? value : value.substr(separator + 1));
+		return uam::strings::NonEmptyOrFallback(title, std::string(fallback));
 	}
 
 	bool IsUnsortedChat(const uam::AppState& app, const ChatSession& chat)
@@ -518,6 +567,114 @@ namespace
 		ForgetDeletedChatReferences(app, deleted_chat_ids);
 	}
 } // namespace
+
+bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
+{
+	const std::vector<ChatFolder> original_folders = app.folders;
+	const std::vector<ChatSession> original_chats = app.chats;
+	const std::string original_status_line = app.status_line;
+	std::vector<ChatSession> changed_chats;
+	const std::size_t original_folder_count = app.folders.size();
+	std::size_t split_count = 0;
+	bool changed = false;
+
+	for (std::size_t folder_index = 0; folder_index < original_folder_count; ++folder_index)
+	{
+		ChatFolder& folder = app.folders[folder_index];
+		const std::string folder_id = folder.id;
+		const std::string folder_title = folder.title;
+		std::unordered_map<std::string, std::vector<std::size_t>> chat_indices_by_owner;
+		std::unordered_map<std::string, std::pair<std::string, std::string>> owner_values;
+		for (std::size_t chat_index = 0; chat_index < app.chats.size(); ++chat_index)
+		{
+			const ChatSession& chat = app.chats[chat_index];
+			if (!ChatBelongsToFolder(chat, folder_id)) continue;
+			const std::string host = uam::strings::NonEmptyOrFallback(
+			    uam::strings::Trim(chat.execution_host_id), "local");
+			const std::string directory = uam::strings::NonEmptyOrFallback(
+			    uam::strings::Trim(chat.workspace_directory), folder.directory);
+			const std::string key = WorkspaceOwnershipKey(app, host, directory);
+			chat_indices_by_owner[key].push_back(chat_index);
+			owner_values.try_emplace(key, host, directory);
+		}
+
+		std::string primary_key;
+		if (uam::strings::IsBlank(folder.execution_host_id))
+		{
+			for (const auto& [key, indices] : chat_indices_by_owner)
+			{
+				if (primary_key.empty() || indices.size() > chat_indices_by_owner.at(primary_key).size() ||
+				    (indices.size() == chat_indices_by_owner.at(primary_key).size() && key < primary_key))
+					primary_key = key;
+			}
+			if (primary_key.empty())
+			{
+				folder.execution_host_id = "local";
+			}
+			else
+			{
+				folder.execution_host_id = owner_values.at(primary_key).first;
+				folder.directory = owner_values.at(primary_key).second;
+			}
+			changed = true;
+		}
+		else
+		{
+			primary_key = WorkspaceOwnershipKey(app, folder.execution_host_id, folder.directory);
+		}
+
+		for (const auto& [key, chat_indices] : chat_indices_by_owner)
+		{
+			if (key == primary_key) continue;
+			const auto& [host, directory] = owner_values.at(key);
+			auto destination = std::ranges::find_if(app.folders, [&](const ChatFolder& candidate) {
+				return candidate.id != folder_id &&
+				       WorkspaceOwnershipKey(app, candidate.execution_host_id, candidate.directory) == key;
+			});
+			if (destination == app.folders.end())
+			{
+				ChatFolder created;
+				created.id = AllocateUniqueFolderId(app);
+				if (created.id.empty())
+				{
+					app.folders = original_folders;
+					app.chats = original_chats;
+					app.status_line = "Could not split a mixed-machine workspace safely.";
+					return false;
+				}
+				created.title = WorkspaceTitle(directory, folder_title);
+				created.directory = directory;
+				created.execution_host_id = host;
+				app.folders.push_back(std::move(created));
+				destination = std::prev(app.folders.end());
+			}
+			for (const std::size_t chat_index : chat_indices)
+			{
+				app.chats[chat_index].folder_id = destination->id;
+				changed_chats.push_back(app.chats[chat_index]);
+			}
+			++split_count;
+			changed = true;
+		}
+	}
+
+	if (!changed) return true;
+	if (!SaveChatHistories(app, changed_chats) || !ChatFolderStore::Save(app.data_root, app.folders))
+	{
+		const bool rollback_saved = SaveChatHistories(app, original_chats) &&
+		                            ChatFolderStore::Save(app.data_root, original_folders);
+		app.folders = original_folders;
+		app.chats = original_chats;
+		app.status_line = StatusAfterFolderDeletePreconditionFailure(
+		    "Could not split a mixed-machine workspace safely", rollback_saved);
+		return false;
+	}
+
+	app.status_line = split_count == 0
+	    ? original_status_line
+	    : "Separated chats that belonged to different workspace machines.";
+	return true;
+}
 
 uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const AppState& app)
 {
@@ -1026,7 +1183,9 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	return true;
 }
 
-bool CreateFolder(uam::AppState& app, const std::string& title, const std::string& directory, std::string* created_folder_id)
+bool CreateFolder(uam::AppState& app, const std::string& title,
+	const std::string& directory, std::string* created_folder_id,
+	const std::string& execution_host_id)
 {
 	if (created_folder_id != nullptr)
 	{
@@ -1034,7 +1193,7 @@ bool CreateFolder(uam::AppState& app, const std::string& title, const std::strin
 	}
 
 	FolderInput input;
-	if (!ValidateFolderInput(app, title, directory, input))
+	if (!ValidateFolderInput(app, title, directory, execution_host_id, input))
 	{
 		return false;
 	}
@@ -1088,17 +1247,23 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		return false;
 	}
 
+	ChatFolder& folder = app.folders[folder_index];
 	FolderInput input;
-	if (!ValidateFolderInput(app, title, directory, input))
+	if (!ValidateFolderInput(app, title, directory,
+	        uam::strings::NonEmptyOrFallback(folder.execution_host_id, "local"), input))
 	{
 		return false;
 	}
 
-	ChatFolder& folder = app.folders[folder_index];
 	const ChatFolder original = folder;
 	const std::vector<ChatSession> original_chats = app.chats;
 	const std::string original_status_line = app.status_line;
 	const bool directory_changed = !FolderDirectoryMatches(original.directory, input.directory);
+	if (directory_changed && original.execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		app.status_line = "A remote workspace directory cannot be changed. Create a new workspace instead.";
+		return false;
+	}
 	if (directory_changed && FolderHasRunningChat(app, target_folder_id))
 	{
 		app.status_line = "Cannot change a folder directory while one of its chats has a running runtime.";

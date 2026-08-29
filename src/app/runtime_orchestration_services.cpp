@@ -1190,9 +1190,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const
 {
+	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(app, uam::strings::Trim(folder_id));
+	if (matched_folder != nullptr && uam::strings::NonEmptyOrFallback(
+	        matched_folder->execution_host_id, "local") != uam::execution_hosts::kLocalHostId)
+	{
+		ImportResult result;
+		result.Fail("Remote native-history rescanning is not supported yet.");
+		return result;
+	}
 	ImportResult result = ImportCodexRolloutChatsForFolder(app, folder_id);
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
-	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(app, uam::strings::Trim(folder_id));
 	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory))
 	{
 		if (result.success) result.Fail("Copilot history scan requires a valid workspace folder.");

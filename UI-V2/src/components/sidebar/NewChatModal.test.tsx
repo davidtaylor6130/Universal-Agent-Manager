@@ -191,18 +191,51 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
-  it('creates a chat on a ready remote host without local model discovery', async () => {
+  it('discovers models on the selected remote host only after an explicit request', async () => {
     const addSession = vi.fn().mockResolvedValue(true)
     const discoverProviderModels = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
       addSession,
       discoverProviderModels,
+	  providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#22c55e', description: '' }],
+	  defaultNewChatProviderId: 'opencode-cli',
+	  providerChatDefaults: { 'opencode-cli': { modelId: 'controller-default', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' } },
 	  folders: [],
 	  newChatFolderId: null,
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
         { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'home-lab', runnerStatus: 'ready', runnerVersion: '0.1.0', platform: 'linux', architecture: 'arm64', lastSeenAt: '' },
       ],
+	  providerModelCatalogs: [
+		{
+		  providerId: 'opencode-cli',
+		  workspaceDirectory: '/srv/Project',
+		  executionHostId: 'lab',
+		  availableModels: [{ id: 'wrong-case', name: 'Wrong Case', description: 'Different Linux workspace' }],
+		  currentModelId: '',
+		  modelsLoading: false,
+		  modelRefreshError: '',
+		},
+		{
+		  providerId: 'opencode-cli',
+		  workspaceDirectory: '/srv/project',
+		  executionHostId: 'local',
+		  availableModels: [{ id: 'local-only', name: 'Local Only', description: 'Controller model' }],
+		  currentModelId: '',
+		  modelsLoading: false,
+		  modelRefreshError: '',
+		},
+		{
+		  providerId: 'opencode-cli',
+		  workspaceDirectory: '/srv/project',
+		  executionHostId: 'lab',
+		  availableModels: [],
+		  configOptions: [{ id: 'model', name: 'Model', description: '', category: 'model', currentValue: '', options: [{ value: 'remote-only', name: 'Remote Only', description: 'Target model' }] }],
+		  currentModelId: '',
+		  modelsLoading: false,
+		  modelRefreshError: '',
+		},
+	  ],
     })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -215,18 +248,32 @@ describe('NewChatModal', () => {
     act(() => remoteHost?.click())
     discoverProviderModels.mockClear()
     const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
-    act(() => {
+	act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
-      remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+	  remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
+	})
+	expect(discoverProviderModels).not.toHaveBeenCalled()
+	await act(async () => {
+	  Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+		.find((button) => button.textContent === 'Discover remote models')?.click()
+	  await Promise.resolve()
+	})
+	act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+	const modelMenu = document.body.querySelector('[role="listbox"][aria-label="Model"]')
+	expect(modelMenu?.textContent).toContain('Remote Only')
+	expect(modelMenu?.textContent).not.toContain('Local Only')
+	expect(modelMenu?.textContent).not.toContain('Wrong Case')
+	expect(modelMenu?.textContent).not.toContain('Controller Default')
+	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+	  .find((option) => option.textContent?.includes('Remote Only'))?.click())
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Create structured chat')
     await act(async () => { create?.click(); await Promise.resolve() })
 
-    expect(discoverProviderModels).not.toHaveBeenCalled()
+	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
     expect(host.textContent).toContain('Computer Use is disabled for remote chats.')
 	expect(host.textContent).not.toContain('A workspace is required')
-    expect(addSession).toHaveBeenCalledWith('New chat', null, 'gemini-cli', '', '', 'chat', 'lab', '/srv/project')
+    expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
 
     act(() => root.unmount())
     host.remove()
@@ -499,6 +546,7 @@ describe('NewChatModal', () => {
 		providerModelCatalogs: [{
 		  providerId: 'codex-cli',
 		  workspaceDirectory: '/tmp/project',
+		  executionHostId: 'local',
 		  availableModels: [{ id: 'gpt-first-chat', name: 'GPT First Chat', description: 'Discovered without a chat.' }],
 		  currentModelId: 'gpt-first-chat',
 		  modelsLoading: false,
@@ -515,7 +563,7 @@ describe('NewChatModal', () => {
 	  expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('GPT First Chat')
 	  expect(requests).toContainEqual(expect.objectContaining({
 		action: 'discoverProviderModels',
-		payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/project' },
+		payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local' },
 	  }))
 
 	  act(() => root.unmount())

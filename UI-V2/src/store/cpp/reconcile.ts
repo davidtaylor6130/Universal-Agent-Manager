@@ -77,6 +77,7 @@ export function normalizeProviderIdForVisibleProviders(
 export function foldersEquivalent(previous: Folder, next: Folder): boolean {
   return previous.name === next.name &&
     previous.directory === next.directory &&
+    previous.executionHostId === next.executionHostId &&
     previous.isExpanded === next.isExpanded &&
     previous.missing === next.missing
 }
@@ -87,6 +88,7 @@ export function folderFromCppFolder(folder: CppFolder, previous: Folder | undefi
     name: folder.title,
     parentId: null,
     directory: folder.directory ?? '',
+    executionHostId: folder.executionHostId || 'local',
     isExpanded: !folder.collapsed,
     missing: folder.missing,
     createdAt: previous?.createdAt ?? new Date(),

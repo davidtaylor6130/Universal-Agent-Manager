@@ -407,7 +407,9 @@ export interface CppAcpSession {
 export interface ProviderModelCatalog {
   providerId: string
   workspaceDirectory: string
+	executionHostId: string
   availableModels: AcpModel[]
+	configOptions?: AcpConfigOption[]
   currentModelId: string
   modelsLoading: boolean
   modelRefreshError: string
@@ -446,6 +448,7 @@ export interface CppFolder {
   title: string
   directory: string
   collapsed: boolean
+  executionHostId: string
   missing?: boolean
 }
 

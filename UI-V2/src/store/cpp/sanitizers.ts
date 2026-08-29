@@ -820,6 +820,7 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
     title: stringOr(value.title, 'Untitled'),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
+    executionHostId: stringOr(value.executionHostId).trim() || 'local',
     missing: booleanOr(value.missing),
   }
 }
@@ -1587,12 +1588,19 @@ function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
     return [{
       providerId,
       workspaceDirectory,
+	  executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
       availableModels: Array.isArray(entry.availableModels)
         ? entry.availableModels.flatMap((model) => {
             const sanitized = sanitizeAcpModel(model)
             return sanitized ? [sanitized] : []
           })
         : [],
+	  configOptions: Array.isArray(entry.configOptions)
+		? entry.configOptions.flatMap((option) => {
+			const sanitized = sanitizeAcpConfigOption(option)
+			return sanitized ? [sanitized] : []
+		  })
+		: [],
       currentModelId: normalizeAcpModelId(entry.currentModelId),
       modelsLoading: booleanOr(entry.modelsLoading),
       modelRefreshError: stringOr(entry.modelRefreshError),

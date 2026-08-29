@@ -317,6 +317,7 @@ namespace uam
 		std::string chat_id;
 		std::string provider_id;
 		std::string workspace_directory;
+		std::string execution_host_id = "local";
 	};
 
 	struct UamControlCapability

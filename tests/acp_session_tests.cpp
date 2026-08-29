@@ -275,6 +275,85 @@ done
 	UAM_ASSERT(uam::StopAcpSession(app, "remote-e2e"));
 }
 
+UAM_TEST(RemoteModelDiscoveryUsesTheSelectedRunnerAndCachesOnlyItsCatalog)
+{
+	TempDir temp("uam-remote-model-discovery");
+	const fs::path runner =
+	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
+	        .parent_path() / "uam-runner";
+	const fs::path ssh = temp.root / "ssh";
+	const fs::path opencode = temp.root / "opencode";
+	UAM_ASSERT(uam::io::WriteTextFile(
+	    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"remote-model-test","title":"Remote Model Test","version":"1"},"agentCapabilities":{"loadSession":true}}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"remote-model-session","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"target/free","options":[{"value":"target/free","name":"Target Free","description":"Reported by the target"}]}]}}'
+      ;;
+  esac
+done
+)"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	fs::permissions(opencode, fs::perms::owner_read | fs::perms::owner_write |
+	                              fs::perms::owner_exec);
+	const std::string inherited_path =
+	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost host;
+	host.id = "lab";
+	host.label = "Lab";
+	host.transport = "ssh";
+	host.ssh_alias = "home-lab";
+	host.runner_status = "ready";
+	host.runner_version = "4.5.7";
+	host.platform = "linux";
+	host.architecture = "x86_64";
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	const std::string workspace = temp.root.string();
+	UAM_ASSERT(app.provider_model_catalog->BeginDiscovery(
+	    uam::provider_ids::kOpenCodeCli, workspace, host.id));
+
+	std::string error;
+	UAM_ASSERT(uam::StartEphemeralAcpModelDiscovery(app,
+	    uam::provider_ids::kOpenCodeCli, workspace, host.id, &error));
+	UAM_ASSERT_EQ(app.model_discovery_chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.model_discovery_chats.front().execution_host_id, host.id);
+	for (int attempt = 0; attempt < 500 &&
+	     app.provider_model_catalog->IsDiscoveryPending(
+	         uam::provider_ids::kOpenCodeCli, workspace, host.id); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const nlohmann::json config =
+	    app.provider_model_catalog->GetCachedProviderConfigOptions(
+	        uam::provider_ids::kOpenCodeCli, workspace, host.id);
+	UAM_ASSERT_EQ(config.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(config[0]["options"][0].value("value", ""),
+	              std::string("target/free"));
+	UAM_ASSERT(app.provider_model_catalog->GetCachedProviderConfigOptions(
+	    uam::provider_ids::kOpenCodeCli, workspace, "local").empty());
+	for (int attempt = 0; attempt < 100 && !app.model_discovery_chats.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.model_discovery_chats.empty());
+}
+
 UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
 {
 	TempDir temp("uam-remote-control-setup");
@@ -2366,6 +2445,9 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 	const nlohmann::json models = nlohmann::json::array({
 	    {{"id", "vendor/reasoner"}, {"name", "Reasoner"}, {"supportedReasoningEfforts", nlohmann::json::array({"low", "high"})}},
 	});
+	const nlohmann::json remote_models = nlohmann::json::array({
+	    {{"id", "target/remote-only"}, {"name", "Remote Only"}},
+	});
 	const nlohmann::json config_options = nlohmann::json::array({
 	    {{"id", "effort"}, {"name", "Effort"}, {"category", "thought_level"}, {"currentValue", "low"}, {"options", nlohmann::json::array({{{"value", "low"}, {"name", "Low"}}, {{"value", "high"}, {"name", "High"}}})}},
 	});
@@ -2399,6 +2481,15 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 		UAM_ASSERT_EQ(catalog.GetCachedProviderModels(first.id, workspace_a), models);
 		UAM_ASSERT(catalog.GetCachedProviderModels(first.id, workspace_b).empty());
 		UAM_ASSERT(!catalog.IsDiscoveryPending(first.id, workspace_a));
+		UAM_ASSERT(catalog.BeginDiscovery(first.id, "/srv/shared", "ssh-lab"));
+		UAM_ASSERT(catalog.RememberSuccessfulModels(first.id, remote_models,
+		    "/srv/shared", config_options, "ssh-lab"));
+		UAM_ASSERT_EQ(catalog.GetCachedProviderModels(
+		    first.id, "/srv/shared", "ssh-lab"), remote_models);
+		UAM_ASSERT(catalog.GetCachedProviderModels(
+		    first.id, "/srv/shared", "local").empty());
+		UAM_ASSERT(catalog.GetCachedProviderModels(
+		    first.id, "/srv/shared", "ssh-other").empty());
 	}
 
 	{
@@ -2406,6 +2497,10 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 		restarted.Initialize(temp.root, {first});
 		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(first.id), models);
 		UAM_ASSERT_EQ(restarted.GetCachedProviderConfigOptions(first.id), updated_config_options);
+		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(
+		    first.id, "/srv/shared", "ssh-lab"), remote_models);
+		UAM_ASSERT_EQ(restarted.GetCachedProviderConfigOptions(
+		    first.id, "/srv/shared", "ssh-lab"), config_options);
 		UAM_ASSERT(!restarted.BeginDiscoveryIfStale(first.id));
 		UAM_ASSERT(restarted.BeginDiscovery(first.id));
 		restarted.RememberRefreshFailure(first.id, "background refresh failed");
@@ -2459,7 +2554,9 @@ UAM_TEST(ProviderModelDiscoveryCompatibilityBlockRetriesOnceWithoutAStartupLoop)
 	const std::string workspace = temp.root.string();
 	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli] = {};
 	UAM_ASSERT(app.provider_model_catalog->BeginDiscoveryIfStale(uam::provider_ids::kOpenCodeCli, workspace));
-	UAM_ASSERT(uam::QueueAcpModelDiscoveryCompatibilityRetry(app, "", uam::provider_ids::kOpenCodeCli, workspace, "Checking OpenCode compatibility."));
+	UAM_ASSERT(uam::QueueAcpModelDiscoveryCompatibilityRetry(app, "",
+	    uam::provider_ids::kOpenCodeCli, workspace, "local",
+	    "Checking OpenCode compatibility."));
 	UAM_ASSERT_EQ(app.pending_model_discovery_retries.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.provider_model_catalog->IsDiscoveryPending(uam::provider_ids::kOpenCodeCli, workspace));
 	UAM_ASSERT(!app.provider_model_catalog->BeginDiscoveryIfStale(uam::provider_ids::kOpenCodeCli, workspace));
@@ -2716,11 +2813,29 @@ UAM_TEST(ProviderModelCatalogSerializesForAWorkspaceWithZeroChats)
 	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
 	const nlohmann::json models = nlohmann::json::array({{{"id", "gpt-zero-chat"}, {"name", "GPT Zero Chat"}}});
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli", models, temp.root.string()));
+	const nlohmann::json remote_models = nlohmann::json::array({
+	    {{"id", "target/remote-only"}, {"name", "Remote Only"}},
+	});
+	const nlohmann::json remote_options = nlohmann::json::array({
+	    {{"id", "model"}, {"name", "Model"}, {"category", "model"},
+	     {"currentValue", "target/remote-only"},
+	     {"options", nlohmann::json::array({
+	         {{"value", "target/remote-only"}, {"name", "Remote Only"}},
+	     })}},
+	});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+	    remote_models, "/srv/project", remote_options, "ssh-lab"));
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	UAM_ASSERT(serialized["chats"].empty());
-	UAM_ASSERT_EQ(serialized["providerModelCatalogs"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(serialized["providerModelCatalogs"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(serialized["providerModelCatalogs"][0]["availableModels"][0].value("id", ""), std::string("gpt-zero-chat"));
+	const nlohmann::json remote = serialized["providerModelCatalogs"][1];
+	UAM_ASSERT_EQ(remote.value("executionHostId", ""), std::string("ssh-lab"));
+	UAM_ASSERT_EQ(remote.value("workspaceDirectory", ""), std::string("/srv/project"));
+	UAM_ASSERT_EQ(remote["availableModels"], remote_models);
+	UAM_ASSERT_EQ(remote["configOptions"], remote_options);
+	UAM_ASSERT_EQ(remote["availableModels"].size(), static_cast<std::size_t>(1));
 }
 
 UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)

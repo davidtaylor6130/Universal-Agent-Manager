@@ -329,16 +329,23 @@ void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, con
 {
 	if (app.provider_model_catalog != nullptr && (!session.available_models.empty() || !session.available_config_options.empty()))
 	{
-		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id, ModelsForPersistentCache(session.available_models), DiscoveryWorkspace(app, chat), ConfigOptionsForPersistentCache(session.available_config_options));
+		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
+		    ModelsForPersistentCache(session.available_models), DiscoveryWorkspace(app, chat),
+		    ConfigOptionsForPersistentCache(session.available_config_options),
+		    chat.execution_host_id);
 	}
 }
 
 void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	const std::string workspace = DiscoveryWorkspace(app, chat);
-	if (app.provider_model_catalog != nullptr && session.available_models.empty() && app.provider_model_catalog->IsDiscoveryPending(session.provider_id, workspace))
+	if (app.provider_model_catalog != nullptr && session.available_models.empty() &&
+	    app.provider_model_catalog->IsDiscoveryPending(
+	        session.provider_id, workspace, chat.execution_host_id))
 	{
-		app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Provider model discovery completed without reporting any models.", workspace);
+		app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
+		    "Provider model discovery completed without reporting any models.", workspace,
+		    chat.execution_host_id);
 	}
 }
 
@@ -439,7 +446,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		const bool model_discovery_request = method == uam::acp_methods::kModelList || method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume;
 		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
-			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, formatted_error, DiscoveryWorkspace(app, chat));
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
+			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id);
 		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
 		if (method == uam::acp_methods::kAccountRateLimitsRead)

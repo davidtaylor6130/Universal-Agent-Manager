@@ -21,6 +21,7 @@ namespace
 	constexpr std::string_view kFolderTitleKey = "title";
 	constexpr std::string_view kFolderDirectoryKey = "directory";
 	constexpr std::string_view kFolderCollapsedKey = "collapsed";
+	constexpr std::string_view kFolderExecutionHostIdKey = "execution_host_id";
 
 	fs::path FolderFilePath(const fs::path& data_root)
 	{
@@ -78,6 +79,10 @@ namespace
 		else if (normalized_key == kFolderCollapsedKey)
 		{
 			folder.collapsed = uam::parse::BoolOr(value, folder.collapsed);
+		}
+		else if (normalized_key == kFolderExecutionHostIdKey)
+		{
+			folder.execution_host_id = uam::strings::Trim(value);
 		}
 	}
 
@@ -171,6 +176,9 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		WriteEncodedFolderField(out, kFolderTitleKey, folder.title);
 		WriteEncodedFolderField(out, kFolderDirectoryKey, folder.directory);
 		WriteBoolFolderField(out, kFolderCollapsedKey, folder.collapsed);
+		WriteEncodedFolderField(out, kFolderExecutionHostIdKey,
+		                        uam::strings::NonEmptyOrFallback(
+		                            uam::strings::Trim(folder.execution_host_id), "local"));
 		out << '\n';
 	}
 	out << kFoldersComplete << '\n';

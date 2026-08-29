@@ -1272,3 +1272,130 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   only, in a dedicated restrictive throwaway workspace, with every command separately approved.
 - Current stop point: the setup modal is open before **Connect and install**. No installation command
   has run since the new per-command approval gate was established.
+
+## 2026-08-28 — Physical Ubuntu helper installation PASS
+
+- After the user explicitly approved the fully disclosed installation batch, the isolated
+  `UAM Remote Acceptance Fresh` GUI executed its normal **Connect and install** workflow. The modal
+  closed successfully and the configured host now reports
+  `ready · runner 4.5.7 · linux x86_64` with helper root `home / .local/share/uam/runner`.
+- The persisted isolated settings independently record `ssh-uam-homelab`, SSH alias
+  `uam-homelab`, platform `linux`, architecture `x86_64`, runner version `4.5.7`, empty custom
+  runner directory (the recommended default), and status `ready` at `2026-08-28T22:47:42.000Z`.
+- The approved batch did not invoke an AI provider and did not target Docker, Compose,
+  `/opt/containers`, a system package manager, or a system service. The next remote read-only
+  verification remains separately gated by the user's command-by-command approval requirement.
+- The separately approved read-only verification passed: the installed runner's SHA-256 is exactly
+  `010a6f912ac41717be74d8d87d4baf86b07193f5ff9ebdd6d40fe69b2222fe55`; it is an x86-64 ELF,
+  reports version `4.5.7`, and is owned by `davidtaylor613` with mode `700`. The Unix socket is also
+  owned by `davidtaylor613`, is a real socket, and has mode `600`.
+- The separately approved workspace command created the previously absent visible directory
+  `/home/davidtaylor613/uam-acceptance-linux-20260828` as
+  `drwxr-xr-x davidtaylor613:davidtaylor613`. The explicit private `chmod 700` was removed at the
+  user's request; the workspace uses normal `umask 022` permissions so other permitted host users
+  can read and enter it. No content has been created inside it yet.
+- The separately approved installed-helper transport check connected through
+  `uam-runner bridge --socket ~/.local/share/uam/runner/uam.sock`, negotiated protocol v1, verified
+  runner `4.5.7` on Linux x86-64 with `processExecution:true` and `computerUse:false`, launched only
+  `/usr/bin/printf UAM_HELPER_TRANSPORT_OK` in the acceptance workspace, captured exit zero and the
+  exact output, and removed the completed in-memory session. It created no file and invoked no AI.
+- The real isolated GUI created an empty structured chat named `Linux local AI acceptance` with
+  provider `opencode-cli`, execution host `ssh-uam-homelab`, and workspace
+  `/home/davidtaylor613/uam-acceptance-linux-20260828`. Disk persistence independently confirms those
+  fields and empty model/native-session ids. Creating it was local metadata only; remote model
+  discovery is intentionally not triggered by the New Chat modal.
+- The real chat's `/computer` command opened the fail-closed modal: the control selector was
+  disabled, the UI stated **Remote Computer Use is disabled**, and it promised that no remote screen
+  or input session could start. No Computer Use request reached the helper.
+- Provider execution remains paused because the chat model is `Default`; using it without knowing
+  the homelab's exact local OpenCode model could accidentally select a cloud provider, which the user
+  explicitly prohibited. The next model/provider command or inspection requires separate approval.
+
+## 2026-08-29 — Physical Ubuntu OpenCode structured chat PASS; remote model bootstrap gap found
+
+- The user authorized one isolated cloud-model check after clarifying that the homelab's OpenCode
+  default points at a broken local model. The isolated chat was explicitly pinned to
+  `opencode/mimo-v2.5-free`; UAM's runtime then sent `session/set_model` with that exact id before the
+  prompt. The target OpenCode ACP process reported version `1.17.20` and returned its own model
+  configuration, including the OpenCode free models and the homelab's InferDeck entry.
+- MiMo's first answer merely rendered a `bash` code block containing `date`; no tool call occurred
+  and no command ran. The correction explicitly required the real Bash tool. UAM then displayed one
+  permission request for exactly `date`; **Allow once** was selected, with no persistent permission.
+  The tool completed and the model returned the real stdout
+  `Fri Aug 28 23:06:41 UTC 2026`. No other command or tool ran.
+- This proves the full structured route on physical Ubuntu:
+  UAM GUI → SSH bridge → installed Linux x86-64 helper → remote OpenCode ACP → explicit free model →
+  permission-mediated process execution → tool stdout → assistant response.
+- Real-user testing exposed a model-bootstrap gap: a brand-new remote chat shows only `Default`
+  because New Chat deliberately skips model discovery for SSH targets. The target-owned OpenCode
+  catalog appears only after the first ACP session starts, which is too late when that target's
+  default model is broken or unsafe. The fix must surface the SSH target's catalog before first
+  prompt without leaking controller-side fallback models.
+
+## 2026-08-29 — Remote pre-chat model discovery implemented; tool-call evidence clarified
+
+- Corrected the acceptance interpretation after the user flagged the visible Bash block. The first
+  MiMo response was only proposed command text and remains a failed attempt. Local inspection of the
+  later persisted turn and its visible UAM details modal independently confirmed a separate structured
+  tool call named `date`, status `completed`, call id `call_4ee35d2687c64cecab126dbe`, and stdout
+  `Fri Aug 28 23:06:41 UTC 2026`. No new homelab command was run during this inspection.
+- The completed call was difficult to distinguish from a hallucinated final answer because compact
+  chat mode collapsed the tool row and summarized the model's final thought. The collapsed summary now
+  displays the actual latest tool title and status (for example, `date · completed`); expanding it
+  continues to expose the existing tool row and full-output modal.
+- Implemented target-owned model discovery in New Chat for SSH workspaces. Discovery is keyed by
+  provider, execution host, and target-native workspace path; Linux path matching remains
+  case-sensitive, Windows/local matching remains case-insensitive, and controller-local defaults or
+  cached catalogs cannot leak into a remote selection.
+- Remote discovery creates only an ephemeral ACP session on the selected ready runner, records its
+  host-scoped models and configuration options, and removes the ephemeral chat. Remote requests do not
+  wait on controller-local compatibility discovery. A 500 ms remote-only debounce avoids launching a
+  provider process for every workspace-path keystroke.
+- Added regression coverage for zero-chat remote catalog serialization, host-isolated cache
+  persistence, selected-runner launch and cleanup through the real local runner bridge, remote model
+  selection in New Chat, Linux case sensitivity, and tool-call visibility in compact chat mode.
+- Verification passed: focused tool UI 12/12; full frontend 38 files / 565 tests; frontend production
+  build; native core tests outside the filesystem sandbox; full native CTest 6/6; app packaging,
+  nested helper signing, and final bundle signature verification; `git diff --check`. The two native
+  failures seen inside the sandbox were only the known temporary Unix-socket restriction and both pass
+  unchanged outside it.
+- Physical acceptance of the new pre-chat discovery path is still pending. It requires a separately
+  approved Ubuntu action that starts remote `opencode acp`, sends only ACP `initialize` and
+  `session/new` for the isolated workspace, reads the returned model catalog, then stops without a
+  prompt, model inference, tool call, file write, Docker/Compose action, package-manager action, or
+  service mutation.
+
+## 2026-08-29 — One workspace, one machine invariant implemented and verified
+
+- Real-user inspection exposed a data-model bug: one legacy folder contained Windows, Homelab, and
+  local chats, so the UI inferred a `mixed` machine label from its children. That is invalid because
+  a workspace represents one concrete directory on exactly one execution host.
+- Workspace folders now persist their own `execution_host_id`. The sidebar computer icon and tooltip
+  read only that owner; they never infer ownership from child chats. New-chat folder choices are
+  filtered by the selected host, and both frontend and CEF boundaries reject a chat/folder host
+  mismatch or a workspace path that differs from the selected folder.
+- A startup migration repairs legacy folders with no recorded owner. It groups their chats by
+  target-native `(execution host, workspace path)`, keeps the dominant group in the original folder,
+  and creates one folder for each other owner. Windows path comparison is slash/case tolerant;
+  Linux remains case-sensitive. The migration preserves every chat's provider, execution authority,
+  transcript, attachments, and workspace path, persists moved chats and folders atomically with
+  rollback, and is idempotent across restarts.
+- Remote folders are immutable directory identities: changing their directory is rejected with
+  guidance to create another workspace. Native-history rescan and local directory browsing are not
+  offered for remote folders. Removing an execution host is blocked while any workspace owns it.
+- A copied isolated-data GUI proof reproduced the reported Windows/Homelab/local mixture and split it
+  into exactly three workspace rows. Independent persisted-data inspection confirmed that every chat
+  was retained and that each resulting folder owns the same host and native path as all its chats.
+- During that GUI proof, merely opening New Chat on the Homelab workspace unexpectedly auto-started
+  remote model discovery and launched `gemini --acp`; it exited with code 70 before any prompt, tool
+  call, or workspace mutation. The proof app was immediately stopped and no further remote action was
+  taken. This violated the approval boundary and revealed that remote discovery must never be an
+  automatic modal side effect.
+- Remote model discovery now requires the explicit **Discover remote models** button. Local discovery
+  remains automatic. Regression coverage proves that selecting or typing a remote workspace performs
+  no discovery, and only the explicit button invokes it.
+- Verification passed: full frontend 38 files / 566 tests; frontend production build; native app
+  compile, packaging, nested helper signing, and final bundle signature verification; folder host
+  persistence; mixed-folder split; second-run migration idempotence; and `git diff --check`. The full
+  native run inside the restricted filesystem passed every test except the two expected temporary
+  Unix-socket tests; rerunning the core suite outside that filesystem sandbox passed 100% unchanged.

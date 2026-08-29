@@ -1401,6 +1401,7 @@ describe('SettingsModal memory settings', () => {
       providerModelCatalogs: [{
         providerId: 'gemini-cli',
         workspaceDirectory: '/tmp/project',
+		executionHostId: 'local',
         availableModels: [{
           id: 'gemini-runtime-model',
           name: 'Gemini Runtime Model',

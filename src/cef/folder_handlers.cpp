@@ -74,9 +74,10 @@ void UamQueryHandler::HandleCreateFolder(CefRefPtr<CefBrowser> browser, const nl
 {
 	const std::string title = payload.value("title", "New Folder");
 	const std::string directory = payload.value("directory", "");
+	const std::string execution_host_id = payload.value("executionHostId", "local");
 	std::string created_folder_id;
 
-	if (!CreateFolder(m_app, title, directory, &created_folder_id))
+	if (!CreateFolder(m_app, title, directory, &created_folder_id, execution_host_id))
 	{
 		cb->Failure(400, m_app.status_line);
 		return;

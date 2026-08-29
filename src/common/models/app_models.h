@@ -291,6 +291,7 @@ struct ChatFolder
 	std::string title;
 	std::string directory;
 	bool collapsed = false;
+	std::string execution_host_id;
 };
 
 struct ResourceReference

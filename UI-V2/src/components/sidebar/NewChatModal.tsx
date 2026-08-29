@@ -36,6 +36,7 @@ export function NewChatModal() {
   const activeFolderId = sessions.find((session) => session.id === activeSessionId)?.folderId ?? null
   const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
+  const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const initialProviderId =
@@ -43,8 +44,8 @@ export function NewChatModal() {
       ? defaultNewChatProviderId
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
-	const [executionHostId, setExecutionHostId] = useState('local')
-	const [remoteWorkspace, setRemoteWorkspace] = useState('')
+	const [executionHostId, setExecutionHostId] = useState(initialFolder?.executionHostId || 'local')
+	const [remoteWorkspace, setRemoteWorkspace] = useState(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local' ? initialFolder.directory : '')
   const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
   const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
   const [creatingChat, setCreatingChat] = useState(false)
@@ -70,16 +71,21 @@ export function NewChatModal() {
       return
     }
 
-    const folderExists = folderId !== null && folders.some((f) => f.id === folderId)
+    const folderExists = folderId !== null && folders.some((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId)
     if (!folderExists) {
-      setFolderId(folders[0].id)
+	  const compatible = folders.find((folder) => (folder.executionHostId || 'local') === executionHostId)
+	  setFolderId(compatible?.id ?? null)
+	  if (compatible && executionHostId !== 'local') setRemoteWorkspace(compatible.directory)
     }
-  }, [folders, folderId])
+  }, [executionHostId, folders, folderId])
 
   useEffect(() => {
     if (newChatFolderId === null) return
-    if (folders.some((folder) => folder.id === newChatFolderId)) {
+    const folder = folders.find((candidate) => candidate.id === newChatFolderId)
+    if (folder) {
       setFolderId(newChatFolderId)
+	  setExecutionHostId(folder.executionHostId || 'local')
+	  if ((folder.executionHostId || 'local') !== 'local') setRemoteWorkspace(folder.directory)
     }
   }, [folders, newChatFolderId])
 
@@ -107,7 +113,7 @@ export function NewChatModal() {
   }, [requestClose])
 
   const selectedFolder =
-    (folderId !== null ? folders.find((f) => f.id === folderId) : null) ?? null
+    (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
 	const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId) ?? executionHosts[0]
 	const isRemote = selectedExecutionHost?.transport === 'ssh'
@@ -162,10 +168,15 @@ export function NewChatModal() {
   }
 
 	const providerSessions = sessions.filter((session) => session.providerId === providerId)
-	const workspaceKey = (value: string | undefined) => (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-	const selectedWorkspace = isRemote ? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
+	const workspaceKey = (value: string | undefined) => {
+	  const normalized = (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+	  return isRemote && selectedExecutionHost?.platform.toLowerCase() !== 'windows'
+		? normalized
+		: normalized.toLowerCase()
+	}
+	const selectedWorkspace = isRemote ? selectedFolder?.directory ?? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
-	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
+	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
@@ -180,16 +191,16 @@ export function NewChatModal() {
 	    )
 	  : []
   const requestModelDiscovery = () => {
-	if (!selectedWorkspace || isRemote) return
-	const discoveryKey = `${providerId}\n${workspaceKey(selectedWorkspace)}`
+	if (!selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
+	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
 	discoveryRequestedRef.current.add(discoveryKey)
-	void discoverProviderModels(discoverySession?.id ?? '', providerId, selectedWorkspace)
+	void discoverProviderModels(discoverySession?.id ?? '', providerId, selectedWorkspace, executionHostId)
   }
   useEffect(() => {
-	const discoveryKey = `${providerId}\n${workspaceKey(selectedWorkspace)}`
-	if (structuredCreationBlocked || isRemote || !selectedWorkspace || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
-	requestModelDiscovery()
-  }, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, providerId, selectedWorkspace, structuredCreationBlocked])
+	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
+	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)) || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
+	if (!isRemote) requestModelDiscovery()
+	}, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, executionHostId, isRemote, providerId, selectedExecutionHost?.platform, selectedWorkspace, structuredCreationBlocked])
   const canCreate = isRemote
     ? isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)
     : selectedFolder !== null && Boolean(selectedWorkspace)
@@ -264,7 +275,7 @@ export function NewChatModal() {
           </div>
 
           {/* Folder */}
-          {folders.length > 0 && (
+          {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
             <div>
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Folder
@@ -272,8 +283,16 @@ export function NewChatModal() {
               <MenuSelect
                 label="Folder"
                 value={folderId ?? ''}
-                options={folders.map((folder) => ({ value: folder.id, label: folder.name, description: folder.directory }))}
-                onChange={setFolderId}
+                options={[
+				  ...(isRemote ? [{ value: '', label: 'New remote workspace…', description: `Create on ${selectedExecutionHost?.label}` }] : []),
+				  ...folders.filter((folder) => (folder.executionHostId || 'local') === executionHostId)
+					.map((folder) => ({ value: folder.id, label: folder.name, description: folder.directory })),
+				]}
+                onChange={(nextFolderId) => {
+				  setFolderId(nextFolderId || null)
+				  const folder = folders.find((candidate) => candidate.id === nextFolderId)
+				  if (folder && isRemote) setRemoteWorkspace(folder.directory)
+				}}
               />
             </div>
           )}
@@ -295,6 +314,11 @@ export function NewChatModal() {
                 }))}
                 onChange={(hostId) => {
                   setExecutionHostId(hostId)
+				  const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
+				  setFolderId(compatible?.id ?? null)
+				  setRemoteWorkspace(hostId !== 'local' ? compatible?.directory ?? '' : '')
+				  setModelId(hostId === 'local' ? providerChatDefaults[providerId]?.modelId ?? '' : '')
+				  setReasoningEffort(hostId === 'local' ? providerChatDefaults[providerId]?.reasoningEffort ?? '' : '')
                 }}
               />
             </div>
@@ -309,12 +333,13 @@ export function NewChatModal() {
                 type="text"
                 value={remoteWorkspace}
                 onChange={(event) => setRemoteWorkspace(event.target.value)}
+                readOnly={selectedFolder !== null}
                 placeholder="/absolute/path/on/selected/host"
                 className="w-full rounded-md px-3 py-2 text-sm outline-none"
                 style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)' }}
               />
               <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
-                Enter an absolute path interpreted only by {selectedExecutionHost?.label}. Computer Use is disabled for remote chats.
+				{selectedFolder ? 'This path is owned by the selected workspace.' : `Enter an absolute path interpreted only by ${selectedExecutionHost?.label}.`} Computer Use is disabled for remote chats.
               </p>
             </div>
           )}
@@ -351,8 +376,8 @@ export function NewChatModal() {
                 }))}
                 onChange={(nextProviderId) => {
                   setProviderId(nextProviderId)
-                  setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
-				  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
+                  setModelId(isRemote ? '' : providerChatDefaults[nextProviderId]?.modelId ?? '')
+				  setReasoningEffort(isRemote ? '' : providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
                 }}
               />
             </div>
@@ -423,11 +448,16 @@ export function NewChatModal() {
 				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
               }}
             />
+			{isRemote && (
+			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={!canCreate || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
+				{cachedAcp?.modelsLoading ? 'Discovering remote models…' : 'Discover remote models'}
+			  </Button>
+			)}
             {cachedAcp?.modelRefreshError && (
               <div role="alert" className="mt-2 flex items-center justify-between gap-2 text-xs" style={{ color: 'var(--red)' }}>
                 <span>{cachedAcp.modelRefreshError}</span>
                 <Button variant="secondary" size="sm" onClick={() => {
-                  discoveryRequestedRef.current.delete(providerId)
+				  discoveryRequestedRef.current.delete(`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`)
                   requestModelDiscovery()
                 }}>Retry</Button>
               </div>

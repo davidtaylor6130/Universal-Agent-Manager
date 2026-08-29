@@ -178,6 +178,12 @@ void UamQueryHandler::HandleRemoveRemoteHost(CefRefPtr<CefBrowser> browser,
 		cb->Failure(409, "Move or delete chats assigned to this host before removing it.");
 		return;
 	}
+	if (std::ranges::any_of(m_app.folders, [&id](const ChatFolder& folder)
+	                       { return folder.execution_host_id == id; }))
+	{
+		cb->Failure(409, "Delete workspaces assigned to this host before removing it.");
+		return;
+	}
 	const AppSettings previous = m_app.settings;
 	std::erase_if(m_app.settings.execution_hosts,
 	              [&id](const ExecutionHost& host) { return host.id == id; });

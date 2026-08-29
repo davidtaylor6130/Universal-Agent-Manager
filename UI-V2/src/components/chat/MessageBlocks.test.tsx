@@ -71,7 +71,7 @@ describe('working transcript', () => {
 
     expect(summary?.open).toBe(false)
     expect(summary?.textContent).toContain('Worked for 1m 23s')
-    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('Checking the code paths.')
+    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('/bin/zsh -lc "rg TODO src" · completed')
     expect(summary?.textContent).not.toContain('I will inspect the workspace first.')
     expect(summary?.textContent).not.toContain('The workspace is clean.')
     expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
@@ -114,7 +114,7 @@ describe('working transcript', () => {
 
     const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
     expect(summary?.textContent).toContain('Worked for 1m 23s')
-    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('Interim progress.')
+    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('/bin/zsh -lc "rg TODO src" · completed')
     expect(host.textContent).toContain('Finished.')
     expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
     expect(summary?.querySelector('.uam-tool-row')).toBeNull()

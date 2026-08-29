@@ -91,6 +91,7 @@ export interface Folder {
   name: string
   parentId: string | null
   directory: string
+  executionHostId?: string
   isExpanded: boolean
   missing?: boolean
   createdAt: Date

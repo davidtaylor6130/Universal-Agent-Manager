@@ -103,6 +103,27 @@ namespace uam::execution_hosts
 		return result;
 	}
 
+	inline std::string NormalizeRemotePath(std::string_view platform, std::string_view value)
+	{
+		const bool windows = platform == "windows" || platform == "Windows";
+		std::string result(uam::strings::TrimAsciiView(value));
+		std::ranges::replace(result, '\\', '/');
+		while (result.size() > (windows ? 3u : 1u) && result.back() == '/') result.pop_back();
+		if (windows)
+		{
+			std::ranges::transform(result, result.begin(), [](unsigned char c) {
+				return static_cast<char>(std::tolower(c));
+			});
+		}
+		return result;
+	}
+
+	inline bool RemotePathsMatch(std::string_view platform, std::string_view lhs,
+	                            std::string_view rhs)
+	{
+		return NormalizeRemotePath(platform, lhs) == NormalizeRemotePath(platform, rhs);
+	}
+
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);

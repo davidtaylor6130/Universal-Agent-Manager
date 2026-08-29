@@ -345,6 +345,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ? folderId
         : null
       const isRemote = executionHostId !== 'local'
+	  const selectedFolder = current.folders.find((folder) => folder.id === selectedFolderId)
+	  if (selectedFolder && (selectedFolder.executionHostId || 'local') !== executionHostId) {
+		console.error('[UAM] createSession workspace belongs to a different computer')
+		return false
+	  }
       if (!selectedFolderId && !isRemote) {
         console.error('[UAM] createSession requires a workspace folder')
         return false
@@ -2146,7 +2151,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = ''): Promise<boolean> => {
+    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
 	  if (!isCefContext()) return false
 	  if (sessionId) set((state) => ({
 		acpBindingBySessionId: {
@@ -2156,7 +2161,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }))
 	  const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
 		action: 'discoverProviderModels',
-		payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}) },
+		payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
 	  })
 	  if (!response.ok) {
 		if (sessionId) set((state) => ({

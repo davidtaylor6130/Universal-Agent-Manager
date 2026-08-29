@@ -1663,7 +1663,7 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
-	it('creates an ungrouped remote CEF session when no local workspace exists', async () => {
+	it('requests a remote workspace when no matching workspace exists yet', async () => {
 	  const requests: Array<{ action: string; payload?: unknown }> = []
 	  window.cefQuery = ({ request, onSuccess }) => {
 		requests.push(JSON.parse(request))
@@ -1681,6 +1681,21 @@ describe('useAppStore Gemini CLI slice', () => {
 		action: 'createSession',
 		payload: { title: 'Remote', folderId: '', providerId: 'opencode-cli', executionHostId: 'lab', workspaceDirectory: '/srv/project' },
 	  })
+	})
+
+	it('rejects a chat whose selected workspace belongs to another computer', async () => {
+	  const requests: Array<{ action: string }> = []
+	  window.cefQuery = ({ request, onSuccess }) => {
+		requests.push(JSON.parse(request))
+		onSuccess('{}')
+	  }
+	  useAppStore.setState({
+		folders: [{ id: 'lab-workspace', name: 'Lab', parentId: null, directory: '/srv/project', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+		providers: [{ id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#f97316', description: '' }],
+	  })
+
+	  await expect(useAppStore.getState().addSession('Wrong host', 'lab-workspace', 'opencode-cli', '', '', 'chat', 'local')).resolves.toBe(false)
+	  expect(requests).toHaveLength(0)
 	})
 
   it('creates edited and reverted message branches through CEF', async () => {
@@ -4827,17 +4842,17 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().acpBindingBySessionId['chat-1'].modelsLoading).toBe(true)
   })
 
-	it('requests workspace-scoped provider model discovery without a chat', async () => {
+	it('requests execution-host-scoped provider model discovery without a chat', async () => {
 	const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
 	ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
 	  requests.push(JSON.parse(params.request))
 	  params.onSuccess?.(JSON.stringify({ started: true, pending: true }))
 	}) as unknown as TestWindow['cefQuery']
 
-	await expect(useAppStore.getState().discoverProviderModels('', 'codex-cli', '/tmp/first-workspace')).resolves.toBe(true)
+	await expect(useAppStore.getState().discoverProviderModels('', 'opencode-cli', '/srv/first-workspace', 'ssh-lab')).resolves.toBe(true)
 	expect(requests).toContainEqual(expect.objectContaining({
 	  action: 'discoverProviderModels',
-	  payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/first-workspace' },
+	  payload: { chatId: '', providerId: 'opencode-cli', workspaceDirectory: '/srv/first-workspace', executionHostId: 'ssh-lab' },
 	}))
   })
 

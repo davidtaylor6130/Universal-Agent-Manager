@@ -121,7 +121,9 @@ namespace uam
 			if (app.provider_model_catalog != nullptr)
 			{
 				if (!uam::strings::IsBlank(chat.execution_host_id) && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
-					return app.provider_model_catalog->GetCachedProviderModels(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
+					return app.provider_model_catalog->GetCachedProviderModels(chat.provider_id,
+					    uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(),
+					    chat.execution_host_id);
 				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
 			}
 			return nlohmann::json::array();
@@ -146,13 +148,43 @@ namespace uam
 		nlohmann::json FallbackAcpConfigOptionsForChat(const AppState& app, const ChatSession& chat)
 		{
 			if (app.provider_model_catalog == nullptr) return nlohmann::json::array();
-			return app.provider_model_catalog->GetCachedProviderConfigOptions(chat.provider_id, ModelCatalogWorkspace(app, chat));
+			return app.provider_model_catalog->GetCachedProviderConfigOptions(chat.provider_id,
+			    ModelCatalogWorkspace(app, chat), chat.execution_host_id);
 		}
 
 		nlohmann::json SerializeProviderModelCatalogs(const AppState& app)
 		{
 			nlohmann::json catalogs = nlohmann::json::array();
 			if (app.provider_model_catalog == nullptr) return catalogs;
+			std::unordered_set<std::string> seen;
+			const auto append_catalog = [&](const std::string& provider_id,
+			                                const std::string& workspace,
+			                                const std::string& execution_host_id)
+			{
+				if (provider_id.empty() || workspace.empty()) return;
+				const std::string host = uam::strings::NonEmptyOrFallback(
+				    execution_host_id, std::string(uam::execution_hosts::kLocalHostId));
+				if (!seen.insert(provider_id + "\n" + host + "\n" + workspace).second) return;
+				const bool remote = host != uam::execution_hosts::kLocalHostId;
+				catalogs.push_back({
+				    {"providerId", provider_id},
+				    {"workspaceDirectory", workspace},
+				    {"executionHostId", host},
+				    {"availableModels", remote
+				        ? app.provider_model_catalog->GetCachedProviderModels(
+				              provider_id, workspace, host)
+				        : app.provider_model_catalog->FallbackAcpModelsForChat(
+				              provider_id, workspace)},
+				    {"configOptions", app.provider_model_catalog->GetCachedProviderConfigOptions(
+				        provider_id, workspace, host)},
+				    {"currentModelId", remote ? std::string{}
+				        : app.provider_model_catalog->FallbackAcpCurrentModelForChat(provider_id, "")},
+				    {"modelsLoading", app.provider_model_catalog->IsDiscoveryPending(
+				        provider_id, workspace, host)},
+				    {"modelRefreshError", app.provider_model_catalog->GetProviderRefreshError(
+				        provider_id, workspace, host)},
+				});
+			};
 			for (const ProviderProfile& provider : app.provider_profiles)
 			{
 				if (!provider.supports_structured) continue;
@@ -161,15 +193,17 @@ namespace uam
 					ChatSession scope;
 					scope.workspace_directory = folder.directory;
 					const std::string workspace = ModelCatalogWorkspace(app, scope);
-					catalogs.push_back({
-					    {"providerId", provider.id},
-					    {"workspaceDirectory", workspace},
-					    {"availableModels", app.provider_model_catalog->FallbackAcpModelsForChat(provider.id, workspace)},
-					    {"currentModelId", app.provider_model_catalog->FallbackAcpCurrentModelForChat(provider.id, "")},
-					    {"modelsLoading", app.provider_model_catalog->IsDiscoveryPending(provider.id, workspace)},
-					    {"modelRefreshError", app.provider_model_catalog->GetProviderRefreshError(provider.id, workspace)},
-					});
+					append_catalog(provider.id, workspace,
+					    std::string(uam::execution_hosts::kLocalHostId));
 				}
+			}
+			for (const nlohmann::json& scope : app.provider_model_catalog->GetCatalogScopes())
+			{
+				if (!scope.is_object()) continue;
+				const std::string host = scope.value("executionHostId", "local");
+				if (host == uam::execution_hosts::kLocalHostId) continue;
+				append_catalog(scope.value("providerId", ""),
+				    scope.value("workspaceDirectory", ""), host);
 			}
 			return catalogs;
 		}
@@ -873,8 +907,13 @@ namespace uam
 			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
 			acp_json["configOptions"] = FallbackAcpConfigOptionsForChat(app, chat);
 			const std::string workspace = ModelCatalogWorkspace(app, chat);
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id, workspace);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id, workspace);
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr &&
+			    app.provider_model_catalog->IsDiscoveryPending(
+			        chat.provider_id, workspace, chat.execution_host_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr
+			    ? std::string{}
+			    : app.provider_model_catalog->GetProviderRefreshError(
+			          chat.provider_id, workspace, chat.execution_host_id);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -931,8 +970,13 @@ namespace uam
 			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
 			acp_json["configOptions"] = session->available_config_options.empty() ? FallbackAcpConfigOptionsForChat(app, chat) : SerializeAcpConfigOptions(session->available_config_options);
 			const std::string workspace = ModelCatalogWorkspace(app, chat);
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr && app.provider_model_catalog->IsDiscoveryPending(chat.provider_id, workspace);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetProviderRefreshError(chat.provider_id, workspace);
+			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr &&
+			    app.provider_model_catalog->IsDiscoveryPending(
+			        chat.provider_id, workspace, chat.execution_host_id);
+			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr
+			    ? std::string{}
+			    : app.provider_model_catalog->GetProviderRefreshError(
+			          chat.provider_id, workspace, chat.execution_host_id);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
@@ -1420,8 +1464,13 @@ namespace uam
 		j["title"] = folder.title;
 		j["directory"] = folder.directory;
 		j["collapsed"] = folder.collapsed;
+		j["executionHostId"] = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(folder.execution_host_id), "local");
 		const std::filesystem::path directory = uam::paths::PathFromUtf8(folder.directory);
-		const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
+		const bool can_probe = folder.execution_host_id.empty() ||
+		                       folder.execution_host_id == uam::execution_hosts::kLocalHostId
+		    ? PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory)
+		    : false;
 		j["missing"] = !folder.directory.empty() && can_probe && !uam::paths::IsDirectoryNoThrow(directory);
 		return j;
 	}
