@@ -31,7 +31,9 @@
 #endif
 #include <shellapi.h>
 #include <shobjidl.h>
+#if !defined(__MINGW32__)
 #include <wincontypes.h>
+#endif
 #include <windows.h>
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Shell32.lib")

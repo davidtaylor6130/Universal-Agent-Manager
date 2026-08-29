@@ -25,6 +25,8 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
     dismiss: vi.fn(),
     dismissAll: vi.fn(),
     applyCliProviderVersion: vi.fn(async () => true),
+    applyRemoteHelperUpdate: vi.fn(async () => true),
+    remoteHelperUpdatingId: '',
     providerStates: [],
     providerTaskRunning: false,
     providerUpdateResults: [],
@@ -72,6 +74,25 @@ describe('UpdatesPanel', () => {
     })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
+    act(() => root.unmount())
+  })
+
+  it('installs an available SSH helper update from the updates panel', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [{
+        id: 'remote-helper-lab', remoteHostId: 'lab', name: 'Homelab SSH helper',
+        currentVersion: '4.8.0-alpha', latestVersion: '4.8.0-alpha-2', url: '', installable: true,
+      }],
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    const update = host.querySelector('button[aria-label="Update Homelab SSH helper to 4.8.0-alpha-2"]') as HTMLButtonElement
+    expect(update.textContent).toContain('Update helper')
+    await act(async () => update.click())
+    expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('lab')
+    expect(host.textContent).not.toContain('View release')
     act(() => root.unmount())
   })
 

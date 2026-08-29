@@ -149,7 +149,24 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                     />
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {update.providerId && update.installable ? (
+                    {update.remoteHostId ? (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        leadingIcon={<Download size={14} aria-hidden />}
+                        aria-label={`Update ${update.name} to ${update.latestVersion}`}
+                        loading={monitor.remoteHelperUpdatingId === update.remoteHostId}
+                        disabled={Boolean(monitor.remoteHelperUpdatingId) && monitor.remoteHelperUpdatingId !== update.remoteHostId}
+                        onClick={async () => {
+                          setInstallError('')
+                          if (!await monitor.applyRemoteHelperUpdate(update.remoteHostId!)) {
+                            setInstallError(`${update.name} update failed. Check its SSH connection and bundled helper in Remote Hosts.`)
+                          }
+                        }}
+                      >
+                        {monitor.remoteHelperUpdatingId === update.remoteHostId ? 'Updating…' : 'Update helper'}
+                      </Button>
+                    ) : update.providerId && update.installable ? (
                       <Button
                         size="sm"
                         variant="primary"
@@ -177,7 +194,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                         View release
                       </Button>
                     )}
-                    {update.providerId && (
+                    {update.providerId && !update.remoteHostId && (
                       <Button
                         size="sm"
                         variant="ghost"

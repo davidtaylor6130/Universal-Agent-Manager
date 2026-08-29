@@ -71,6 +71,10 @@ namespace uam::remote
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
+		bool CopyFile(const std::string& request_id,
+		              const std::filesystem::path& source_path,
+		              const std::filesystem::path& target_path, bool overwrite,
+		              std::string* error_out = nullptr);
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);

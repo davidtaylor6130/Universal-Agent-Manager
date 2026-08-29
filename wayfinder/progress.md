@@ -1708,3 +1708,32 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   `--version`, and deep/strict macOS code-signature verification all report the alpha-2 build as
   valid.
 - Status: `COMPLETE`.
+
+## 2026-08-29 — Remote helper refresh, visibility, and remote VCS route
+
+- Fixed the helper-refresh root cause: the app bundle now contains target-native runners for Linux
+  ARM64, Linux x86_64, and Windows x86_64. The existing install/reinstall route selects the detected
+  target artifact, verifies its checksum, replaces the helper, restarts it, and verifies its version.
+- Helper versions older than the controller now appear in the Updates panel with an **Update helper**
+  action. Remote offline/error states and session transport failures appear in Notifications, with a
+  recovery notification when the connection returns.
+- Existing workspace editing keeps machine ownership immutable but renders **Runs on**, **Name**, and
+  **Directory** with the same field hierarchy and styling.
+- Git/SVN status, diff, staging, commit, and AI commit-message generation now execute through the
+  selected remote workspace helper. Remote Git commits preserve and restore the target machine's
+  staging index on failure, so a remote workspace can never fall through to a same-named Mac path.
+- Edge-case trace: remote attachments already upload into the target workspace; skills and custom
+  agent instructions are controller snapshots injected into the remote provider request; ACP and
+  terminal sessions already run through the remote helper. Finder/editor launches and Computer Use
+  intentionally remain controller-local/disabled for remote workspaces.
+- Verification passed: 38 frontend files / 576 tests; 661 native core assertions outside the
+  filesystem socket sandbox; production UI/native build; deep/strict app signature; executable
+  Linux ARM64 and Linux x86_64 runners reporting `4.8.0-alpha-2`; Windows x86_64 PE version evidence;
+  runner copy/overwrite rollback primitives; and exact packaged SHA-256 checksums.
+- Replaced only the installed application bundle at
+  `/Users/davidtaylormacbookpro/Applications/universal_agent_manager.app`; preserved its predecessor
+  at `/private/tmp/universal_agent_manager-alpha-2-before-remote-vcs.app`. Chats, settings, SSH
+  aliases, keys, and application data were not changed. No homelab command or connection occurred.
+- Status: `COMPLETE_WITH_PHYSICAL_ACCEPTANCE_PENDING` — implementation and local cross-platform
+  evidence are complete. A real remote VCS status/diff/commit journey still requires the owner's
+  explicitly approved disposable repository on a configured remote host.

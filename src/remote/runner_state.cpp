@@ -400,6 +400,29 @@ namespace uam::remote
 				return ProcessError(request, "invalid_request",
 				                    "A portable bounded uploadId is required.");
 			const std::string upload_id = request["uploadId"].get<std::string>();
+			if (type == "file.copy")
+			{
+				if (!request.contains("sourcePath") || !request["sourcePath"].is_string() ||
+				    !request.contains("targetPath") || !request["targetPath"].is_string())
+					return ProcessError(request, "invalid_request", "Source and target file paths are required.");
+				const std::string source_text = request["sourcePath"].get<std::string>();
+				const std::string target_text = request["targetPath"].get<std::string>();
+				const std::filesystem::path source(source_text);
+				const std::filesystem::path target(target_text);
+				if (!IsBoundedText(source_text, kMaxWorkingDirectoryBytes) ||
+				    !IsBoundedText(target_text, kMaxWorkingDirectoryBytes) ||
+				    !source.is_absolute() || !target.is_absolute())
+					return ProcessError(request, "invalid_request", "The source or target file path is invalid.");
+				std::error_code error;
+				if (!std::filesystem::is_regular_file(source, error) || error)
+					return ProcessError(request, "not_found", "The source file does not exist.");
+				const auto options = request.value("overwrite", false)
+				    ? std::filesystem::copy_options::overwrite_existing
+				    : std::filesystem::copy_options::none;
+				if (!std::filesystem::copy_file(source, target, options, error) || error)
+					return ProcessError(request, "copy_failed", "The file could not be copied.");
+				return ProcessSuccess(request, {{"path", target_text}});
+			}
 			if (type == "file.remove")
 			{
 				if (!request.contains("path") || !request["path"].is_string())

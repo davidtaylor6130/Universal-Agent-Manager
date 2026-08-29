@@ -349,6 +349,18 @@ namespace uam::remote
 		                {"path", remote_path.string()}}, response, error_out);
 	}
 
+	bool RunnerClient::CopyFile(const std::string& request_id,
+	                            const std::filesystem::path& source_path,
+	                            const std::filesystem::path& target_path,
+	                            const bool overwrite, std::string* error_out)
+	{
+		nlohmann::json response;
+		return Request({{"type", "file.copy"}, {"uploadId", request_id},
+		                {"sourcePath", source_path.string()},
+		                {"targetPath", target_path.string()}, {"overwrite", overwrite}},
+		               response, error_out);
+	}
+
 	bool RunnerClient::ListDirectories(const std::filesystem::path& remote_path,
 	                                   DirectoryListing& result,
 	                                   std::string* error_out)

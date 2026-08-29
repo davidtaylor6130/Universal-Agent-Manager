@@ -383,6 +383,12 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 	std::string uploaded_bytes;
 	UAM_ASSERT(uam::io::TryReadBinaryFile(uploaded, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
+	const fs::path copied = upload.root / "nested" / "attachment-copy.txt";
+	UAM_ASSERT(client.CopyFile("copy-1", uploaded, copied, false, &error));
+	UAM_ASSERT(uam::io::TryReadBinaryFile(copied, uploaded_bytes));
+	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
+	UAM_ASSERT(!client.CopyFile("copy-2", uploaded, copied, false, &error));
+	UAM_ASSERT(client.CopyFile("copy-3", uploaded, copied, true, &error));
 	UAM_ASSERT(!client.UploadFile("upload-2", uploaded, "must-not-overwrite", &error));
 	UAM_ASSERT(uam::io::TryReadBinaryFile(uploaded, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));

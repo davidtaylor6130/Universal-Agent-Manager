@@ -51,6 +51,9 @@ describe('AppShell', () => {
       updateLastCheckedAt: new Date().toISOString(),
       dismissedUpdateVersions: {},
       cliVersionManager: { providers: [] },
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' }],
+      acpBindingBySessionId: {},
+      cliBindingBySessionId: {},
     })
   })
 
@@ -239,6 +242,40 @@ describe('AppShell', () => {
     const panel = host.querySelector('[aria-label="Notifications"]')
     expect(panel?.textContent).toContain('Application status')
     expect(panel?.textContent).toContain('Failed to persist settings.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('notifies when a remote chat disconnects and when it reconnects', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      sessions: [{ id: 'remote-chat', name: 'Containers', viewMode: 'chat', folderId: null, executionHostId: 'lab', createdAt: new Date(), updatedAt: new Date() }],
+      cliBindingBySessionId: {
+        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'error', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'The remote runner bridge closed.' },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell />))
+
+    expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
+    act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('Homelab connection issue')
+    expect(host.textContent).toContain('The remote runner bridge closed.')
+
+    await act(async () => useAppStore.setState((state) => ({
+      cliBindingBySessionId: {
+        ...state.cliBindingBySessionId,
+        'remote-chat': { ...state.cliBindingBySessionId['remote-chat'], running: true, lifecycleState: 'idle', lastError: '' },
+      },
+    })))
+    expect(host.textContent).toContain('Homelab reconnected')
+    expect(host.textContent).toContain('The remote connection is available again.')
 
     act(() => root.unmount())
     host.remove()

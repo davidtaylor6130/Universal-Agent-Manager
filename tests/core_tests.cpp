@@ -6556,7 +6556,7 @@ UAM_TEST(RemoteWorkspacePathsRemainNativeToTheTargetHost)
 	UAM_ASSERT(!uam::execution_hosts::IsAbsoluteRemotePath("linux", "relative/project"));
 }
 
-UAM_TEST(RemoteWorkspaceLocalVcsAndWorktreeActionsFailClosed)
+UAM_TEST(RemoteWorkspaceLocalWorktreeActionsFailClosedAndMissingHostBlocksVcs)
 {
 	TempDir temp("uam-remote-workspace-local-actions");
 	uam::AppState app;
@@ -6590,14 +6590,14 @@ UAM_TEST(RemoteWorkspaceLocalVcsAndWorktreeActionsFailClosed)
 	const uam::VcsCommitService vcs;
 	const uam::VcsCommitStatus vcs_status = vcs.Status(app, chat);
 	UAM_ASSERT(!vcs_status.available);
-	UAM_ASSERT(vcs_status.warning.find("remote") != std::string::npos);
+	UAM_ASSERT(vcs_status.error.find("host") != std::string::npos);
 	std::string diff_error;
 	UAM_ASSERT(vcs.Diff(app, chat, "sentinel.txt", uam::VcsType::Git, &diff_error).empty());
-	UAM_ASSERT(diff_error.find("remote") != std::string::npos);
+	UAM_ASSERT(diff_error.find("host") != std::string::npos);
 	UAM_ASSERT(vcs.Commit(app, chat, uam::VcsType::Git, "Must not run", {"sentinel.txt"})
-	               .error.find("remote") != std::string::npos);
+	               .error.find("host") != std::string::npos);
 	UAM_ASSERT(vcs.GenerateMessage(app, chat, uam::VcsType::Git, {"sentinel.txt"})
-	               .error.find("remote") != std::string::npos);
+	               .error.find("host") != std::string::npos);
 	ChatFolder remote_folder;
 	remote_folder.directory = local_collision.string();
 	remote_folder.execution_host_id = chat.execution_host_id;

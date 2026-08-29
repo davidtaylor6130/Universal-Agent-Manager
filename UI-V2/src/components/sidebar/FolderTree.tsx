@@ -1682,25 +1682,37 @@ const FolderRow = memo(function FolderRow({
             border: '1px solid var(--border)',
           }}
         >
-          <input
-            autoFocus
-            value={editFolderName}
-            onChange={(e) => onEditNameChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') onCommitRename()
-              if (e.key === 'Escape') onCancelEdit()
-            }}
-            placeholder="Folder name"
-            className="w-full rounded px-2 py-1 text-xs outline-none"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              color: 'var(--text)',
-              fontFamily: 'inherit',
-            }}
-          />
+          <label className="grid gap-1 text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>
+            Runs on
+            <input
+              aria-label="Workspace computer"
+              value={machineLabel.replace(/^Runs on /, '')}
+              readOnly
+              className="w-full rounded px-2 py-1 text-xs outline-none"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'inherit' }}
+            />
+          </label>
+          <label className="grid gap-1 text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>
+            Name
+            <input
+              autoFocus
+              aria-label="Workspace name"
+              value={editFolderName}
+              onChange={(e) => onEditNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onCommitRename()
+                if (e.key === 'Escape') onCancelEdit()
+              }}
+              placeholder="Folder name"
+              className="w-full rounded px-2 py-1 text-xs outline-none"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'inherit' }}
+            />
+          </label>
+          <label className="grid gap-1 text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>
+            Directory
           <div className="flex items-center gap-2">
             <input
+              aria-label="Workspace directory"
               value={editFolderDirectory}
               onChange={(e) => onEditDirectoryChange(e.target.value)}
 			  readOnly={machineKind === 'remote'}
@@ -1721,6 +1733,7 @@ const FolderRow = memo(function FolderRow({
 			  Browse
 			</Button>}
           </div>
+          </label>
           <div className="flex items-center justify-end gap-2">
             <Button
               variant="ghost"

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { UPDATE_REQUEST_TIMEOUT_MS, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
+import { UPDATE_REQUEST_TIMEOUT_MS, availableRemoteHelperUpdates, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
 
 describe('update catalog', () => {
   afterEach(() => {
@@ -13,6 +13,19 @@ describe('update catalog', () => {
     expect(compareVersions('0.9.9', '1.0.0')).toBeLessThan(0)
     expect(compareVersions('4.5.7-alpha2', '4.5.7')).toBeLessThan(0)
     expect(compareVersions('4.5.7-alpha.10', '4.5.7-alpha.2')).toBeGreaterThan(0)
+    expect(compareVersions('4.8.0-alpha-2', '4.8.0-alpha')).toBeGreaterThan(0)
+  })
+
+  it('reports an older SSH helper independently of the online catalog', () => {
+    expect(availableRemoteHelperUpdates('4.8.0-alpha-2', [
+      { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+      { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+    ], {})).toEqual([expect.objectContaining({
+      id: 'remote-helper-lab',
+      remoteHostId: 'lab',
+      currentVersion: '4.8.0-alpha',
+      latestVersion: '4.8.0-alpha-2',
+    })])
   })
 
   it('rejects malformed cached catalog entries', () => {

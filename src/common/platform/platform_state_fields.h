@@ -15,7 +15,9 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include <wincontypes.h>
+#if defined(__MINGW32__)
+using HPCON = HANDLE;
+#endif
 #elif defined(__APPLE__) || defined(__linux__)
 #include <sys/types.h>
 #else

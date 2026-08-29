@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
 
@@ -59,6 +59,49 @@ function statusLineNotificationId(detail: string): string {
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
   return `missing-folder-${folder.id}-${folder.name}-${folder.directory}`
+}
+
+type RemoteConnectionNotification = {
+  id: string
+  connectionKey: string
+  hostLabel: string
+  title: string
+  detail: string
+  warning?: boolean
+}
+
+function remoteConnectionIssues(
+  executionHosts: ReturnType<typeof useAppStore.getState>['executionHosts'],
+  sessions: ReturnType<typeof useAppStore.getState>['sessions'],
+  acpBindings: ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'],
+  cliBindings: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'],
+): RemoteConnectionNotification[] {
+  const hosts = new Map(executionHosts.map((host) => [host.id, host]))
+  const issues = executionHosts.flatMap((host) => host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
+    id: `remote-host-${host.id}-${host.runnerStatus}`,
+    connectionKey: `host-${host.id}`,
+    hostLabel: host.label,
+    title: `${host.label} connection ${host.runnerStatus}`,
+    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH helper.' : 'The SSH helper needs attention in Remote Hosts.',
+    warning: true,
+  }] : [])
+  const connectionError = /remote|runner|ssh|bridge|disconnect|reconnect|transport/i
+  for (const session of sessions) {
+    const hostId = session.executionHostId ?? 'local'
+    if (hostId === 'local') continue
+    const error = acpBindings[session.id]?.lastError || cliBindings[session.id]?.lastError || ''
+    if (!error || !connectionError.test(error)) continue
+    const hostLabel = hosts.get(hostId)?.label || hostId
+    issues.push({
+      id: `remote-session-${session.id}-${error}`,
+      connectionKey: `session-${session.id}`,
+      hostLabel,
+      title: `${hostLabel} connection issue`,
+      detail: `${session.name}: ${error}`,
+      warning: true,
+    })
+  }
+  return issues
 }
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
@@ -129,10 +172,12 @@ function LeftActivityRail() {
 
 function NotificationsPanel({
   dismissedNotificationIds,
+  remoteNotifications,
   onClose,
   onDismiss,
 }: {
   dismissedNotificationIds: ReadonlySet<string>
+  remoteNotifications: RemoteConnectionNotification[]
   onClose: () => void
   onDismiss: (id: string) => void
 }) {
@@ -163,6 +208,7 @@ function NotificationsPanel({
       title: 'Finder / Explorer action',
       detail: shellActionNotification,
     }] : []),
+    ...remoteNotifications,
     ...missingFolders.map((folder): Notification => ({
       id: missingFolderNotificationId(folder),
       title: `Workspace folder missing: ${folder.name}`,
@@ -323,7 +369,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
   const updateCount = monitor.updates.length
-  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId).length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || update.remoteHostId).length
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -381,6 +427,10 @@ export function AppShell() {
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
   const folders = useAppStore((s) => s.folders)
+  const sessions = useAppStore((s) => s.sessions)
+  const executionHosts = useAppStore((s) => s.executionHosts)
+  const acpBindings = useAppStore((s) => s.acpBindingBySessionId)
+  const cliBindings = useAppStore((s) => s.cliBindingBySessionId)
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const statusLine = useAppStore((s) => s.statusLine)
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
@@ -388,11 +438,19 @@ export function AppShell() {
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
+  const connectionIssues = useMemo(
+    () => remoteConnectionIssues(executionHosts, sessions, acpBindings, cliBindings),
+    [acpBindings, cliBindings, executionHosts, sessions],
+  )
+  const previousConnectionIssues = useRef(connectionIssues)
+  const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
     ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+    ...connectionIssues.map((notification) => notification.id),
+    ...connectionRecoveries.map((notification) => notification.id),
   ]
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
@@ -407,17 +465,38 @@ export function AppShell() {
   }, [])
 
   useEffect(() => {
+    const currentKeys = new Set(connectionIssues.map((issue) => issue.connectionKey))
+    const recovered = previousConnectionIssues.current.filter((issue) => !currentKeys.has(issue.connectionKey))
+    if (recovered.length > 0) {
+      const now = Date.now()
+      setConnectionRecoveries((current) => [
+        ...current.filter((notification) => !recovered.some((issue) => issue.connectionKey === notification.connectionKey)),
+        ...recovered.map((issue, index) => ({
+          id: `remote-reconnected-${issue.connectionKey}-${now + index}`,
+          connectionKey: issue.connectionKey,
+          hostLabel: issue.hostLabel,
+          title: `${issue.hostLabel} reconnected`,
+          detail: 'The remote connection is available again.',
+        })),
+      ])
+    }
+    previousConnectionIssues.current = connectionIssues
+  }, [connectionIssues])
+
+  useEffect(() => {
     const activeIds = new Set([
       ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+      ...connectionIssues.map((notification) => notification.id),
+      ...connectionRecoveries.map((notification) => notification.id),
     ])
     setDismissedNotificationIds((dismissed) => {
       const currentIds = [...dismissed]
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [folders, shellActionNotification, statusLine])
+  }, [connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -552,6 +631,7 @@ export function AppShell() {
       {alertsOpen && (
         <NotificationsPanel
           dismissedNotificationIds={dismissedNotificationIds}
+          remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
           onClose={() => setAlertsOpen(false)}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {

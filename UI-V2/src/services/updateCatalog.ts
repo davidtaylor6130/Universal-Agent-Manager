@@ -1,5 +1,6 @@
 import type { CliVersionManager } from '../store/cpp/types'
 import type { Provider } from '../types/provider'
+import type { ExecutionHost } from '../types/session'
 
 const CACHE_KEY = 'uam-update-catalog-v1'
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -29,6 +30,7 @@ export interface LatestUpdateCatalog {
 export interface AvailableUpdate {
   id: string
   providerId?: string
+  remoteHostId?: string
   name: string
   currentVersion: string
   latestVersion: string
@@ -41,8 +43,10 @@ function cleanVersion(value: string): string {
 }
 
 export function compareVersions(left: string, right: string): number {
-  const [aCore, aPre = ''] = cleanVersion(left).split('-', 2)
-  const [bCore, bPre = ''] = cleanVersion(right).split('-', 2)
+  const [aCore, ...aPreParts] = cleanVersion(left).split('-')
+  const [bCore, ...bPreParts] = cleanVersion(right).split('-')
+  const aPre = aPreParts.join('-')
+  const bPre = bPreParts.join('-')
   const a = aCore.split('.').map((part) => Number.parseInt(part, 10) || 0)
   const b = bCore.split('.').map((part) => Number.parseInt(part, 10) || 0)
   for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
@@ -64,6 +68,29 @@ export function compareVersions(left: string, right: string): number {
     return aParts[index] < bParts[index] ? -1 : 1
   }
   return 0
+}
+
+export function availableRemoteHelperUpdates(
+  appVersion: string,
+  executionHosts: ExecutionHost[],
+  dismissedVersions: Record<string, string>,
+): AvailableUpdate[] {
+  const latestVersion = cleanVersion(appVersion)
+  if (!latestVersion) return []
+  return executionHosts.flatMap((host) => {
+    const currentVersion = cleanVersion(host.runnerVersion)
+    const id = `remote-helper-${host.id}`
+    if (host.transport !== 'ssh' || !currentVersion || compareVersions(latestVersion, currentVersion) <= 0 || dismissedVersions[id] === latestVersion) return []
+    return [{
+      id,
+      remoteHostId: host.id,
+      name: `${host.label} SSH helper`,
+      currentVersion,
+      latestVersion,
+      url: '',
+      installable: true,
+    }]
+  })
 }
 
 function isCatalog(value: unknown): value is LatestUpdateCatalog {

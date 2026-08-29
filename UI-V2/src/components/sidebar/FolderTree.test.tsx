@@ -934,6 +934,34 @@ describe('FolderTree', () => {
 	  host.remove()
 	})
 
+	it('shows an existing workspace computer with the same read-only field styling', () => {
+	  useAppStore.setState({
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+		folders: [{ id: 'project', name: 'Containers', parentId: null, directory: '/opt/containers', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!.click())
+	  const computer = host.querySelector<HTMLInputElement>('input[aria-label="Workspace computer"]')!
+	  const name = host.querySelector<HTMLInputElement>('input[aria-label="Workspace name"]')!
+	  const directory = host.querySelector<HTMLInputElement>('input[aria-label="Workspace directory"]')!
+	  expect(computer.value).toBe('Homelab')
+	  expect(computer.readOnly).toBe(true)
+	  expect(computer.className).toBe(name.className)
+	  expect(computer.style.background).toBe(name.style.background)
+	  expect(computer.style.border).toBe(directory.style.border)
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
 	it('browses remote directories only after an explicit Browse action', async () => {
 	  const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
 		ok: true as const,
