@@ -295,7 +295,8 @@ namespace
 
 		for (const ChatFolder& folder : app.folders)
 		{
-			if (FolderMatchesWorkspaceRoot(folder, workspace_root))
+			if (uam::paths::IsControllerLocalWorkspace(folder) &&
+			    FolderMatchesWorkspaceRoot(folder, workspace_root))
 			{
 				native_chat.folder_id = folder.id;
 				native_chat.workspace_directory = folder.directory;
@@ -494,7 +495,8 @@ namespace
 	{
 		for (const ChatFolder& folder : app.folders)
 		{
-			if (Utf8WorkspaceDirectoriesMatch(folder.directory, source.folder_directory))
+			if (uam::paths::IsControllerLocalWorkspace(folder) &&
+			    Utf8WorkspaceDirectoriesMatch(folder.directory, source.folder_directory))
 			{
 				return folder.id;
 			}
@@ -565,6 +567,10 @@ namespace
 
 		for (const ChatFolder& folder : app.folders)
 		{
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				continue;
+			}
 			fs::path root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory);
 
 			if (root.empty())
@@ -1012,7 +1018,7 @@ fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const uam::
 		return {};
 	}
 
-	const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 	const auto chats_dir = ResolveNativeHistoryChatsDirForWorkspace(workspace_root);
 	return chats_dir ? *chats_dir : fs::path{};
 }
@@ -1137,6 +1143,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory))
 	{
 		result.Fail("Codex history scan requires a valid workspace folder.");
+		return result;
+	}
+	if (!uam::paths::IsControllerLocalWorkspace(*matched_folder))
+	{
+		result.Fail("Remote native-history rescanning is not supported yet.");
 		return result;
 	}
 	const ChatFolder folder = *matched_folder;
@@ -1530,6 +1541,10 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 	{
 		error_out->clear();
 	}
+	if (!uam::paths::IsControllerLocalWorkspace(folder))
+	{
+		return false;
+	}
 
 	const std::string folder_directory = uam::strings::Trim(folder.directory);
 
@@ -1602,6 +1617,24 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	const ChatFolder* new_folder = ChatDomainService().FindFolderById(app, target_folder_id);
 	if (new_folder == nullptr)
 	{
+		return false;
+	}
+	if (target_folder_id == chat.folder_id)
+	{
+		return true;
+	}
+	const std::string current_host = uam::strings::NonEmptyOrFallback(
+	    uam::strings::Trim(chat.execution_host_id), "local");
+	const std::string target_host = uam::strings::NonEmptyOrFallback(
+	    uam::strings::Trim(new_folder->execution_host_id), "local");
+	if (current_host != target_host)
+	{
+		app.status_line = "A chat cannot be moved to a workspace on another computer.";
+		return false;
+	}
+	if (current_host != uam::execution_hosts::kLocalHostId)
+	{
+		app.status_line = "Moving remote chats between workspace directories is not supported yet.";
 		return false;
 	}
 
@@ -1724,7 +1757,7 @@ std::string ChatHistorySyncService::ResolveResumeSessionIdForChat(const uam::App
 		return candidate_id;
 	}
 
-	const fs::path current_workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const fs::path current_workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 	for (const fs::path& workspace_root : CollectWorkspaceRootsForNativeHistory(app))
 	{
 		if (workspace_root == current_workspace)
@@ -2227,7 +2260,8 @@ void ChatHistorySyncService::RefreshNativeSessionDirectory(uam::AppState& app) c
 
 	if (selected != nullptr)
 	{
-		const auto selected_chats_dir = ResolveNativeHistoryChatsDirForWorkspace(uam::paths::ResolveWorkspaceRootPath(app, *selected));
+		const auto selected_chats_dir = ResolveNativeHistoryChatsDirForWorkspace(
+		    uam::paths::ResolveControllerWorkspaceRootPath(app, *selected));
 
 		if (selected_chats_dir)
 		{

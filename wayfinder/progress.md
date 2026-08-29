@@ -1430,3 +1430,31 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
 - Status: `IN_PROGRESS` — continue the remote path/no-fallback audit and remaining local-only edge
   cases before the next remote acceptance step. The physical Homelab remains untouched and every
   future action there still requires its own exact-command approval.
+
+## 2026-08-29 — Host-aware workspace identity and Homelab/NAS tooltip regression closed
+
+- The user clarified the invariant precisely: a workspace is one directory on one machine, so even
+  identical path strings on Homelab and NAS are different workspaces. The shared ownership key now
+  combines the execution host with the target-native normalized directory. Folder assignment,
+  startup repair, and Unsorted recovery all use that same key instead of comparing controller-local
+  filesystem paths alone.
+- Moving a chat into a folder on another machine is rejected without mutation. Moving remote chats
+  between target directories is also rejected until target-side move/history transport exists. The
+  recovery preview carries and displays the execution machine, and same-path recovery groups on
+  Homelab and NAS remain separate.
+- Controller-only services now use one shared local-workspace guard. Remote paths cannot collide with
+  Mac paths to trigger local agent-file loading, workspace memory scanning, native-history import or
+  deletion, shell actions, model discovery, Git/worktree operations, or folder availability probes.
+  Global UAM memory remains available to remote chats; controller-local project memory does not.
+- Added the exact rendered regression: two `/srv/project` workspaces owned by Homelab and NAS produce
+  two machine badges with independent `Runs on Homelab` and `Runs on NAS` accessibility labels. A
+  child chat with stale or mixed authority cannot alter either folder tooltip.
+- Isolated GUI inspection used only the freshly built repository bundle and
+  `/private/tmp/uam-workspace-final.7WIOyI`; it visibly showed separate Windows, local, and Homelab
+  workspace rows with one machine icon each. No Applications build, global UAM data, SSH connection,
+  remote command, provider process, or Homelab action was used.
+- Verification passed: focused FolderTree 35/35; full frontend 38 files / 568 tests; full native CTest
+  6/6 outside the Unix-socket sandbox; signed repository bundle; and `git diff --check`.
+- Status: `IN_PROGRESS` — the workspace machine invariant is closed locally. The broader approved
+  remote-helper goal continues, and any physical Homelab step still requires separate exact-command
+  approval.

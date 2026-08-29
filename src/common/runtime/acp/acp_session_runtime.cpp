@@ -378,7 +378,7 @@ namespace uam
 				return true;
 			}
 			const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
-			    app.data_root, uam::paths::ResolveWorkspaceRootPath(app, chat));
+			    app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 			const std::string id = uam::strings::NonEmptyOrFallback(
 			    uam::strings::Trim(chat.uam_agent_id), "build");
 			const auto agent = std::ranges::find(agents.definitions, id, &AgentDefinition::id);

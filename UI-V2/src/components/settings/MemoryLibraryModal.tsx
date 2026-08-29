@@ -125,7 +125,8 @@ function buildMemoryLocationGroups(
     return []
   }
 
-  const folderOrder = new Map(folders.map((folder, index) => [folder.id, index]))
+  const localFolders = folders.filter((folder) => (folder.executionHostId || 'local') === 'local')
+  const folderOrder = new Map(localFolders.map((folder, index) => [folder.id, index]))
   const groups = new Map<string, {
     label: string
     rootPath: string
@@ -137,7 +138,7 @@ function buildMemoryLocationGroups(
     groups.set('global', { label: 'Global memory', rootPath: scope.scopeType === 'global' ? scope.rootPath : 'Global memory root', sortIndex: -1, entries: [] })
   }
   if (scope.scopeType === 'all') {
-    folders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
+    localFolders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
       label: folder.name,
       rootPath: `${folder.directory.replace(/[\\/]+$/, '')}/.UAM`,
       sortIndex: index,
@@ -286,7 +287,7 @@ export function MemoryLibraryModal() {
   const targetOptions = [
     { value: 'global', label: 'Global memory' },
     ...folders
-      .filter((folder) => folder.directory.trim().length > 0)
+	  .filter((folder) => (folder.executionHostId || 'local') === 'local' && folder.directory.trim().length > 0)
       .map((folder) => ({ value: `folder:${folder.id}`, label: folder.name })),
   ]
   const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: memoryCategoryLabel(category) }))

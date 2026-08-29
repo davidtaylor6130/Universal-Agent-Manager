@@ -104,6 +104,56 @@ UAM_TEST(MemoryServiceRecallTruncatesUtf8AtCodePointBoundary)
 	UAM_ASSERT(!nlohmann::json(recall).dump().empty());
 }
 
+UAM_TEST(RemoteWorkspaceMemoryNeverUsesAControllerPathCollision)
+{
+	TempDir temp("uam-remote-memory-collision");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.memory_recall_budget_bytes = 2048;
+
+	ChatFolder folder;
+	folder.id = "remote-folder";
+	folder.title = "Remote";
+	folder.directory = (temp.root / "collision").string();
+	folder.execution_host_id = "homelab";
+	app.folders.push_back(folder);
+
+	const fs::path global_category = MemoryService::CategoryPath(
+	    MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons");
+	const fs::path collision_category = MemoryService::CategoryPath(
+	    MemoryService::LocalMemoryRoot(folder.directory), "Lessons/User_Lessons");
+	fs::create_directories(global_category);
+	fs::create_directories(collision_category);
+	UAM_ASSERT(uam::io::WriteTextFile(global_category / "global.md",
+	                                  "## Memory\nGlobal memory remains available."));
+	UAM_ASSERT(uam::io::WriteTextFile(collision_category / "wrong-machine.md",
+	                                  "## Memory\nNever read this controller collision."));
+
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "opencode-cli");
+	chat.id = "remote-chat";
+	chat.execution_host_id = folder.execution_host_id;
+	chat.workspace_directory = folder.directory;
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember this.", "now"});
+	app.chats.push_back(chat);
+
+	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue");
+	UAM_ASSERT(recall.find("Global memory remains available") != std::string::npos);
+	UAM_ASSERT(recall.find("Never read this controller collision") == std::string::npos);
+	UAM_ASSERT(MemoryService::ListManualScanCandidates(app).empty());
+	int queued_count = -1;
+	std::string error;
+	UAM_ASSERT(!MemoryService::QueueManualScan(app, {chat.id}, &queued_count, &error));
+	UAM_ASSERT_EQ(queued_count, 0);
+
+	MemoryLibraryService::Scope scope;
+	UAM_ASSERT(!MemoryLibraryService::ResolveScope(app, "folder", folder.id, scope, &error));
+	UAM_ASSERT(error.find("remote") != std::string::npos);
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", scope, &error));
+	UAM_ASSERT_EQ(scope.roots.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(scope.roots.front().root_path, MemoryService::GlobalMemoryRoot(app.data_root));
+}
+
 UAM_TEST(MemoryServiceSmallModelRecallRanksPromptRelevantMemoryFirst)
 {
 	TempDir temp("uam-memory-small-model-ranking");

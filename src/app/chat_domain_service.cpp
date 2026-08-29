@@ -244,22 +244,13 @@ void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 			continue;
 		}
 
-		const std::filesystem::path chat_workspace = uam::paths::NormalizeExistingPath(
-		    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
-		        uam::strings::Trim(chat.workspace_directory)));
-
-		if (chat_workspace.empty())
-		{
-			continue;
-		}
+		const std::string chat_key = uam::paths::WorkspaceOwnershipKey(
+		    app, chat.execution_host_id, chat.workspace_directory);
 
 		for (const ChatFolder& folder : app.folders)
 		{
-			const std::filesystem::path folder_directory = uam::paths::NormalizeExistingPath(
-			    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
-			        uam::strings::Trim(folder.directory)));
-
-			if (!folder_directory.empty() && chat_workspace == folder_directory)
+			if (uam::paths::WorkspaceOwnershipKey(
+			        app, folder.execution_host_id, folder.directory) == chat_key)
 			{
 				chat.folder_id = folder.id;
 				break;

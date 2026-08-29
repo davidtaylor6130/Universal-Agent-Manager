@@ -39,6 +39,7 @@ namespace
 		    {"id", chat.id},
 		    {"title", chat.title},
 		    {"directory", chat.directory},
+		    {"executionHostId", chat.execution_host_id},
 		    {"reason", chat.reason},
 		};
 	}
@@ -51,6 +52,7 @@ namespace
 			groups.push_back({
 			    {"title", group.title},
 			    {"directory", group.directory},
+			    {"executionHostId", group.execution_host_id},
 			    {"existingFolderId", group.existing_folder_id},
 			    {"chatIds", group.chat_ids},
 			});

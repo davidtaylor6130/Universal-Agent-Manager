@@ -573,7 +573,8 @@ void ApplyCommandSafetyDecision(const AppState& app, const ChatSession& chat, Ac
 	    : uam::command_safety::ClassifyCommand(pending.content);
 	pending.safety_risk = uam::command_safety::RiskLevelName(risk);
 	pending.safety_tier = uam::command_safety::TierName(tier);
-	pending.version_controlled_workspace = uam::command_safety::WorkspaceIsVersionControlled(uam::paths::ResolveWorkspaceRootPath(app, chat));
+	pending.version_controlled_workspace = uam::command_safety::WorkspaceIsVersionControlled(
+	    uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 	pending.safety_requires_approval = uam::command_safety::RequiresApproval(tier, risk, pending.version_controlled_workspace);
 }
 

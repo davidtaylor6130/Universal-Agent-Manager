@@ -133,6 +133,35 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('keeps same-directory workspaces on different computers separate', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+        { id: 'nas', label: 'NAS', transport: 'ssh', sshAlias: 'nas', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      folders: [
+        { ...useAppStore.getState().folders[0], id: 'homelab-workspace', name: 'Homelab project', directory: '/srv/project', executionHostId: 'homelab' },
+        { ...useAppStore.getState().folders[0], id: 'nas-workspace', name: 'NAS project', directory: '/srv/project', executionHostId: 'nas' },
+      ],
+      sessions: [
+        { ...makeSession(1), folderId: 'homelab-workspace', workspaceDirectory: '/srv/project', executionHostId: 'homelab' },
+        { ...makeSession(2), folderId: 'nas-workspace', workspaceDirectory: '/srv/project', executionHostId: 'nas' },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.querySelector('[data-testid="workspace-machine-homelab-workspace"]')?.getAttribute('aria-label')).toBe('Runs on Homelab')
+    expect(host.querySelector('[data-testid="workspace-machine-nas-workspace"]')?.getAttribute('aria-label')).toBe('Runs on NAS')
+    expect(host.querySelectorAll('[data-testid^="workspace-machine-"]')).toHaveLength(2)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not reclassify a workspace chat drag as a folder drag', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

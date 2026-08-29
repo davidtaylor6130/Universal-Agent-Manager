@@ -639,7 +639,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			return changed;
 		}
 
-		const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, *codex_chat);
+		const std::filesystem::path workspace_root =
+		    uam::paths::ResolveControllerWorkspaceRootPath(app, *codex_chat);
 		const std::string discovered = uam::codex::PickNewSessionId(terminal.session_ids_before, workspace_root);
 		if (!discovered.empty())
 		{

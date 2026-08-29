@@ -257,7 +257,8 @@ namespace uam
 
 		AgentDefinitionCatalog AgentCatalog(const AppState& app, const ChatSession& chat)
 		{
-			return AgentDefinitionService::Load(app.data_root, uam::paths::ResolveWorkspaceRootPath(app, chat));
+			return AgentDefinitionService::Load(
+			    app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 		}
 
 		std::vector<std::string> AllowedSkillIds(const UamControlCapability& capability)

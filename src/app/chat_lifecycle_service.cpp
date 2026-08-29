@@ -473,19 +473,7 @@ namespace
 	std::string WorkspaceOwnershipKey(const uam::AppState& app, std::string_view host_id,
 	                                  std::string_view directory)
 	{
-		const std::string host = uam::strings::NonEmptyOrFallback(
-		    uam::strings::Trim(host_id), "local");
-		if (host == uam::execution_hosts::kLocalHostId)
-		{
-			return host + "\n" + uam::paths::Utf8PathString(
-			    uam::paths::AbsolutePathNoThrow(
-			        uam::paths::ExpandTrimmedWorkspacePath(directory)));
-		}
-		const ExecutionHost* execution_host = uam::execution_hosts::Find(
-		    app.settings.execution_hosts, host);
-		return host + "\n" + uam::execution_hosts::NormalizeRemotePath(
-		    execution_host == nullptr ? std::string_view{} : execution_host->platform,
-		    directory);
+		return uam::paths::WorkspaceOwnershipKey(app, host_id, directory);
 	}
 
 	std::string WorkspaceTitle(std::string_view directory, std::string_view fallback)
@@ -503,12 +491,12 @@ namespace
 		return uam::strings::IsBlank(chat.folder_id) || ChatDomainService().FindFolderById(app, chat.folder_id) == nullptr;
 	}
 
-	std::filesystem::path RecordedWorkspaceDirectory(const ChatSession& chat)
+	std::string RecordedWorkspaceDirectory(const ChatSession& chat)
 	{
 		const std::string& recorded = uam::paths::HasGitWorktreeSource(chat)
 		                                  ? chat.workspace_source_directory
 		                                  : chat.workspace_directory;
-		return uam::paths::ExpandTrimmedWorkspacePath(recorded);
+		return uam::strings::Trim(recorded);
 	}
 
 	std::string WorkspaceTitle(const std::filesystem::path& directory)
@@ -519,12 +507,13 @@ namespace
 		return uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(name), "Workspace");
 	}
 
-	uam::WorkspaceFolderRecoveryChat RecoveryChat(const ChatSession& chat, const std::filesystem::path& directory, std::string reason)
+	uam::WorkspaceFolderRecoveryChat RecoveryChat(const ChatSession& chat, std::string directory, std::string reason)
 	{
 		return {
 		    chat.id,
 		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.title), "Untitled chat"),
-		    uam::paths::Utf8PathString(directory),
+		    std::move(directory),
+		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local"),
 		    std::move(reason),
 		};
 	}
@@ -683,15 +672,60 @@ uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const A
 	{
 		if (!IsUnsortedChat(app, chat)) continue;
 
-		const std::filesystem::path recorded_directory = RecordedWorkspaceDirectory(chat);
+		const std::string host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(chat.execution_host_id), "local");
+		const std::string recorded_directory = RecordedWorkspaceDirectory(chat);
 		if (recorded_directory.empty())
 		{
-			preview.no_location.push_back(RecoveryChat(chat, {}, "No workspace location recorded"));
+			preview.no_location.push_back(RecoveryChat(chat, "", "No workspace location recorded"));
+			continue;
+		}
+		if (host_id != uam::execution_hosts::kLocalHostId)
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(
+			    app.settings.execution_hosts, host_id);
+			if (host == nullptr)
+			{
+				preview.unavailable.push_back(RecoveryChat(
+				    chat, recorded_directory, "Execution computer no longer exists"));
+				continue;
+			}
+			const std::string directory = uam::execution_hosts::NormalizeRemotePath(
+			    host->platform, recorded_directory);
+			if (!uam::execution_hosts::IsAbsoluteRemotePath(host->platform, directory))
+			{
+				preview.unavailable.push_back(RecoveryChat(
+				    chat, recorded_directory, "Saved remote workspace path is not absolute"));
+				continue;
+			}
+			const std::string key = WorkspaceOwnershipKey(app, host_id, directory);
+			auto group = std::ranges::find_if(preview.groups, [&](const WorkspaceFolderRecoveryGroup& candidate) {
+				return WorkspaceOwnershipKey(app, candidate.execution_host_id,
+				                             candidate.directory) == key;
+			});
+			if (group == preview.groups.end())
+			{
+				WorkspaceFolderRecoveryGroup created;
+				created.title = WorkspaceTitle(directory, "Workspace");
+				created.directory = directory;
+				created.execution_host_id = host_id;
+				const auto existing = std::ranges::find_if(app.folders, [&](const ChatFolder& folder) {
+					return WorkspaceOwnershipKey(app, folder.execution_host_id,
+					                             folder.directory) == key;
+				});
+				if (existing != app.folders.end()) created.existing_folder_id = existing->id;
+				preview.groups.push_back(std::move(created));
+				group = std::prev(preview.groups.end());
+			}
+			group->chat_ids.push_back(chat.id);
 			continue;
 		}
 
+		const std::filesystem::path local_directory =
+		    uam::paths::ExpandTrimmedWorkspacePath(recorded_directory);
+
 		std::error_code status_error;
-		const std::filesystem::file_status status = std::filesystem::status(recorded_directory, status_error);
+		const std::filesystem::file_status status = std::filesystem::status(local_directory, status_error);
 		if (status_error)
 		{
 			if (status_error == std::errc::no_such_file_or_directory)
@@ -715,17 +749,22 @@ uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const A
 			continue;
 		}
 
-		const std::filesystem::path directory = uam::paths::NormalizeExistingPath(recorded_directory);
+		const std::filesystem::path directory = uam::paths::NormalizeExistingPath(local_directory);
+		const std::string key = WorkspaceOwnershipKey(
+		    app, uam::execution_hosts::kLocalHostId, uam::paths::Utf8PathString(directory));
 		auto group = std::ranges::find_if(preview.groups, [&](const WorkspaceFolderRecoveryGroup& candidate) {
-			return FolderDirectoryMatches(candidate.directory, directory);
+			return WorkspaceOwnershipKey(app, candidate.execution_host_id,
+			                             candidate.directory) == key;
 		});
 		if (group == preview.groups.end())
 		{
 			WorkspaceFolderRecoveryGroup created;
 			created.title = WorkspaceTitle(directory);
 			created.directory = uam::paths::Utf8PathString(directory);
+			created.execution_host_id = uam::execution_hosts::kLocalHostId;
 			const auto existing = std::ranges::find_if(app.folders, [&](const ChatFolder& folder) {
-				return FolderDirectoryMatches(folder.directory, directory);
+				return WorkspaceOwnershipKey(app, folder.execution_host_id,
+				                             folder.directory) == key;
 			});
 			if (existing != app.folders.end()) created.existing_folder_id = existing->id;
 			preview.groups.push_back(std::move(created));
@@ -770,6 +809,7 @@ bool uam::RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecovery
 			folder.id = folder_id;
 			folder.title = group.title;
 			folder.directory = group.directory;
+			folder.execution_host_id = group.execution_host_id;
 			folder.collapsed = false;
 			next_folders.push_back(std::move(folder));
 			++result.created_folder_count;

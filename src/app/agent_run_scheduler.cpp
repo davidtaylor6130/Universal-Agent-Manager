@@ -271,7 +271,8 @@ namespace uam
 			}
 		}
 
-		const AgentDefinitionCatalog agents = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveWorkspaceRootPath(app, *root_chat));
+		const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
+		    app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, *root_chat));
 		const AgentDefinition* definition = FindAgent(agents, requested_agent);
 		if (definition == nullptr || (definition->mode != "subagent" && definition->mode != "both"))
 		{
@@ -384,7 +385,7 @@ namespace uam
 		if (root_chat == nullptr || !root_chat->agent_run_id.empty()) return true;
 		const std::string agent_id = text.substr(1, end - 1);
 		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(
-		    app.data_root, uam::paths::ResolveWorkspaceRootPath(app, *root_chat));
+		    app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, *root_chat));
 		const AgentDefinition* definition = FindAgent(catalog, agent_id);
 		if (definition == nullptr || (definition->mode != "subagent" && definition->mode != "both"))
 		{

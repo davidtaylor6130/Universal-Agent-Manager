@@ -2,7 +2,6 @@
 
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
-#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -28,14 +27,6 @@ namespace uam
 		constexpr std::size_t kMaxManagedSnapshotFiles = 100000;
 		constexpr std::string_view kRemoteWorkspaceUnsupported =
 		    "Local Git worktrees are unavailable for remote workspaces.";
-
-		bool IsRemoteWorkspace(const ChatSession& chat)
-		{
-			return uam::strings::NonEmptyOrFallback(
-			           uam::strings::Trim(chat.execution_host_id),
-			           std::string(uam::execution_hosts::kLocalHostId)) !=
-		    uam::execution_hosts::kLocalHostId;
-		}
 
 		struct SnapshotFile
 		{
@@ -578,7 +569,7 @@ namespace uam
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
 	{
 		GitWorktreeStatus status;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			status.warning = std::string(kRemoteWorkspaceUnsupported);
 			return status;
@@ -608,7 +599,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateForChat(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
 			return result;
@@ -739,7 +730,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::DiscardChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
 			return result;
@@ -779,7 +770,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::PortChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
 			return result;
@@ -888,7 +879,7 @@ namespace uam
 	bool GitWorktreeService::CanCheckpointTurn(const AppState& /*app*/, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const
 	{
 		if (reason_out != nullptr) reason_out->clear();
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			if (reason_out != nullptr) *reason_out = std::string(kRemoteWorkspaceUnsupported);
 			return false;
@@ -922,7 +913,7 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token) const
 	{
 		GitTurnCheckpointResult result;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
 			return result;
@@ -998,7 +989,7 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const
 	{
 		GitTurnCheckpointResult result;
-		if (IsRemoteWorkspace(chat))
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
 			return result;

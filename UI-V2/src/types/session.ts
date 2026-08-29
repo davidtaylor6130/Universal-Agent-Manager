@@ -101,12 +101,14 @@ export interface WorkspaceFolderRecoveryChat {
   id: string
   title: string
   directory: string
+  executionHostId?: string
   reason: string
 }
 
 export interface WorkspaceFolderRecoveryGroup {
   title: string
   directory: string
+  executionHostId?: string
   existingFolderId: string
   chatIds: string[]
 }

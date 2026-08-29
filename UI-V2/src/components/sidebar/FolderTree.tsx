@@ -1129,6 +1129,7 @@ function WorkspaceFolderRecoveryModal({
   onApply,
   onDeleteUnavailable,
 }: WorkspaceFolderRecoveryModalProps) {
+	const executionHosts = useAppStore((state) => state.executionHosts)
   const readyChatCount = preview?.groups.reduce((count, group) => count + group.chatIds.length, 0) ?? 0
   const newFolderCount = preview?.groups.filter((group) => !group.existingFolderId).length ?? 0
   const unavailableChats = [...(preview?.missing ?? []), ...(preview?.unavailable ?? [])]
@@ -1180,13 +1181,15 @@ function WorkspaceFolderRecoveryModal({
                     <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Ready · {readyChatCount} chat{readyChatCount === 1 ? '' : 's'}</h3>
                   </div>
                   <div className="grid gap-2">
-                    {preview.groups.map((group) => (
-                      <div key={group.directory} className="rounded-md px-3 py-2" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+					{preview.groups.map((group) => (
+					  <div key={`${group.executionHostId || 'local'}\n${group.directory}`} className="rounded-md px-3 py-2" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
                         <div className="flex items-center justify-between gap-3 text-xs">
                           <strong className="truncate" style={{ color: 'var(--text)' }}>{group.title}</strong>
                           <span className="shrink-0" style={{ color: 'var(--text-3)' }}>{group.existingFolderId ? 'Use existing' : 'Create'} · {group.chatIds.length}</span>
                         </div>
-                        <div className="mt-1 truncate text-[11px]" title={group.directory} style={{ color: 'var(--text-3)' }}>{group.directory}</div>
+						<div className="mt-1 truncate text-[11px]" title={group.directory} style={{ color: 'var(--text-3)' }}>
+						  {group.directory} · {executionHosts.find((host) => host.id === (group.executionHostId || 'local'))?.label || group.executionHostId || 'This computer'}
+						</div>
                       </div>
                     ))}
                   </div>

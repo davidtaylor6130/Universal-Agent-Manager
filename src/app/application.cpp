@@ -22,6 +22,7 @@
 #include "common/models/app_models.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -94,6 +95,11 @@ namespace
 		{
 			result += folder.id;
 			result.push_back('\0');
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				result.push_back('1');
+				continue;
+			}
 			const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 			const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
 			result.push_back(folder.directory.empty() || !can_probe || uam::paths::IsDirectoryNoThrow(directory) ? '1' : '0');

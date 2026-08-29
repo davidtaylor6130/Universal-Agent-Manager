@@ -560,6 +560,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 			            requested_workspace_text)));
 			const auto matching_folder = std::ranges::find_if(
 			    m_app.folders, [&requested_workspace](const ChatFolder& folder) {
+				    if (!uam::paths::IsControllerLocalWorkspace(folder)) return false;
 				    const std::filesystem::path folder_workspace =
 				        uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(
 				            PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(

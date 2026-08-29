@@ -822,7 +822,9 @@ namespace
 
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		return !MemoryEnabled(chat) || !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) || !MemoryRetryDue(app, chat.id, now);
+		return !uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		       !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) ||
+		       !MemoryRetryDue(app, chat.id, now);
 	}
 
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat, const uam::QueuedMemoryExtractionTask& queued)
@@ -1042,6 +1044,11 @@ namespace
 
 	bool StartWorkerTask(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, int start_message_index = -1)
 	{
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			app.memory_last_status = "Target-side memory workers are not supported for remote chats yet.";
+			return false;
+		}
 		if (chat.imported_read_only)
 		{
 			app.memory_last_status = "Imported transcripts are read-only and cannot run memory workers.";
@@ -1242,6 +1249,10 @@ namespace
 		}
 		for (const ChatFolder& folder : app.folders)
 		{
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				continue;
+			}
 			const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory);
 			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
@@ -1250,7 +1261,7 @@ namespace
 		}
 		for (const ChatSession& chat : app.chats)
 		{
-			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+			const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
 				AddUniqueMemoryRoot(roots, seen, MemoryService::LocalMemoryRoot(workspace_root));
@@ -1301,7 +1312,7 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 
 	std::vector<std::string> previews;
 	CollectMemoryPreviews(GlobalMemoryRoot(app.data_root), previews);
-	const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 	if (!workspace_root.empty())
 	{
 		CollectMemoryPreviews(LocalMemoryRoot(workspace_root), previews);
@@ -1448,7 +1459,9 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!MemoryEnabled(chat) || chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || HasQueuedTaskForChat(app, chat.id))
+		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1492,7 +1505,8 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!MemoryEnabled(chat) || chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1590,7 +1604,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
-			if (StartWorkerTask(app, chat, uam::paths::ResolveWorkspaceRootPath(app, chat), queued.scan_start_message_index))
+			if (StartWorkerTask(app, chat, uam::paths::ResolveControllerWorkspaceRootPath(app, chat), queued.scan_start_message_index))
 			{
 				started = true;
 				changed = true;

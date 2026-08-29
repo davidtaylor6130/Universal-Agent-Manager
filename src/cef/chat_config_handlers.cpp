@@ -542,7 +542,7 @@ void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 	const uam::AgentDefinitionCatalog agents = uam::AgentDefinitionService::Load(
-	    m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
+	    m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat));
 	const auto selected = std::ranges::find(agents.definitions, agent_id, &uam::AgentDefinition::id);
 	if (selected == agents.definitions.end() || (selected->mode != "primary" && selected->mode != "both"))
 	{
@@ -634,7 +634,7 @@ void UamQueryHandler::HandleListUamAgents(CefRefPtr<CefBrowser>, const nlohmann:
 	if (chat == nullptr) return;
 
 	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(
-	    m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
+	    m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat));
 	nlohmann::json agents = nlohmann::json::array();
 	for (const uam::AgentDefinition& agent : catalog.definitions)
 	{
@@ -704,7 +704,8 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 	uam::AgentDefinition imported;
 	std::string error;
 	if (!uam::AgentDefinitionService::ImportProviderAgent(
-	        m_app.data_root, uam::paths::ResolveWorkspaceRootPath(m_app, *chat), request, &imported, &error))
+	        m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat),
+	        request, &imported, &error))
 	{
 		cb->Failure(400, FailureDetailOrFallback(error, "Provider agent import failed."));
 		return;

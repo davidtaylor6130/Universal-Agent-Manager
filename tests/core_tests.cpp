@@ -869,14 +869,15 @@ UAM_TEST(AgentRunSchedulerLaunchesThePersistedDefinitionSnapshot)
 {
 	TempDir temp("uam-agent-scheduler-definition-change");
 	const fs::path workspace = temp.root / "workspace";
-	const fs::path agents = workspace / ".uam" / "agents";
+	const fs::path data_root = temp.root / "data";
+	const fs::path agents = data_root / "agents";
 	fs::create_directories(agents);
 	const fs::path agent_path = agents / "reviewer.md";
 	UAM_ASSERT(uam::io::WriteTextFile(agent_path,
 	    "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: subagent\nworkspaceAccess: read\nskills: []\ndelegates: []\n---\nReview carefully.\n"));
 
 	uam::AppState app;
-	app.data_root = temp.root / "data";
+	app.data_root = data_root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatSession root;
 	root.id = "root-chat";
@@ -6523,12 +6524,23 @@ UAM_TEST(ResolveWorkspaceRootPathPrefersGitWorktreeDirectory)
 
 UAM_TEST(RemoteWorkspacePathsRemainNativeToTheTargetHost)
 {
+	TempDir temp("uam-remote-native-path");
 	uam::AppState app;
 	ChatSession chat;
 	chat.execution_host_id = "remote";
-	chat.workspace_directory = "C:\\Users\\builder\\project";
+	chat.workspace_directory = (temp.root / "local-collision").string();
+	fs::create_directories(chat.workspace_directory);
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, chat).string(),
 	              chat.workspace_directory);
+	UAM_ASSERT(uam::paths::ResolveControllerWorkspaceRootPath(app, chat).empty());
+	ChatFolder folder;
+	folder.execution_host_id = "remote";
+	UAM_ASSERT(!uam::paths::IsControllerLocalWorkspace(folder));
+	chat.execution_host_id = "local";
+	UAM_ASSERT_EQ(uam::paths::ResolveControllerWorkspaceRootPath(app, chat),
+	              uam::paths::AbsolutePathNoThrow(chat.workspace_directory));
+	chat.execution_host_id = "remote";
+	chat.workspace_directory = "C:\\Users\\builder\\project";
 	UAM_ASSERT(uam::execution_hosts::IsAbsoluteRemotePath(
 	    "windows", chat.workspace_directory));
 	UAM_ASSERT_EQ(uam::execution_hosts::JoinRemotePath(
@@ -6584,6 +6596,13 @@ UAM_TEST(RemoteWorkspaceLocalVcsAndWorktreeActionsFailClosed)
 	               .error.find("remote") != std::string::npos);
 	UAM_ASSERT(vcs.GenerateMessage(app, chat, uam::VcsType::Git, {"sentinel.txt"})
 	               .error.find("remote") != std::string::npos);
+	ChatFolder remote_folder;
+	remote_folder.directory = local_collision.string();
+	remote_folder.execution_host_id = chat.execution_host_id;
+	std::error_code native_history_error;
+	UAM_ASSERT(!ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(
+	    app, remote_folder, &native_history_error));
+	UAM_ASSERT(!native_history_error);
 
 	UAM_ASSERT_EQ(ReadFile(local_collision / "sentinel.txt"), std::string("unchanged"));
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(app.data_root / "worktrees"));
@@ -11615,6 +11634,34 @@ UAM_TEST(DefaultFolderIsNotSynthesized)
 	UAM_ASSERT(app.new_chat_folder_id.empty());
 }
 
+UAM_TEST(UnsortedChatAssignmentMatchesBothDirectoryAndMachine)
+{
+	TempDir temp("uam-unsorted-machine-assignment");
+	uam::AppState app;
+	app.settings.execution_hosts = {
+	    uam::execution_hosts::LocalHost(),
+	    {"homelab", "Homelab", "ssh", "homelab", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	    {"nas", "NAS", "ssh", "nas", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	};
+	app.folders = {
+	    {"local", "Local", (temp.root / "same-name").string(), false, "local"},
+	    {"homelab", "Homelab", "/srv/same-name", false, "homelab"},
+	    {"nas", "NAS", "/srv/same-name", false, "nas"},
+	};
+	for (const std::string& host_id : {"homelab", "nas"})
+	{
+		ChatSession chat;
+		chat.id = host_id;
+		chat.execution_host_id = host_id;
+		chat.workspace_directory = "/srv/same-name";
+		app.chats.push_back(std::move(chat));
+	}
+
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	UAM_ASSERT_EQ(app.chats[0].folder_id, std::string("homelab"));
+	UAM_ASSERT_EQ(app.chats[1].folder_id, std::string("nas"));
+}
+
 UAM_TEST(UnsortedWorkspaceRecoveryPreviewsAndRebuildsAvailableFolders)
 {
 	TempDir temp("uam-unsorted-workspace-recovery");
@@ -11729,6 +11776,47 @@ UAM_TEST(UnsortedWorkspaceRecoveryRollsBackChatsWhenFolderSaveFails)
 	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(app.data_root);
 	UAM_ASSERT_EQ(persisted.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(persisted.front().folder_id.empty());
+}
+
+UAM_TEST(UnsortedRemoteWorkspaceRecoveryKeepsEachMachineSeparate)
+{
+	TempDir temp("uam-unsorted-remote-workspace-recovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.execution_hosts = {
+	    uam::execution_hosts::LocalHost(),
+	    {"homelab", "Homelab", "ssh", "homelab", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	    {"nas", "NAS", "ssh", "nas", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	};
+	for (const std::string& host_id : {"homelab", "nas"})
+	{
+		ChatSession chat;
+		chat.id = host_id + "-chat";
+		chat.title = chat.id;
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = host_id;
+		chat.workspace_directory = "/srv/shared-name";
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = chat.created_at;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+
+	const uam::WorkspaceFolderRecoveryPreview preview =
+	    uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT_EQ(preview.groups.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(preview.groups[0].directory, std::string("/srv/shared-name"));
+	UAM_ASSERT(preview.groups[0].execution_host_id != preview.groups[1].execution_host_id);
+	UAM_ASSERT(uam::RebuildUnsortedWorkspaceFolders(app));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(app.folders[0].execution_host_id != app.folders[1].execution_host_id);
+	for (const ChatSession& chat : app.chats)
+	{
+		const ChatFolder* folder = ChatDomainService().FindFolderById(app, chat.folder_id);
+		UAM_ASSERT(folder != nullptr);
+		UAM_ASSERT_EQ(folder->execution_host_id, chat.execution_host_id);
+		UAM_ASSERT_EQ(folder->directory, chat.workspace_directory);
+	}
 }
 
 UAM_TEST(DeleteLegacyDefaultFolderDeletesContainedChats)
@@ -12407,6 +12495,40 @@ UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.back(), " " + target_folder_id + " "));
 	UAM_ASSERT_EQ(app.chats.back().folder_id, target_folder_id);
 	UAM_ASSERT_EQ(app.chats.back().workspace_directory, missing_target.string());
+}
+
+UAM_TEST(MoveChatToFolderRejectsCrossMachineAndRemoteMovesWithoutMutation)
+{
+	TempDir temp("uam-move-chat-machine-boundary");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {
+	    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+	    {"nas", "NAS", "/srv/nas", false, "ssh-nas"},
+	    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+	};
+	ChatSession chat;
+	chat.id = "remote-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "nas"));
+	UAM_ASSERT_EQ(app.status_line,
+	              std::string("A chat cannot be moved to a workspace on another computer."));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab"));
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("ssh-homelab"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
+
+	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(
+	    app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT_EQ(app.status_line,
+	              std::string("Moving remote chats between workspace directories is not supported yet."));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(
+	    app, app.chats.front(), "homelab"));
 }
 
 UAM_TEST(MoveOpenCodeChatToDifferentWorkspaceStartsFreshNativeSession)

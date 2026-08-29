@@ -180,7 +180,15 @@ namespace
 
 		for (const ChatFolder& folder : app.folders)
 		{
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				continue;
+			}
 			const fs::path workspace_root = FolderWorkspaceRoot(folder);
+			if (workspace_root.empty())
+			{
+				continue;
+			}
 			AddUniqueMemoryLibraryRoot(roots, seen, "folder", folder.id, uam::strings::TrimOrFallback(folder.title, "Project memory"), MemoryService::LocalMemoryRoot(workspace_root));
 		}
 
@@ -193,7 +201,11 @@ namespace
 			{
 				continue;
 			}
-			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+			const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
+			if (workspace_root.empty())
+			{
+				continue;
+			}
 			AddUniqueMemoryLibraryRoot(roots, seen, "folder", chat.folder_id, WorkspaceLabel(workspace_root, chat), MemoryService::LocalMemoryRoot(workspace_root));
 		}
 
@@ -582,6 +594,11 @@ bool MemoryLibraryService::ResolveScope(const uam::AppState& app, std::string_vi
 		if (folder == nullptr)
 		{
 			SetError(error_out, "Folder not found: " + normalized_folder_id);
+			return false;
+		}
+		if (!uam::paths::IsControllerLocalWorkspace(*folder))
+		{
+			SetError(error_out, "Target-side project memory is not supported for remote workspaces yet.");
 			return false;
 		}
 

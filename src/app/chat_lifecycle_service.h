@@ -14,6 +14,7 @@ namespace uam
 		std::string id;
 		std::string title;
 		std::string directory;
+		std::string execution_host_id = "local";
 		std::string reason;
 	};
 
@@ -21,6 +22,7 @@ namespace uam
 	{
 		std::string title;
 		std::string directory;
+		std::string execution_host_id = "local";
 		std::string existing_folder_id;
 		std::vector<std::string> chat_ids;
 	};

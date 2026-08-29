@@ -8,6 +8,7 @@
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
@@ -522,7 +523,9 @@ namespace
 	{
 		for (const ChatFolder& folder : app.folders)
 		{
-			if (FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), workspace)) return folder.id;
+			if (uam::paths::IsControllerLocalWorkspace(folder) &&
+			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), workspace))
+				return folder.id;
 		}
 		std::string id;
 		return CreateFolder(app, FolderTitle(workspace), uam::paths::Utf8PathString(workspace), &id) ? id : std::string();
