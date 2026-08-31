@@ -210,6 +210,11 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 		return;
 	}
 
+	if (process_type.empty())
+	{
+		command_line->AppendSwitchWithValue("renderer-process-limit", "1");
+	}
+
 #if defined(__APPLE__)
 	// Disable Chromium features that trigger an EXC_BREAKPOINT / SIGTRAP crash
 	// on macOS 26.x (beta).  The crash manifests as NSApplication receiving a
