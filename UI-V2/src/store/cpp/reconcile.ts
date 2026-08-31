@@ -755,6 +755,16 @@ export function reconcileCppMessages(
   authoritative = false
 ): Message[] {
   const existing = existingMessages ?? []
+  if (!authoritative && existing[existing.length - 1]?.isStreaming) {
+    let hasEarlierStreamingPlaceholder = false
+    for (let index = 0; index < existing.length - 1; index += 1) {
+      if (existing[index].isStreaming) {
+        hasEarlierStreamingPlaceholder = true
+        break
+      }
+    }
+    if (!hasEarlierStreamingPlaceholder && cppMessages.length <= existing.length - 1) return existing
+  }
   const existingRealMessages = existing.filter((message) => !message.isStreaming)
   const hasStreamingPlaceholder = existing.some((message) => message.isStreaming)
 
