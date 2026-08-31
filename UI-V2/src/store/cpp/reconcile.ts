@@ -727,6 +727,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
 
 export function buildMessageFromCpp(chatId: string, message: CppMessage, index: number): Message {
   const createdAtMillis = cppMessageCreatedAtMillis(message)
+  const attachments = messageAttachments(message)
   return {
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
@@ -735,10 +736,10 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     providerId: message.providerId,
     thoughts: message.thoughts ?? '',
     planSummary: message.planSummary ?? '',
-    planEntries: message.planEntries ?? [],
-    toolCalls: message.toolCalls ?? [],
-    blocks: message.blocks ?? [],
-    attachments: messageAttachments(message),
+    planEntries: message.planEntries?.length ? message.planEntries : undefined,
+    toolCalls: message.toolCalls?.length ? message.toolCalls : undefined,
+    blocks: message.blocks?.length ? message.blocks : undefined,
+    attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
 		prioritySteer: Boolean(message.prioritySteer),
