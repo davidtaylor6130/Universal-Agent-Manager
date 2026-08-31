@@ -268,6 +268,7 @@ UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
 	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.");
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	uam::GoalService::RecordTurnCompletion(app, chat.id, goal_id, 1);
 	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Need user credentials.");
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
@@ -341,6 +342,63 @@ UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 0);
 	UAM_ASSERT(app.chats.front().goals.front().last_blocker.empty());
+}
+
+UAM_TEST(GoalServiceSetActiveGoalNeverReactivatesCompletedGoal)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-complete-goal";
+	app.chats.push_back(chat);
+
+	std::string completed_goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Completed work.", 0, &completed_goal_id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, completed_goal_id, GoalStatus::Complete));
+	app.chats.front().goals.front().last_verification = "Focused tests passed.";
+
+	std::string active_goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Current work.", 0, &active_goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, active_goal_id));
+	std::string error;
+	UAM_ASSERT(!uam::GoalService::SetActiveGoal(app, chat.id, completed_goal_id, &error));
+	UAM_ASSERT(error.find("cannot be reactivated") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, active_goal_id);
+	const Goal* completed_goal = uam::GoalService::FindGoalById(app, chat.id, completed_goal_id);
+	UAM_ASSERT(completed_goal != nullptr);
+	UAM_ASSERT_EQ(completed_goal->status, GoalStatus::Complete);
+	UAM_ASSERT_EQ(completed_goal->last_verification, std::string("Focused tests passed."));
+}
+
+UAM_TEST(GoalServiceFindsLatestTerminalGoalAndBuildsReadOnlyState)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-terminal-goal";
+	Goal complete;
+	complete.id = "goal-complete";
+	complete.status = GoalStatus::Complete;
+	chat.goals.push_back(complete);
+	Goal blocked;
+	blocked.id = "goal-blocked";
+	blocked.objective = "Wait for approval.";
+	blocked.status = GoalStatus::Blocked;
+	blocked.last_blocker = "User approval required.";
+	blocked.last_diagnostic = "goal_blocked_permission";
+	blocked.last_verification = "Remote process is still running.";
+	blocked.current_step = "Approve access.";
+	blocked.completed_items = {"Connected over SSH"};
+	blocked.remaining_items = {"Approve access"};
+	chat.goals.push_back(blocked);
+	app.chats.push_back(std::move(chat));
+
+	const Goal* latest = uam::GoalService::FindActiveOrLatestTerminalGoal(app, "chat-terminal-goal");
+	UAM_ASSERT(latest != nullptr);
+	UAM_ASSERT_EQ(latest->id, std::string("goal-blocked"));
+	const std::string prompt = uam::GoalService::BuildReadOnlyTerminalPrompt(*latest);
+	UAM_ASSERT(prompt.find("read-only") != std::string::npos);
+	UAM_ASSERT(prompt.find("Do not reactivate") != std::string::npos);
+	UAM_ASSERT(prompt.find("goal_blocked_permission") != std::string::npos);
+	UAM_ASSERT(prompt.find("Remote process is still running.") != std::string::npos);
 }
 
 UAM_TEST(GoalServicePauseClearsActiveGoalAndResumeReactivates)
@@ -644,7 +702,7 @@ UAM_TEST(AcpGoalIterationsUsePrivateContextsInOwnerChat)
 	session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
 	session->turn_user_message_index = -1;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *session, app.chats.front(),
-	                                     R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"One step remains.\",\"nextPrompt\":\"Implement the final bounded step.\"}"}}}})"));
+	                                     R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"One step remains.\",\"nextPrompt\":\"Implement the final bounded step.\",\"progressUpdate\":{\"remaining\":[\"Implement the final bounded step.\"],\"currentStep\":\"Implement the final bounded step.\"}}"}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *session, app.chats.front(),
 	                                     R"({"jsonrpc":"2.0","id":11,"result":{}})"));
 
@@ -714,7 +772,7 @@ UAM_TEST(AcpLegacyGoalIterationSwapsReviewerAndWorkerModelsFromOwner)
 	raw_session->processing = false;
 	raw_session->queued_prompt.clear();
 	stored_iteration.messages.push_back({MessageRole::Assistant,
-	                                    R"({"decision":"continue","reason":"One step remains.","nextPrompt":"Implement the final step."})"});
+	                                    R"({"decision":"continue","reason":"One step remains.","nextPrompt":"Implement the final step.","progressUpdate":{"remaining":["Implement the final step."],"currentStep":"Implement the final step."}})"});
 	raw_session->turn_assistant_message_index = 2;
 	UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(
 	    app, *raw_session, stored_iteration, nullptr));
@@ -749,6 +807,8 @@ UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
 	goal.remaining_items = {"second"};
 	goal.current_step = "second";
 	goal.last_verification = "npm test passed";
+	goal.last_blocker = "User approval required.";
+	goal.last_blocker_kind = "user_permission_approval";
 	goal.last_next_prompt = "Do second";
 	goal.same_next_prompt_count = 2;
 	goal.loop_count = 3;
@@ -767,6 +827,8 @@ UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
 	UAM_ASSERT_EQ(loaded_goal.remaining_items.front(), std::string("second"));
 	UAM_ASSERT_EQ(loaded_goal.current_step, std::string("second"));
 	UAM_ASSERT_EQ(loaded_goal.last_verification, std::string("npm test passed"));
+	UAM_ASSERT_EQ(loaded_goal.last_blocker, std::string("User approval required."));
+	UAM_ASSERT_EQ(loaded_goal.last_blocker_kind, std::string("user_permission_approval"));
 	UAM_ASSERT_EQ(loaded_goal.last_next_prompt, std::string("Do second"));
 	UAM_ASSERT_EQ(loaded_goal.same_next_prompt_count, 2);
 	UAM_ASSERT_EQ(loaded_goal.loop_count, 3);
@@ -802,7 +864,7 @@ UAM_TEST(ChatRepositoryNormalizesLegacyCompletedGoalProgress)
 
 UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
 {
-	const auto parsed = uam::GoalService::ParseReviewDecision("review:\n{\"decision\":\"continue\",\"reason\":\"more work remains\",\"nextPrompt\":\"Run tests\"}\nthanks");
+	const auto parsed = uam::GoalService::ParseReviewDecision("review:\n{\"decision\":\"continue\",\"reason\":\"more work remains\",\"nextPrompt\":\"Run tests\",\"progressUpdate\":{\"remaining\":[\"Run tests\"],\"currentStep\":\"Run tests\"}}\nthanks");
 	UAM_ASSERT(parsed.has_value());
 	UAM_ASSERT_EQ(parsed->decision, std::string("continue"));
 	UAM_ASSERT_EQ(parsed->reason, std::string("more work remains"));
@@ -812,13 +874,21 @@ UAM_TEST(GoalServiceParseReviewDecisionAllowsWrappedStrictJson)
 
 UAM_TEST(GoalServiceParseReviewDecisionRejectsContinueWithoutNextPrompt)
 {
-	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":""})").has_value());
-	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":"   "})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":"","progressUpdate":{"remaining":["Run tests"]}})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"continue","reason":"more work remains","nextPrompt":"   ","progressUpdate":{"remaining":["Run tests"]}})").has_value());
 
 	const auto blocked = uam::GoalService::ParseReviewDecision(R"({"decision":"blocked","reason":"Need user input.","nextPrompt":""})");
 	UAM_ASSERT(blocked.has_value());
 	UAM_ASSERT_EQ(blocked->decision, std::string("blocked"));
 	UAM_ASSERT_EQ(blocked->next_prompt, std::string(""));
+}
+
+UAM_TEST(GoalServiceParseReviewDecisionRejectsContinueWithoutNonEmptyProgress)
+{
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(
+	    R"({"decision":"continue","reason":"more work remains","nextPrompt":"Run tests"})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(
+	    R"({"decision":"continue","reason":"more work remains","nextPrompt":"Run tests","progressUpdate":{}})").has_value());
 }
 
 UAM_TEST(GoalServiceParseReviewDecisionRequiresEvidenceForCompleteAndReadsProgress)
@@ -847,10 +917,18 @@ UAM_TEST(GoalServiceParseReviewDecisionRequiresEvidenceForCompleteAndReadsProgre
 	UAM_ASSERT_EQ(parsed->last_verification, std::string("npm test passed"));
 }
 
+UAM_TEST(GoalBlockersStopUnlessExplicitlyTransient)
+{
+	UAM_ASSERT(uam::acp_detail::GoalBlockerStopsImmediately("user_permission_approval"));
+	UAM_ASSERT(uam::acp_detail::GoalBlockerStopsImmediately("permission"));
+	UAM_ASSERT(uam::acp_detail::GoalBlockerStopsImmediately(""));
+	UAM_ASSERT(!uam::acp_detail::GoalBlockerStopsImmediately("transient"));
+}
+
 UAM_TEST(GoalServiceParseReviewDecisionRepairsMissingEvidenceArrayBracket)
 {
 	const auto parsed = uam::GoalService::ParseReviewDecision(
-	    R"({"decision":"continue","reason":"More work remains.","nextPrompt":"Continue.","evidence":"first check","second check"],"blockerKind":""})");
+	    R"({"decision":"continue","reason":"More work remains.","nextPrompt":"Continue.","evidence":"first check","second check"],"blockerKind":"","progressUpdate":{"remaining":["Continue"],"currentStep":"Continue"}})");
 	UAM_ASSERT(parsed.has_value());
 	UAM_ASSERT_EQ(parsed->evidence, (std::vector<std::string>{"first check", "second check"}));
 }
@@ -890,7 +968,7 @@ UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More implementation remains.\",\"nextPrompt\":\"Apply the runtime guard.\",\"evidence\":[\"reviewed worker output\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More implementation remains.\",\"nextPrompt\":\"Apply the runtime guard.\",\"evidence\":[\"reviewed worker output\"],\"progressUpdate\":{\"remaining\":[\"Apply the runtime guard.\"],\"currentStep\":\"Apply the runtime guard.\"}}"}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
 
 	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
@@ -937,13 +1015,14 @@ UAM_TEST(AcpInvalidGoalReviewRetriesOnceThenBlocksInsteadOfCompleting)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Goal Review COMPLETE"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Continue without progress.\"}"}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(raw_session->goal_review_repair_attempts, 1);
 	UAM_ASSERT(raw_session->goal_review_turn);
 	UAM_ASSERT(raw_session->queued_prompt.find("only repair attempt") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Do not call tools") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("progressUpdate") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Implement the work.") == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("I made partial progress.") == std::string::npos);
 
@@ -957,6 +1036,46 @@ UAM_TEST(AcpInvalidGoalReviewRetriesOnceThenBlocksInsteadOfCompleting)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("goal_blocked_invalid_review"));
 	UAM_ASSERT(!raw_session->diagnostics.empty());
 	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("goal_blocked_invalid_review"));
+}
+
+UAM_TEST(AcpBlockedGoalReviewPersistsItsBlockerKind)
+{
+	TempDir temp("uam-blocked-goal-review-kind");
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-blocked-review";
+	chat.provider_id = "gemini-cli";
+	Goal goal;
+	goal.id = "goal-blocked-review";
+	goal.objective = "Stop when access is required.";
+	goal.status = GoalStatus::Active;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->processing = true;
+	session->prompt_request_id = 10;
+	session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+	session->goal_turn_kind = "review";
+	session->goal_review_turn = true;
+	session->goal_review_scheduled = true;
+	session->goal_review_goal_id = goal.id;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"blocked\",\"reason\":\"Documents access is required.\",\"blockerKind\":\"user_permission_approval\"}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind,
+	              std::string("user_permission_approval"));
+
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().goals.front().last_blocker_kind,
+	              std::string("user_permission_approval"));
 }
 
 UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
@@ -993,7 +1112,7 @@ UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
 		uam::AcpSessionState* raw_session = session.get();
 		app.acp_sessions.push_back(std::move(session));
 
-		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Continue the implementation.\"}"}}}})"));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Continue the implementation.\",\"progressUpdate\":{\"remaining\":[\"Continue the implementation.\"],\"currentStep\":\"Continue the implementation.\"}}"}}}})"));
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
 		UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, initial_loop_count + 1);
 
@@ -1057,7 +1176,7 @@ UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Do the next worker task.\",\"evidence\":[\"review text\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Do the next worker task.\",\"evidence\":[\"review text\"],\"progressUpdate\":{\"remaining\":[\"Do the next worker task.\"],\"currentStep\":\"Do the next worker task.\"}}"}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
 
 	UAM_ASSERT(raw_session->goal_turn_kind.empty());
@@ -1114,7 +1233,7 @@ UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
 	raw_session->current_assistant_message_index = -1;
 	raw_session->turn_assistant_message_index = -1;
 
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"Still going.\",\"nextPrompt\":\"Repeat this review.\",\"evidence\":[\"review output\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"Still going.\",\"nextPrompt\":\"Repeat this review.\",\"evidence\":[\"review output\"],\"progressUpdate\":{\"remaining\":[\"Repeat this review.\"],\"currentStep\":\"Repeat this review.\"}}"}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
 	UAM_ASSERT(!raw_session->goal_review_scheduled);
 	UAM_ASSERT(raw_session->queued_prompt.empty());
@@ -1400,10 +1519,8 @@ UAM_TEST(AcpProviderManagedGoalSkipsUamLoopCompletesAndPersistsOwner)
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 	UAM_ASSERT_EQ(goal.loop_count, 7);
 
-	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
-	std::string cancel_error;
-	UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id, &cancel_error));
-	UAM_ASSERT_EQ(goal.status, GoalStatus::Paused);
+	UAM_ASSERT(!uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Complete);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));

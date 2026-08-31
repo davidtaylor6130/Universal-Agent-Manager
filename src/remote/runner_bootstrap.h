@@ -29,6 +29,10 @@ namespace uam::remote
 		std::string install_directory;
 		std::string runner_directory;
 		std::string nonce;
+		std::string previous_platform;
+		std::string previous_version;
+		std::string previous_runner_directory;
+		int previous_protocol_version = 0;
 		std::vector<RunnerArtifact> artifacts;
 		std::vector<BootstrapStep> steps;
 	};
@@ -51,4 +55,9 @@ namespace uam::remote
 	std::string BootstrapPlanPreview(const BootstrapPlan& plan);
 	BootstrapResult ExecuteBootstrapPlan(const BootstrapPlan& plan,
 	                                     std::stop_token stop_token = {});
+	bool FinalizeBootstrapPlan(const BootstrapPlan& plan,
+	                           const BootstrapResult& result,
+	                           bool keep_new_runner,
+	                           std::string* error_out = nullptr,
+	                           std::stop_token stop_token = {});
 }

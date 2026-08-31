@@ -1382,6 +1382,31 @@ describe('useAppStore Gemini CLI slice', () => {
     ])
   })
 
+  it('surfaces chat hydration failures instead of presenting an unexplained empty transcript', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const action = (JSON.parse(request) as { action: string }).action
+      if (action === 'getInitialState') {
+        onSuccess(JSON.stringify(makeCppState(1)))
+        return
+      }
+      if (action === 'getChatMessages') {
+        onFailure(502, 'Remote transcript could not be read.')
+      }
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cefStore.getState().loadSessionMessages('chat-1')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(cefStore.getState().statusLine).toBe(
+      'Failed to load chat history for Gemini Session: Remote transcript could not be read.'
+    )
+  })
+
   it('applies selected chat patches with hydrated messages and chat order', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -3748,6 +3773,14 @@ describe('useAppStore Gemini CLI slice', () => {
     }
 
     await expect(useAppStore.getState().rescanFolderChats('project')).resolves.toBe(false)
+  })
+
+  it('reports a partial history rescan as usable when some chats were imported', async () => {
+    window.cefQuery = ({ onSuccess }) => {
+      onSuccess('{"success":false,"partial":true,"errors":["One provider history was unavailable"]}')
+    }
+
+    await expect(useAppStore.getState().rescanFolderChats('project')).resolves.toBe(true)
   })
 
   it('rolls folder expansion back on CEF failure without changing the active chat', async () => {

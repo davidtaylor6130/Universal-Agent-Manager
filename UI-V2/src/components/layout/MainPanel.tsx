@@ -240,13 +240,34 @@ export function MainPanel() {
   }, [lastAppliedStateRevision, sessions])
 
   useEffect(() => {
-    if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) return
+    if (!activeSessionId) return
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+    const selectedSession = sessionsById.get(activeSessionId)
+    if (!selectedSession) return
+    const selectedBranchRoot = selectedSession.branchRootChatId || selectedSession.parentChatId || selectedSession.id
     setLayout((current) => {
       const currentLeaves = chatGridLeaves(current.root)
-      if (currentLeaves.find((leaf) => leaf.id === current.activeLeafId)?.sessionId === activeSessionId) return current
-      const existingPane = currentLeaves.find((leaf) => leaf.sessionId === activeSessionId)
-      if (existingPane) return { ...current, activeLeafId: existingPane.id }
-      return setChatInLeaf(current, activeSessionId, current.activeLeafId)
+      const activeLeaf = currentLeaves.find((leaf) => leaf.id === current.activeLeafId)
+      const branchLeaves = currentLeaves.filter((leaf) => {
+        const session = sessionsById.get(leaf.sessionId)
+        return session && (session.branchRootChatId || session.parentChatId || session.id) === selectedBranchRoot
+      })
+      const existingPane = branchLeaves.find((leaf) => leaf.sessionId === activeSessionId)
+      const branchTarget = existingPane ?? branchLeaves.find((leaf) => leaf.id === current.activeLeafId) ?? branchLeaves[0]
+      if (branchTarget) {
+        if (branchLeaves.length === 1 && existingPane && current.activeLeafId === branchTarget.id) return current
+        let next = existingPane
+          ? { ...current, activeLeafId: branchTarget.id }
+          : setChatInLeaf(current, activeSessionId, branchTarget.id)
+        for (const leaf of branchLeaves) {
+          if (leaf.id !== branchTarget.id) next = clearChatLeaf(next, leaf.id)
+        }
+        return next.activeLeafId === branchTarget.id ? next : { ...next, activeLeafId: branchTarget.id }
+      }
+      const targetLeaf = activeLeaf && !activeLeaf.sessionId
+        ? activeLeaf
+        : currentLeaves.find((leaf) => !leaf.sessionId) ?? activeLeaf ?? currentLeaves[0]
+      return targetLeaf ? setChatInLeaf(current, activeSessionId, targetLeaf.id) : current
     })
   }, [activeSessionId, sessions])
 

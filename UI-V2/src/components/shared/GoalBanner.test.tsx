@@ -108,6 +108,28 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
+	it('keeps the blocker category, cause, and next action visible while collapsed', () => {
+		const { host, root } = renderGoal({
+			status: 'blocked',
+			lastBlockerKind: 'user_permission_approval',
+			lastBlocker: 'The remote helper needs Documents access.',
+			lastDiagnostic: 'goal_blocked_invalid_review',
+			currentStep: 'Continue processing the files',
+		})
+
+		const alert = host.querySelector('summary [role="alert"]') as HTMLElement
+		expect(alert).toBeTruthy()
+		expect(alert.textContent).toContain('Needs access')
+		expect(alert.textContent).toContain('The remote helper needs Documents access.')
+		expect(alert.textContent).toContain('Approve or deny the request, then resume.')
+		expect(alert.textContent).not.toContain('Continue processing the files')
+		expect(host.textContent).toContain('Last check:')
+		expect(host.textContent).toContain('The completion review was invalid.')
+		expect(host.textContent).toContain('Current step: Continue processing the files')
+
+		act(() => root.unmount())
+	})
+
   it('edits a UAM-managed goal in a screen-level modal and saves trimmed text', async () => {
     const { host, root, onEdit } = renderGoal()
 

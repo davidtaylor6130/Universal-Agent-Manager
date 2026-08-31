@@ -41,6 +41,8 @@ export interface CppMessage {
   markdownStoreFiles?: string[]
   attachments?: Attachment[]
   processingTimeMs?: number
+	interrupted?: boolean
+	prioritySteer?: boolean
   checkpointSha?: string
   checkpointParentSha?: string
   createdAt: string
@@ -130,6 +132,7 @@ export interface CppGoal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+	lastBlockerKind?: string
   lastDiagnostic?: string
   completedItems?: string[]
   remainingItems?: string[]

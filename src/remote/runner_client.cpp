@@ -140,8 +140,11 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::Request(nlohmann::json request, nlohmann::json& response,
-	                           std::string* error_out)
+	                           std::string* error_out,
+	                           const std::function<bool()>& interrupt,
+	                           bool* interrupted_out)
 	{
+		if (interrupted_out != nullptr) *interrupted_out = false;
 		if (!m_connected)
 		{
 			if (error_out != nullptr) *error_out = "The remote runner is disconnected.";
@@ -157,7 +160,7 @@ namespace uam::remote
 		}
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
-		    !ReadResponse(response, &error))
+		    !ReadResponse(response, &error, interrupt, interrupted_out))
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner request failed." : error;
@@ -178,12 +181,20 @@ namespace uam::remote
 		return true;
 	}
 
-	bool RunnerClient::ReadResponse(nlohmann::json& response, std::string* error_out)
+	bool RunnerClient::ReadResponse(nlohmann::json& response, std::string* error_out,
+	                                const std::function<bool()>& interrupt,
+	                                bool* interrupted_out)
 	{
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 		std::array<char, 16 * 1024> buffer{};
 		while (std::chrono::steady_clock::now() < deadline)
 		{
+			if (interrupt && interrupt())
+			{
+				if (interrupted_out != nullptr) *interrupted_out = true;
+				if (error_out != nullptr) *error_out = "The remote runner request was interrupted.";
+				return false;
+			}
 			if (m_received.size() >= 4)
 			{
 				const auto* header = reinterpret_cast<const unsigned char*>(m_received.data());
@@ -432,11 +443,13 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::PollProcess(const std::string& session_id, ProcessPollResult& result,
-	                               std::string* error_out)
+	                               std::string* error_out,
+	                               const std::function<bool()>& interrupt,
+	                               bool* interrupted_out)
 	{
 		nlohmann::json response;
 		if (!Request({{"type", "process.poll"}, {"sessionId", session_id}}, response,
-		             error_out))
+		             error_out, interrupt, interrupted_out))
 			return false;
 		const nlohmann::json& value = response["result"];
 		result.running = value.value("running", false);

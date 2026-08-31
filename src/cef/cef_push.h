@@ -28,6 +28,7 @@ namespace uam
 	}
 	std::string StatePatchForTests(const AppState& before, const AppState& after);
 	std::string SettingsPatchForTests(const AppState& app);
+	std::size_t LastStatePushChatSerializationCountForTests();
 
 	/// <summary>
 	/// Delivers a single streaming token for the given chat session to the React frontend.

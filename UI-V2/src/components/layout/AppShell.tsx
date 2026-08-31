@@ -70,6 +70,33 @@ type RemoteConnectionNotification = {
   warning?: boolean
 }
 
+const REMOTE_CONNECTION_ERROR = /remote|runner|ssh|bridge|disconnect|reconnect|transport|helper|app-server|process exited during an active turn|timed out/i
+
+function matchingRemoteConnectionError(...errors: Array<string | undefined>): string {
+  return errors.find((error) => error && REMOTE_CONNECTION_ERROR.test(error)) ?? ''
+}
+
+function remoteConnectionIssueSignature(state: ReturnType<typeof useAppStore.getState>): string {
+  const hosts = new Map(state.executionHosts.map((host) => [host.id, host]))
+  const signature: string[] = []
+  for (const host of state.executionHosts) {
+    if (host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
+      signature.push(['host', host.id, host.label, host.runnerStatus].join('\0'))
+    }
+  }
+  for (const session of state.sessions) {
+    const hostId = session.executionHostId ?? 'local'
+    if (hostId === 'local') continue
+    const error = matchingRemoteConnectionError(
+      state.acpBindingBySessionId[session.id]?.lastError,
+      state.cliBindingBySessionId[session.id]?.lastError,
+    )
+    if (!error) continue
+    signature.push(['session', session.id, session.name, hostId, hosts.get(hostId)?.label || hostId, error].join('\0'))
+  }
+  return signature.join('\n')
+}
+
 function remoteConnectionIssues(
   executionHosts: ReturnType<typeof useAppStore.getState>['executionHosts'],
   sessions: ReturnType<typeof useAppStore.getState>['sessions'],
@@ -85,12 +112,14 @@ function remoteConnectionIssues(
     detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH helper.' : 'The SSH helper needs attention in Remote Hosts.',
     warning: true,
   }] : [])
-  const connectionError = /remote|runner|ssh|bridge|disconnect|reconnect|transport/i
   for (const session of sessions) {
     const hostId = session.executionHostId ?? 'local'
     if (hostId === 'local') continue
-    const error = acpBindings[session.id]?.lastError || cliBindings[session.id]?.lastError || ''
-    if (!error || !connectionError.test(error)) continue
+    const error = matchingRemoteConnectionError(
+      acpBindings[session.id]?.lastError,
+      cliBindings[session.id]?.lastError,
+    )
+    if (!error) continue
     const hostLabel = hosts.get(hostId)?.label || hostId
     issues.push({
       id: `remote-session-${session.id}-${error}`,
@@ -427,10 +456,7 @@ export function AppShell() {
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
   const folders = useAppStore((s) => s.folders)
-  const sessions = useAppStore((s) => s.sessions)
-  const executionHosts = useAppStore((s) => s.executionHosts)
-  const acpBindings = useAppStore((s) => s.acpBindingBySessionId)
-  const cliBindings = useAppStore((s) => s.cliBindingBySessionId)
+  const connectionIssueSignature = useAppStore(remoteConnectionIssueSignature)
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const statusLine = useAppStore((s) => s.statusLine)
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
@@ -438,10 +464,15 @@ export function AppShell() {
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
-  const connectionIssues = useMemo(
-    () => remoteConnectionIssues(executionHosts, sessions, acpBindings, cliBindings),
-    [acpBindings, cliBindings, executionHosts, sessions],
-  )
+  const connectionIssues = useMemo(() => {
+    const state = useAppStore.getState()
+    return remoteConnectionIssues(
+      state.executionHosts,
+      state.sessions,
+      state.acpBindingBySessionId,
+      state.cliBindingBySessionId,
+    )
+  }, [connectionIssueSignature])
   const previousConnectionIssues = useRef(connectionIssues)
   const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)

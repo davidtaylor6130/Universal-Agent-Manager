@@ -73,6 +73,7 @@ class GoalService
 	/// </summary>
 	static Goal* FindActiveGoal(AppState& app, const std::string& chat_id);
 	static const Goal* FindActiveGoal(const AppState& app, const std::string& chat_id);
+	static const Goal* FindActiveOrLatestTerminalGoal(const AppState& app, const std::string& chat_id);
 
 	/// <summary>
 	/// Find a goal by its ID within a chat, or nullptr if not found.
@@ -110,6 +111,7 @@ class GoalService
 	/// </summary>
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
 	                                           bool small_model_mode = false, const std::string& next_step = "");
+	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,
 	                                     bool small_model_mode = false);

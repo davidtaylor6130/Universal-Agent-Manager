@@ -52,6 +52,7 @@ bool ResolveAcpUserInput(AppState& app,
                          std::string* error_out = nullptr);
 
 	bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
+	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app);
 	void FlushPendingChatSaves(AppState& app);
 	void FastStopAcpSessionsForExit(AppState& app);
 

@@ -73,7 +73,9 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
         goalsByChatId: {
           ...state.goalsByChatId,
           [chatId]: (state.goalsByChatId[chatId] ?? []).map((goal) =>
-            goal.id === goalId ? { ...goal, status, updatedAt: new Date() } : goal
+						goal.id === goalId
+							? { ...goal, status, ...(status === 'complete' ? { lastBlocker: '', lastBlockerKind: '' } : {}), updatedAt: new Date() }
+							: goal
           ),
         },
         activeGoalIdByChatId:
@@ -152,7 +154,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
             ...state.goalsByChatId,
             [chatId]: goals.map((goal) =>
               goal.id === goalId
-                ? { ...goal, status: 'active', blockedTurnCount: 0, lastBlocker: '', updatedAt: new Date() }
+								? { ...goal, status: 'active', blockedTurnCount: 0, lastBlocker: '', lastBlockerKind: '', updatedAt: new Date() }
                 : goal
             ),
           },

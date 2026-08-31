@@ -3,10 +3,11 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 project(universal_agent_manager VERSION 4.8.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.8.0-alpha-2")
+set(UAM_PRODUCT_VERSION "4.8.0")
 
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
-set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "" CACHE PATH
+option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
+set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
   "Directory containing linux-arm64, linux-x86_64, and windows-x86_64 runner folders.")
 
 if(APPLE)
@@ -15,6 +16,45 @@ endif()
 
 if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
+endif()
+
+if(NOT UAM_RUNNER_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
+  set(UAM_REQUIRED_REMOTE_RUNNERS
+    "linux-arm64/uam-runner"
+    "linux-x86_64/uam-runner"
+    "windows-x86_64/uam-runner.exe"
+  )
+  foreach(UAM_REMOTE_RUNNER IN LISTS UAM_REQUIRED_REMOTE_RUNNERS)
+    cmake_path(GET UAM_REMOTE_RUNNER PARENT_PATH UAM_REMOTE_RUNNER_DIR)
+    set(UAM_REMOTE_RUNNER_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER}")
+    set(UAM_REMOTE_RUNNER_SHA256_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.sha256")
+    set(UAM_REMOTE_RUNNER_VERSION_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.version")
+    foreach(UAM_REMOTE_RUNNER_FILE
+        "${UAM_REMOTE_RUNNER_PATH}"
+        "${UAM_REMOTE_RUNNER_SHA256_PATH}"
+        "${UAM_REMOTE_RUNNER_VERSION_PATH}")
+      if(NOT EXISTS "${UAM_REMOTE_RUNNER_FILE}")
+        message(FATAL_ERROR
+          "Full app builds require every remote helper. Missing: ${UAM_REMOTE_RUNNER_FILE}")
+      endif()
+    endforeach()
+    file(READ "${UAM_REMOTE_RUNNER_VERSION_PATH}" UAM_REMOTE_RUNNER_VERSION)
+    string(STRIP "${UAM_REMOTE_RUNNER_VERSION}" UAM_REMOTE_RUNNER_VERSION)
+    if(NOT UAM_REMOTE_RUNNER_VERSION STREQUAL UAM_PRODUCT_VERSION)
+      message(FATAL_ERROR
+        "Remote helper version mismatch for ${UAM_REMOTE_RUNNER}: "
+        "expected ${UAM_PRODUCT_VERSION}, got ${UAM_REMOTE_RUNNER_VERSION}")
+    endif()
+    file(READ "${UAM_REMOTE_RUNNER_SHA256_PATH}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+    string(STRIP "${UAM_REMOTE_RUNNER_EXPECTED_SHA256}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+    file(SHA256 "${UAM_REMOTE_RUNNER_PATH}" UAM_REMOTE_RUNNER_ACTUAL_SHA256)
+    if(NOT UAM_REMOTE_RUNNER_ACTUAL_SHA256 STREQUAL UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+      message(FATAL_ERROR "Remote helper checksum mismatch: ${UAM_REMOTE_RUNNER}")
+    endif()
+  endforeach()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -339,13 +379,16 @@ target_compile_definitions(uam_runner PRIVATE
   UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
 )
 set(UAM_RUNNER_SHA256_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.sha256")
+set(UAM_RUNNER_VERSION_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.version")
 add_custom_command(TARGET uam_runner POST_BUILD
   COMMAND ${CMAKE_COMMAND}
     -DINPUT=$<TARGET_FILE:uam_runner>
     -DOUTPUT=${UAM_RUNNER_SHA256_FILE}
+    -DVERSION=${UAM_PRODUCT_VERSION}
+    -DVERSION_OUTPUT=${UAM_RUNNER_VERSION_FILE}
     -P "${CMAKE_SOURCE_DIR}/cmake/write_sha256.cmake"
   VERBATIM
-  COMMENT "Writing the remote runner checksum"
+  COMMENT "Writing the remote runner checksum and version"
 )
 
 if(UAM_RUNNER_ONLY)
@@ -854,11 +897,8 @@ else()
   set(UAM_REMOTE_ARTIFACT_DEST "$<TARGET_FILE_DIR:universal_agent_manager>/remote")
 endif()
 set(UAM_REMOTE_ARTIFACT_COPY_COMMAND)
-if(UAM_REMOTE_RUNNER_ARTIFACT_DIR)
-  if(NOT IS_DIRECTORY "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}")
-    message(FATAL_ERROR "UAM_REMOTE_RUNNER_ARTIFACT_DIR is not a directory.")
-  endif()
-  list(APPEND UAM_REMOTE_ARTIFACT_COPY_COMMAND
+if(UAM_PACKAGE_REMOTE_RUNNERS)
+  set(UAM_REMOTE_ARTIFACT_COPY_COMMAND
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}" "${UAM_REMOTE_ARTIFACT_DEST}")
 endif()
@@ -894,6 +934,9 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${UAM_RUNNER_SHA256_FILE}"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.sha256"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_VERSION_FILE}"
+	  "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.version"
 	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
@@ -928,6 +971,9 @@ else()
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 	  "${UAM_RUNNER_SHA256_FILE}"
 	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.sha256"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_VERSION_FILE}"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.version"
 	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )

@@ -42,12 +42,16 @@ remote_root="$app_root/Contents/Resources/remote"
 for remote_file in \
     "$remote_root/uam-runner" \
     "$remote_root/uam-runner.sha256" \
+    "$remote_root/uam-runner.version" \
     "$remote_root/linux-arm64/uam-runner" \
     "$remote_root/linux-arm64/uam-runner.sha256" \
+    "$remote_root/linux-arm64/uam-runner.version" \
     "$remote_root/linux-x86_64/uam-runner" \
     "$remote_root/linux-x86_64/uam-runner.sha256" \
+    "$remote_root/linux-x86_64/uam-runner.version" \
     "$remote_root/windows-x86_64/uam-runner.exe" \
-    "$remote_root/windows-x86_64/uam-runner.sha256"
+    "$remote_root/windows-x86_64/uam-runner.sha256" \
+    "$remote_root/windows-x86_64/uam-runner.version"
 do
     [[ -f "$remote_file" ]]
 done
@@ -57,11 +61,22 @@ for remote_runner in \
     "$remote_root/linux-x86_64/uam-runner" \
     "$remote_root/windows-x86_64/uam-runner.exe"
 do
-    expected_hash=$(tr -d '[:space:]' < "$remote_runner.sha256")
+    expected_hash=$(tr -d '[:space:]' < "$(dirname "$remote_runner")/uam-runner.sha256")
     actual_hash=$(shasum -a 256 "$remote_runner" | awk '{print $1}')
     [[ "$actual_hash" == "$expected_hash" ]]
 done
-[[ -n "$("$remote_root/uam-runner" --version)" ]]
+native_runner_version=$("$remote_root/uam-runner" --version)
+bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$app_root/Contents/Info.plist")
+[[ "$native_runner_version" == "$bundle_version" ]]
+for version_file in \
+    "$remote_root/uam-runner.version" \
+    "$remote_root/linux-arm64/uam-runner.version" \
+    "$remote_root/linux-x86_64/uam-runner.version" \
+    "$remote_root/windows-x86_64/uam-runner.version"
+do
+    [[ "$(tr -d '[:space:]' < "$version_file")" == "$native_runner_version" ]]
+done
 codesign --verify --deep --strict "$app_root"
 
 if [[ -n "$expected_ui_dist" ]]; then

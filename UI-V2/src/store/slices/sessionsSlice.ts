@@ -205,7 +205,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     }).then((response) => {
       if (!isLatestPendingRequest(requestKey, response.requestId)) return
       clearPendingRequest(requestKey, response.requestId)
-      if (!response.ok || !response.data) return
+      if (!response.ok || !response.data) {
+        const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
+        set({ statusLine: `Failed to load chat history for ${chatName}: ${response.error ?? 'The chat history response was empty.'}` })
+        return
+      }
 
       const data = response.data
       if (data.chatId && data.chatId !== chatId) return
@@ -262,7 +266,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
-    appVersion: 'V4.8.0-alpha-2',
+    appVersion: 'V4.8.0',
     runnerProtocolVersion: 0,
     updateChecksEnabled: true,
     updateLastCheckedAt: '',

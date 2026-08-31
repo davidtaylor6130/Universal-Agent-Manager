@@ -86,7 +86,7 @@ std::string NormalizeGoalNextPrompt(const std::string& prompt)
 
 bool GoalBlockerStopsImmediately(const std::string& blocker_kind)
 {
-	return blocker_kind == "needs_user" || blocker_kind == "needs_external_state" || blocker_kind == "invalid_review";
+	return blocker_kind != "transient";
 }
 
 bool PreservesGoalPlan(const Goal& goal, const GoalService::ReviewDecision& decision)

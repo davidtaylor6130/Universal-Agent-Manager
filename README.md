@@ -101,6 +101,14 @@ npm --prefix UI-V2 run build
 CMake enforces build directories under `Builds/`, except for CLion default `cmake-build-*` directories:
 
 ```bash
+./build.sh
+```
+
+The macOS build script cross-builds and packages the Linux ARM64, Linux x86-64, and Windows
+x86-64 SSH helpers. Direct full-app CMake builds fail closed unless those matching helpers exist
+under `Builds/remote-artifacts` (or `UAM_REMOTE_RUNNER_ARTIFACT_DIR` points to them).
+
+```bash
 cmake -S . -B Builds
 cmake --build Builds --config Release
 ```
@@ -178,7 +186,7 @@ npm --prefix UI-V2 ci
 npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
-cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON
+cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
@@ -287,11 +295,13 @@ Current bridge capabilities include:
 
 ## Known Issues & Status
 
-This is an actively developed project; the current development and release line is `v4.5.7-alpha2`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). Current focus areas:
+The current release line is `v4.8.0`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues).
 
-- The in-app goal loop has been significantly improved (stall watchdog, loop detection, keep-awake) but edge cases remain around continuation, failure surfacing, and stop conditions.
-- The polished "Interactive" view (CLI power with chat-bubble overlay) is planned but not yet implemented.
-- Monolith decomposition of the ACP session runtime and frontend Zustand store is ongoing.
+- Windows can run the remote helper as a target, but a Windows UAM controller cannot originate structured SSH sessions yet ([#349](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/349)).
+- A clean local Windows app build requires the prebuilt Linux helper artifacts that the release workflow produces and packages ([#350](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/350)).
+- Remote helper installation is serialized inside one UAM process, but two UAM processes can still update the same host concurrently ([#351](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/351)).
+- Remote helper rollback and final cleanup currently perform synchronous SSH work in the completion path, so a slow host can briefly pause the settings UI ([#352](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/352)).
+- Remote workspace parity gaps are tracked in [#353](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/353).
 
 ## License
 

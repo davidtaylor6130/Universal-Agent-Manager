@@ -313,7 +313,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			const std::string repair_prompt =
 			    "Your previous goal review could not be parsed. This is the only repair attempt. "
 			    "Do not call tools. Output exactly one valid JSON object and nothing else. "
-			    "For continue use {\"decision\":\"continue\",\"reason\":\"...\",\"nextPrompt\":\"...\"}. "
+			    "For continue use {\"decision\":\"continue\",\"reason\":\"...\",\"nextPrompt\":\"...\",\"progressUpdate\":{\"completed\":[],\"remaining\":[\"next step\"],\"currentStep\":\"next step\",\"lastVerification\":\"...\"}}. "
 			    "For blocked use {\"decision\":\"blocked\",\"reason\":\"...\",\"blockerKind\":\"...\"}. "
 			    "For complete use {\"decision\":\"complete\",\"reason\":\"...\",\"evidence\":[\"one concrete item\"]}.";
 			AppendGoalLoopDiagnostic(session, "review_json_invalid_retry", goal_id, review_text);
@@ -368,6 +368,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
 		{
 			ApplyGoalProgressUpdate(*goal, decision);
+			goal->last_blocker_kind = decision.blocker_kind;
 		}
 		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason);
 		if (GoalBlockerStopsImmediately(decision.blocker_kind))
@@ -402,6 +403,9 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	}
 
 	ApplyGoalProgressUpdate(*active_goal, decision);
+	active_goal->blocked_turn_count = 0;
+	active_goal->last_blocker.clear();
+	active_goal->last_blocker_kind.clear();
 	AppSettings bounded_settings = app.settings;
 	uam::settings::ClampGoalSettings(bounded_settings);
 	if (active_goal->loop_count >= bounded_settings.goal_max_loop_iterations)
@@ -766,7 +770,7 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 				session->turn_checkpoint_eligible = same_turn_waiting && task.state->eligible;
 				if (same_turn_waiting && chat != nullptr)
 				{
-					(void)SendQueuedPromptIfReady(*session, *chat);
+					(void)SendQueuedPromptIfReady(app, *session, *chat);
 				}
 			}
 			continue;

@@ -717,6 +717,8 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
+		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
+		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
     (existing.checkpointParentSha ?? '') === (next.checkpointParentSha ?? '') &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
@@ -738,6 +740,8 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     blocks: message.blocks ?? [],
     attachments: messageAttachments(message),
     processingTimeMs: message.processingTimeMs ?? 0,
+		interrupted: Boolean(message.interrupted),
+		prioritySteer: Boolean(message.prioritySteer),
     checkpointSha: message.checkpointSha,
     checkpointParentSha: message.checkpointParentSha,
     createdAt: new Date(createdAtMillis),

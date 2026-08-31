@@ -115,6 +115,58 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('does not rescan the sidebar runtime model when only turn event text changes', () => {
+    const sessions = Array.from({ length: 120 }, (_, index) => makeSession(index + 1))
+    let historicalStatusReads = 0
+    const acpBindingBySessionId = Object.fromEntries(sessions.map((session, index) => {
+      const binding = { turnEvents: [] as Array<{ type: 'assistant_text'; text: string }> }
+      const countRead = <T,>(value: T) => ({
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          if (index >= 49) historicalStatusReads += 1
+          return value
+        },
+      })
+      Object.defineProperties(binding, {
+        processing: countRead(false),
+        lifecycleState: countRead('ready'),
+        readySinceLastSelect: countRead(false),
+        attentionKind: countRead(null),
+      })
+      return [session.id, binding]
+    }))
+    useAppStore.setState({
+      sessions,
+      acpBindingBySessionId: acpBindingBySessionId as never,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelectorAll('[data-session-id]')).toHaveLength(5)
+    expect(historicalStatusReads).toBe(284)
+    historicalStatusReads = 0
+    const currentBinding = acpBindingBySessionId['chat-1']
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...currentBinding,
+          turnEvents: [{ type: 'assistant_text', text: 'A new streaming fragment.' }],
+        } as never,
+      },
+    })))
+
+    expect(historicalStatusReads).toBe(0)
+    expect(host.textContent).toContain('Show 115 more')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows the actual execution computer on workspace rows only', () => {
     useAppStore.setState({
       executionHosts: [
@@ -733,6 +785,93 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Active chats')
     expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
     expect(host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('collapses Active chats and keeps an attention strip that expands the section', () => {
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-2': { running: true, processing: false, lifecycleState: 'waitingPermission', attentionKind: 'permission' },
+        },
+      }))
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-label="Collapse Active chats"]')
+    const list = host.querySelector<HTMLElement>('#active-chat-list')
+    expect(toggle?.tagName).toBe('BUTTON')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    act(() => toggle?.focus())
+    expect(document.activeElement).toBe(toggle)
+
+    act(() => toggle?.click())
+    expect(host.querySelector('button[aria-label="Expand Active chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    expect(list?.hasAttribute('inert')).toBe(true)
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    const strip = host.querySelector<HTMLButtonElement>('[data-testid="active-attention-strip"]')
+    expect(strip?.textContent).toContain('1 chat needs attention')
+
+    act(() => root.render(<FolderTree searchQuery="Chat 2" />))
+    expect(host.querySelector('button[aria-label="Collapse Active chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(host.querySelector('[data-testid="active-attention-strip"]')).toBeNull()
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelector('button[aria-label="Expand Active chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    const restoredStrip = host.querySelector<HTMLButtonElement>('[data-testid="active-attention-strip"]')
+    expect(restoredStrip?.textContent).toContain('1 chat needs attention')
+
+    act(() => restoredStrip?.click())
+    expect(host.querySelector('button[aria-label="Collapse Active chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(list?.hasAttribute('inert')).toBe(false)
+    expect(host.querySelector('[data-testid="active-attention-strip"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('collapses Pinned chats but reveals matching rows while searching', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, isPinned: true } : session
+      ),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-label="Collapse Pinned chats"]')
+    const list = host.querySelector<HTMLElement>('#pinned-chat-list')
+    expect(toggle?.tagName).toBe('BUTTON')
+    act(() => toggle?.focus())
+    expect(document.activeElement).toBe(toggle)
+    act(() => toggle?.click())
+    expect(host.querySelector('button[aria-label="Expand Pinned chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    expect(list?.hasAttribute('inert')).toBe(true)
+
+    act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+    expect(host.querySelector('button[aria-label="Collapse Pinned chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(list?.hasAttribute('inert')).toBe(false)
+    expect(list?.textContent).toContain('Chat 1')
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelector('button[aria-label="Expand Pinned chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
 
     act(() => root.unmount())
     host.remove()

@@ -407,6 +407,8 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
       })
       : [],
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
+		interrupted: booleanOr(value.interrupted),
+		prioritySteer: booleanOr(value.prioritySteer),
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
     createdAt: stringOr(value.createdAt),
@@ -794,6 +796,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
+		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
     remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,

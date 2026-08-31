@@ -159,12 +159,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
     rescanFolderChats: async (id: string): Promise<boolean> => {
       if (!isCefContext()) return true
-      const response = await sendToCEF<{ success?: boolean }>({
+      const response = await sendToCEF<{ success?: boolean; partial?: boolean }>({
         action: 'rescanFolderChats',
         payload: { folderId: id },
         requestId: createRequestId('rescanFolderChats'),
       })
-      return response.ok && response.data?.success !== false
+      return response.ok && (response.data?.success !== false || response.data?.partial === true)
     },
 
     previewUnsortedWorkspaceFolders: async (): Promise<WorkspaceFolderRecoveryPreview | null> => {

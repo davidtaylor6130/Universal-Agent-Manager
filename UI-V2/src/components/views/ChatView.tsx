@@ -82,6 +82,7 @@ import {
   TurnTimelineContent,
   attachmentLabel,
   goalReviewForMessage,
+  type WorkingDisplayMode,
 } from '../chat/MessageBlocks'
 import {
   acpRuntimeBlocksControlChanges,
@@ -444,6 +445,137 @@ function ProviderHandoffDialog({
     document.body
   )
 }
+
+type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
+
+const PersistedMessageRow = memo(function PersistedMessageRow({
+  message,
+  index,
+  assistantLabel,
+  sessionId,
+  sessionParentChatId,
+  sessionBranchFromMessageIndex,
+  sessionBranchMessageEdited,
+  branchSessions,
+  isEditing,
+  editingText,
+  actionsDisabled,
+  canChangeProvider,
+  branching,
+  planActions,
+  workingMode,
+  onBeginEdit,
+  onCancelEdit,
+  onEditingTextChange,
+  onCreateBranch,
+  onSelectBranch,
+  onSelectTool,
+}: {
+  message: Message
+  index: number
+  assistantLabel: string
+  sessionId: string
+  sessionParentChatId?: string
+  sessionBranchFromMessageIndex?: number
+  sessionBranchMessageEdited?: boolean
+  branchSessions: Session[]
+  isEditing: boolean
+  editingText: string
+  actionsDisabled: boolean
+  canChangeProvider: boolean
+  branching: boolean
+  planActions?: PersistedPlanActions
+  workingMode: WorkingDisplayMode
+  onBeginEdit: (index: number, content: string) => void
+  onCancelEdit: () => void
+  onEditingTextChange: (content: string) => void
+  onCreateBranch: (index: number, content?: string) => void | Promise<void>
+  onSelectBranch: (parentId: string, index: number, sessionId: string) => void
+  onSelectTool: (messageId: string, toolId: string) => void
+}) {
+  const isUserMessage = message.role === 'user'
+  const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
+    ? sessionParentChatId
+    : sessionId
+  const messageBranchSessions = isUserMessage
+    ? branchSessions.filter((candidate) =>
+      candidate.id === branchParentId ||
+      (candidate.parentChatId === branchParentId && candidate.branchFromMessageIndex === index)
+    )
+    : []
+  const messageBranchIndex = messageBranchSessions.findIndex((candidate) => candidate.id === sessionId)
+  const isBranchPoint = messageBranchSessions.length > 1 && messageBranchIndex >= 0
+  const goalReview = goalReviewForMessage(message)
+  const branchLabel = sessionBranchFromMessageIndex === index
+    ? sessionBranchMessageEdited ? 'Edited branch' : 'Reverted branch'
+    : undefined
+
+  return (
+		<>
+			{message.prioritySteer && (
+				<div role="separator" aria-label="Steered during this response" className="my-3 flex items-center gap-3 text-xs" style={{ color: 'var(--accent)' }}>
+					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
+					<span>Steered during this response</span>
+					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
+				</div>
+			)}
+    <MessageFrame
+      role={message.role}
+      assistantLabel={assistantLabel}
+      copyText={message.content}
+      branchLabel={branchLabel}
+      branchNavigation={isBranchPoint ? {
+        current: messageBranchIndex + 1,
+        total: messageBranchSessions.length,
+        onPrevious: () => onSelectBranch(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id),
+        onNext: () => onSelectBranch(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id),
+      } : undefined}
+      goalReview={Boolean(goalReview)}
+      actionsDisabled={actionsDisabled}
+      onEdit={isUserMessage ? () => onBeginEdit(index, message.content) : undefined}
+      onRevert={isUserMessage ? () => void onCreateBranch(index) : undefined}
+    >
+			{message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>Response interrupted</div>}
+			{isEditing ? (
+        <div className="space-y-2">
+          <textarea
+            aria-label="Edit message"
+            autoFocus
+            value={editingText}
+            onChange={(event) => onEditingTextChange(event.target.value)}
+            rows={Math.max(3, editingText.split('\n').length)}
+            className="w-full resize-y rounded-md p-2 text-sm"
+            style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              loading={branching}
+              disabled={!editingText.trim() || !canChangeProvider}
+              onClick={() => void onCreateBranch(index, editingText)}
+            >
+              Save to new branch
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <PersistedMessageContent
+          message={message}
+          onSelectTool={onSelectTool}
+          planActions={planActions}
+          sourceChatId={sessionId}
+          workingMode={workingMode}
+        />
+      )}
+		</MessageFrame>
+		</>
+  )
+})
 
 export const ChatView = memo(function ChatView({ session, accentColor, onOpenTerminalFallback }: ChatViewProps) {
   const slashListboxId = useId()
@@ -1279,7 +1411,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
   const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
-  const createMessageBranch = async (messageIndex: number, content?: string) => {
+  const createMessageBranch = useCallback(async (messageIndex: number, content?: string) => {
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
     const branchId = await branchFromMessage(session.id, messageIndex, content)
@@ -1290,7 +1422,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
-  }
+  }, [branchFromMessage, session.id])
+  const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
+    setEditingMessageIndex(messageIndex)
+    setEditingMessageText(content)
+    setMessageBranchError('')
+  }, [])
+  const cancelEditingMessage = useCallback(() => setEditingMessageIndex(null), [])
+  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string) => {
+    setPreferredBranch(parentId, messageIndex, branchId)
+    setActiveSession(branchId)
+  }, [setActiveSession])
+  const selectPersistedTool = useCallback((messageId: string, toolId: string) => {
+    setSelectedToolCallRef({ id: toolId, messageId })
+  }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
     () => providerSupported && !session.importedReadOnly && draft.trim().length > 0 && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
@@ -1565,7 +1710,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const planActionsDisabledTitle = planActionBlockedByRuntime
     ? 'Codex is still working.'
     : 'Plan action is unavailable.'
-  const sendPlanAction = async (prompt: string, nextModeId: 'default' | 'plan') => {
+  const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
     if (planActionsDisabled) return
     setSubmitting(true)
     const modeOk = await setSessionApprovalMode(session.id, nextModeId)
@@ -1573,7 +1718,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       await sendAcpPrompt(session.id, prompt)
     }
     setSubmitting(false)
-  }
+  }, [planActionsDisabled, sendAcpPrompt, session.id, setSessionApprovalMode])
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
   const displayedGoalWorkerLabel = session.smallModelMode && displayedGoal?.workerModelId
@@ -1919,7 +2064,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
   }
 
-  const activePlanActions = canShowPlanActions && providerSupported
+  const activePlanActions = useMemo(() => canShowPlanActions && providerSupported
     ? {
         show: true,
         disabled: planActionsDisabled,
@@ -1927,11 +2072,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         onApprove: () => void sendPlanAction(PLAN_APPROVE_PROMPT, 'default'),
         onDeny: () => void sendPlanAction(PLAN_DENY_PROMPT, 'plan'),
       }
-    : undefined
-  const planActionsForMessage = (index: number) =>
-    canShowPlanActions && index === latestPlanMessageIndex
-      ? activePlanActions
-      : undefined
+    : undefined, [canShowPlanActions, planActionsDisabled, planActionsDisabledTitle, providerSupported, sendPlanAction])
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
     const prompt = claudePlanPrompt?.trim()
     if (!prompt) {
@@ -2023,95 +2164,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 const index = earliestRenderedMessageIndex + visibleIndex
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const isUserMessage = message.role === 'user'
-                const isEditingMessage = editingMessageIndex === index
-                const branchParentId = session.parentChatId && session.branchFromMessageIndex === index
-                  ? session.parentChatId
-                  : session.id
-                const messageBranchSessions = isUserMessage
-                  ? branchSessions.filter((candidate) =>
-                    candidate.id === branchParentId ||
-                    (candidate.parentChatId === branchParentId && candidate.branchFromMessageIndex === index)
-                  )
-                  : []
-                const messageBranchIndex = messageBranchSessions.findIndex((candidate) => candidate.id === session.id)
-                const isBranchPoint = messageBranchSessions.length > 1 && messageBranchIndex >= 0
-                const goalReview = goalReviewForMessage(message)
                 const messageProviderId = message.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
                   messageProviderId
                 )
-                const branchLabel = session.branchFromMessageIndex === index
-                  ? session.branchMessageEdited ? 'Edited branch' : 'Reverted branch'
-                  : undefined
 
                 if (shouldSkipAssistantMessage) return null
 
                 return (
                   <div key={message.id} className="space-y-1">
-                    <MessageFrame
-                      role={message.role}
-                      assistantLabel={messageProviderName}
-                      copyText={message.content}
-                      branchLabel={branchLabel}
-                      branchNavigation={isBranchPoint ? {
-                        current: messageBranchIndex + 1,
-                        total: messageBranchSessions.length,
-                        onPrevious: () => {
-                          const id = messageBranchSessions[messageBranchIndex - 1].id
-                          setPreferredBranch(branchParentId, index, id)
-                          setActiveSession(id)
-                        },
-                        onNext: () => {
-                          const id = messageBranchSessions[messageBranchIndex + 1].id
-                          setPreferredBranch(branchParentId, index, id)
-                          setActiveSession(id)
-                        },
-                      } : undefined}
-                      goalReview={Boolean(goalReview)}
-                      streaming={Boolean(shouldRenderTimelineAtAssistant && acp?.processing)}
-                      actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
-                      onEdit={isUserMessage ? () => {
-                        setEditingMessageIndex(index)
-                        setEditingMessageText(message.content)
-                        setMessageBranchError('')
-                      } : undefined}
-                      onRevert={isUserMessage ? () => void createMessageBranch(index) : undefined}
-                    >
-                      {isEditingMessage ? (
-                        <div className="space-y-2">
-                          <textarea
-                            aria-label="Edit message"
-                            autoFocus
-                            value={editingMessageText}
-                            onChange={(event) => setEditingMessageText(event.target.value)}
-                            rows={Math.max(3, editingMessageText.split('\n').length)}
-                            className="w-full resize-y rounded-md p-2 text-sm"
-                            style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
-                          />
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setEditingMessageIndex(null)}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="primary"
-                              loading={branchingMessageIndex === index}
-                              disabled={!editingMessageText.trim() || !canChangeProvider}
-                              onClick={() => void createMessageBranch(index, editingMessageText)}
-                            >
-                              Save to new branch
-                            </Button>
-                          </div>
-                        </div>
-                      ) : shouldRenderTimelineAtAssistant ? (
+                    {shouldRenderTimelineAtAssistant ? (
+                      <MessageFrame
+                        role={message.role}
+                        assistantLabel={messageProviderName}
+                        copyText={message.content}
+                        goalReview={Boolean(goalReviewForMessage(message))}
+                        streaming={Boolean(acp?.processing)}
+                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                      >
                         <TurnTimelineContent
                           key={`turn-${turnSerial}-assistant`}
                           events={turnEvents}
@@ -2134,16 +2205,32 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                           workingMode={workingDisplayMode}
                           workedSeconds={turnWorkedSeconds}
                         />
-                      ) : (
-                        <PersistedMessageContent
-                          message={message}
-                          onSelectTool={(messageId, toolId) => setSelectedToolCallRef({ id: toolId, messageId })}
-                          planActions={planActionsForMessage(index)}
-                          sourceChatId={session.id}
-                          workingMode={workingDisplayMode}
-                        />
-                      )}
-                    </MessageFrame>
+                      </MessageFrame>
+                    ) : (
+                      <PersistedMessageRow
+                        message={message}
+                        index={index}
+                        assistantLabel={messageProviderName}
+                        sessionId={session.id}
+                        sessionParentChatId={session.parentChatId}
+                        sessionBranchFromMessageIndex={session.branchFromMessageIndex}
+                        sessionBranchMessageEdited={session.branchMessageEdited}
+                        branchSessions={branchSessions}
+                        isEditing={editingMessageIndex === index}
+                        editingText={editingMessageIndex === index ? editingMessageText : ''}
+                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                        canChangeProvider={canChangeProvider}
+                        branching={branchingMessageIndex === index}
+                        planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
+                        workingMode={workingDisplayMode}
+                        onBeginEdit={beginEditingMessage}
+                        onCancelEdit={cancelEditingMessage}
+                        onEditingTextChange={setEditingMessageText}
+                        onCreateBranch={createMessageBranch}
+                        onSelectBranch={selectMessageBranch}
+                        onSelectTool={selectPersistedTool}
+                      />
+                    )}
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
                       <MessageFrame
                         key={`turn-${turnSerial}-after-user`}

@@ -2,16 +2,15 @@ import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useAppStore } from '../../store/useAppStore'
+import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
 import { Button, IconButton, MenuSelect, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
+  type ChatSearchFilterContext,
   buildChatSearchIndex,
-  buildChatSearchModelFromGroups,
-  buildChatSearchSessionGroups,
-  displayedChatStatus,
+  buildChatSearchModel,
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
@@ -30,6 +29,48 @@ interface FolderTreeProps {
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
 type FolderDropEdge = 'before' | 'after'
+type CompactRuntimeStatus = '' | 'processing' | 'done' | `attention:${AcpAttentionKind}`
+
+// Runtime bindings are immutable store values. Cache their compact sidebar status so
+// streaming payload changes only inspect the replaced binding, not every historical chat.
+const cliRuntimeStatusCache = new WeakMap<object, CompactRuntimeStatus>()
+const acpRuntimeStatusCache = new WeakMap<object, CompactRuntimeStatus>()
+
+function cliRuntimeStatus(binding: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'][string] | undefined) {
+  if (!binding) return ''
+  const cached = cliRuntimeStatusCache.get(binding)
+  if (cached !== undefined) return cached
+  const status: CompactRuntimeStatus = binding.processing || binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown'
+    ? 'processing'
+    : binding.readySinceLastSelect ? 'done' : ''
+  cliRuntimeStatusCache.set(binding, status)
+  return status
+}
+
+function acpRuntimeStatus(binding: ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] | undefined) {
+  if (!binding) return ''
+  const cached = acpRuntimeStatusCache.get(binding)
+  if (cached !== undefined) return cached
+  const attentionKind = binding.attentionKind && binding.attentionKind !== 'error' ? binding.attentionKind : null
+  const status: CompactRuntimeStatus = attentionKind
+    ? `attention:${attentionKind}`
+    : binding.processing || binding.lifecycleState === 'waitingPermission'
+      ? 'processing'
+      : binding.readySinceLastSelect ? 'done' : ''
+  acpRuntimeStatusCache.set(binding, status)
+  return status
+}
+
+function combinedRuntimeStatus(
+  cliBinding: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'][string] | undefined,
+  acpBinding: ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] | undefined,
+): CompactRuntimeStatus {
+  const acpStatus = acpRuntimeStatus(acpBinding)
+  if (acpStatus.startsWith('attention:')) return acpStatus
+  const cliStatus = cliRuntimeStatus(cliBinding)
+  if (acpStatus === 'processing' || cliStatus === 'processing') return 'processing'
+  return acpStatus === 'done' || cliStatus === 'done' ? 'done' : ''
+}
 
 function moveId(ids: string[], sourceId: string, targetId: string, edge: FolderDropEdge) {
   const reordered = ids.filter((id) => id !== sourceId)
@@ -67,16 +108,24 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const runtimeStatusSignature = useAppStore((s) => sessions.map(({ id }) => {
-    const cli = s.cliBindingBySessionId[id]
-    const acp = s.acpBindingBySessionId[id]
-    return JSON.stringify([id, cli?.processing, cli?.lifecycleState, cli?.readySinceLastSelect,
-      acp?.processing, acp?.lifecycleState, acp?.readySinceLastSelect, acp?.attentionKind])
-  }).join('\n'))
-  const runtimeBindings = useMemo(() => {
-    const state = useAppStore.getState()
-    return { cliBindingBySessionId: state.cliBindingBySessionId, acpBindingBySessionId: state.acpBindingBySessionId }
-  }, [runtimeStatusSignature])
+  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map(({ id }) => combinedRuntimeStatus(
+    s.cliBindingBySessionId[id],
+    s.acpBindingBySessionId[id],
+  ))))
+  const runtimeStatusBySessionId = useMemo(
+    () => new Map(sessions.map((session, index) => [session.id, runtimeStatuses[index]])),
+    [runtimeStatuses, sessions],
+  )
+  const runtimeBindings = useMemo<ChatSearchFilterContext>(() => {
+    const acpBindingBySessionId: NonNullable<ChatSearchFilterContext['acpBindingBySessionId']> = {}
+    sessions.forEach((session, index) => {
+      const status = runtimeStatuses[index]
+      if (status === 'processing') acpBindingBySessionId[session.id] = { processing: true }
+      else if (status === 'done') acpBindingBySessionId[session.id] = { readySinceLastSelect: true }
+      else if (status) acpBindingBySessionId[session.id] = { attentionKind: status.slice('attention:'.length) as AcpAttentionKind }
+    })
+    return { acpBindingBySessionId }
+  }, [runtimeStatuses, sessions])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -109,6 +158,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
   const [deleteFolderError, setDeleteFolderError] = useState('')
   const [deletingFolder, setDeletingFolder] = useState(false)
+  const [activeCollapsed, setActiveCollapsed] = useState(false)
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
@@ -198,8 +249,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     () => deepSearchSessionIds ? new Set(deepSearchSessionIds) : undefined,
     [deepSearchSessionIds]
   )
-  const searchGroups = useMemo(
-    () => buildChatSearchSessionGroups(
+  const searchModel = useMemo(
+    () => buildChatSearchModel(
+      folders,
       sessions,
       searchIndex,
       searchTokens,
@@ -207,11 +259,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       filters,
       runtimeBindings
     ),
-    [sessions, searchIndex, searchTokens, deepSearchSet, filters, runtimeBindings]
-  )
-  const searchModel = useMemo(
-    () => buildChatSearchModelFromGroups(folders, searchGroups),
-    [folders, searchGroups]
+    [folders, sessions, searchIndex, searchTokens, deepSearchSet, filters, runtimeBindings]
   )
   const sessionsById = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
@@ -220,21 +268,20 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const activeStatusCounts = useMemo(() => {
     const counts = { running: 0, attention: 0, done: 0 }
     for (const sessionId of searchModel.activeSessionIds) {
-      const status = displayedChatStatus(
-        [runtimeBindings.cliBindingBySessionId?.[sessionId]],
-        [runtimeBindings.acpBindingBySessionId?.[sessionId]],
-      )
-      if (status?.type === 'processing') counts.running += 1
-      else if (status?.type === 'attention') counts.attention += 1
-      else if (status?.type === 'done') counts.done += 1
+      const status = runtimeStatusBySessionId.get(sessionId)
+      if (status === 'processing') counts.running += 1
+      else if (status?.startsWith('attention:')) counts.attention += 1
+      else if (status === 'done') counts.done += 1
     }
     return counts
-  }, [runtimeBindings, searchModel.activeSessionIds])
+  }, [runtimeStatusBySessionId, searchModel.activeSessionIds])
   const activeStatusSummary = [
     activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
     activeStatusCounts.done ? `${activeStatusCounts.done} done` : '',
   ].filter(Boolean).join(' · ')
+  const activeExpanded = searchModel.isSearching || !activeCollapsed
+  const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -584,32 +631,87 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
       {searchModel.activeSessionIds.length > 0 && (
         <div className="mb-0.5" data-testid="active-chats">
-          <div className="flex flex-wrap items-center justify-between gap-x-2 px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
+          <button
+            type="button"
+            aria-label={`${activeExpanded ? 'Collapse' : 'Expand'} Active chats`}
+            aria-expanded={activeExpanded}
+            aria-controls="active-chat-list"
+            className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
+            onClick={() => setActiveCollapsed((collapsed) => !collapsed)}
+          >
+            <ChevronRight
+              size={13}
+              style={{ flexShrink: 0, transform: activeExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              aria-hidden
+            />
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Active chats
             </span>
             {activeStatusSummary && (
-              <span aria-label="Active chat status counts" className="text-[10px]" title={activeStatusSummary}>
+              <span aria-label="Active chat status counts" className="ml-auto text-[10px]" title={activeStatusSummary}>
                 {activeStatusSummary}
               </span>
             )}
+          </button>
+          <div
+            id="active-chat-list"
+            hidden={!activeExpanded}
+            aria-hidden={!activeExpanded}
+            {...(!activeExpanded ? { inert: '' } : {})}
+          >
+            {searchModel.activeSessionIds.map((id) => (
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+            ))}
           </div>
-          {searchModel.activeSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-          ))}
+          {!activeExpanded && activeStatusCounts.attention > 0 && (
+            <button
+              type="button"
+              data-testid="active-attention-strip"
+              className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded px-2 py-1 text-left text-[10px] hover:bg-[var(--warning-dim)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--yellow)]"
+              style={{ background: 'var(--warning-dim)', border: '1px solid color-mix(in srgb, var(--yellow) 28%, var(--border))', color: 'var(--yellow)', cursor: 'pointer' }}
+              onClick={() => setActiveCollapsed(false)}
+            >
+              <TriangleAlert size={12} aria-hidden />
+              {activeStatusCounts.attention === 1
+                ? '1 chat needs attention'
+                : `${activeStatusCounts.attention} chats need attention`}
+            </button>
+          )}
         </div>
       )}
 
       {searchModel.pinnedSessionIds.length > 0 && (
-        <div className="mb-0.5">
-          <div className="px-2.5 py-0.5" style={{ color: 'var(--text-3)' }}>
+        <div className="mb-0.5" data-testid="pinned-chats">
+          <button
+            type="button"
+            aria-label={`${pinnedExpanded ? 'Collapse' : 'Expand'} Pinned chats`}
+            aria-expanded={pinnedExpanded}
+            aria-controls="pinned-chat-list"
+            className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
+            onClick={() => setPinnedCollapsed((collapsed) => !collapsed)}
+          >
+            <ChevronRight
+              size={13}
+              style={{ flexShrink: 0, transform: pinnedExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              aria-hidden
+            />
             <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
               Pinned chats
             </span>
+            <span className="ml-auto text-[10px]">{searchModel.pinnedSessionIds.length}</span>
+          </button>
+          <div
+            id="pinned-chat-list"
+            hidden={!pinnedExpanded}
+            aria-hidden={!pinnedExpanded}
+            {...(!pinnedExpanded ? { inert: '' } : {})}
+          >
+            {searchModel.pinnedSessionIds.map((id) => (
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+            ))}
           </div>
-          {searchModel.pinnedSessionIds.map((id) => (
-            <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-          ))}
         </div>
       )}
 

@@ -4,6 +4,8 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_update_handler.h"
 
+#include "app/chat_domain_service.h"
+#include "app/goal_service.h"
 #include "common/platform/platform_services.h"
 #include "common/config/settings_normalization.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
@@ -29,26 +31,59 @@ namespace uam::acp_detail
 		constexpr std::size_t kAcpStderrChunksPerPoll = 16;
 		constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024;
 		constexpr double kFatalTransportReconnectDelaySeconds = 0.25;
+		constexpr std::string_view kRemoteAttachedMethod = "uam/remoteAttached";
 
-		void InvalidateAcpTransport(
+		void ReactivateConfirmedRemoteGoal(AppState& app, const ChatSession& chat)
+		{
+			const std::string owner_chat_id = uam::strings::NonEmptyOrFallback(
+			    chat.goal_owner_chat_id, chat.id);
+			ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
+			if (owner == nullptr) return;
+
+			Goal* matched = nullptr;
+			for (Goal& goal : owner->goals)
+			{
+				if (goal.status != GoalStatus::Blocked ||
+				    !goal.last_blocker.ends_with(" process exited during an active turn."))
+					continue;
+				if (!chat.goal_iteration_goal_id.empty() && goal.id != chat.goal_iteration_goal_id)
+					continue;
+				if (matched != nullptr) return;
+				matched = &goal;
+			}
+			if (matched != nullptr && GoalService::SetActiveGoal(app, owner_chat_id, matched->id))
+			{
+				SaveChatQuietly(app, *owner);
+			}
+		}
+
+		void InvalidateAcpTransportImpl(
 		    AppState& app,
 		    AcpSessionState& session,
 		    ChatSession& chat,
 		    const std::string& message)
 		{
+			const bool undelivered_prompt = session.prompt_request_id == 0 && !session.queued_prompt.empty();
+			std::string queued_prompt = undelivered_prompt ? session.queued_prompt : std::string{};
 			std::deque<AcpQueuedUserPromptState> queued_prompts = std::move(session.queued_user_prompts);
 			FailAcpTurnOrSession(session, message);
+			bool restart_safe = true;
 			if (session.running)
 			{
-				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				restart_safe = StopAcpProcessForRestart(session, chat);
 			}
-			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 			session.running = false;
 			ResetAcpRuntimeState(session);
 			session.queued_user_prompts = std::move(queued_prompts);
+			if (undelivered_prompt)
+			{
+				session.queued_prompt = std::move(queued_prompt);
+				session.processing = true;
+			}
 			session.last_error = message;
 			session.lifecycle_state = kAcpLifecycleError;
-			if (!session.queued_user_prompts.empty() && session.managed_agent_run_id.empty())
+			if ((undelivered_prompt || !session.queued_user_prompts.empty()) && session.managed_agent_run_id.empty() &&
+			    restart_safe)
 			{
 				session.reconnect_pending = true;
 				session.reconnect_not_before_time_s = GetAppTimeSeconds() + kFatalTransportReconnectDelaySeconds;
@@ -66,7 +101,7 @@ namespace uam::acp_detail
 		    const std::string& message)
 		{
 			AppendAcpDiagnostic(session, "read", reason, "", "", false, 0, message);
-			InvalidateAcpTransport(app, session, chat, message);
+			InvalidateAcpTransportImpl(app, session, chat, message);
 			return true;
 		}
 
@@ -143,6 +178,15 @@ namespace uam::acp_detail
 		}
 	} // namespace
 
+	void InvalidateAcpTransport(
+	    AppState& app,
+	    AcpSessionState& session,
+	    ChatSession& chat,
+	    const std::string& message)
+	{
+		InvalidateAcpTransportImpl(app, session, chat, message);
+	}
+
 bool AppendAcpStdoutChunk(AcpSessionState& session, std::string_view chunk)
 {
 	if (chunk.size() > kMaxAcpStdoutLineBytes || session.stdout_buffer.size() > kMaxAcpStdoutLineBytes - chunk.size())
@@ -207,6 +251,14 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		const std::string error_message = std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
 		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message, CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
 		InvalidateAcpTransport(app, session, chat, error_message);
+		return true;
+	}
+	if (JsonDiagnosticStringValue(message, "method") == kRemoteAttachedMethod)
+	{
+		if (!session.recovering_remote_turn) return true;
+		AppendAcpDiagnostic(session, "reconnect", "remote_attached", std::string(kRemoteAttachedMethod),
+		                    "", false, 0, "Reattached to the existing remote turn.");
+		ReactivateConfirmedRemoteGoal(app, chat);
 		return true;
 	}
 

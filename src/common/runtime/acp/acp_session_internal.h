@@ -285,16 +285,17 @@ bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
 bool SendInitialize(AcpSessionState& session, std::string* error_out = nullptr);
 void ResetAcpRuntimeState(AcpSessionState& session);
 AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat);
+bool StopAcpProcessForRestart(AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
-bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat);
+bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool SendDeferredCodexInterruptIfReady(AcpSessionState& session);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
-void SaveChatQuietly(AppState& app, const ChatSession& chat);
+bool SaveChatQuietly(AppState& app, const ChatSession& chat);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
@@ -306,6 +307,8 @@ bool ScheduleTurnCheckpointPreflight(AppState& app, AcpSessionState& session, co
 void ClearGoalReviewState(AcpSessionState& session);
 void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
+void InvalidateAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat,
+                           const std::string& message);
 
 // ACP response handler helpers
 std::string PendingRequestSummary(const AcpSessionState& session);

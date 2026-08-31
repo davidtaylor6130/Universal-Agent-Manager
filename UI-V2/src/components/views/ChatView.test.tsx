@@ -1395,6 +1395,41 @@ describe('ChatView', () => {
     host.remove()
   })
 
+	it('keeps a steer visibly tied to the response it interrupted', () => {
+		useAppStore.setState((state) => ({
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
+						content: 'I was changing the remote helper.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'steer', sessionId: 'chat-1', role: 'user',
+						content: 'Keep the work local.', prioritySteer: true,
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+		const text = host.textContent ?? ''
+		expect(text).toContain('Response interrupted')
+		expect(host.querySelector('[role="separator"][aria-label="Steered during this response"]')).toBeTruthy()
+		expect(text.indexOf('Response interrupted')).toBeLessThan(text.indexOf('Steered during this response'))
+		expect(text.indexOf('Steered during this response')).toBeLessThan(text.indexOf('Keep the work local.'))
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
   it('shows either UAM agent or provider mode from the provider preference while permissions stay independent', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     const setSessionUamAgent = vi.fn(() => Promise.resolve(true))
@@ -3467,6 +3502,74 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('does not rebuild historical message rows when the streaming tail changes', () => {
+    let historicalContentReads = 0
+    const state = useAppStore.getState()
+    const historicalMessage = { ...state.messages['chat-1'][1], id: 'm-history' }
+    Object.defineProperty(historicalMessage, 'content', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        historicalContentReads += 1
+        return 'Stable historical response.'
+      },
+    })
+    const streamingMessage = {
+      id: 'm-streaming',
+      sessionId: 'chat-1',
+      role: 'assistant' as const,
+      content: 'Streaming response one.',
+      isStreaming: true,
+      createdAt: new Date('2026-01-01T00:00:02.000Z'),
+    }
+    useAppStore.setState({
+      messages: {
+        ...state.messages,
+        'chat-1': [state.messages['chat-1'][0], historicalMessage, streamingMessage],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: null,
+        },
+      },
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+    const readsAfterInitialRender = historicalContentReads
+    expect(readsAfterInitialRender).toBeGreaterThan(0)
+
+    act(() => useAppStore.setState((current) => ({
+      messages: {
+        ...current.messages,
+        'chat-1': [
+          current.messages['chat-1'][0],
+          historicalMessage,
+          { ...streamingMessage, content: 'Streaming response two.' },
+        ],
+      },
+    })))
+
+    expect(host.textContent).toContain('Streaming response two.')
+    expect(historicalContentReads).toBe(readsAfterInitialRender)
+
+    act(() => root.unmount())
     host.remove()
   })
 

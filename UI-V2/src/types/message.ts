@@ -48,6 +48,8 @@ export interface Message {
   isStreaming?: boolean
   attachments?: Attachment[]
   processingTimeMs?: number
+	interrupted?: boolean
+	prioritySteer?: boolean
   checkpointSha?: string
   checkpointParentSha?: string
   createdAt: Date

@@ -78,6 +78,7 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	bool priority_steer = false;
 	std::string checkpoint_sha;
 	std::string checkpoint_parent_sha;
 	std::vector<ToolCall> tool_calls;
@@ -115,6 +116,7 @@ struct Goal
 	int64_t tokens_used = 0;
 	int blocked_turn_count = 0;              // consecutive turns at same blocker
 	std::string last_blocker;                // description of current blocker
+	std::string last_blocker_kind;           // machine-readable blocker category
 	std::string last_diagnostic;             // durable goal-loop diagnostic reason
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
@@ -196,6 +198,9 @@ struct ChatSession
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
+	// Persisted only while a remote structured turn is active. A GUI restart uses
+	// this to reattach to the existing runner process without replaying the prompt.
+	bool remote_turn_reconnect_pending = false;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;

@@ -232,7 +232,7 @@ namespace uam
 			const std::string detail = "pending_requests=" + PendingRequestSummary(session) +
 			    (session.recent_stderr.empty() ? "" : "\nstderr_tail=" + RecentStderrTail(session));
 			AppendAcpDiagnostic(session, "session_setup", "setup_timeout", "", "", false, 0, message, detail);
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+			const bool stopped = StopAcpProcessForRestart(session, chat);
 			session.last_error = message;
 			MarkAcpProcessExited(session, false, 0);
 
@@ -255,8 +255,8 @@ namespace uam
 			}
 			else
 			{
-				ScheduleAcpReconnect(session, now_seconds);
-				if (active_turn && !session.reconnect_pending)
+				if (stopped) ScheduleAcpReconnect(session, now_seconds);
+				if (active_turn && (!stopped || !session.reconnect_pending))
 				{
 					BlockActiveGoalForSetupFailure(app, session, chat, message);
 				}
@@ -279,7 +279,17 @@ namespace uam
 
 		bool HandleAcpTurnInactivityTimeoutInternal(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
 		{
-			const AcpTurnInactivityRecoveryAction action = AcpTurnInactivityRecovery(session, now_seconds, static_cast<double>(app.settings.active_turn_inactivity_timeout_seconds), kAcpCancelTimeoutSeconds);
+			const bool codex_turn_start_pending =
+			    session.protocol_kind == "codex-app-server" &&
+			    session.codex_turn_id.empty() &&
+			    (session.prompt_request_id != 0 || session.recovering_remote_turn);
+			const int timeout_seconds = codex_turn_start_pending
+			                                ? std::min(app.settings.active_turn_inactivity_timeout_seconds,
+			                                           app.settings.acp_setup_inactivity_timeout_seconds)
+			                                : app.settings.active_turn_inactivity_timeout_seconds;
+			const AcpTurnInactivityRecoveryAction action = AcpTurnInactivityRecovery(
+			    session, now_seconds, static_cast<double>(timeout_seconds),
+			    kAcpCancelTimeoutSeconds);
 			if (action == AcpTurnInactivityRecoveryAction::None)
 			{
 				return false;
@@ -290,7 +300,10 @@ namespace uam
 				return true;
 			}
 
-			const std::string message = std::string(RuntimeDisplayName(session)) + " turn timed out after " + std::to_string(app.settings.active_turn_inactivity_timeout_seconds) + " seconds without provider activity. The delivered prompt was not replayed.";
+			const std::string message = std::string(RuntimeDisplayName(session)) +
+			    (codex_turn_start_pending ? " turn start" : " turn") + " timed out after " +
+			    std::to_string(timeout_seconds) +
+			    " seconds without provider activity. The delivered prompt was not replayed.";
 			std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
 			std::string cancel_error;
 			const bool cancel_sent = CancelAcpTurn(app, session.chat_id, &cancel_error);
@@ -337,6 +350,50 @@ namespace uam
 			}
 		}
 		return nullptr;
+	}
+
+	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app)
+	{
+		std::size_t restored = 0;
+		for (ChatSession& chat : app.chats)
+		{
+			if (!chat.remote_turn_reconnect_pending || chat.imported_read_only ||
+			    chat.execution_host_id == uam::execution_hosts::kLocalHostId)
+				continue;
+
+			std::string warning;
+			if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning))
+			{
+				chat.remote_turn_reconnect_pending = false;
+				(void)ChatRepository::SaveChat(app.data_root, chat);
+				continue;
+			}
+
+			AcpSessionState& session = acp_detail::EnsureAcpSessionForChat(app, chat);
+			session.processing = true;
+			session.recovering_remote_turn = true;
+			session.turn_serial = 1;
+			for (int index = static_cast<int>(chat.messages.size()) - 1; index >= 0; --index)
+			{
+				if (chat.messages[static_cast<std::size_t>(index)].role == MessageRole::User)
+				{
+					session.turn_user_message_index = index;
+					break;
+				}
+			}
+			session.turn_started_time_s = GetAppTimeSeconds();
+			session.last_runtime_activity_time_s = session.turn_started_time_s;
+			if (acp_detail::StartAcpProcessForChat(app, session, chat))
+			{
+				++restored;
+			}
+			else
+			{
+				chat.remote_turn_reconnect_pending = false;
+				acp_detail::SaveChatQuietly(app, chat);
+			}
+		}
+		return restored;
 	}
 
 	namespace
@@ -522,6 +579,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
 				}
 			}
+			else if (!first.goal_mode)
+			{
+				const Goal* terminal_goal = GoalService::FindActiveOrLatestTerminalGoal(app, chat.id);
+				if (terminal_goal != nullptr)
+				{
+					const std::string terminal_prompt = GoalService::BuildReadOnlyTerminalPrompt(*terminal_goal);
+					if (!terminal_prompt.empty()) effective_prompt = terminal_prompt + "\n\n" + effective_prompt;
+				}
+			}
 			return true;
 		}
 
@@ -537,6 +603,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				ChatDomainService::MessageAnalytics analytics;
 				analytics.provider = MessageProviderId(session);
 				ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
+				chat.messages.back().priority_steer = queued.priority_steer;
 				chat.messages.back().markdown_store_files = queued.markdown_store_files;
 				chat.messages.back().markdown_store_prompt_blocks = queued.markdown_store_prompt_blocks;
 				chat.messages.back().attachments = queued.attachments;
@@ -649,7 +716,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.turn_user_message_index = static_cast<int>(chat.messages.size() + appended_message_count) - 1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
-			(void)ScheduleTurnCheckpointPreflight(app, session, chat);
 			RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
 			RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
 			ResetAcpTurnStreamState(session);
@@ -658,21 +724,38 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.last_runtime_activity_time_s = session.turn_started_time_s;
 			session.last_error.clear();
 			session.lifecycle_state = session.session_ready ? kAcpLifecycleProcessing : kAcpLifecycleStarting;
+			const std::size_t original_message_count = chat.messages.size();
+			const std::size_t original_linked_file_count = chat.linked_files.size();
+			const std::string original_updated_at = chat.updated_at;
+			AppendQueuedUserMessages(chat, session, batch);
+			if (!SaveChatQuietly(app, chat))
+			{
+				chat.messages.resize(original_message_count);
+				chat.linked_files.resize(original_linked_file_count);
+				chat.updated_at = original_updated_at;
+				session.last_error = "Prompt was not sent because chat history could not be saved.";
+				if (error_out != nullptr) *error_out = session.last_error;
+				CompletePromptTurn(session, kAcpLifecycleError);
+				return false;
+			}
+			(void)ScheduleTurnCheckpointPreflight(app, session, chat);
 
 			if (session.session_ready)
 			{
-				(void)SendQueuedPromptIfReady(session, chat);
+				(void)SendQueuedPromptIfReady(app, session, chat);
 				if (session.lifecycle_state == kAcpLifecycleError)
 				{
 					if (error_out != nullptr)
 					{
 						*error_out = uam::strings::NonEmptyOrFallback(session.last_error, "Failed to deliver queued prompt batch.");
 					}
+					chat.messages.resize(original_message_count);
+					chat.linked_files.resize(original_linked_file_count);
+					chat.updated_at = original_updated_at;
+					SaveChatQuietly(app, chat);
 					return false;
 				}
 			}
-			AppendQueuedUserMessages(chat, session, batch);
-			SaveChatQuietly(app, chat);
 			return true;
 		}
 
@@ -1272,7 +1355,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (session.processing)
 		{
-			return SendQueuedPromptIfReady(session, chat);
+			return SendQueuedPromptIfReady(app, session, chat);
 		}
 		return DrainNextQueuedAcpUserPrompt(app, session, chat);
 	}
@@ -1339,7 +1422,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
-		if (chat != nullptr && acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session))
+		bool chat_changed = false;
+		if (chat != nullptr)
+		{
+			const int assistant_index = session->current_assistant_message_index >= 0
+			                                ? session->current_assistant_message_index
+			                                : session->turn_assistant_message_index;
+			if (assistant_index >= 0 && assistant_index < static_cast<int>(chat->messages.size()) &&
+			    !chat->messages[assistant_index].interrupted)
+			{
+				chat->messages[assistant_index].interrupted = true;
+				chat_changed = true;
+			}
+			chat_changed = acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, *session) || chat_changed;
+		}
+		if (chat != nullptr && chat_changed)
 		{
 			acp_detail::SaveChatQuietly(app, *chat);
 		}
@@ -1442,6 +1539,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.last_error = message;
 		session.lifecycle_state = kAcpLifecycleError;
 		BlockActiveGoalForInactivityTimeout(app, session, chat, message);
+		chat.remote_turn_reconnect_pending = false;
+		acp_detail::SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
 
@@ -1461,27 +1560,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			acp_detail::SaveChatQuietly(app, *chat);
 		}
 
+		const bool stopped = !session->running || chat == nullptr
+		                         ? true
+		                         : acp_detail::StopAcpProcessForRestart(*session, *chat);
 		if (session->running)
-		{
-			auto& process_service = PlatformServicesFactory::Instance().process_service;
-			bool exited = false;
-			if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
-			{
-				std::string ignored_error;
-				if (process_service.WriteToStdioProcess(
-				        *session, uam::remote::kRemoteStopControlLine.data(),
-				        uam::remote::kRemoteStopControlLine.size(), &ignored_error))
-				{
-					for (int attempt = 0; attempt < 100 && !exited; ++attempt)
-					{
-						exited = process_service.PollStdioProcessExited(*session);
-						if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-					}
-				}
-			}
-			if (exited) process_service.CloseStdioProcessHandles(*session);
-			else process_service.StopStdioProcess(*session, true);
-		}
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
 
 		session->running = false;
 		session->initialized = false;
@@ -1524,7 +1607,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->pending_assistant_thoughts.clear();
 		ResetAcpPendingInteractionState(*session);
 		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
-		return true;
+		return stopped;
 	}
 
 	bool SetAcpSessionMode(AppState& app,
@@ -2000,7 +2083,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				changed = true;
 			}
 
-			if (SendQueuedPromptIfReady(session, chat))
+			if (SendQueuedPromptIfReady(app, session, chat))
 			{
 				if (!session.last_error.empty() && session.lifecycle_state == kAcpLifecycleError)
 				{
@@ -2032,6 +2115,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// startup crash), the turn can be retried safely without risking a
 				// duplicate prompt reaching the provider.
 				const bool turn_was_active = uam::AcpSessionHasActiveTurn(session);
+				const bool remote_turn_recovery = turn_was_active &&
+				    chat.execution_host_id != uam::execution_hosts::kLocalHostId;
+				const bool remote_turn_missing = remote_turn_recovery &&
+				    (session.recent_stderr.find("The remote process does not exist.") != std::string::npos ||
+				     session.recent_stderr.find("The remote process is no longer available.") != std::string::npos);
 				const bool undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
 				const std::string pending_prompt = session.queued_prompt;
 				const int turn_user_message_index = session.turn_user_message_index;
@@ -2044,6 +2132,41 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
 
 				MarkAcpProcessExited(session, true, exit_code);
+				if (remote_turn_missing)
+				{
+					session.reconnect_pending = false;
+					session.reconnect_not_before_time_s = 0.0;
+					session.last_error = "The remote turn no longer exists on the selected runner.";
+					session.lifecycle_state = kAcpLifecycleError;
+					AppendAcpDiagnostic(session, "reconnect", "remote_turn_missing", "", "",
+					                    true, exit_code, session.last_error);
+					const std::string goal_owner_chat_id = uam::strings::NonEmptyOrFallback(
+					    chat.goal_owner_chat_id, chat.id);
+					if (Goal* active_goal = GoalService::FindActiveGoal(app, goal_owner_chat_id);
+					    active_goal != nullptr &&
+					    (chat.goal_iteration_goal_id.empty() ||
+					     active_goal->id == chat.goal_iteration_goal_id))
+					{
+						GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id,
+						                           session.last_error);
+						(void)GoalService::UpdateGoalStatus(
+						    app, goal_owner_chat_id, active_goal->id, GoalStatus::Blocked);
+						if (ChatSession* owner = ChatDomainService().FindChatById(app, goal_owner_chat_id);
+						    owner != nullptr)
+							SaveChatQuietly(app, *owner);
+					}
+					MarkAcpChatUnseenIfBackground(app, chat);
+					SaveChatQuietly(app, chat);
+					changed = true;
+					continue;
+				}
+				if (remote_turn_recovery)
+				{
+					// A failed bridge must retry the same remote process. Starting a fresh
+					// provider here would create an idle server and falsely look recovered.
+					session.processing = true;
+					session.recovering_remote_turn = true;
+				}
 				if (model_discovery_only)
 				{
 					session.model_discovery_only = false;
@@ -2085,10 +2208,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 					{
 						MarkAcpChatUnseenIfBackground(app, chat);
 					}
-					// A goal must not stay Active with no running session; surface
-					// the crash as a blocker so the goal loop ends visibly instead
-					// of stalling silently.
-					if (turn_was_active)
+					// Keep a recoverable remote goal active while its bridge reattaches.
+					// Local exits and exhausted remote recovery still end visibly.
+					if (turn_was_active && (!remote_turn_recovery || !session.reconnect_pending))
 					{
 						const std::string goal_owner_chat_id = uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id);
 						if (Goal* active_goal = GoalService::FindActiveGoal(app, goal_owner_chat_id); active_goal != nullptr &&

@@ -65,6 +65,86 @@ UAM_TEST(AcpBufferedPollingSharesWorkAcrossNoisySessionsWithoutReordering)
 	std::cerr.rdbuf(previous_cerr);
 }
 
+UAM_TEST(ConfirmedRemoteAttachmentReactivatesOnlyTheInterruptedGoal)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "remote-recovery";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.status = GoalStatus::Blocked;
+	goal.last_blocker = "Codex app-server process exited during an active turn.";
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	uam::AcpSessionState session;
+	session.chat_id = "remote-recovery";
+	session.provider_id = uam::provider_ids::kCodexCli;
+	session.running = true;
+	session.processing = true;
+	session.recovering_remote_turn = true;
+	session.stdout_buffer =
+	    R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})" "\n";
+
+	UAM_ASSERT_EQ(
+	    uam::acp_detail::ProcessBufferedAcpStdoutForTests(
+	        app, session, app.chats.front(), nullptr, 1),
+	    static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, std::string("goal-1"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+}
+
+UAM_TEST(RemoteCodexBridgeExitKeepsGoalActiveWhileReconnectIsPending)
+{
+	TempDir temp("uam-remote-codex-bridge-exit");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "remote-active-turn";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = "ssh-test";
+	chat.workspace_directory = temp.root.string();
+	chat.remote_turn_reconnect_pending = true;
+	app.chats.push_back(std::move(chat));
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, app.chats.front().id, "Keep working.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = uam::provider_ids::kCodexCli;
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->processing = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> exit_argv = {"cmd.exe", "/d", "/s", "/c", "exit /b 0"};
+#else
+	const std::vector<std::string> exit_argv = {"/bin/sh", "-c", "exit 0"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, exit_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	for (int attempt = 0; attempt < 100 && raw_session->running; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT(raw_session->recovering_remote_turn);
+	const Goal* goal = uam::GoalService::FindActiveGoal(app, app.chats.front().id);
+	UAM_ASSERT(goal != nullptr);
+	UAM_ASSERT_EQ(goal->status, GoalStatus::Active);
+	UAM_ASSERT(goal->last_blocker.empty());
+}
+
 UAM_TEST(KeepAwakeCoversLiveWorkButReleasesStaleStructuredWaits)
 {
 	uam::AppState app;
@@ -242,7 +322,7 @@ done
 	host.transport = "ssh";
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
-	host.runner_version = "4.5.7";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	host.platform = "linux";
 	host.architecture = "arm64";
 	app.settings.execution_hosts = {host};
@@ -318,7 +398,7 @@ done
 	host.transport = "ssh";
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
-	host.runner_version = "4.5.7";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	host.platform = "linux";
 	host.architecture = "x86_64";
 	app.settings.execution_hosts = {host};
@@ -378,7 +458,7 @@ UAM_TEST(RemoteAcpPublishesOnlyTheRemoteUamControlShim)
 	host.transport = "ssh";
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
-	host.runner_version = "4.5.7";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	host.platform = "linux";
 	host.architecture = "arm64";
 	app.settings.execution_hosts = {host};
@@ -441,7 +521,9 @@ UAM_TEST(AcpSilentTurnCancelsThenStopsWithoutReplayingOrDroppingFuturePrompts)
 	ChatSession chat;
 	chat.id = "chat-inactivity-timeout";
 	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.execution_host_id = "ssh-test";
 	chat.workspace_directory = temp.root.string();
+	chat.remote_turn_reconnect_pending = true;
 	app.chats.push_back(chat);
 	std::string goal_id;
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish without hanging.", 0, &goal_id));
@@ -480,6 +562,9 @@ UAM_TEST(AcpSilentTurnCancelsThenStopsWithoutReplayingOrDroppingFuturePrompts)
 	const Goal* goal = uam::GoalService::FindGoalById(app, chat.id, goal_id);
 	UAM_ASSERT(goal != nullptr);
 	UAM_ASSERT_EQ(goal->status, GoalStatus::Blocked);
+	const std::optional<ChatSession> cancelling = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(cancelling.has_value());
+	UAM_ASSERT(cancelling->remote_turn_reconnect_pending);
 
 	raw_session->cancel_requested_time_s = 62.0;
 	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, *raw_session, app.chats.front(), 67.0));
@@ -488,6 +573,12 @@ UAM_TEST(AcpSilentTurnCancelsThenStopsWithoutReplayingOrDroppingFuturePrompts)
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("future prompt"));
 	UAM_ASSERT(uam::strings::Contains(raw_session->last_error, "not replayed"));
+	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+	const std::optional<ChatSession> stopped = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(stopped.has_value());
+	UAM_ASSERT(!stopped->remote_turn_reconnect_pending);
+	UAM_ASSERT(stopped->active_goal_id.empty());
+	UAM_ASSERT_EQ(stopped->goals.front().status, GoalStatus::Blocked);
 }
 
 UAM_TEST(CopilotAuthenticationFailureExplainsHowToRecover)
@@ -4490,6 +4581,49 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 }
 
+UAM_TEST(AcpOrdinaryFollowupIncludesLatestTerminalGoalAsReadOnlyState)
+{
+	TempDir temp("uam-acp-terminal-goal-followup");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.active_provider_id = app.provider_profiles.front().id;
+
+	ChatSession chat;
+	chat.id = "chat-terminal-followup";
+	chat.provider_id = app.provider_profiles.front().id;
+	chat.workspace_directory = temp.root.string();
+	Goal goal;
+	goal.id = "goal-terminal-followup";
+	goal.objective = "Finish the prior task.";
+	goal.status = GoalStatus::Blocked;
+	goal.last_blocker = "User approval required.";
+	goal.last_diagnostic = "goal_blocked_permission";
+	goal.last_verification = "Remote process remained alive.";
+	goal.completed_items = {"Connected over SSH"};
+	goal.remaining_items = {"Approve access"};
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-terminal-followup";
+	session->provider_id = app.provider_profiles.front().id;
+	session->running = true;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-terminal-followup", "What happened?", {}, {}, false, &error));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_prompt.find("Persisted terminal goal state (read-only)") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Do not reactivate") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("goal_blocked_permission") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Remote process remained alive.") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("What happened?") != std::string::npos);
+}
+
 UAM_TEST(AcpPromptRejectsOversizedCombinedSkillContent)
 {
 	TempDir temp("uam-acp-skill-prompt-limit");
@@ -4516,6 +4650,41 @@ UAM_TEST(AcpPromptRejectsOversizedCombinedSkillContent)
 	UAM_ASSERT(!uam::SendAcpPrompt(app, "chat-skill-limit", "Use both skills.", {first_skill.string(), second_skill.string()}, {}, false, &error));
 	UAM_ASSERT(error.find("2 MiB prompt limit") != std::string::npos);
 	UAM_ASSERT(app.chats.front().messages.empty());
+}
+
+UAM_TEST(AcpPromptIsNotDeliveredWhenChatHistoryCannotBeSaved)
+{
+	TempDir temp("uam-acp-prompt-save-failure");
+	const fs::path invalid_data_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(invalid_data_root, "blocked"));
+
+	uam::AppState app;
+	app.data_root = invalid_data_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-save-failure";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = "session-save-failure";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, app.chats.front().id, "Do not deliver this.",
+	                              {}, {}, false, &error));
+	UAM_ASSERT_EQ(error, std::string("Prompt was not sent because chat history could not be saved."));
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
 }
 
 UAM_TEST(AcpSmallModelModeCreatesGoalAndKeepsQueuedPromptsAtomic)
@@ -4665,6 +4834,7 @@ UAM_TEST(AcpSetupInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
 	chat.id = "chat-setup-timeout";
 	chat.provider_id = "gemini-cli";
 	chat.workspace_directory = temp.root.string();
+	chat.execution_host_id = "ssh-test";
 	app.chats.push_back(std::move(chat));
 	std::string goal_id;
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, "chat-setup-timeout", "Keep working after reconnect.", 0, &goal_id));
@@ -4688,15 +4858,21 @@ UAM_TEST(AcpSetupInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
 	uam::AcpSessionState* raw_session = session.get();
 
 #if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+	const std::vector<std::string> sink_argv = {"cmd.exe", "/d", "/s", "/c", "set /p line="};
 #else
-	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+	const std::filesystem::path stop_marker = temp.root / "remote-stop-received";
+	const std::vector<std::string> sink_argv = {
+	    "/bin/sh", "-c",
+	    "IFS= read -r line; printf stopped > '" + stop_marker.string() + "'"};
 #endif
 	std::string error;
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(uam::PollAllAcpSessions(app));
+#if !defined(_WIN32)
+	UAM_ASSERT(std::filesystem::is_regular_file(stop_marker));
+#endif
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->processing);
 	UAM_ASSERT(raw_session->reconnect_pending);
@@ -4734,6 +4910,77 @@ UAM_TEST(AcpSetupInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
 	UAM_ASSERT(uam::SteerAcpPrompt(app, raw_session->chat_id, "New Gemini steering prompt", {}, {}, false, &error));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("New Gemini steering prompt"));
 	UAM_ASSERT(raw_session->reconnect_pending);
+}
+
+UAM_TEST(AcpRemoteRestartRequiresAZeroExitFromTheStopProxy)
+{
+	TempDir temp("uam-acp-remote-stop-failure");
+	ChatSession chat;
+	chat.id = "chat-remote-stop-failure";
+	chat.execution_host_id = "ssh-test";
+
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.running = true;
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 70"};
+#else
+	const std::vector<std::string> sink_argv = {
+	    "/bin/sh", "-c", "IFS= read -r line; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    session, temp.root, sink_argv, &error));
+	UAM_ASSERT(!uam::acp_detail::StopAcpProcessForRestart(session, chat));
+	UAM_ASSERT(!session.running);
+}
+
+UAM_TEST(CodexInitializeErrorStopsTheStaleTransportAndRetriesAnUndeliveredPrompt)
+{
+	TempDir temp("uam-codex-initialize-error-reconnect");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+
+	ChatSession chat;
+	chat.id = "chat-codex-initialize-error";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_turn_reconnect_pending = true;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->processing = true;
+	session->queued_prompt = "continue";
+	session->initialize_request_id = 1;
+	session->pending_request_methods[1] = "initialize";
+	uam::AcpSessionState* raw_session = session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line="};
+#else
+	const std::vector<std::string> sink_argv = {
+	    "/bin/sh", "-c", "IFS= read -r line"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(
+	    app, *raw_session, app.chats.front(),
+	    R"({"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Already initialized"}})"));
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("continue"));
+	UAM_ASSERT_EQ(raw_session->initialize_request_id, 0);
+	UAM_ASSERT(raw_session->last_error.find("Already initialized") != std::string::npos);
 }
 
 UAM_TEST(AcpStartupModelInactivityTimeoutStopsAndReconnectsWithoutDroppingQueuedWork)
@@ -4781,6 +5028,98 @@ UAM_TEST(AcpStartupModelInactivityTimeoutStopsAndReconnectsWithoutDroppingQueued
 	UAM_ASSERT(raw_session->reconnect_pending);
 	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Prompt waiting for startup model"));
 	UAM_ASSERT(raw_session->last_error.find("setup timed out") != std::string::npos);
+}
+
+UAM_TEST(AcpUnacknowledgedCodexTurnUsesSetupTimeoutInsteadOfFullTurnTimeout)
+{
+	TempDir temp("uam-codex-turn-start-timeout");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.acp_setup_inactivity_timeout_seconds = 120;
+	app.settings.active_turn_inactivity_timeout_seconds = 1800;
+
+	ChatSession chat;
+	chat.id = "chat-codex-turn-start-timeout";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-codex-turn-start-timeout";
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->session_id = "01a05397-c799-70b3-952f-2607b1aeba56";
+	session->lifecycle_state = "processing";
+	session->processing = true;
+	session->prompt_request_id = 5;
+	session->pending_request_methods[5] = "turn/start";
+	session->turn_started_time_s = 1.0;
+	session->last_runtime_activity_time_s = session->turn_started_time_s;
+	uam::AcpSessionState* raw_session = session.get();
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(
+	    app, *raw_session, app.chats.front(), 301.0));
+	UAM_ASSERT(raw_session->inactivity_timeout_pending);
+	UAM_ASSERT(raw_session->last_error.find("timed out after 120 seconds") != std::string::npos);
+	(void)uam::StopAcpSession(app, raw_session->chat_id);
+}
+
+UAM_TEST(AcpRecoveredCodexTurnWithoutActivityUsesSetupTimeout)
+{
+	TempDir temp("uam-recovered-codex-turn-timeout");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.acp_setup_inactivity_timeout_seconds = 120;
+	app.settings.active_turn_inactivity_timeout_seconds = 1800;
+
+	ChatSession chat;
+	chat.id = "chat-recovered-codex-turn-timeout";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "codex-cli";
+	session->protocol_kind = "codex-app-server";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->recovering_remote_turn = true;
+	session->processing = true;
+	session->lifecycle_state = "processing";
+	session->turn_started_time_s = 1.0;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(
+	    app, *raw_session, app.chats.front(), 301.0));
+	UAM_ASSERT(raw_session->last_error.find("timed out after 120 seconds") != std::string::npos);
+	(void)uam::StopAcpSession(app, raw_session->chat_id);
 }
 
 UAM_TEST(AcpIdleControlInactivityTimeoutStopsAndReconnects)
@@ -5142,7 +5481,13 @@ UAM_TEST(AcpSteerPrioritizesPromptPreservesQueueAndStartsAfterInterrupt)
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Older queued"));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Steer immediately"));
+	UAM_ASSERT(app.chats.front().messages[0].interrupted);
+	UAM_ASSERT(app.chats.front().messages[1].priority_steer);
 	UAM_ASSERT_EQ(app.chats.front().messages[1].attachments.front().id, std::string("attachment-1"));
+	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(persisted.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(persisted.front().messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(persisted.front().messages[1].priority_steer);
 
 	const std::string late_interrupt_response = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(interrupt_request_id) + ",\"result\":{}}";
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), late_interrupt_response));
@@ -5152,6 +5497,7 @@ UAM_TEST(AcpSteerPrioritizesPromptPreservesQueueAndStartsAfterInterrupt)
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(app.chats.front().messages[2].content, std::string("Older queued"));
+	UAM_ASSERT(!app.chats.front().messages[2].priority_steer);
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);

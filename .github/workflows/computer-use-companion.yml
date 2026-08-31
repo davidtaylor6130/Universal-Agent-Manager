@@ -33,7 +33,7 @@ jobs:
           key: Windows-uam-computer-use-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: Windows-uam-computer-use-
       - run: npm --prefix UI-V2 ci
-      - run: cmake -S . -B Builds/companion -DUAM_BUILD_TESTS=ON
+      - run: cmake -S . -B Builds/companion -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
       - run: cmake --build Builds/companion --config Debug --target uam_core_tests
       - name: Validate isolated external-window capture
         shell: pwsh

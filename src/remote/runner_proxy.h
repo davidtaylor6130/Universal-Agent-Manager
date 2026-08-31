@@ -15,7 +15,8 @@ namespace uam::remote
 	std::string BuildProcessProxySpec(
 	    const std::string& session_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
-	    const std::vector<std::pair<std::string, std::string>>& environment);
+	    const std::vector<std::pair<std::string, std::string>>& environment,
+	    bool attach_only = false);
 	std::filesystem::path PackagedRunnerPath();
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,

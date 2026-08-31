@@ -5,6 +5,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,7 +56,9 @@ namespace uam::remote
 		                  std::string* error_out = nullptr);
 		bool CloseProcessInput(const std::string& session_id, std::string* error_out = nullptr);
 		bool PollProcess(const std::string& session_id, ProcessPollResult& result,
-		                 std::string* error_out = nullptr);
+		                 std::string* error_out = nullptr,
+		                 const std::function<bool()>& interrupt = {},
+		                 bool* interrupted_out = nullptr);
 		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr);
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,
@@ -82,8 +85,12 @@ namespace uam::remote
 
 	  private:
 		bool Request(nlohmann::json request, nlohmann::json& response,
-		             std::string* error_out);
-		bool ReadResponse(nlohmann::json& response, std::string* error_out);
+		             std::string* error_out,
+		             const std::function<bool()>& interrupt = {},
+		             bool* interrupted_out = nullptr);
+		bool ReadResponse(nlohmann::json& response, std::string* error_out,
+		                  const std::function<bool()>& interrupt,
+		                  bool* interrupted_out);
 
 		IPlatformProcessService& m_processService;
 		std::vector<std::string> m_bridgeArgv;

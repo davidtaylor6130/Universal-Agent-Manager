@@ -503,9 +503,27 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT_EQ(loaded->goals.front().creator, std::string("model"));
 	UAM_ASSERT(!loaded->goals.front().creator_request_key_hash.empty());
 	UAM_ASSERT(!loaded->uam_control_audit.empty());
+	Goal* completed_goal = uam::GoalService::FindGoalById(app, chat_id, goal->id);
+	UAM_ASSERT(completed_goal != nullptr);
+	completed_goal->last_blocker = "Prior blocker";
+	completed_goal->last_diagnostic = "verified_terminal_state";
+	completed_goal->last_verification = "Focused native test passed";
+	completed_goal->current_step = "Final verification";
+	completed_goal->completed_items = {"Implemented fix", "Ran focused test"};
+	completed_goal->remaining_items = {"Final verification"};
 	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat_id, goal->id, GoalStatus::Complete));
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, app.chats.front()));
 	capability = issue();
+	const nlohmann::json terminal_goal_response = call(capability, "terminal-goal-get", "goal_get");
+	UAM_ASSERT(terminal_goal_response.value("ok", false));
+	const nlohmann::json& terminal_goal = terminal_goal_response["result"]["goal"];
+	UAM_ASSERT_EQ(terminal_goal.value("status", ""), std::string("complete"));
+	UAM_ASSERT_EQ(terminal_goal.value("lastBlocker", ""), std::string(""));
+	UAM_ASSERT_EQ(terminal_goal.value("lastDiagnostic", ""), std::string("verified_terminal_state"));
+	UAM_ASSERT_EQ(terminal_goal.value("lastVerification", ""), std::string("Focused native test passed"));
+	UAM_ASSERT_EQ(terminal_goal.value("currentStep", ""), std::string(""));
+	UAM_ASSERT_EQ(terminal_goal["completedItems"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(terminal_goal["remainingItems"].empty());
 	UAM_ASSERT(!call(capability, "durable-idempotency", "goal_create",
 	                 {{"objective", "Must not replay after capability rotation."},
 	                  {"idempotencyKey", "goal-once"}}).value("ok", true));
@@ -4489,6 +4507,32 @@ UAM_TEST(ChatRepositoryToleratesLegacyFieldsAndDropsThemOnWrite)
 	UAM_ASSERT(!inherited->service_tier_explicit);
 }
 
+UAM_TEST(ChatRepositoryPersistsRemoteTurnReconnectMarker)
+{
+	TempDir temp("uam-chat-remote-turn-reconnect");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	const fs::path chat_file = chats_dir / "remote-chat.json";
+	UAM_ASSERT(uam::io::WriteTextFile(chat_file, R"({
+  "id": "remote-chat",
+  "provider_id": "codex-cli",
+  "title": "Remote",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, "remote-chat");
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(!loaded->remote_turn_reconnect_pending);
+
+	loaded->remote_turn_reconnect_pending = true;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *loaded));
+	loaded = ChatRepository::LoadLocalChat(temp.root, "remote-chat");
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->remote_turn_reconnect_pending);
+}
+
 UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToCommandSafetyTier)
 {
 	TempDir temp("uam-chat-yolo-migration");
@@ -7853,6 +7897,53 @@ UAM_TEST(StatePatchIncludesEveryChangedTopLevelStateSlice)
 	UAM_ASSERT(patch.contains("resourceCollections"));
 	UAM_ASSERT(patch.contains("cliVersionManager"));
 	UAM_ASSERT_EQ(patch.value("statusLine", ""), after.status_line);
+}
+
+UAM_TEST(StatePushReplacesMalformedUtf8InsteadOfCrashing)
+{
+	uam::AppState before;
+	uam::AppState after;
+	after.status_line = std::string("broken ") + static_cast<char>(0xC3);
+
+	const nlohmann::json patch = nlohmann::json::parse(uam::StatePatchForTests(before, after))["data"];
+	UAM_ASSERT_EQ(patch.value("statusLine", ""), std::string("broken \xEF\xBF\xBD"));
+	uam::PushStateUpdate(nullptr, after);
+}
+
+UAM_TEST(StatePushDoesNotReserializeUnchangedBackgroundChatsForASelectedChatUpdate)
+{
+	uam::AppState app;
+	for (int index = 0; index < 6; ++index)
+	{
+		ChatSession chat;
+		chat.id = "cached-chat-" + std::to_string(index);
+		chat.title = "Chat " + std::to_string(index);
+		chat.updated_at = "2026-08-30T12:00:00.000Z";
+		for (int message_index = 0; message_index < 20; ++message_index)
+		{
+			chat.messages.push_back(Message{
+			    MessageRole::Assistant,
+			    std::string(4096, static_cast<char>('a' + index))});
+		}
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+
+	(void)uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(uam::LastStatePushChatSerializationCountForTests(),
+	              static_cast<std::size_t>(6));
+	app.chats.front().title = "Selected chat changed";
+	app.chats.front().updated_at = "2026-08-30T12:00:01.000Z";
+	const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(uam::LastStatePushChatSerializationCountForTests(),
+	              static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(fingerprint["chats"][0].value("title", ""), app.chats.front().title);
+
+	app.chats[1].messages.front().content = "Background chat changed";
+	app.chats[1].updated_at = "2026-08-30T12:00:02.000Z";
+	(void)uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(uam::LastStatePushChatSerializationCountForTests(),
+	              static_cast<std::size_t>(2));
 }
 
 UAM_TEST(StatePatchUsesSummaryOnlyForMessageChanges)

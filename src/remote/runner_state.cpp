@@ -49,6 +49,8 @@ namespace uam::remote
 		inline constexpr std::size_t kMaxEnvironmentValueBytes = 32 * 1024;
 		inline constexpr std::size_t kMaxWriteBytes = 256 * 1024;
 		inline constexpr std::size_t kMaxReadBytesPerStream = 256 * 1024;
+		inline constexpr auto kInitialIdleDrainDelay = std::chrono::milliseconds(10);
+		inline constexpr auto kMaximumIdleDrainDelay = std::chrono::milliseconds(100);
 		inline constexpr std::size_t kMaxChannelBytes = 1024 * 1024;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
@@ -194,6 +196,7 @@ namespace uam::remote
 		bool AppendSpool(const std::filesystem::path& path, std::ofstream& stream,
 		                 std::string_view bytes, std::string& error)
 		{
+			if (bytes.empty()) return true;
 			std::error_code size_error;
 			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
 			if (size_error || bytes.size() > kMaxSpoolBytesPerStream -
@@ -240,6 +243,7 @@ namespace uam::remote
 		{
 			process.drainer = std::jthread([&process](std::stop_token stop_token)
 			{
+				auto idle_delay = kInitialIdleDrainDelay;
 				std::ofstream stdout_stream(process.stdout_spool,
 				                            std::ios::binary | std::ios::app);
 				std::ofstream stderr_stream(process.stderr_spool,
@@ -289,7 +293,14 @@ namespace uam::remote
 						return;
 					}
 					if (stdout_bytes.empty() && stderr_bytes.empty())
-						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					{
+						std::this_thread::sleep_for(idle_delay);
+						idle_delay = std::min(idle_delay * 2, kMaximumIdleDrainDelay);
+					}
+					else
+					{
+						idle_delay = kInitialIdleDrainDelay;
+					}
 				}
 			});
 		}
@@ -324,7 +335,7 @@ namespace uam::remote
 		{
 			(void)upload_id;
 			std::error_code remove_error;
-			std::filesystem::remove(upload.temporary, remove_error);
+			std::filesystem::remove(upload->temporary, remove_error);
 		}
 		std::error_code cleanup_error;
 		if (!m_spoolDirectory.empty())
@@ -333,10 +344,11 @@ namespace uam::remote
 
 	nlohmann::json RunnerState::HandleProcessRequest(const nlohmann::json& request)
 	{
-		std::scoped_lock state_lock(m_stateMutex);
+		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
 		if (type == "directory.list")
 		{
+			state_lock.unlock();
 			if (!request.contains("path") || !request["path"].is_string())
 				return ProcessError(request, "invalid_request", "An absolute directory path is required.");
 			const std::string path_text = request["path"].get<std::string>();
@@ -413,6 +425,7 @@ namespace uam::remote
 				    !IsBoundedText(target_text, kMaxWorkingDirectoryBytes) ||
 				    !source.is_absolute() || !target.is_absolute())
 					return ProcessError(request, "invalid_request", "The source or target file path is invalid.");
+				state_lock.unlock();
 				std::error_code error;
 				if (!std::filesystem::is_regular_file(source, error) || error)
 					return ProcessError(request, "not_found", "The source file does not exist.");
@@ -431,6 +444,7 @@ namespace uam::remote
 				const std::filesystem::path path(path_text);
 				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
 					return ProcessError(request, "invalid_request", "The file path is invalid.");
+				state_lock.unlock();
 				std::error_code error;
 				if (!std::filesystem::is_regular_file(path, error) || error ||
 				    !std::filesystem::remove(path, error) || error)
@@ -461,37 +475,101 @@ namespace uam::remote
 				    !std::ranges::all_of(digest, [](unsigned char character)
 				    { return std::isxdigit(character) != 0 && !std::isupper(character); }))
 					return ProcessError(request, "invalid_request", "Upload metadata is invalid.");
+				auto upload = std::make_shared<Upload>();
+				upload->target = target;
+				upload->temporary = target.parent_path() / (".uam-upload-" + upload_id + ".tmp");
+				upload->expected_size = size;
+				upload->digest = uam::hashing::kFnv1a64OffsetBasis;
+				upload->expected_digest = digest;
+				std::unique_lock upload_lock(upload->mutex);
+				m_uploads.emplace(upload_id, upload);
+				state_lock.unlock();
+				const auto abandon_upload = [&upload, &upload_lock, &upload_id, this]
+				{
+					std::error_code remove_error;
+					std::filesystem::remove(upload->temporary, remove_error);
+					upload->state = Upload::State::Finished;
+					upload_lock.unlock();
+					std::scoped_lock lock(m_stateMutex);
+					const auto found = m_uploads.find(upload_id);
+					if (found != m_uploads.end() && found->second == upload)
+						m_uploads.erase(found);
+				};
 				std::error_code error;
 				std::filesystem::create_directories(target.parent_path(), error);
 				if (error || std::filesystem::exists(target, error) || error)
+				{
+					abandon_upload();
 					return ProcessError(request, "target_unavailable",
 					                    "The upload target already exists or cannot be created.");
-				const std::filesystem::path temporary =
-				    target.parent_path() / (".uam-upload-" + upload_id + ".tmp");
-				std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+				}
+				std::ofstream stream(upload->temporary, std::ios::binary | std::ios::trunc);
 				if (!stream)
+				{
+					abandon_upload();
 					return ProcessError(request, "target_unavailable",
 					                    "The upload temporary file could not be created.");
+				}
 				std::filesystem::permissions(
-				    temporary, std::filesystem::perms::owner_read |
+				    upload->temporary, std::filesystem::perms::owner_read |
 				                   std::filesystem::perms::owner_write,
 				    std::filesystem::perm_options::replace, error);
-				m_uploads.emplace(upload_id, Upload{target, temporary, size, 0,
-				                                          uam::hashing::kFnv1a64OffsetBasis,
-				                                          digest});
+				upload->state = Upload::State::Active;
 				return ProcessSuccess(request, {{"uploadId", upload_id}});
 			}
 			const auto found = m_uploads.find(upload_id);
 			if (found == m_uploads.end())
 				return ProcessError(request, "upload_not_found", "The upload does not exist.");
-			Upload& upload = found->second;
+			const std::shared_ptr<Upload> upload_pointer = found->second;
+			Upload& upload = *upload_pointer;
+			std::unique_lock upload_lock(upload.mutex);
+			if (upload.state == Upload::State::Starting)
+				return ProcessError(request, "upload_starting", "The upload is still starting.");
+			if (upload.state != Upload::State::Active)
+				return ProcessError(request, "upload_finished", "The upload is already finishing or finished.");
+			const auto finish_upload = [&upload, &upload_lock, &upload_id, &upload_pointer, this]
+			{
+				upload.state = Upload::State::Finished;
+				upload_lock.unlock();
+				std::scoped_lock lock(m_stateMutex);
+				const auto current = m_uploads.find(upload_id);
+				if (current != m_uploads.end() && current->second == upload_pointer)
+					m_uploads.erase(current);
+			};
 			if (type == "file.abort")
 			{
+				upload.state = Upload::State::Finishing;
+				state_lock.unlock();
 				std::error_code error;
 				std::filesystem::remove(upload.temporary, error);
-				m_uploads.erase(found);
+				if (error)
+				{
+					upload.state = Upload::State::Active;
+					return ProcessError(request, "abort_failed", "Upload temporary data could not be removed.");
+				}
+				finish_upload();
 				return ProcessSuccess(request, nlohmann::json::object());
 			}
+			if (type == "file.commit")
+			{
+				if (upload.received_size != upload.expected_size ||
+				    uam::hashing::Hex64Padded(upload.digest) != upload.expected_digest)
+					return ProcessError(request, "digest_mismatch",
+					                    "Upload size or digest verification failed.");
+				upload.state = Upload::State::Finishing;
+				state_lock.unlock();
+				std::error_code error;
+				std::filesystem::rename(upload.temporary, upload.target, error);
+				if (error)
+				{
+					upload.state = Upload::State::Active;
+					return ProcessError(request, "commit_failed", "Upload could not be committed.");
+				}
+				const std::string path = upload.target.string();
+				finish_upload();
+				return ProcessSuccess(request, {{"path", path}});
+			}
+			state_lock.unlock();
 			if (type == "file.write")
 			{
 				if (!request.contains("dataBase64") || !request["dataBase64"].is_string())
@@ -509,20 +587,6 @@ namespace uam::remote
 				    reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
 				upload.received_size += decoded.size();
 				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
-			}
-			if (type == "file.commit")
-			{
-				if (upload.received_size != upload.expected_size ||
-				    uam::hashing::Hex64Padded(upload.digest) != upload.expected_digest)
-					return ProcessError(request, "digest_mismatch",
-					                    "Upload size or digest verification failed.");
-				std::error_code error;
-				std::filesystem::rename(upload.temporary, upload.target, error);
-				if (error)
-					return ProcessError(request, "commit_failed", "Upload could not be committed.");
-				const std::string path = upload.target.string();
-				m_uploads.erase(found);
-				return ProcessSuccess(request, {{"path", path}});
 			}
 			return ProcessError(request, "unsupported_request", "Unknown runner file request.");
 		}
@@ -602,12 +666,15 @@ namespace uam::remote
 				    process.arguments != arguments || process.environment != environment)
 					return ProcessError(request, "session_conflict",
 					                    "The existing remote process does not match this launch request.");
+				if (!process.ready.load(std::memory_order_acquire))
+					return ProcessError(request, "session_starting",
+					                    "The existing remote process is still starting.");
 				const bool exited = process.exited.load(std::memory_order_acquire);
 				return ProcessSuccess(request,
 				                      {{"sessionId", session_id}, {"running", !exited},
 				                       {"attached", true}});
 			}
-			auto process = std::make_unique<Process>();
+			auto process = std::make_shared<Process>();
 			process->working_directory = working_directory;
 			process->arguments = arguments;
 			process->environment = environment;
@@ -616,19 +683,34 @@ namespace uam::remote
 				                    "The remote process output spool is unavailable.");
 			process->stdout_spool = m_spoolDirectory / (session_id + ".stdout");
 			process->stderr_spool = m_spoolDirectory / (session_id + ".stderr");
+			m_processes.emplace(session_id, process);
+			state_lock.unlock();
+			const auto abandon_start = [&]
+			{
+				std::scoped_lock lock(m_stateMutex);
+				const auto found = m_processes.find(session_id);
+				if (found != m_processes.end() && found->second == process)
+					m_processes.erase(found);
+			};
 			{
 				std::ofstream stdout_file(process->stdout_spool, std::ios::binary);
 				std::ofstream stderr_file(process->stderr_spool, std::ios::binary);
 				if (!stdout_file || !stderr_file)
+				{
+					abandon_start();
 					return ProcessError(request, "spool_unavailable",
 					                    "The remote process output spool could not be created.");
+				}
 			}
 			if (!ProcessService().StartStdioProcess(process->fields, working_directory,
 			                                                arguments, &error, environment))
+			{
+				abandon_start();
 				return ProcessError(request, "start_failed",
 				                    error.empty() ? "The remote process could not start." : error);
+			}
 			StartDrainer(*process);
-			m_processes.emplace(session_id, std::move(process));
+			process->ready.store(true, std::memory_order_release);
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", true}});
 		}
 
@@ -640,7 +722,30 @@ namespace uam::remote
 		const auto found = m_processes.find(session_id);
 		if (found == m_processes.end())
 			return ProcessError(request, "session_not_found", "The remote process does not exist.");
-		Process& process = *found->second;
+		const std::shared_ptr<Process> process_pointer = found->second;
+		Process& process = *process_pointer;
+		if (!process.ready.load(std::memory_order_acquire))
+			return ProcessError(request, "session_starting",
+			                    "The remote process is still starting.");
+		if (type == "process.remove")
+		{
+			if (!process.exited.load(std::memory_order_acquire))
+				return ProcessError(request, "process_running",
+				                    "Stop the remote process before removing it.");
+			m_processes.erase(found);
+			state_lock.unlock();
+			process.drainer.request_stop();
+			if (process.drainer.joinable()) process.drainer.join();
+			{
+				std::scoped_lock lock(process.mutex);
+				ProcessService().CloseStdioProcessHandles(process.fields);
+				std::error_code remove_error;
+				std::filesystem::remove(process.stdout_spool, remove_error);
+				std::filesystem::remove(process.stderr_spool, remove_error);
+			}
+			return ProcessSuccess(request, nlohmann::json::object());
+		}
+		state_lock.unlock();
 
 		if (type == "process.write")
 		{
@@ -677,26 +782,12 @@ namespace uam::remote
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}});
 		}
 
-		if (type == "process.remove")
-		{
-			if (!process.exited.load(std::memory_order_acquire))
-				return ProcessError(request, "process_running",
-				                    "Stop the remote process before removing it.");
-			process.drainer.request_stop();
-			if (process.drainer.joinable()) process.drainer.join();
-			ProcessService().CloseStdioProcessHandles(process.fields);
-			std::error_code remove_error;
-			std::filesystem::remove(process.stdout_spool, remove_error);
-			std::filesystem::remove(process.stderr_spool, remove_error);
-			m_processes.erase(found);
-			return ProcessSuccess(request, nlohmann::json::object());
-		}
-
 		if (type == "process.poll")
 		{
 			std::string output_error;
 			std::string standard_output;
 			std::string standard_error;
+			bool output_pending = false;
 			{
 				std::scoped_lock lock(process.mutex);
 				if (!process.spool_error.empty()) output_error = process.spool_error;
@@ -707,15 +798,15 @@ namespace uam::remote
 					standard_error = ReadSpool(process.stderr_spool, process.stderr_offset,
 					                           output_error);
 				}
+				output_pending = SpoolHasUnread(process.stdout_spool,
+				                                process.stdout_offset) ||
+				                 SpoolHasUnread(process.stderr_spool,
+				                                process.stderr_offset);
 			}
 			if (!output_error.empty())
 				return ProcessError(request, "read_failed", std::move(output_error));
 			const bool exited = process.exited.load(std::memory_order_acquire);
 			const int exit_code = process.exit_code.load(std::memory_order_acquire);
-			const bool output_pending = SpoolHasUnread(process.stdout_spool,
-			                                           process.stdout_offset) ||
-			                            SpoolHasUnread(process.stderr_spool,
-			                                           process.stderr_offset);
 			return ProcessSuccess(request,
 			                      {{"sessionId", session_id},
 			                       {"running", !exited || output_pending},

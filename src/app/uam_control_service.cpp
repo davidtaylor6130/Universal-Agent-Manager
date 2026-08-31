@@ -218,6 +218,10 @@ namespace uam
 			return {
 			    {"id", goal->id}, {"objective", goal->objective}, {"status", GoalStatusName(goal->status)},
 			    {"tokenBudget", goal->token_budget}, {"tokensUsed", goal->tokens_used},
+			    {"lastBlocker", goal->last_blocker}, {"lastBlockerKind", goal->last_blocker_kind},
+			    {"lastDiagnostic", goal->last_diagnostic},
+			    {"lastVerification", goal->last_verification}, {"currentStep", goal->current_step},
+			    {"completedItems", goal->completed_items}, {"remainingItems", goal->remaining_items},
 			    {"maxLoopIterations", bounded_settings.goal_max_loop_iterations},
 			    {"executionOwner", "uam"}, {"creator", goal->creator},
 			    {"creatorProviderId", goal->creator_provider_id}, {"creatorAgentId", goal->creator_agent_id},
@@ -384,7 +388,7 @@ namespace uam
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			const bool mutations_allowed = chat != nullptr && MutationsAllowed(*chat);
 			return {.ok = true,
-			        .result = {{"goal", GoalJson(GoalService::FindActiveGoal(app, capability.chat_id), app)},
+			        .result = {{"goal", GoalJson(GoalService::FindActiveOrLatestTerminalGoal(app, capability.chat_id), app)},
 			                   {"controlEnabled", chat != nullptr && chat->uam_control_enabled},
 			                   {"mutationToolsEnabled", mutations_allowed},
 			                   {"mutationPolicy", mutations_allowed ? "yoloAutoApprove" : "readOnly"},

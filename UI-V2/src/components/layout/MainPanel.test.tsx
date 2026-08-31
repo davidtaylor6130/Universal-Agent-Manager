@@ -409,6 +409,83 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('opens a selected sidebar chat in the active empty pane before another empty pane', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [] },
+    }))
+    const layout = paneLayout('chat-1', '', '')
+    const leaves = chatGridLeaves(layout.root)
+    writeChatGridLayout({ ...layout, activeLeafId: leaves[2].id })
+    useAppStore.setState({ activeSessionId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', '', 'chat-2'])
+    expect(readChatGridLayout().activeLeafId).toBe(leaves[2].id)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens a selected sidebar chat in an empty pane before replacing the active chat', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2, 3].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [], 'chat-3': [] },
+    }))
+    writeChatGridLayout(paneLayout('chat-1', '', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-3' }))
+
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', 'chat-3', 'chat-2'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('replaces and deduplicates a visible branch family before using an empty pane', () => {
+    useAppStore.setState((state) => ({
+      sessions: [
+        { ...state.sessions[0], id: 'chat-root', name: 'Root', branchRootChatId: 'chat-root' },
+        { ...state.sessions[0], id: 'chat-branch-a', name: 'Branch A', parentChatId: 'chat-root', branchRootChatId: 'chat-root' },
+        { ...state.sessions[0], id: 'chat-branch-b', name: 'Branch B', parentChatId: 'chat-root', branchRootChatId: 'chat-root' },
+      ],
+      messages: { 'chat-root': [], 'chat-branch-a': [], 'chat-branch-b': [] },
+      activeSessionId: 'chat-root',
+    }))
+    writeChatGridLayout(paneLayout('chat-root', 'chat-branch-a', ''))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-branch-b' }))
+
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-branch-b', '', ''])
+    expect(host.querySelector('[data-testid="chat-pane-chat-root"]')).toBeNull()
+    expect(host.querySelector('[data-testid="chat-pane-chat-branch-a"]')).toBeNull()
+    expect(host.querySelector('[data-testid="chat-pane-chat-branch-b"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('closes an active empty leaf from the keyboard-actionable toolbar control', () => {
     const layout = paneLayout('chat-1', '')
     writeChatGridLayout({ ...layout, activeLeafId: chatGridLeaves(layout.root)[1].id })

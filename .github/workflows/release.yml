@@ -45,18 +45,21 @@ jobs:
             artifact: UAM-runner-linux-x86_64
             binary: Builds/runner/uam-runner
             checksum: Builds/runner/uam-runner.sha256
+            version: Builds/runner/uam-runner.version
           - os: ubuntu-24.04-arm
             platform: linux
             arch: arm64
             artifact: UAM-runner-linux-arm64
             binary: Builds/runner/uam-runner
             checksum: Builds/runner/uam-runner.sha256
+            version: Builds/runner/uam-runner.version
           - os: windows-latest
             platform: windows
             arch: x86_64
             artifact: UAM-runner-windows-x86_64
             binary: Builds/runner/Release/uam-runner.exe
             checksum: Builds/runner/Release/uam-runner.sha256
+            version: Builds/runner/Release/uam-runner.version
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -64,17 +67,18 @@ jobs:
       - run: cmake --build Builds/runner --config Release --target uam_runner --parallel 4
       - name: Smoke runner version (Linux)
         if: runner.os == 'Linux'
-        run: test "$(Builds/runner/uam-runner --version)" = "4.8.0-alpha-2"
+        run: test "$(Builds/runner/uam-runner --version)" = "4.8.0"
       - name: Smoke runner version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: if ((& Builds/runner/Release/uam-runner.exe --version) -ne '4.8.0-alpha-2') { throw 'Runner version mismatch.' }
+        run: if ((& Builds/runner/Release/uam-runner.exe --version) -ne '4.8.0') { throw 'Runner version mismatch.' }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.binary }}
             ${{ matrix.checksum }}
+            ${{ matrix.version }}
           if-no-files-found: error
 
   build:
@@ -166,7 +170,7 @@ jobs:
 
       - name: Smoke test packaged macOS app
         if: runner.os == 'macOS'
-        run: bash scripts/smoke_packaged_macos.sh ${{ matrix.archive }} Builds/tests/UI-V2/dist
+        run: bash scripts/smoke_packaged_macos.sh ${{ matrix.archive }} Builds/UI-V2/dist
 
       # Windows output: Builds/Release/ holds the .exe plus the CEF DLLs,
       # resources, and the bundled UI-V2/dist — zip the whole payload.
@@ -180,7 +184,7 @@ jobs:
       - name: Smoke test packaged Windows app
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/smoke_packaged_windows.ps1 ${{ matrix.archive }} Builds/tests/UI-V2/dist
+        run: ./scripts/smoke_packaged_windows.ps1 ${{ matrix.archive }} Builds/UI-V2/dist
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

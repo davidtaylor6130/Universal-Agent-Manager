@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
 import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppAcpSession, sanitizeCppMessage, sanitizeCppProvider } from './sanitizers'
+import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider } from './sanitizers'
 
 const message: CppMessage = {
   role: 'user',
@@ -10,6 +10,14 @@ const message: CppMessage = {
 }
 
 describe('reconcileCppMessages attachments', () => {
+	it('preserves persisted interruption and steering provenance', () => {
+		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true })
+		const reconciled = reconcileCppMessages('chat-1', undefined, [sanitized!])
+
+		expect(reconciled[0].interrupted).toBe(true)
+		expect(reconciled[0].prioritySteer).toBe(true)
+	})
+
   it('keeps an ordinary attachment-only update', () => {
     const existing = reconcileCppMessages('chat-1', undefined, [message])
     const attachment = {
@@ -93,6 +101,14 @@ describe('reconcileCppMessages deferred tool content', () => {
 })
 
 describe('backend state reconciliation', () => {
+	it('preserves the blocker category used by the goal banner', () => {
+		expect(sanitizeCppGoal({
+			id: 'goal-1', objective: 'Finish safely', status: 'blocked',
+			lastBlocker: 'Approval required', lastBlockerKind: 'permission',
+			createdAt: '', updatedAt: '',
+		})?.lastBlockerKind).toBe('permission')
+	})
+
   it('keeps provider package metadata after sanitizing', () => {
     expect(sanitizeCppProvider({
       id: 'custom',

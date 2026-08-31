@@ -55,6 +55,7 @@ namespace
 	constexpr std::string_view kMessageCheckpointShaField = "checkpoint_sha";
 	constexpr std::string_view kMessageCheckpointParentShaField = "checkpoint_parent_sha";
 	constexpr std::string_view kMessageInterruptedField = "interrupted";
+	constexpr std::string_view kMessagePrioritySteerField = "priority_steer";
 	constexpr std::string_view kMessageThoughtsField = "thoughts";
 	constexpr std::string_view kMessagePlanSummaryField = "plan_summary";
 	constexpr std::string_view kMessagePlanEntriesField = "plan_entries";
@@ -85,6 +86,7 @@ namespace
 	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
 	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
 	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
@@ -264,6 +266,10 @@ namespace
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
+		if (msg.priority_steer)
+		{
+			uam::json::SetBool(obj, kMessagePrioritySteerField, true);
+		}
 		SetNonEmptyString(obj, kMessageCheckpointShaField, msg.checkpoint_sha);
 		SetNonEmptyString(obj, kMessageCheckpointParentShaField, msg.checkpoint_parent_sha);
 		SetNonEmptyString(obj, kMessageThoughtsField, msg.thoughts);
@@ -375,6 +381,7 @@ namespace
 		msg.time_to_first_token_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageTimeToFirstTokenMsField));
 		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
+		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
 		msg.checkpoint_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointShaField));
 		msg.checkpoint_parent_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointParentShaField));
 		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
@@ -589,7 +596,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -795,6 +802,8 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		chat.remote_turn_reconnect_pending = JsonBoolOrDefault(
+		    root.Find(kChatRemoteTurnReconnectPendingField), false);
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
@@ -867,6 +876,7 @@ namespace
 				goal.tokens_used = NonNegativeInt64FieldOrZero(goal_obj.Find("tokensUsed"));
 				goal.blocked_turn_count = NonNegativeIntFieldOrZero(goal_obj.Find("blockedTurnCount"));
 				goal.last_blocker = JsonStringOrEmpty(goal_obj.Find("lastBlocker"));
+				goal.last_blocker_kind = JsonStringOrEmpty(goal_obj.Find("lastBlockerKind"));
 				goal.last_diagnostic = JsonStringOrEmpty(goal_obj.Find("lastDiagnostic"));
 				goal.completed_items = JsonStringArrayOrEmpty(goal_obj.Find("completedItems"));
 				goal.remaining_items = JsonStringArrayOrEmpty(goal_obj.Find("remainingItems"));
@@ -1136,6 +1146,8 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	uam::json::SetBool(root, kChatRemoteTurnReconnectPendingField,
+	                   chat.remote_turn_reconnect_pending);
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
@@ -1230,6 +1242,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 			uam::json::SetNumber(goal_obj, "tokensUsed", static_cast<double>(goal.tokens_used));
 			uam::json::SetNumber(goal_obj, "blockedTurnCount", static_cast<double>(goal.blocked_turn_count));
 			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
+			uam::json::SetString(goal_obj, "lastBlockerKind", goal.last_blocker_kind);
 			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
@@ -1477,6 +1490,7 @@ namespace
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
 		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;
+		hydrated.remote_turn_reconnect_pending = summary.remote_turn_reconnect_pending;
 		hydrated.active_goal_id = summary.active_goal_id;
 		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;

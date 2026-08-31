@@ -101,9 +101,15 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     }
 
     update()
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(update)
+    if (menuRef.current) resizeObserver?.observe(menuRef.current)
+    if (anchorRef?.current) resizeObserver?.observe(anchorRef.current)
     window.addEventListener('resize', update)
     window.addEventListener('scroll', update, true)
     return () => {
+      resizeObserver?.disconnect()
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', update, true)
     }

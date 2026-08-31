@@ -53,6 +53,11 @@ namespace
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
 
+	std::string DumpFrontendJson(const nlohmann::json& value)
+	{
+		return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
 	/// Posts a window.uamPush(json) call to the browser's main frame.
 	void PostPush(CefRefPtr<CefBrowser> browser, const std::string& json)
 	{
@@ -82,14 +87,14 @@ namespace
 	void ResetPatchBaselines(const uam::AppState& app)
 	{
 		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
-		g_last_pushed_folders_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "folders").dump();
-		g_last_pushed_resource_collections_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "resourceCollections").dump();
-		g_last_pushed_providers_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers").dump();
-		g_last_pushed_provider_model_catalogs_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providerModelCatalogs").dump();
-		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app).dump();
-		g_last_pushed_memory_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity").dump();
-		g_last_pushed_cli_version_manager_fingerprint = uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "cliVersionManager").dump();
-		g_last_pushed_shell_actions_fingerprint = uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions").dump();
+		g_last_pushed_folders_fingerprint = DumpFrontendJson(uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "folders"));
+		g_last_pushed_resource_collections_fingerprint = DumpFrontendJson(uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "resourceCollections"));
+		g_last_pushed_providers_fingerprint = DumpFrontendJson(uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providers"));
+		g_last_pushed_provider_model_catalogs_fingerprint = DumpFrontendJson(uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "providerModelCatalogs"));
+		g_last_pushed_settings_fingerprint = DumpFrontendJson(SerializeSettingsForPatch(app));
+		g_last_pushed_memory_fingerprint = DumpFrontendJson(uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "memoryActivity"));
+		g_last_pushed_cli_version_manager_fingerprint = DumpFrontendJson(uam::nlohmann_json::ObjectFieldOrEmpty(fingerprint_state, "cliVersionManager"));
+		g_last_pushed_shell_actions_fingerprint = DumpFrontendJson(uam::nlohmann_json::ArrayFieldOrEmpty(fingerprint_state, "shellActions"));
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -112,7 +117,7 @@ namespace
 				continue;
 			}
 
-			g_last_pushed_chat_summaries_by_chat_id[chat_id] = chat.dump();
+			g_last_pushed_chat_summaries_by_chat_id[chat_id] = DumpFrontendJson(chat);
 		}
 	}
 
@@ -120,7 +125,7 @@ namespace
 	{
 		nlohmann::json msg = PushMessage(kPushTypeStateUpdate);
 		msg["data"] = uam::StateSerializer::Serialize(app);
-		return msg.dump();
+		return DumpFrontendJson(msg);
 	}
 
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
@@ -140,7 +145,7 @@ namespace
 
 	void AddChangedJsonField(nlohmann::json& patch_data, const char* field_name, const nlohmann::json& value, std::string& last_fingerprint)
 	{
-		const std::string fingerprint = value.dump();
+		const std::string fingerprint = DumpFrontendJson(value);
 		if (fingerprint == last_fingerprint)
 		{
 			return;
@@ -210,7 +215,7 @@ namespace
 
 			current_chat_ids.insert(chat_id);
 
-			const std::string chat_fingerprint = chat.dump();
+			const std::string chat_fingerprint = DumpFrontendJson(chat);
 			diff.next_chat_summaries[chat_id] = chat_fingerprint;
 
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
@@ -334,7 +339,7 @@ namespace
 
 		nlohmann::json msg = PushMessage(kPushTypeStatePatch);
 		msg["data"] = std::move(data);
-		const std::string message = msg.dump();
+		const std::string message = DumpFrontendJson(msg);
 		MaybeLogLargePatch(message, static_cast<int>(uam::nlohmann_json::ArrayFieldOrEmpty(msg["data"], "chats").size()), std::chrono::steady_clock::now() - started);
 		return message;
 	}
@@ -395,7 +400,7 @@ namespace
 		nlohmann::json state = fingerprint_state;
 		StripVolatileCliDebugTelemetry(state);
 		StripVolatileAcpWaitTelemetry(state);
-		return state.dump();
+		return DumpFrontendJson(state);
 	}
 
 	std::string BuildStateFingerprint(const uam::AppState& app)
@@ -419,7 +424,7 @@ namespace uam
 
 	std::string SettingsPatchForTests(const AppState& app)
 	{
-		return SerializeSettingsForPatch(app).dump();
+		return DumpFrontendJson(SerializeSettingsForPatch(app));
 	}
 
 	std::string StatePatchForTests(const AppState& before, const AppState& after)
@@ -431,6 +436,11 @@ namespace uam
 	bool HasDeferredStatePush()
 	{
 		return g_state_push_deferred;
+	}
+
+	std::size_t LastStatePushChatSerializationCountForTests()
+	{
+		return StateSerializer::LastFingerprintMessageDigestCountForTests();
 	}
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
@@ -469,14 +479,14 @@ namespace uam
 		nlohmann::json msg = PushMessage(kPushTypeStreamToken);
 		msg["chatId"] = chat_id;
 		msg["token"] = token;
-		PostPush(browser, msg.dump());
+		PostPush(browser, DumpFrontendJson(msg));
 	}
 
 	void PushStreamDone(CefRefPtr<CefBrowser> browser, const std::string& chat_id)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeStreamDone);
 		msg["chatId"] = chat_id;
-		PostPush(browser, msg.dump());
+		PostPush(browser, DumpFrontendJson(msg));
 	}
 
 	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, const std::string& raw_bytes)
@@ -486,7 +496,7 @@ namespace uam
 		msg["sourceChatId"] = source_chat_id;
 		msg["terminalId"] = terminal_id;
 		msg["data"] = uam::base64::Encode(raw_bytes);
-		PostPush(browser, msg.dump());
+		PostPush(browser, DumpFrontendJson(msg));
 	}
 
 	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event)
@@ -510,7 +520,7 @@ namespace uam
 				msg["event"] = "end";
 				break;
 		}
-		PostPush(browser, msg.dump());
+		PostPush(browser, DumpFrontendJson(msg));
 	}
 
 } // namespace uam

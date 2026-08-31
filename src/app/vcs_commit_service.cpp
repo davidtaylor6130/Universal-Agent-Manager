@@ -1341,7 +1341,11 @@ namespace uam
 			}
 			std::string cwd = status.workspace_directory;
 			if (type == VcsType::Git)
-				(void)RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &cwd);
+			{
+				std::string root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
+					cwd = std::move(root);
+			}
 			if (type == VcsType::Svn)
 			{
 				std::string output;
@@ -1409,23 +1413,37 @@ namespace uam
 			}
 			else
 			{
-				(void)RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &cwd);
+				std::string root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
+					cwd = std::move(root);
 				std::string index_path;
 				if (!RemoteOutput(context, cwd,
 				                  {"git", "rev-parse", "--path-format=absolute", "--git-path", "index"},
 				                  &index_path, &result.error)) return result;
 				const std::string backup_path = index_path + ".uam-backup-" +
 				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-				if (!context.CopyFile(index_path, backup_path, false, &result.error)) return result;
+				const bool had_index = context.CopyFile(index_path, backup_path, false,
+				                                        &result.error);
+				if (!had_index && result.error != "The source file does not exist.") return result;
+				if (!had_index) result.error.clear();
+				const auto restore_index = [&]
+				{
+					if (had_index)
+					{
+						if (!context.CopyFile(backup_path, index_path, true, nullptr)) return false;
+						(void)context.RemoveFile(backup_path);
+						return true;
+					}
+					return context.RemoveFile(index_path);
+				};
 				std::vector<std::string> add = {"git", "--literal-pathspecs", "add", "--"};
 				add.insert(add.end(), selected_files.begin(), selected_files.end());
 				const ProcessExecutionResult added = context.Run(cwd, add);
 				if (!CommandSucceeded(added))
 				{
 					result.error = CommandOutputOrError(added);
-					if (!context.CopyFile(backup_path, index_path, true, nullptr))
+					if (!restore_index())
 						result.error += " The previous Git staging area could not be restored.";
-					(void)context.RemoveFile(backup_path);
 					return result;
 				}
 				std::vector<std::string> commit = {"git", "--literal-pathspecs", "commit",
@@ -1435,12 +1453,11 @@ namespace uam
 				if (!CommandSucceeded(committed))
 				{
 					result.error = CommandOutputOrError(committed);
-					if (!context.CopyFile(backup_path, index_path, true, nullptr))
+					if (!restore_index())
 						result.error += " The previous Git staging area could not be restored.";
-					(void)context.RemoveFile(backup_path);
 					return result;
 				}
-				(void)context.RemoveFile(backup_path);
+				if (had_index) (void)context.RemoveFile(backup_path);
 			}
 			if (!CommandSucceeded(committed))
 			{

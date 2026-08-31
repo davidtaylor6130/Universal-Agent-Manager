@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cctype>
 #include <filesystem>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -47,6 +48,17 @@ namespace uam
 	{
 		namespace attachment_fields = uam::message_attachment_json;
 		namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
+
+		struct MessageDigestCacheEntry
+		{
+			const Message* messages_data = nullptr;
+			std::size_t message_count = 0;
+			std::string updated_at;
+			std::string digest;
+		};
+
+		std::unordered_map<std::string, MessageDigestCacheEntry> g_background_message_digest_cache;
+		std::size_t g_fingerprint_message_digest_count = 0;
 
 		std::string RoleStr(MessageRole role)
 		{
@@ -209,7 +221,7 @@ namespace uam
 			return catalogs;
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session);
+		std::string MessageDigestForFingerprint(const ChatSession& session, bool allow_cached_digest = false);
 		std::size_t MessageCountForFrontend(const ChatSession& session);
 
 		void AddWorkspaceIsolationFields(nlohmann::json& chat_json, const ChatSession& chat)
@@ -221,7 +233,7 @@ namespace uam
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
 
-		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory)
+		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory, bool allow_cached_message_digest = false)
 		{
 			session_json["id"] = session.id;
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
@@ -262,7 +274,7 @@ namespace uam
 			session_json["updatedAt"] = session.updated_at;
 			session_json["lastOpenedAt"] = uam::strings::NonEmptyOrFallback(session.last_opened_at, session.updated_at);
 			session_json["messageCount"] = MessageCountForFrontend(session);
-			session_json["messagesDigest"] = MessageDigestForFingerprint(session);
+			session_json["messagesDigest"] = MessageDigestForFingerprint(session, allow_cached_message_digest);
 			session_json["activeGoalId"] = session.active_goal_id.empty() ? nullptr : nlohmann::json(session.active_goal_id);
 		}
 
@@ -368,6 +380,8 @@ namespace uam
 			message_json["role"] = RoleStr(message.role);
 			message_json["content"] = message.content;
 			message_json["createdAt"] = message.created_at;
+			if (message.interrupted) message_json["interrupted"] = true;
+			if (message.priority_steer) message_json["prioritySteer"] = true;
 			if (message.processing_time_ms > 0)
 			{
 				message_json["processingTimeMs"] = message.processing_time_ms;
@@ -468,7 +482,7 @@ namespace uam
 			return uam::hashing::Hex64Padded(hash);
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session)
+		std::string MessageDigestForFingerprint(const ChatSession& session, bool allow_cached_digest)
 		{
 			if (!session.messages_loaded)
 			{
@@ -478,6 +492,20 @@ namespace uam
 				}
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
 			}
+
+			if (allow_cached_digest)
+			{
+				const auto cached = g_background_message_digest_cache.find(session.id);
+				if (cached != g_background_message_digest_cache.end() &&
+				    cached->second.messages_data == session.messages.data() &&
+				    cached->second.message_count == session.messages.size() &&
+				    cached->second.updated_at == session.updated_at)
+				{
+					return cached->second.digest;
+				}
+			}
+
+			++g_fingerprint_message_digest_count;
 
 			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
 
@@ -543,9 +571,16 @@ namespace uam
 					FingerprintHashBool(hash, attachment.copied);
 				}
 				FingerprintHashBool(hash, message.interrupted);
+				FingerprintHashBool(hash, message.priority_steer);
 			}
 
-			return FingerprintHashHex(hash);
+			const std::string digest = FingerprintHashHex(hash);
+			if (allow_cached_digest)
+			{
+				g_background_message_digest_cache[session.id] = {
+				    session.messages.data(), session.messages.size(), session.updated_at, digest};
+			}
+			return digest;
 		}
 
 		std::size_t MessageCountForFrontend(const ChatSession& session)
@@ -1000,10 +1035,25 @@ namespace uam
 			return acp_json;
 		}
 
-		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
+		bool CanReuseBackgroundMessageDigest(const AppState& app, const ChatSession& chat, const std::string& selected_chat_id)
+		{
+			if (chat.id == selected_chat_id || uam::HasPendingCallForChat(app, chat.id))
+			{
+				return false;
+			}
+			if (const CliTerminalState* terminal = FindTerminalForChat(app, chat);
+			    terminal != nullptr && uam::CliTerminalLifecycleIsProcessing(*terminal))
+			{
+				return false;
+			}
+			const AcpSessionState* acp_session = FindAcpSessionForChat(app, chat.id);
+			return acp_session == nullptr || !acp_session->processing;
+		}
+
+		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat, bool allow_cached_message_digest = false)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), allow_cached_message_digest);
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
@@ -1022,6 +1072,7 @@ namespace uam
 					goal_json["tokensUsed"] = goal.tokens_used;
 					goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+					goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
 					goal_json["completedItems"] = goal.completed_items;
 					goal_json["remainingItems"] = goal.remaining_items;
@@ -1336,7 +1387,9 @@ namespace uam
 		{
 			if (IsInternalChat(chat)) continue;
 			const bool selected_chat = !has_selected_chat || selected_chat_id == chat.id;
-			nlohmann::json chat_json = (selected_chat && chat.messages_loaded) ? SerializeSession(chat) : SerializeFingerprintSession(app, chat);
+			nlohmann::json chat_json = (selected_chat && chat.messages_loaded)
+			    ? SerializeSession(chat)
+			    : SerializeFingerprintSession(app, chat, CanReuseBackgroundMessageDigest(app, chat, selected_chat_id));
 			chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
@@ -1364,6 +1417,7 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 	{
+		g_fingerprint_message_digest_count = 0;
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
@@ -1373,14 +1427,22 @@ namespace uam
 		j["statusLine"] = app.status_line;
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
+		const std::string selected_chat_id = SelectedVisibleChatId(app);
+		std::unordered_set<std::string> current_chat_ids;
 		for (const auto& chat : app.chats)
 		{
 			if (IsInternalChat(chat)) continue;
-			chats_arr.push_back(SerializeFingerprintSession(app, chat));
+			current_chat_ids.insert(chat.id);
+			chats_arr.push_back(SerializeFingerprintSession(
+			    app, chat, CanReuseBackgroundMessageDigest(app, chat, selected_chat_id)));
 		}
+		std::erase_if(g_background_message_digest_cache, [&current_chat_ids](const auto& entry)
+		{
+			return !current_chat_ids.contains(entry.first);
+		});
 		j["chats"] = chats_arr;
 
-		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(SelectedVisibleChatId(app));
+		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
 		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app);
@@ -1392,6 +1454,11 @@ namespace uam
 		}
 
 		return j;
+	}
+
+	std::size_t StateSerializer::LastFingerprintMessageDigestCountForTests()
+	{
+		return g_fingerprint_message_digest_count;
 	}
 
 	nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
@@ -1420,6 +1487,7 @@ namespace uam
 				goal_json["tokensUsed"] = goal.tokens_used;
 				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
 				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
 				goal_json["completedItems"] = goal.completed_items;
 				goal_json["remainingItems"] = goal.remaining_items;

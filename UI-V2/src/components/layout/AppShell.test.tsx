@@ -3,12 +3,19 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 
+const { mainPanelRenderCount } = vi.hoisted(() => ({
+  mainPanelRenderCount: { value: 0 },
+}))
+
 vi.mock('./Sidebar', () => ({
   Sidebar: () => <div data-testid="sidebar">Sidebar</div>,
 }))
 
 vi.mock('./MainPanel', () => ({
-  MainPanel: () => <div data-testid="main-panel">Main panel</div>,
+  MainPanel: () => {
+    mainPanelRenderCount.value += 1
+    return <div data-testid="main-panel">Main panel</div>
+  },
 }))
 
 import { AppShell } from './AppShell'
@@ -29,6 +36,7 @@ Object.defineProperty(window, 'localStorage', {
 describe('AppShell', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    mainPanelRenderCount.value = 0
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1400 })
     window.localStorage.clear()
     useAppStore.setState({
@@ -254,8 +262,11 @@ describe('AppShell', () => {
         { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
       ],
       sessions: [{ id: 'remote-chat', name: 'Containers', viewMode: 'chat', folderId: null, executionHostId: 'lab', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: {
+        'remote-chat': { lastError: 'Provider model unavailable.' } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
+      },
       cliBindingBySessionId: {
-        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'error', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'The remote runner bridge closed.' },
+        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'error', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'Codex app-server process exited during an active turn.' },
       },
     })
     const host = document.createElement('div')
@@ -266,7 +277,7 @@ describe('AppShell', () => {
     expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
     act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
     expect(host.textContent).toContain('Homelab connection issue')
-    expect(host.textContent).toContain('The remote runner bridge closed.')
+    expect(host.textContent).toContain('Codex app-server process exited during an active turn.')
 
     await act(async () => useAppStore.setState((state) => ({
       cliBindingBySessionId: {
@@ -276,6 +287,65 @@ describe('AppShell', () => {
     })))
     expect(host.textContent).toContain('Homelab reconnected')
     expect(host.textContent).toContain('The remote connection is available again.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not rerender the shell for unrelated background runtime updates', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'background', name: 'Background', viewMode: 'chat', folderId: null, executionHostId: 'local', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: {
+        background: {
+          sessionId: 'native-background',
+          providerId: 'codex-cli',
+          protocolKind: 'codex-acp',
+          threadId: '',
+          running: true,
+          lifecycleState: 'processing',
+          processing: true,
+          readySinceLastSelect: false,
+          processingStartedAtMs: Date.now(),
+          lastError: '',
+          recentStderr: '',
+          lastExitCode: null,
+          diagnostics: [],
+          toolCalls: [],
+          planEntries: [],
+          availableModes: [],
+          currentModeId: 'default',
+          availableModels: [],
+          currentModelId: '',
+          turnEvents: [],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 1,
+          pendingPermission: null,
+          pendingUserInput: null,
+          agentInfo: null,
+        },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<AppShell />)
+      await Promise.resolve()
+    })
+    const rendersBeforeRuntimeUpdate = mainPanelRenderCount.value
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        background: {
+          ...state.acpBindingBySessionId.background,
+          turnEvents: [{ type: 'assistant_text', text: 'Streaming in the background.' }],
+        },
+      },
+    })))
+
+    expect(mainPanelRenderCount.value).toBe(rendersBeforeRuntimeUpdate)
 
     act(() => root.unmount())
     host.remove()

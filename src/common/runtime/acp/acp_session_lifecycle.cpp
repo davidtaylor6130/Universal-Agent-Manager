@@ -21,11 +21,13 @@
 #include "remote/runner_proxy.h"
 
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace uam::acp_detail
@@ -230,13 +232,13 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.mcp_http_supported = false;
 	session.mcp_sse_supported = false;
 	session.processing = false;
+	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.turn_checkpoint_eligible = false;
 	session.turn_checkpoint_preflight_pending = false;
 	session.turn_checkpoint_commit_pending = false;
-	session.next_request_id = 1;
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
 	ClearAcpStartupModelRequest(session);
@@ -287,6 +289,33 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	ResetAcpPendingInteractionState(session);
 }
 
+bool StopAcpProcessForRestart(AcpSessionState& session, const ChatSession& chat)
+{
+	if (!session.running) return true;
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
+	bool exited = false;
+	int exit_code = -1;
+	if (remote)
+	{
+		std::string ignored_error;
+		if (process_service.WriteToStdioProcess(
+		        session, uam::remote::kRemoteStopControlLine.data(),
+		        uam::remote::kRemoteStopControlLine.size(), &ignored_error))
+		{
+			for (int attempt = 0; attempt < 100 && !exited; ++attempt)
+			{
+				exited = process_service.PollStdioProcessExited(session, &exit_code);
+				if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	}
+	if (exited) process_service.CloseStdioProcessHandles(session);
+	else process_service.StopStdioProcess(session, true);
+	session.running = false;
+	return !remote || (exited && exit_code == 0);
+}
+
 AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 {
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -331,7 +360,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	const ExecutionHost* execution_host =
 	    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 	const bool remote = execution_host != nullptr && execution_host->id != uam::execution_hosts::kLocalHostId;
-	if (execution_host == nullptr || (remote && execution_host->runner_status != "ready"))
+	if (execution_host == nullptr ||
+	    (remote && execution_host->runner_status != "ready" &&
+	     !session.recovering_remote_turn))
 	{
 		const std::string startup_error = remote ? "The selected remote runner is not ready. Recheck it in Settings."
 		                                         : "The selected execution host no longer exists.";
@@ -362,6 +393,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	}
 
 	const bool retrying_undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
+	const bool recovering_remote_turn = session.recovering_remote_turn;
 	const std::string pending_prompt = session.queued_prompt;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int turn_serial = session.turn_serial;
@@ -376,10 +408,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	ResetAcpRuntimeState(session);
-	if (retrying_undelivered_prompt)
+	if (retrying_undelivered_prompt || recovering_remote_turn)
 	{
-		session.queued_prompt = pending_prompt;
+		if (retrying_undelivered_prompt) session.queued_prompt = pending_prompt;
 		session.processing = true;
+		session.recovering_remote_turn = recovering_remote_turn;
 		session.turn_user_message_index = turn_user_message_index;
 		session.turn_serial = turn_serial;
 		session.goal_turn_kind = goal_turn_kind;
@@ -465,7 +498,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment,
 			                        uam::remote::BuildProcessProxySpec(
 			                            "acp-" + chat.id, workspace_root, launch_argv,
-			                            launch_environment)}};
+			                            launch_environment, session.recovering_remote_turn)}};
 		}
 	}
 	if (!startup_error.empty() ||
@@ -485,15 +518,22 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 
 	session.running = true;
 	session.reconnect_pending = false;
-	session.reconnect_attempts = 0;
 	session.reconnect_not_before_time_s = 0.0;
 	session.last_process_id = AcpProcessHandleLabel(session);
 	session.last_runtime_activity_time_s = GetAppTimeSeconds();
 	AppendAcpDiagnostic(session, "process_launch", "started", "", "", false, 0, "", launch_detail);
+	if (session.recovering_remote_turn)
+	{
+		// The remote provider never stopped. Resume its existing byte stream without
+		// sending a second initialize or replaying the in-flight prompt.
+		session.initialized = true;
+		session.session_ready = true;
+		session.lifecycle_state = kAcpLifecycleProcessing;
+		return true;
+	}
 	if (!SendInitialize(session, error_out))
 	{
-		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
-		session.running = false;
+		(void)StopAcpProcessForRestart(session, chat);
 		return false;
 	}
 
@@ -698,7 +738,7 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	return true;
 }
 
-bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
+bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	if (session.turn_checkpoint_preflight_pending)
 	{
@@ -751,13 +791,31 @@ bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 		return true;
 	}
 
+	chat.remote_turn_reconnect_pending =
+	    chat.execution_host_id != uam::execution_hosts::kLocalHostId;
 	session.queued_prompt.clear();
+	if (!SaveChatQuietly(app, chat))
+	{
+		session.last_error = "Prompt was delivered, but restart recovery could not be saved. Keep UAM open until this turn finishes.";
+		app.status_line = session.last_error;
+		AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed", "", "",
+		                    false, 0, session.last_error);
+		ScheduleChatSave(app, chat, 0.0);
+	}
 	return true;
 }
 
-void SaveChatQuietly(AppState& app, const ChatSession& chat)
+bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 {
-	(void)ChatRepository::SaveChat(app.data_root, chat);
+	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr && persisted->remote_turn_reconnect_pending)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		if (session == nullptr ||
+		    (!uam::AcpSessionHasActiveTurn(*session) && !session->reconnect_pending))
+			persisted->remote_turn_reconnect_pending = false;
+	}
+	return ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
 }
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
@@ -832,6 +890,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	}
 	session.prompt_request_id = 0;
 	session.processing = false;
+	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
@@ -885,12 +944,15 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	if (fresh_session && !StartAcpProcessForChat(app, session, chat))
 	{
 		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to start the private goal context."));
+		SaveChatQuietly(app, chat);
 		return false;
 	}
 	(void)ScheduleTurnCheckpointPreflight(app, session, chat);
+	SaveChatQuietly(app, chat);
 	// Queued is success; if the session cannot send yet, the poll loop
 	// delivers the prompt once the session is ready.
-	(void)SendQueuedPromptIfReady(session, chat);
+	(void)SendQueuedPromptIfReady(app, session, chat);
+	SaveChatQuietly(app, chat);
 	return true;
 }
 

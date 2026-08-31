@@ -531,6 +531,12 @@ bool Application::InitializeState()
 	ChatHistorySyncService().LoadSidebarChats(m_app);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
 	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
+	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
+	    reconnecting > 0)
+	{
+		m_app.status_line = "Reconnecting " + std::to_string(reconnecting) +
+		                    " remote turn" + (reconnecting == 1 ? "" : "s") + ".";
+	}
 	if (const std::size_t paused_goals = uam::GoalService::PauseActiveGoalsAfterRestart(m_app);
 	    paused_goals > 0)
 	{

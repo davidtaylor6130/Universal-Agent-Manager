@@ -63,7 +63,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			}
 			session.awaiting_model_config_options = false;
 			(void)ReconcileCopilotReasoningEffort(app, session, chat);
-			(void)SendQueuedPromptIfReady(session, chat);
+			(void)SendQueuedPromptIfReady(app, session, chat);
 		}
 		return;
 	}

@@ -383,6 +383,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	{
 		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
 	}
+	if (method.empty() && session.recovering_remote_turn && session.processing)
+	{
+		// Request ids belonged to the GUI that crashed. The only outstanding
+		// response on an attach-only stream is the already-running prompt.
+		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
+	}
 	if (session.cancel_requested && method == uam::acp_methods::kSessionPrompt)
 	{
 		if (session.inactivity_timeout_pending)
@@ -493,6 +499,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (session.model_discovery_only && (model_discovery_request || method == uam::acp_methods::kInitialize))
 		{
 			StopBackgroundModelDiscovery(app, session);
+			return;
+		}
+		if (method == uam::acp_methods::kInitialize)
+		{
+			InvalidateAcpTransport(app, session, chat, formatted_error);
+			SaveChatQuietly(app, chat);
 			return;
 		}
 		if (method == uam::acp_methods::kSessionSetConfigOption && id == session.reasoning_change_request_id)
@@ -825,7 +837,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			session.last_error.clear();
 			session.lifecycle_state = kAcpLifecycleReady;
 			(void)ReconcileCopilotReasoningEffort(app, session, chat);
-			(void)SendQueuedPromptIfReady(session, chat);
+			(void)SendQueuedPromptIfReady(app, session, chat);
 		}
 		if (method == uam::acp_methods::kSessionSetConfigOption && response_id == session.config_option_change_request_id)
 		{
@@ -859,7 +871,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			ClearAcpModeChangeRequest(session);
 			session.last_error.clear();
 			session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
-			(void)SendQueuedPromptIfReady(session, chat);
+			(void)SendQueuedPromptIfReady(app, session, chat);
 		}
 		if (method == uam::acp_methods::kSessionSetModel)
 		{
@@ -890,7 +902,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				ClearAcpStartupModelRequest(session);
 			}
 			(void)ReconcileCopilotReasoningEffort(app, session, chat);
-			(void)SendQueuedPromptIfReady(session, chat);
+			(void)SendQueuedPromptIfReady(app, session, chat);
 		}
 		return;
 	}

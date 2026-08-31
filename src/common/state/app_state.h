@@ -356,6 +356,7 @@ namespace uam
 		bool mcp_http_supported = false;
 		bool mcp_sse_supported = false;
 		bool processing = false;
+		bool recovering_remote_turn = false;
 		bool waiting_for_permission = false;
 		bool waiting_for_user_input = false;
 		bool cancel_requested = false;

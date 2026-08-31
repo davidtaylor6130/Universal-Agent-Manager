@@ -40,6 +40,7 @@ namespace uam::remote
 			std::uintmax_t stderr_offset = 0;
 			std::mutex mutex;
 			std::jthread drainer;
+			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
 			std::atomic<int> exit_code{-1};
 			std::string spool_error;
@@ -51,19 +52,29 @@ namespace uam::remote
 		};
 		struct Upload
 		{
+			enum class State
+			{
+				Starting,
+				Active,
+				Finishing,
+				Finished
+			};
+
+			std::mutex mutex;
 			std::filesystem::path target;
 			std::filesystem::path temporary;
 			std::uintmax_t expected_size = 0;
 			std::uintmax_t received_size = 0;
 			std::uint64_t digest = 0;
 			std::string expected_digest;
+			State state = State::Starting;
 		};
 
 	  private:
 		std::mutex m_stateMutex;
 		std::filesystem::path m_spoolDirectory;
-		std::unordered_map<std::string, std::unique_ptr<Process>> m_processes;
+		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
 		std::unordered_map<std::string, Channel> m_channels;
-		std::unordered_map<std::string, Upload> m_uploads;
+		std::unordered_map<std::string, std::shared_ptr<Upload>> m_uploads;
 	};
 }

@@ -35,6 +35,32 @@ function statusLabel(status: Goal['status']): string {
   }
 }
 
+function blockerKindLabel(kind = ''): string {
+	const normalized = kind.toLowerCase()
+	if (normalized.includes('permission') || normalized.includes('access')) return 'Needs access'
+	if (normalized.includes('input') || normalized.includes('user')) return 'Needs input'
+	if (normalized.includes('token') || normalized.includes('budget')) return 'Budget reached'
+	if (normalized.includes('remote') || normalized.includes('connection') || normalized.includes('host')) return 'Needs connection'
+	if (normalized === 'transient') return 'Temporary issue'
+	return 'Blocked'
+}
+
+function blockerNextAction(goal: Goal): string {
+	const kind = goal.lastBlockerKind?.toLowerCase() ?? ''
+	if (kind.includes('permission') || kind.includes('access')) return 'Approve or deny the request, then resume.'
+	if (kind.includes('token') || kind.includes('budget')) return 'Increase the token budget, then resume.'
+	if (kind.includes('remote') || kind.includes('connection') || kind.includes('host')) return 'Reconnect the host, then resume.'
+	if (kind === 'transient') return 'Retry when the dependency is available.'
+	if (goal.currentStep?.trim()) return readablePlanItem(goal.currentStep)
+	return 'Resolve the blocker, then resume.'
+}
+
+function readableDiagnostic(diagnostic: string): string {
+	if (diagnostic === 'goal_blocked_invalid_review') return 'The completion review was invalid.'
+	if (diagnostic === 'goal_blocked_max_loop_iterations_reached') return 'The goal reached its automatic iteration limit.'
+	return diagnostic
+}
+
 function readablePlanItem(item: string): string {
   const trimmed = item.trim()
   return trimmed.replace(/^T\d+\s*(?:[:.)\]_\-–—]\s*)?/i, '').trim() || trimmed
@@ -143,6 +169,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
   const menuId = useId()
   const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
+	const blockerLabel = blockerKindLabel(goal.lastBlockerKind)
+	const blockerAction = blockerDisplay ? blockerNextAction(goal) : ''
   const tone = statusTone(goal.status)
   const completedCount = goal.completedItems?.length ?? 0
   const totalItems = completedCount + (goal.remainingItems?.length ?? 0)
@@ -193,16 +221,18 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
       <details className="group min-w-0 flex-1">
         <summary className="uam-goal-banner__summary flex min-w-0 cursor-pointer items-center gap-1.5" style={{ color: 'var(--text)' }}>
           <ChevronRight data-goal-disclosure-icon size={14} className="flex-shrink-0 transition-transform duration-150 group-open:rotate-90" aria-hidden />
-          <span className="min-w-0 flex-1 truncate" style={{ fontWeight: 500 }} title={goal.objective}>{goal.objective}</span>
+					<span className="min-w-0 flex-1">
+						<span className="block truncate" style={{ fontWeight: 500 }} title={goal.objective}>{goal.objective}</span>
+						{blockerDisplay && (
+							<span role="alert" className="block truncate text-xs" style={{ color: 'var(--error)', marginTop: 1 }} title={`${blockerLabel}: ${blockerDisplay} ${blockerAction}`}>
+								<strong>{blockerLabel}:</strong> {blockerDisplay} {blockerAction}
+							</span>
+						)}
+					</span>
         </summary>
         {goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && (
           <div className="uam-goal-banner__secondary mt-1 truncate text-xs" style={{ color: 'var(--text-3)' }} title={`Worker: ${workerModelLabel} · Reviewer: ${reviewerModelLabel}`}>
             Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked
-          </div>
-        )}
-        {blockerDisplay && (
-          <div className="truncate text-xs" style={{ color: 'var(--error)', marginTop: 1 }} title={blockerDisplay}>
-            {blockerDisplay}
           </div>
         )}
         <div
@@ -214,6 +244,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
           style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
         >
           <div className="whitespace-pre-wrap" style={{ color: 'var(--text-2)' }}>{goal.objective}</div>
+					{blockerDisplay && <div><strong style={{ color: 'var(--text)' }}>Blocker:</strong> <span style={{ color: 'var(--text-2)' }}>{blockerDisplay}</span></div>}
+					{goal.lastDiagnostic && <div><strong style={{ color: 'var(--text)' }}>Last check:</strong> <span style={{ color: 'var(--text-2)' }}>{readableDiagnostic(goal.lastDiagnostic)}</span></div>}
           {currentStep && <div><strong style={{ color: 'var(--text)' }}>Current step:</strong> <span style={{ color: 'var(--text-2)' }}>{currentStep}</span></div>}
           {completedItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Completed steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{completedItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
           {remainingItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Remaining steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{remainingItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
