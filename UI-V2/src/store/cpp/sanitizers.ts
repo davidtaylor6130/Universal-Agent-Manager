@@ -334,7 +334,9 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
 }
 
 export function messageAttachments(message: CppMessage): Attachment[] {
-  const markdownAttachments = (message.markdownStoreFiles ?? []).map((filePath) => ({
+  const markdownStoreFiles = message.markdownStoreFiles ?? []
+  if (markdownStoreFiles.length === 0) return message.attachments ?? []
+  const markdownAttachments = markdownStoreFiles.map((filePath) => ({
     id: filePath,
     name: filePath.split(/[\\/]/).pop() || filePath,
     type: 'markdown-store',
