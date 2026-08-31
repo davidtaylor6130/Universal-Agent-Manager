@@ -1221,6 +1221,9 @@ if(UAM_BUILD_TESTS)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/libcef.dll"
         "$<TARGET_FILE_DIR:uam_core_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll"
+        "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
