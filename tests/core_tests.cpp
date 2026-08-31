@@ -2863,10 +2863,16 @@ UAM_TEST(IoUtilsDurableReplacementKeepsACompleteGenerationAtEveryFaultStage)
 		    new_generation,
 		    [fault_stage](uam::io::AtomicWriteStage stage) { return stage != fault_stage; },
 		    true);
-		const bool committed_before_fault = fault_stage == uam::io::AtomicWriteStage::BeforeBackupCleanup;
-		UAM_ASSERT_EQ(result.success, committed_before_fault);
-		UAM_ASSERT_EQ(result.primary_committed, committed_before_fault);
-		UAM_ASSERT_EQ(result.backup_degraded, committed_before_fault);
+		const bool completed_before_fault =
+		    fault_stage == uam::io::AtomicWriteStage::BeforeBackupCleanup;
+		bool primary_committed = completed_before_fault;
+#if defined(_WIN32)
+		primary_committed = primary_committed ||
+		                    fault_stage == uam::io::AtomicWriteStage::AfterReplaceBeforeDirectorySync;
+#endif
+		UAM_ASSERT_EQ(result.success, completed_before_fault);
+		UAM_ASSERT_EQ(result.primary_committed, primary_committed);
+		UAM_ASSERT_EQ(result.backup_degraded, completed_before_fault);
 		UAM_ASSERT(result.interrupted);
 		UAM_ASSERT_EQ(result.stage, fault_stage);
 
@@ -7170,6 +7176,7 @@ UAM_TEST(VcsCommitServiceTreatsSelectedGitFilesAsLiteralPathspecs)
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(workspace))));
 	UAM_ASSERT(RunGitForTest(workspace, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(workspace, "config user.name UAM"));
+	UAM_ASSERT(RunGitForTest(workspace, "config core.autocrlf false"));
 	UAM_ASSERT(uam::io::WriteTextFile(workspace / "file[1].txt", "initial\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(workspace / "file1.txt", "initial\n"));
 	UAM_ASSERT(RunGitForTest(workspace, "add -- ."));

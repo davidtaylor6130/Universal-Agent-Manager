@@ -1217,6 +1217,11 @@ if(UAM_BUILD_TESTS)
       uiautomationcore
       windowscodecs
     )
+    add_custom_command(TARGET uam_core_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll"
+        "$<TARGET_FILE_DIR:uam_core_tests>/libcef.dll"
+    )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
     NOMINMAX

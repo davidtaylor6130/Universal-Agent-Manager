@@ -177,7 +177,7 @@ UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach
 
 UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 {
-	const fs::path cwd = fs::temp_directory_path();
+	const fs::path cwd = "/tmp";
 	const std::vector<std::string> provider_argv = {"/usr/bin/printf", "terminal-ok"};
 	const std::vector<std::string> ssh_argv =
 	    uam::remote::BuildRemoteTerminalSshArgv("home-lab", "linux", "4.5.7", cwd,
@@ -238,10 +238,9 @@ UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 
 UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 {
-	const fs::path runner =
-	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
-	        .parent_path() /
-	    "uam-runner";
+	TempDir temp("uam-runner-bootstrap-artifact");
+	const fs::path runner = temp.root / "uam-runner";
+	UAM_ASSERT(uam::io::WriteTextFile(runner, "runner"));
 	uam::remote::BootstrapPlan plan;
 	std::string error;
 	const std::string checksum(64, 'a');
@@ -430,7 +429,12 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 {
 	const fs::path test_executable =
 	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
-	const fs::path runner = test_executable.parent_path() / "uam-runner";
+	const fs::path runner = test_executable.parent_path() /
+#if defined(_WIN32)
+	                        "uam-runner.exe";
+#else
+	                        "uam-runner";
+#endif
 	UAM_ASSERT(fs::exists(runner));
 	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
 	                                 {runner.string(), "bridge-direct"});
@@ -724,8 +728,8 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 		}
 	} stop_guard{runner};
 
-	uam::remote::RunnerClient first(service, {runner.string(), "bridge"}, "4.5.7");
-	uam::remote::RunnerClient second(service, {runner.string(), "bridge"}, "4.5.7");
+	uam::remote::RunnerClient first(service, {runner.string(), "bridge"});
+	uam::remote::RunnerClient second(service, {runner.string(), "bridge"});
 	std::string error;
 	UAM_ASSERT(first.Connect(&error));
 	UAM_ASSERT(second.Connect(&error));
