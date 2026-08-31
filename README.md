@@ -1,204 +1,132 @@
 <h1>
   <img src="assets/app_icon.png" alt="Universal Agent Manager icon" width="36" valign="middle" />
-  Universal Agent Manager (UAM)
+  Universal Agent Manager
 </h1>
 
-**A local-first macOS and Windows desktop app for running CLI-driven AI agents across multiple providers from one interface.**
+Run Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, and GitHub Copilot CLI from one local desktop app. UAM provides structured chat, embedded terminals, persistent history, flexible multi-pane layouts, and SSH execution on remote machines.
 
-Universal Agent Manager runs a React/Vite UI inside CEF (Chromium Embedded Framework) and connects it to agent CLIs through C++ runtime services. It is focused on local, CLI-backed agent sessions with no cloud backend, telemetry, or sync service.
-
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
-[![Language](https://img.shields.io/badge/language-C%2B%2B20-green)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
-[![UI](https://img.shields.io/badge/UI-React%20%2B%20CEF-61dafb)](https://github.com/davidtaylor6130/Universal-Agent-Manager)
+[![CI](https://github.com/davidtaylor6130/Universal-Agent-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/davidtaylor6130/Universal-Agent-Manager/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/davidtaylor6130/Universal-Agent-Manager)](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases)
+[![Platform](https://img.shields.io/badge/desktop-macOS%20%7C%20Windows-blue)](#platform-support)
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
-## Screenshots
+UAM is local-first, not offline-only. The app stores its own settings and history as local files and has no cloud backend, sync service, or telemetry. Provider CLIs still send prompts and permitted workspace data according to their own configuration and service terms.
 
-Dark theme:
+## Quick start
 
-![Universal Agent Manager dark theme](docs/images/V2.0.1-Dark.png)
+1. Download the correct archive from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases):
+   - `UAM-macOS-ARM.zip` for Apple Silicon
+   - `UAM-macOS-Intel.zip` for Intel Macs
+   - `UAM-Windows.zip` for Windows x64
+2. Install and sign in to at least one supported provider CLI.
+3. Launch UAM and create a workspace.
+4. Choose a provider, model, and permission mode for the chat.
 
-Light theme:
+The current macOS packages are ad hoc signed rather than notarized. Windows packages are unsigned ZIP archives. See [security and enterprise deployment](docs/security-enterprise.md) before distributing UAM in a managed environment.
 
-![Universal Agent Manager light theme](docs/images/V2.0.1-Light.png)
+## Current interface
 
-## Key Features
+![Universal Agent Manager 4.8 workspace with local and remote chats in two panes](docs/images/uam-4.8-workspaces.png)
 
-- **Multi-provider** — Built-in CLI providers for Gemini, Codex, Claude Code, OpenCode, and GitHub Copilot, switchable per chat.
-- **Two session paths per provider** — A structured chat path over each provider's protocol, and an xterm.js terminal fallback for the raw interactive CLI.
-- **Universal chat history** — Chats are stored in UAM's own normalized format, so you can start with one provider and continue with another.
-- **Local-first storage** — Chat metadata, settings, folders, theme, window/sidebar state, markdown store, and durable memory are all stored locally as files. No cloud, no telemetry.
-- **Git worktree isolation** — Optional per-chat git worktree create, status, diff, commit, discard, and port workflows.
-- **Workspace folders** — One-level workspace folders drive provider working directories and Gemini history discovery, with collapsible collections for grouping related workspaces.
-- **Command safety** — Low, medium, and high safety tiers gate risky commands, with permission modes available from the composer `+` menu and slash commands.
-- **Finder and Explorer actions** — Configurable per-user shell actions open selected files and folders as workspaces or run Markdown Store skills.
-- **Durable memory** — Idle extraction and manual scans write durable memory files, with workspace-local memories under `<workspace>/.codex/memories/`. Memory library supports browsing, scanning, and categorizing lessons and failures.
-- **Goal system** — Plan-driven multi-step goals with auto-resume, loop detection, and stall watchdog.
-- **Concurrent sessions** — Multiple CLI and structured runtime sessions run side by side on macOS and Windows.
+The workspace view can hold up to nine chats. Each pane keeps its own selected chat and structured or terminal view, while the sidebar reports active, completed, pinned, local, and remote sessions.
 
-Removed or intentionally unsupported surfaces include RAG engines, local model engines, templates, Dear ImGui, Linux builds, and checked-in frontend build output.
+![Universal Agent Manager 4.8 Remote Hosts settings](docs/images/uam-4.8-remote-hosts.png)
 
-## Tech Stack
+Remote hosts use existing OpenSSH aliases. UAM installs a versioned helper in the remote user's home directory and verifies its checksum, version, and protocol before use.
 
-- **Backend:** C++20, CMake 3.20+, CEF 146.0.10 (Chromium 146.0.7680.179), `nlohmann/json`
-- **Frontend:** React 18, Vite 6, TypeScript 5, Zustand, Tailwind CSS, xterm.js
-- **Platform services:** native PTY (openpty on macOS, ConPTY on Windows) for the CLI terminal path
-- **Tooling:** Vitest for the frontend, CTest for native tests
+## What UAM does
 
-## Support Matrix
+- Runs five built-in CLI providers without removing their native command-line workflows.
+- Gives every provider a structured chat view and an embedded xterm.js terminal fallback.
+- Stores normalized chat history locally, with native provider resume when the provider exposes a reusable session ID.
+- Opens up to nine chats in a recursive split layout with horizontal and vertical splits, resizing, per-pane state, and persisted layout.
+- Runs chats on the local computer or a configured SSH host.
+- Keeps remote provider jobs alive when the desktop app closes, then reconnects without replaying the delivered prompt.
+- Supports chat create, rename, delete, pin, branch, search, provider switching, and portable read-only chat bundles.
+- Shows tool calls, plans, approvals, user-input requests, attachments, expandable sub-agent history, and background activity in the transcript.
+- Adds UAM agents, delegated agent runs, durable goals, bounded auto-resume, loop detection, and stall reporting.
+- Supports Git worktree isolation, commits, discard, rollback, and port-to-source workflows.
+- Stores durable global or workspace memory and provides manual scans, background extraction, and a searchable memory library.
+- Connects workspace-scoped MCP servers and offers a packaged local Computer Use MCP companion.
+- Provides configurable editor, Finder, Explorer, and shell actions without storing provider credentials.
 
-Each provider has a structured chat path and an xterm.js CLI fallback. UAM persists normalized
-history for every provider; Gemini can additionally overlay its native JSON history.
+### Provider handoff
 
-The detailed, release-gating capability matrix is maintained in
-[docs/provider-runtime-parity.md](docs/provider-runtime-parity.md).
+The normalized transcript stays visible when a chat changes provider. UAM also preserves its own title, workspace, goals, agent selection, and recorded tool results. A provider change starts a new native session with the destination provider's defaults. It does not transplant the previous provider's private thread state or silently replay the full transcript.
 
-Computer-use architecture and review guidance: [docs/computer-use.md](docs/computer-use.md).
+Portable chat imports are passive, read-only transcripts. Reconnect workspaces, provider sessions, agents, goals, attachments, and permissions explicitly before running them.
 
-### View Definitions
+## Provider support
 
-| View | Description |
-|------|-------------|
-| **Structured View** | Chat-bubble UI over the provider's structured protocol (Gemini ACP, Codex app-server stdio, Claude stream JSON, OpenCode/Copilot ACP). Tool calls, approvals, and model selection surface in the UI with persisted history. |
-| **CLI View** | Embedded xterm.js terminal running the provider's CLI directly over a PTY (openpty on macOS, ConPTY on Windows). Full terminal experience with real-time streaming output. |
+| Provider | Structured transport | Embedded terminal | Native resume |
+|---|---|---|---|
+| Gemini CLI | ACP | Yes | Yes |
+| Codex CLI | app-server over stdio | Yes | Yes |
+| Claude Code CLI | stream JSON | Yes | When the CLI exposes a session ID |
+| OpenCode CLI | ACP | Yes | When ACP exposes a session ID |
+| GitHub Copilot CLI | ACP | Yes | When ACP exposes a session ID |
 
-### What is Universal Chat History?
+Structured sessions surface the provider features available through that transport. Terminal fallback remains an opaque provider-controlled PTY, so UAM cannot mediate its internal tool approvals.
 
-UAM stores chats in its own normalized format, which enables provider switching:
+The release-gating capability matrix is in [provider runtime parity](docs/provider-runtime-parity.md).
 
-- **Start a chat with Gemini CLI**
-- **Switch mid-conversation to Claude or Codex**
-- **Continue the same chat with a different provider**
+## Permission modes
 
-Context and conversation history are preserved across providers. Native provider history (e.g. Gemini JSON) is used only while a session is active; long-term storage always lives in UAM's local format under `<data-root>/chats/`.
+Structured chats expose four command-safety choices:
 
-## Requirements
+| Mode | Behavior |
+|---|---|
+| Default / Ask | Leaves approval decisions to the user or provider flow. |
+| Accept Edits | Allows supported edit operations while retaining broader approval boundaries. |
+| AI Review | Sends bounded approval decisions through the configured reviewer. |
+| YOLO | Uses the provider's least restrictive supported mode. Use it only in a disposable or trusted workspace. |
 
-- CMake 3.20+
-- C++20 compiler
-- Node.js and npm
-- Internet access for the first native configure, because CMake fetches CEF and `nlohmann/json`
-- macOS with Xcode command line tools, or Windows with MSVC Build Tools initialized
-- Provider CLIs on `PATH` for the providers you use:
-  - `gemini`
-  - `codex`
-  - `claude`
-  - `opencode`
-  - `copilot`
+Plan mode is separate. It is a hard read-only ceiling even when another permission setting is selected.
 
-## Frontend
+## Remote execution
 
-```bash
-npm --prefix UI-V2 ci
-npm --prefix UI-V2 run test
-npm --prefix UI-V2 run build
-```
+UAM uses aliases already defined in `~/.ssh/config`. Authentication stays with OpenSSH, including keys, agents, host checks, and any user-configured proxy or jump-host rules. UAM does not copy SSH credentials into its settings.
 
-`UI-V2/node_modules/`, frontend build output, and TypeScript build info files are generated output and are not committed. CMake also builds the frontend into the native build tree before packaging it into the app.
+The packaged remote helper supports:
 
-## Build
+| Remote target | Architecture |
+|---|---|
+| Linux | x86-64 and ARM64 |
+| Windows | x86-64 |
 
-CMake enforces build directories under `Builds/`, except for CLion default `cmake-build-*` directories:
+The macOS and Windows desktop packages include all three helper targets plus checksum and version metadata. Helper activation is versioned and rollback-aware. The local UAM controller remains the canonical owner of chat metadata, settings, and normalized history.
 
-```bash
-./build.sh
-```
+Remote structured sessions retain provider controls, approvals, cancellation, history refresh, and reconnect recovery. Embedded terminal sessions can also run through the remote helper.
 
-The macOS build script cross-builds and packages the Linux ARM64, Linux x86-64, and Windows
-x86-64 SSH helpers. Direct full-app CMake builds fail closed unless those matching helpers exist
-under `Builds/remote-artifacts` (or `UAM_REMOTE_RUNNER_ARTIFACT_DIR` points to them).
+Current remote boundaries:
 
-```bash
-cmake -S . -B Builds
-cmake --build Builds --config Release
-```
+- Computer Use is local-only because UAM cannot supervise a remote desktop safely.
+- Remote workspace editor and file-manager actions are disabled.
+- A remote chat cannot be moved to a different workspace directory.
+- macOS is not currently packaged as a remote helper target.
 
-Provider runtime flags (all default `ON`; at least one must be enabled):
+## Computer Use and MCP
 
-```bash
-cmake -S . -B Builds \
-  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_COPILOT_CLI=ON
-```
+Local structured chats can use the packaged UAM Computer Use companion through MCP. The provider receives bounded screenshots and accessibility labels, then requests actions through the companion. UAM requires an OS-native allow or deny decision before returning observations.
 
-Disabling a flag excludes that runtime from the binary entirely, so it cannot be invoked. The removed structured, Ollama, and RAG runtime flags intentionally fail configuration.
+macOS requires Screen Recording and Accessibility permission. Windows uses UI Automation and requires an interactive foreground desktop. Secure desktops, UAC prompts, elevated windows, and remote chats are outside the supported boundary.
 
-Gemini-and-Codex-only build:
+Workspaces can also define local stdio, HTTP, or SSE MCP servers. Secret values remain environment references rather than being copied into the workspace configuration.
 
-```bash
-npm --prefix UI-V2 ci
-cmake -S . -B Builds/GeminiCodex \
-  -DUAM_FETCHCONTENT_BASE_DIR=Builds/_deps \
-  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON \
-  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF \
-  -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF
-cmake --build Builds/GeminiCodex --config Release
-```
+Read [Computer Use architecture and safety](docs/computer-use.md) before enabling it for sensitive work.
 
-On Windows, initialize MSVC first:
+## Local data and privacy
 
-```bat
-call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-npm --prefix UI-V2 ci
-cmake -S . -B Builds
-cmake --build Builds --config Release
-```
+UAM resolves its data root in this order:
 
-On Windows for the Gemini-and-Codex-only build:
+1. `UAM_DATA_DIR`, when explicitly set.
+2. The operating-system app-data location:
+   - macOS: `~/Library/Application Support/Universal Agent Manager`
+   - Windows: `%LOCALAPPDATA%\Universal Agent Manager`, with `%APPDATA%` and the user profile as fallbacks
+3. A temporary directory when no usable home or app-data location exists.
+4. A relative `data` directory only when no temporary directory can be resolved.
 
-```bat
-call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-npm --prefix UI-V2 ci
-cmake -S . -B Builds\GeminiCodex ^
-  -DUAM_FETCHCONTENT_BASE_DIR=Builds\_deps ^
-  -DUAM_ENABLE_RUNTIME_GEMINI_CLI=ON ^
-  -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON ^
-  -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF ^
-  -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF ^
-  -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF
-cmake --build Builds\GeminiCodex --config Release
-```
-
-## Run
-
-```bash
-# macOS
-open Builds/universal_agent_manager.app
-
-# Windows
-.\Builds\Release\universal_agent_manager.exe
-
-# Custom data root on macOS
-UAM_DATA_DIR=/tmp/uam-data ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
-```
-
-Do not open `UI-V2/dist/index.html` directly. The frontend is packaged into the CEF shell and expects the native bridge.
-
-## Tests
-
-```bash
-npm --prefix UI-V2 ci
-npm --prefix UI-V2 run test
-npm --prefix UI-V2 run build
-
-cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
-cmake --build Builds/tests --config Debug
-ctest --test-dir Builds/tests -C Debug --output-on-failure
-```
-
-Native tests include `uam_core_tests` from `tests/core_tests.cpp` and the `uam_platform_ifdef_guard` CMake script test. On macOS, a full `cmake --build Builds/tests --config Debug` can fail after compilation during CEF app bundle signing or verification; if that happens, build the isolated test target and run CTest:
-
-```bash
-cmake --build Builds/tests --target uam_core_tests --config Debug
-ctest --test-dir Builds/tests -C Debug --output-on-failure
-```
-
-## Data Layout
+The main layout is:
 
 ```text
 <data-root>/
@@ -207,102 +135,169 @@ ctest --test-dir Builds/tests -C Debug --output-on-failure
   chats/
     <chat-id>.json
     <chat-id>.json.bak
+  chat-summaries/
   memory/
-    Failures/
-      AI_Failures/
-      User_Failures/
-    Lessons/
-      AI_Lessons/
-      User_Lessons/
+  themes/
+  agents/
+  agent-runs/
+  computer-use/
 ```
 
-Workspace-local memories are written under `<workspace>/.codex/memories/` using the same category layout.
+Workspace-scoped memories are stored under `<workspace>/.UAM/`. Staged attachments use `<workspace>/.UAM/attachments/<chat-id>/`.
 
-Data root resolution:
+Set a disposable data root when testing a build without touching your normal UAM history:
 
-1. `UAM_DATA_DIR`
-2. `<current-working-directory>/data`
-3. OS default app-data location
-4. Temp fallback
+```bash
+UAM_DATA_DIR=/tmp/uam-test-data \
+  ./Builds/universal_agent_manager.app/Contents/MacOS/universal_agent_manager
+```
+
+## Platform support
+
+| Component | Supported platforms |
+|---|---|
+| Desktop app | macOS 10.15 or newer, Apple Silicon and Intel; Windows 10 1809 or newer, x64 |
+| Local terminal | `openpty` on macOS; ConPTY on Windows |
+| Remote helper | Linux x86-64, Linux ARM64, Windows x86-64 |
+
+There is no Linux desktop GUI build. RAG engines, local model engines, templates, Dear ImGui, and checked-in frontend build output are outside the current release scope.
+
+## Build from source
+
+Requirements:
+
+- CMake 3.20 or newer
+- A C++20 compiler
+- Node.js 20 and npm
+- Internet access during the first configure so CMake can fetch CEF and `nlohmann/json`
+- Xcode command-line tools on macOS, or MSVC Build Tools on Windows
+- The provider CLIs you intend to run: `gemini`, `codex`, `claude`, `opencode`, or `copilot`
+
+CMake requires build directories inside `Builds/`. CLion's default `cmake-build-*` directories are also accepted.
+
+### Frontend
+
+```bash
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
+npm --prefix UI-V2 run build
+```
+
+Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CEF bridge.
+
+### Local development build
+
+Disable remote-helper packaging when you only need a local development build:
+
+```bash
+npm --prefix UI-V2 ci
+cmake -S . -B Builds/dev \
+  -DUAM_BUILD_TESTS=OFF \
+  -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake --build Builds/dev --config Release --parallel 4
+```
+
+On Windows, initialize MSVC before running the same commands:
+
+```bat
+call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+npm --prefix UI-V2 ci
+cmake -S . -B Builds\dev -A x64 -DUAM_BUILD_TESTS=OFF -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake --build Builds\dev --config Release --parallel 4
+```
+
+### Complete macOS package
+
+`build.sh` builds the desktop app and cross-builds every remote helper. It requires [Zig](https://ziglang.org/) plus MinGW-w64:
+
+```bash
+brew install zig mingw-w64
+./build.sh
+```
+
+The interactive script lets you exclude provider runtimes, but at least one provider must remain enabled.
+
+### Release-compatible direct build
+
+Full app packaging fails closed unless these helper artifacts, checksums, and version files exist:
+
+```text
+Builds/remote-artifacts/
+  linux-arm64/
+  linux-x86_64/
+  windows-x86_64/
+```
+
+After populating that directory, build with:
+
+```bash
+npm --prefix UI-V2 ci
+cmake -S . -B Builds \
+  -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$PWD/Builds/remote-artifacts"
+cmake --build Builds --config Release --parallel 4
+```
+
+The GitHub release workflow builds these helpers independently, verifies their reported version, and injects all three into each desktop package.
+
+## Tests and release gates
+
+Run the local test suite without requiring packaged remote helpers:
+
+```bash
+npm --prefix UI-V2 ci
+npm --prefix UI-V2 run test
+npm --prefix UI-V2 run build
+
+cmake -S . -B Builds/tests \
+  -DUAM_BUILD_TESTS=ON \
+  -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake --build Builds/tests --config Debug --parallel 4
+ctest --test-dir Builds/tests -C Debug --output-on-failure
+```
+
+Pull-request CI also runs:
+
+- A locked CycloneDX frontend SBOM check.
+- Frontend tests and the production frontend build.
+- Linux x86-64, Linux ARM64, and Windows x86-64 helper builds with version smoke tests.
+- Native Release builds and CTest on macOS ARM, macOS Intel, and Windows x64.
+- Packaged-app smoke tests that validate the bundled UI, CEF resources, helper checksums, launch, and shutdown.
+- Separate Computer Use and provider CLI contract checks.
+
+Release tags must match the version in `UI-V2/package.json`. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.
 
 ## Architecture
 
-- Entry point: `src/main.cpp`
-- App shell: `src/app/application.cpp`
-- CEF bridge: `src/cef/uam_query_handler.cpp`
-- React UI: `UI-V2/src`
-- Provider profiles and runtime registry: `src/common/provider/`
-- Gemini runtime: `src/common/provider/gemini/`
-- Codex runtime: `src/common/provider/codex/`
-- Claude runtime: `src/common/provider/claude/`
-- OpenCode runtime: `src/common/provider/opencode/`
-- Copilot runtime: `src/common/provider/copilot/`
-- ACP runtime: `src/common/runtime/acp/`
-- Terminal runtime: `src/common/runtime/terminal/` plus platform services
-- Local persistence: `src/common/chat`, `src/common/config`
-- Memory services: `src/app/memory_service.cpp`, `src/app/memory_library_service.cpp`
-- Goal system: `src/app/goal_service.cpp`, `src/common/runtime/acp/acp_goal_loop.cpp`
-- Markdown store: `src/app/markdown_store_service.cpp`
-- Workspace isolation: `src/app/git_worktree_service.cpp`
-- VCS commit workflows: `src/app/vcs_commit_service.cpp`
+```text
+UI-V2/src/                         React, Zustand, Tailwind CSS, xterm.js
+src/cef/                           CEF query bridge and pushed state updates
+src/app/                           application services, goals, agents, memory, VCS
+src/common/provider/               five provider implementations and runtime registry
+src/common/runtime/acp/            structured-session orchestration
+src/common/runtime/terminal/       terminal fallback orchestration
+src/remote/                        SSH bridge, helper installer, runner protocol and service
+src/computer_use/                  packaged local Computer Use companion
+src/common/chat/                   normalized chat persistence and recovery
+```
 
-Security and enterprise deployment notes are tracked in `docs/security-enterprise.md`.
+The app starts at `src/main.cpp`, creates the native application in `src/app/application.cpp`, and hosts the React build inside CEF. The UI calls native services through `window.cefQuery`; native state changes return through `window.uamPush`.
 
-## CEF Bridge
+Useful design documents:
 
-The UI talks to native code through `window.cefQuery`; native state updates are pushed back through `window.uamPush`.
+- [Provider runtime parity](docs/provider-runtime-parity.md)
+- [Computer Use architecture and safety](docs/computer-use.md)
+- [Security and enterprise deployment](docs/security-enterprise.md)
+- [Visual Studio solution guide](docs/visual-studio-solution.md)
 
-Current bridge capabilities include:
+## Known limitations
 
-- State and chat loading: initial state, chat selection, lazy message loading, and sidebar search.
-- Chat lifecycle: create, rename, delete, pin, provider switch, model changes, provider modes, UAM agents, command-safety policy, and per-chat memory toggles.
-- Settings: memory settings, editor settings, provider chat defaults, CLI provider version refresh/apply, theme, and clipboard writes.
-- Folders and workspaces: create, rename, delete, toggle, browse, open workspace, and open workspace editor.
-- Markdown store: browse/set store directory, list entries, create entries, and reveal entries.
-- Memory library: list, create, delete, open roots, reveal entries, list scan candidates, and queue scans.
-- Git/VCS: worktree status/create/discard/port, changed-file status, diffs, commits, and commit message generation.
-- Goal system: list goals, create goals, delete goals, queue goal scans, and manage goal lifecycle.
-- Terminal sessions: start, stop, resize, and write xterm.js CLI input.
-- Structured sessions: stage attachments, send prompts, cancel turns, resolve permission and user-input requests, stop ACP sessions, and manage goal loop lifecycle.
+Tracked release gaps remain in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues). The current remote-helper limitations are:
 
-## Project Goals
-
-- Local-first operation with file-based state
-- Auditable behavior with explicit command execution
-- Provider-native history when an adapter is available
-- No cloud backend, no telemetry, no sync service
-- Reproducible workspace-driven CLI runs
-- A single repeatable interface so swapping between AI providers is hassle-free
-
-## Platform Notes
-
-| Platform | Minimum Version | Terminal Implementation |
-|----------|-----------------|-------------------------|
-| macOS | Current | xterm.js over a PTY (openpty / fork / execvp) |
-| Windows | Windows 10 1809+ | xterm.js over ConPTY (CreatePseudoConsole) |
-
-## Manual Release Checks
-
-1. Create chats for every enabled provider in different workspace folders.
-2. Send prompts in chat view and verify structured output, tool calls, approvals, user input prompts, attachments, model selection, and cancellation route to the right session.
-3. Start CLI fallback for two sessions, type into both terminals, and verify output stays scoped to the correct session.
-4. Stop one terminal and verify the other keeps running.
-5. Rename, pin, branch, and delete chats, then restart and verify metadata persists.
-6. Resume prior Gemini and Codex chats and verify native session or thread ids are used where available.
-7. Toggle memory settings and verify durable memory files are only written after idle extraction or manual scan.
-8. Exercise git worktree create, discard, port, status, diff, and commit flows in a git workspace.
-9. Restart and verify sidebar chats restore from local metadata plus Gemini history discovery.
-
-## Known Issues & Status
-
-The current release line is `v4.8.0`. Published builds are available from [GitHub Releases](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases), and tracked gaps live in [GitHub Issues](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues).
-
-- Windows can run the remote helper as a target, but a Windows UAM controller cannot originate structured SSH sessions yet ([#349](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/349)).
-- A clean local Windows app build requires the prebuilt Linux helper artifacts that the release workflow produces and packages ([#350](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/350)).
-- Remote helper installation is serialized inside one UAM process, but two UAM processes can still update the same host concurrently ([#351](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/351)).
-- Remote helper rollback and final cleanup currently perform synchronous SSH work in the completion path, so a slow host can briefly pause the settings UI ([#352](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/352)).
-- Remote workspace parity gaps are tracked in [#353](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/353).
+- Clean local Windows app builds do not yet acquire the Linux helper artifacts automatically ([#350](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/350)).
+- Helper installation is serialized within one UAM process, but separate UAM processes can update the same host concurrently ([#351](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/351)).
+- Slow remote rollback or cleanup can briefly delay the settings completion path ([#352](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/352)).
+- Remaining remote workspace parity gaps are tracked in [#353](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/353).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+Universal Agent Manager is available under the [MIT License](LICENSE).
