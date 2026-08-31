@@ -16,6 +16,9 @@ export function Sidebar() {
   const [searchQuery, setSearchQuery] = useState('')
   const [deepSearch, setDeepSearch] = useState(false)
   const [deepSearchSessionIds, setDeepSearchSessionIds] = useState<string[] | undefined>(undefined)
+  const [deepSearchError, setDeepSearchError] = useState('')
+  const [deepSearchLoading, setDeepSearchLoading] = useState(false)
+  const [deepSearchRetry, setDeepSearchRetry] = useState(0)
   const [filters, setFilters] = useState<ChatSearchFilters>({ providerIds: [], statusIds: [] })
   const latestDeepSearchRequestRef = useRef('')
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
@@ -56,10 +59,15 @@ export function Sidebar() {
     const query = searchQuery.trim()
     if (!deepSearch || !query) {
       setDeepSearchSessionIds(undefined)
+      setDeepSearchError('')
+      setDeepSearchLoading(false)
       return
     }
 
     let cancelled = false
+    setDeepSearchError('')
+    setDeepSearchLoading(true)
+    setDeepSearchSessionIds(undefined)
     const requestId = createRequestId('searchChatMessages')
     latestDeepSearchRequestRef.current = requestId
     const timer = window.setTimeout(() => {
@@ -69,7 +77,12 @@ export function Sidebar() {
         requestId,
       }).then((response) => {
         if (cancelled || latestDeepSearchRequestRef.current !== response.requestId) return
-        setDeepSearchSessionIds(response.ok && Array.isArray(response.data?.chatIds) ? response.data.chatIds : [])
+        setDeepSearchLoading(false)
+        if (!response.ok || !Array.isArray(response.data?.chatIds)) {
+          setDeepSearchError(response.error || 'Message search failed. Try again.')
+          return
+        }
+        setDeepSearchSessionIds(response.data.chatIds)
       })
     }, 180)
 
@@ -77,7 +90,7 @@ export function Sidebar() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [deepSearch, searchQuery])
+  }, [deepSearch, deepSearchRetry, searchQuery])
 
   return (
     <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--sidebar-bg)' }}>
@@ -93,6 +106,13 @@ export function Sidebar() {
         onToggleStatusFilter={toggleStatusFilter}
         onClearFilters={clearFilters}
       />
+      {deepSearchLoading && <div role="status" className="px-3 pb-2 text-xs" style={{ color: 'var(--text-3)' }}>Searching message contents…</div>}
+      {deepSearchError && (
+        <div role="alert" className="flex items-center justify-between gap-2 px-3 pb-2 text-xs" style={{ color: 'var(--red)' }}>
+          <span>{deepSearchError}</span>
+          <Button size="sm" variant="ghost" onClick={() => setDeepSearchRetry((value) => value + 1)}>Retry</Button>
+        </div>
+      )}
       <div
         data-testid="sidebar-tree-scroll"
         className="flex-1 overflow-y-auto overflow-x-hidden py-1"

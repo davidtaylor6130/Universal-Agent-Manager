@@ -16,6 +16,7 @@ std::string CliTerminalIdForChat(std::string_view chat_id);
 bool ProviderUsesCodexCli(const ProviderProfile& provider);
 bool ProviderSupportsInteractiveTerminal(const ProviderProfile& provider);
 std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& provider);
+std::string ProviderInteractivePermissionFlagError(const AppState& app, const ProviderProfile& provider);
 std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider);
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr);
 bool EnsureCopilotInteractiveSessionIdForLaunch(AppState& app, ChatSession& chat, const ProviderProfile& provider, std::string* error_out);

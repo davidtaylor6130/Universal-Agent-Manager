@@ -10,6 +10,8 @@ export interface ProviderCapabilities {
   hasReasoningEffort: boolean
   hasServiceTier: boolean
   hasAcceptEditsMode: boolean
+  structuredPermissionControl: 'uam' | 'provider'
+  terminalPermissionControl: 'provider'
   usesFriendlyModelLabels: boolean
   showPlanActionButtons: boolean
   autoLabel: string
@@ -55,7 +57,8 @@ export const CODEX_REASONING_LABELS: Record<string, { label: string; shortLabel:
 }
 
 export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
-  '': { label: 'Default', shortLabel: 'Default', detail: 'Use Codex default speed' },
+  __uam_inherit__: { label: 'Inherit', shortLabel: 'Inherit', detail: 'Do not send a speed override' },
+  '': { label: 'Standard', shortLabel: 'Standard', detail: 'Explicitly clear any provider speed override' },
   fast: { label: 'Fast', shortLabel: 'Fast', detail: 'Prioritize latency' },
   flex: { label: 'Flex', shortLabel: 'Flex', detail: 'Use flexible service tier' },
 }
@@ -124,11 +127,13 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       hasReasoningEffort: false,
       hasServiceTier: false,
-      hasAcceptEditsMode: false,
+      hasAcceptEditsMode: true,
+      structuredPermissionControl: 'uam',
+      terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: true,
       showPlanActionButtons: false,
       autoLabel: 'Yolo',
-      acceptEditsLabel: undefined,
+      acceptEditsLabel: 'Accept Edits',
       defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
       memoryModelIds: GEMINI_MEMORY_MODEL_IDS,
       memoryModelLabels: GEMINI_MEMORY_MODEL_LABELS,
@@ -148,11 +153,13 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       hasReasoningEffort: true,
       hasServiceTier: true,
-      hasAcceptEditsMode: false,
+      hasAcceptEditsMode: true,
+      structuredPermissionControl: 'uam',
+      terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
       showPlanActionButtons: true,
       autoLabel: 'Yolo',
-      acceptEditsLabel: undefined,
+      acceptEditsLabel: 'Accept Edits',
       defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
       memoryModelIds: CODEX_MEMORY_MODEL_IDS,
       memoryModelLabels: CODEX_MEMORY_MODEL_LABELS,
@@ -172,7 +179,9 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       hasReasoningEffort: false,
       hasServiceTier: false,
-      hasAcceptEditsMode: true,
+      hasAcceptEditsMode: false,
+      structuredPermissionControl: 'provider',
+      terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
       showPlanActionButtons: false,
       autoLabel: 'Auto',
@@ -196,11 +205,13 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       hasReasoningEffort: false,
       hasServiceTier: false,
-      hasAcceptEditsMode: false,
+      hasAcceptEditsMode: true,
+      structuredPermissionControl: 'uam',
+      terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
       showPlanActionButtons: false,
       autoLabel: 'Yolo',
-      acceptEditsLabel: undefined,
+      acceptEditsLabel: 'Accept Edits',
       defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
       memoryModelIds: [''],
       memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
@@ -220,11 +231,13 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       hasReasoningEffort: true,
       hasServiceTier: false,
-      hasAcceptEditsMode: false,
+      hasAcceptEditsMode: true,
+      structuredPermissionControl: 'uam',
+      terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
       showPlanActionButtons: false,
       autoLabel: 'Yolo',
-      acceptEditsLabel: undefined,
+      acceptEditsLabel: 'Accept Edits',
       defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
       memoryModelIds: [''],
       memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
@@ -271,7 +284,11 @@ export function providerMetadataForId(providerId: string): ProviderMetadata {
 
 export function providerCapabilities(providerId: string, provider?: Provider): ProviderCapabilities {
   const metadata = providerMetadataForId(providerId)
-  return metadata.capabilities
+  return provider ? {
+    ...metadata.capabilities,
+    structuredPermissionControl: provider.structuredPermissionControl ?? metadata.capabilities.structuredPermissionControl,
+    terminalPermissionControl: 'provider',
+  } : metadata.capabilities
 }
 
 export function capabilitiesWithDefaults(providerId: string, provider?: Provider, overrides?: Partial<ProviderCapabilities>): ProviderCapabilities {

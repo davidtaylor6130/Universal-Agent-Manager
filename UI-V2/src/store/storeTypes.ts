@@ -1,4 +1,4 @@
-import type { Session, Folder, WorkspaceFolderRecoveryPreview } from '../types/session'
+import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
@@ -18,19 +18,27 @@ import type {
   EditorFileAssociation,
   GitWorktreeResult,
   GitWorktreeStatus,
+  GitTurnCheckpointResult,
   MemoryActivity,
   MemoryWorkerBinding,
+  McpServerConfiguration,
   ProviderChatDefaults,
+  ProviderModelCatalog,
+  ProviderAgentImportPreview,
+  UamAgentCycleShortcut,
+  UamAgentSummary,
   ShellAction,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
-  VoiceInputCapabilities,
-  VoiceInputMode,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
+
+export type MutationResult = { ok: boolean; error?: string }
+export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
+export type GoalCreateResult = MutationResult & { goalId?: string }
 
 export interface AppState {
   // Data
@@ -49,6 +57,7 @@ export interface AppState {
   providers: Provider[]
   cliBindingBySessionId: Record<string, CliBinding>
   acpBindingBySessionId: Record<string, AcpBinding>
+  providerModelCatalogs: ProviderModelCatalog[]
   cliTranscriptBySessionId: Record<string, CliTranscript>
   cliDebugState: CppCliDebugState | null
   memoryEnabledDefault: boolean
@@ -56,7 +65,10 @@ export interface AppState {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  acpSetupInactivityTimeoutSeconds: number
+  acpTurnOutputLimitMiB: number
   appVersion: string
+  runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
   updateChecksEnabled: boolean
@@ -64,21 +76,23 @@ export interface AppState {
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+  permissionReviewerProviderId: string
+  permissionReviewerModelId: string
   memoryActivity: MemoryActivity
   cliVersionManager: CliVersionManager
   markdownStoreDirectory: string
-  voiceInputMode: VoiceInputMode
-  voiceInputServerBaseUrl: string
-  voiceInputServerEndpoint: string
-  voiceInputServerModel: string
-  voiceInputApiKeyEnv: string
-  voiceInputCapabilities: VoiceInputCapabilities
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
+  mcpServers: McpServerConfiguration[]
+  executionHosts: ExecutionHost[]
+  favoriteUamAgentIds: string[]
+  uamAgentCycleShortcut: UamAgentCycleShortcut
+  uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string
+  statusLine: string
   workspaceFolderRecoveryError: string
 
   // UI
@@ -112,28 +126,39 @@ export interface AppState {
   pushChannelError: string
   lastPushAtMs: number | null
   uiBuildId: string
+  repositoryReviewBySessionId: Record<string, VcsCommitStatus>
 
   // Session actions
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string) => Promise<boolean>
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
+  setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
-  setSessionAutoApproveCommands: (id: string, enabled: boolean) => Promise<boolean>
-  setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo') => Promise<boolean>
+  setSessionUamAgent: (id: string, agentId: string) => Promise<boolean>
+  setSessionUamControlEnabled: (id: string, enabled: boolean) => Promise<boolean>
+  refreshUamAgents: (id: string) => Promise<boolean>
+  browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
+  previewProviderAgentImport: (providerId: string, sourcePath: string) => Promise<ProviderAgentImportPreview | null>
+  importProviderAgent: (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => Promise<boolean>
+  setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => Promise<CommandSafetyTierResult>
+	setSessionComputerUseEnabled: (id: string, enabled: boolean) => Promise<ComputerUseActionResult>
+	setSessionComputerUseBackend: (id: string, backend: ComputerUseBackend) => Promise<ComputerUseActionResult>
+	setSessionComputerUseControl: (id: string, state: ComputerUseControlState) => Promise<ComputerUseActionResult>
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>) => Promise<boolean>
-  setVoiceInputSettings: (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>) => Promise<boolean>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
-  setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string }) => Promise<boolean>
+  setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
+  setMcpServers: (servers: McpServerConfiguration[]) => Promise<{ ok: boolean; error?: string }>
+  setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
@@ -163,32 +188,36 @@ export interface AppState {
   createChatWorktree: (id: string) => Promise<GitWorktreeResult>
   discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
   portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
-  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; requestId?: string }) => Promise<VcsCommitStatus | null>
-  getVcsFileDiff: (id: string, path: string, vcsType: VcsType) => Promise<string>
+  previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
+  rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
+  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
-  deleteSession: (id: string) => void
+  deleteSession: (id: string) => Promise<boolean>
   deleteSessions: (ids: string[]) => Promise<boolean>
 
   // Goal actions
-	setGoal: (chatId: string, objective: string, tokenBudget?: number, executionOwner?: 'uam' | 'provider') => Promise<string | null>
-  updateGoalStatus: (goalId: string, status: GoalStatus) => Promise<boolean>
-  removeGoal: (goalId: string) => Promise<boolean>
-  resumeGoal: (chatId: string, goalId: string) => Promise<boolean>
+	setGoal: (chatId: string, objective: string, tokenBudget?: number, executionOwner?: 'uam' | 'provider') => Promise<GoalCreateResult>
+  updateGoalStatus: (chatId: string, goalId: string, status: GoalStatus) => Promise<MutationResult>
+  updateGoalObjective: (chatId: string, goalId: string, objective: string) => Promise<MutationResult>
+  removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
+  resumeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
   setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
-  clearActiveGoal: (chatId: string) => Promise<boolean>
+  clearActiveGoal: (chatId: string) => Promise<MutationResult>
 
   // Folder actions
-  addFolder: (name: string, parentId: string | null, directory: string) => Promise<boolean>
+  addFolder: (name: string, parentId: string | null, directory: string, executionHostId?: string) => Promise<boolean>
   toggleFolder: (id: string) => void
   reorderFolders: (folderIds: string[]) => Promise<boolean>
   rescanFolderChats: (id: string) => Promise<boolean>
   previewUnsortedWorkspaceFolders: () => Promise<WorkspaceFolderRecoveryPreview | null>
   rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
-  renameFolder: (id: string, name: string, directory: string) => void
-  deleteFolder: (id: string) => void
+  renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
+  deleteFolder: (id: string) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
+  listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
   createResourceCollection: (name: string) => Promise<ResourceCollection | null>
   renameResourceCollection: (collectionId: string, name: string) => Promise<boolean>
   deleteResourceCollection: (collectionId: string) => Promise<boolean>
@@ -222,7 +251,8 @@ export interface AppState {
   sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
   removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
   steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
-  discoverProviderModels: (sessionId: string) => Promise<boolean>
+  discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
+  setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>

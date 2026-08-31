@@ -7,6 +7,7 @@ import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
 export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
 export type AcpLifecycleState =
@@ -40,6 +41,10 @@ export interface CppMessage {
   markdownStoreFiles?: string[]
   attachments?: Attachment[]
   processingTimeMs?: number
+	interrupted?: boolean
+	prioritySteer?: boolean
+  checkpointSha?: string
+  checkpointParentSha?: string
   createdAt: string
 }
 
@@ -55,6 +60,7 @@ export interface ChatAttachmentInput {
 
 export interface CppChat {
   id: string
+  executionHostId?: string
   title: string
   folderId: string
   pinned?: boolean
@@ -64,11 +70,23 @@ export interface CppChat {
   branchFromMessageIndex?: number
   branchMessageEdited?: boolean
   modelId?: string
+  reviewerModelId?: string
   reasoningEffort?: string
   serviceTier?: string
+  serviceTierExplicit?: boolean
   approvalMode?: string
-  autoApproveCommands?: boolean
-  commandSafetyTier?: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
+  uamAgentId?: string
+  uamControlEnabled?: boolean
+  commandSafetyTier?: 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
+  computerUseEnabled?: boolean
+  computerUseBackend?: ComputerUseBackend
+  computerUseEffectiveBackend?: ComputerUseEffectiveBackend
+  computerUseProviderAvailable?: boolean
+  computerUseTargetKind?: 'window' | 'screen'
+  computerUseTargetId?: string
+  computerUseTargetTitle?: string
+  computerUseTargetInputMode?: 'background' | 'foreground'
+  computerUse?: ComputerUseState
   memoryEnabled?: boolean
   memoryLevel?: MemoryLevel
   smallModelMode?: boolean
@@ -80,6 +98,7 @@ export interface CppChat {
   workspaceBaseRef?: string
   workspaceBranchName?: string
   workspaceWorktreeDirectory?: string
+  importedReadOnly?: boolean
   createdAt: string
   updatedAt: string
   lastOpenedAt?: string
@@ -113,6 +132,7 @@ export interface CppGoal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+	lastBlockerKind?: string
   lastDiagnostic?: string
   completedItems?: string[]
   remainingItems?: string[]
@@ -124,6 +144,8 @@ export interface CppGoal {
   createdAt: string
   updatedAt: string
 	executionOwner?: 'uam' | 'provider'
+	workerModelId?: string
+	reviewerModelId?: string
 	providerCommand?: string
 }
 
@@ -148,6 +170,13 @@ export interface GitWorktreeResult {
   status?: GitWorktreeStatus
   message: string
   patchPath: string
+}
+
+export interface GitTurnCheckpointResult {
+  message: string
+  diff: string
+  checkpointSha: string
+  parentSha: string
 }
 
 export interface AcpToolCall {
@@ -187,6 +216,21 @@ export interface AcpModel {
   defaultReasoningEffort?: string
   supportedReasoningEfforts?: string[]
   additionalSpeedTiers?: string[]
+}
+
+export interface AcpConfigOptionChoice {
+  value: string
+  name: string
+  description: string
+}
+
+export interface AcpConfigOption {
+  id: string
+  name: string
+  description: string
+  category: string
+  currentValue: string
+  options: AcpConfigOptionChoice[]
 }
 
 export type AcpTurnEvent =
@@ -248,10 +292,12 @@ export interface AcpAgentInfo {
 
 export interface AcpQueuedPrompt {
   text: string
+  uamAgentId: string
   markdownStoreFiles: string[]
   attachments: Attachment[]
   goalMode: boolean
   goalId: string
+  computerUseMode?: boolean
   prioritySteer?: boolean
 }
 
@@ -323,6 +369,8 @@ export interface AcpProviderUsage {
 export interface CppAcpSession {
   sessionId?: string
   providerId?: string
+	/** Exact UAM execution path: provider-native config/plugin or UAM prompt injection. */
+	uamAgentExecutionCapability?: string
   protocolKind?: string
   threadId?: string
   running?: boolean
@@ -342,6 +390,7 @@ export interface CppAcpSession {
   availableModes?: AcpMode[]
   currentModeId?: string
   availableModels?: AcpModel[]
+  configOptions?: AcpConfigOption[]
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId?: string
@@ -356,6 +405,17 @@ export interface CppAcpSession {
   pendingPermission?: AcpPendingPermission | null
   pendingUserInput?: AcpPendingUserInput | null
   providerUsage?: AcpProviderUsage | null
+}
+
+export interface ProviderModelCatalog {
+  providerId: string
+  workspaceDirectory: string
+	executionHostId: string
+  availableModels: AcpModel[]
+	configOptions?: AcpConfigOption[]
+  currentModelId: string
+  modelsLoading: boolean
+  modelRefreshError: string
 }
 
 export interface CppCliDebugTerminal {
@@ -391,6 +451,7 @@ export interface CppFolder {
   title: string
   directory: string
   collapsed: boolean
+  executionHostId: string
   missing?: boolean
 }
 
@@ -402,6 +463,8 @@ export interface CppProvider {
   supportsCli?: boolean
   supportsStructured?: boolean
   structuredProtocol?: string
+  structuredPermissionControl?: 'uam' | 'provider'
+  terminalPermissionControl?: 'provider'
   npmPackageName?: string
 	nativeGoalCommand?: string
 }
@@ -413,13 +476,15 @@ export interface MemoryWorkerBinding {
 
 export interface ProviderChatDefaults {
   modelId: string
+  reviewerModelId?: string
+  featurePreference?: 'uam' | 'provider'
   approvalMode: string
-  autoApproveCommands: boolean
+  commandSafetyTier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
   memoryEnabled: boolean
   memoryLevel?: MemoryLevel
   smallModelMode?: boolean
   reasoningEffort: string
-  serviceTier: string
+	serviceTier: string
 }
 
 export interface MemoryActivity {
@@ -451,7 +516,9 @@ export interface CliVersionProviderState {
   selectedVersion: string
   availableVersions: CliVersionOption[]
   preferredVersion: string
-  status: 'unknown' | 'checking' | 'installing' | 'supported' | 'unsupported'
+  verifiedVersion?: string
+  verifiedAt?: string
+  status: 'unknown' | 'checking' | 'installing' | 'verified' | 'untested' | 'untested-newer' | 'known-incompatible' | 'unavailable' | 'provider-managed'
   message: string
   running: boolean
   installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget'
@@ -487,30 +554,62 @@ export interface CppSettings {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  acpSetupInactivityTimeoutSeconds?: number
+  acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+  permissionReviewerProviderId?: string
+  permissionReviewerModelId?: string
   defaultNewChatProviderId?: string
   providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
-  voiceInputMode?: VoiceInputMode
-  voiceInputServerBaseUrl?: string
-  voiceInputServerEndpoint?: string
-  voiceInputServerModel?: string
-  voiceInputApiKeyEnv?: string
-  voiceInputCapabilities?: VoiceInputCapabilities
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
+  mcpServers?: McpServerConfiguration[]
+  executionHosts?: ExecutionHost[]
+  favoriteUamAgentIds?: string[]
+  uamAgentCycleShortcut?: UamAgentCycleShortcut
 }
 
-export type VoiceInputMode = 'system' | 'local' | 'server'
-export interface VoiceInputCapability { supported: boolean; reason: string }
-export interface VoiceInputCapabilities {
-  system: VoiceInputCapability
-  local: VoiceInputCapability
-  server: VoiceInputCapability
+export type UamAgentCycleShortcut = 'shift+tab' | 'control+shift+tab' | 'alt+shift+tab' | 'meta+shift+tab' | 'disabled'
+
+export interface UamAgentSummary {
+  id: string
+  description: string
+  builtIn: boolean
+}
+
+export interface ProviderAgentImportPreview {
+  providerId: string
+  sourcePath: string
+  suggestedId: string
+  description: string
+  mode: string
+  securityFields: string[]
+  ignoredFields: string[]
+  error: string
+  supported: boolean
+}
+
+export interface McpSecretReference {
+  name: string
+  environmentVariable: string
+}
+
+export interface McpServerConfiguration {
+  id: string
+  name: string
+  workspaceDirectory: string
+  transport: 'stdio' | 'http' | 'sse'
+  command: string
+  args: string[]
+  url: string
+  environment: McpSecretReference[]
+  headers: McpSecretReference[]
+  enabled: boolean
 }
 
 export interface EditorFileAssociation {
@@ -578,6 +677,7 @@ export interface VcsCommitMessageSuggestion {
 export interface CppAppState {
   stateRevision?: number
   appVersion?: string
+  runnerProtocolVersion?: number
   folders: CppFolder[]
   resourceCollections?: ResourceCollection[]
   chats: CppChat[]
@@ -585,11 +685,13 @@ export interface CppAppState {
   selectedChatId: string | null
   selectedChatIndex?: number
   providers: CppProvider[]
+  providerModelCatalogs?: ProviderModelCatalog[]
   settings: CppSettings
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   shellActionNotification?: string
+  statusLine?: string
 }
 
 export interface CppStatePatch {
@@ -602,11 +704,13 @@ export interface CppStatePatch {
   messagesByChatId?: Record<string, CppMessage[]>
   selectedChatId?: string | null
   providers?: CppProvider[]
+  providerModelCatalogs?: ProviderModelCatalog[]
   settings?: CppSettings
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   shellActionNotification?: string
+  statusLine?: string
 }
 
 export interface CliBinding {
@@ -644,6 +748,7 @@ export interface AcpBinding {
   availableModes: AcpMode[]
   currentModeId: string
   availableModels: AcpModel[]
+  configOptions?: AcpConfigOption[]
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId: string

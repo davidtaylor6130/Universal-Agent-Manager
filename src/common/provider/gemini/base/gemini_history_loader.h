@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <stop_token>
+#include <string>
 #include <vector>
 
 struct GeminiJsonHistoryStoreOptions
@@ -29,4 +30,4 @@ class GeminiJsonHistoryStore
 
 std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token = {});
 
-std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources();
+std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources(std::string* error_out = nullptr);

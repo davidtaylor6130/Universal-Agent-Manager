@@ -1,7 +1,11 @@
 #pragma once
 
 #include "app/chat_domain_service.h"
+#include "app/agent_definition_service.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/computer_use_service.h"
 #include "app/git_worktree_service.h"
 #include "app/goal_service.h"
 #include "app/markdown_store_service.h"
@@ -22,12 +26,12 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
 #include "common/config/editor_file_associations.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/settings_store.h"
-#include "common/config/voice_input_settings.h"
 #include "common/constants/app_constants.h"
 #include "common/memory/memory_categories.h"
 #include "common/paths/app_paths.h"
@@ -84,6 +88,9 @@
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
+#include "computer_use/computer_use_mcp_server.h"
+#include "computer_use/computer_use_platform.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
@@ -91,6 +98,11 @@
 #include "cef/state_serializer.h"
 #include "core/chat_import_utils.h"
 #include "core/gemini_cli_compat.h"
+#include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
+#include "remote/runner_client.h"
+#include "remote/runner_bootstrap.h"
+#include "remote/runner_state.h"
 
 #include <nlohmann/json.hpp>
 

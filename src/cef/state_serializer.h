@@ -26,6 +26,9 @@ class StateSerializer
 	/// Serialise a compact state summary for push fingerprinting.
 	static nlohmann::json SerializeFingerprint(const AppState& app);
 
+	/// Number of loaded chat transcripts deeply hashed by the last fingerprint pass.
+	static std::size_t LastFingerprintMessageDigestCountForTests();
+
 	/// Serialise a single chat session (messages included).
 	static nlohmann::json SerializeSession(const ChatSession& session);
 

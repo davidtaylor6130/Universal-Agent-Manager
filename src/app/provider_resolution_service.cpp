@@ -80,20 +80,24 @@ ProviderProfile* ProviderResolutionService::ActiveProvider(uam::AppState& app) c
 
 	if (found != nullptr)
 	{
-		app.settings.active_provider_id = active_provider_id;
 		return found;
 	}
 
 	// PR-7: profiles are build-defined and reset on startup (application.cpp), so this only
 	// matters as a safety net should `provider_profiles` ever be left empty.
 	ProviderProfileStore::EnsureDefaultProfile(app.provider_profiles);
-	app.settings.active_provider_id = provider_build_config::FirstEnabledProviderId();
-	return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
+	return app.provider_profiles.empty() ? nullptr : &app.provider_profiles.front();
 }
 
 const ProviderProfile* ProviderResolutionService::ActiveProvider(const uam::AppState& app) const
 {
-	return ProviderProfileStore::FindById(app.provider_profiles, app.settings.active_provider_id);
+	if (const ProviderProfile* found = ProviderProfileStore::FindById(
+	        app.provider_profiles, CanonicalProviderId(app.settings.active_provider_id));
+	    found != nullptr)
+	{
+		return found;
+	}
+	return app.provider_profiles.empty() ? nullptr : &app.provider_profiles.front();
 }
 
 const ProviderProfile& ProviderResolutionService::ActiveProviderOrDefault(const uam::AppState& app) const

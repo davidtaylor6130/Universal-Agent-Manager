@@ -22,6 +22,7 @@ import {
   ToolCallInlineRows,
   UserInputInlineCard,
 } from './ToolCallViews'
+import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
 export function attachmentLabel(attachment: Attachment) {
   const path = attachment.path?.trim()
@@ -33,41 +34,76 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const [error, setError] = useState('')
   const [selectedTool, setSelectedTool] = useState<AcpToolCall | null>(null)
   const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
+  const loadSessionMessages = useAppStore((state) => state.loadSessionMessages)
   const workingDisplayMode = useAppStore((state) => state.workingDisplayMode)
+  const sourceSession = useAppStore((state) => state.sessions.find((candidate) => candidate.id === sourceChatId))
+  const sourceAcp = useAppStore((state) => state.acpBindingBySessionId[sourceChatId])
+  const providers = useAppStore((state) => state.providers)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
   const messages = useAppStore((state) => state.messages[chatId] ?? [])
   const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const providerId = sourceSession?.providerId || sourceAcp?.providerId || DEFAULT_PROVIDER_ID
+  const providerName = providerShortName(
+    providers.find((candidate) => candidate.id === providerId) ?? fallbackProviderForId(providerId),
+    providerId
+  )
 
   useEffect(() => {
     if (!tool.subAgentId) {
-      setError('The provider did not expose a sub-agent session ID.')
+      setChatId('')
+      setError('')
       return
     }
-    const subAgentId = tool.subAgentId
+    setChatId('')
+    setError('')
     let mounted = true
-    const refresh = () => void openSubAgentSession(sourceChatId, subAgentId, tool.subAgentTitle, false).then((openedChatId) => {
-      if (!mounted) return
-      if (openedChatId) {
-        setChatId(openedChatId)
-        setError('')
+    void (async () => {
+      try {
+        const openedChatId = await openSubAgentSession(sourceChatId, tool.subAgentId!, tool.subAgentTitle, false)
+        if (!mounted) return
+        if (openedChatId) setChatId(openedChatId)
+        else setError('Sub-agent chat history is unavailable.')
+      } catch {
+        if (mounted) setError('Sub-agent chat history is unavailable.')
       }
-      else setError('Sub-agent chat history is unavailable.')
-    })
-    refresh()
-    const refreshTimer = isActive ? window.setInterval(refresh, 1000) : undefined
+    })()
     return () => {
       mounted = false
-      if (refreshTimer) window.clearInterval(refreshTimer)
     }
-  }, [isActive, openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
+  }, [openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
 
-  if (error) return <div className="text-xs" style={{ color: 'var(--error)' }}>{error}</div>
-  if (!chatId || !session) return <div className="text-xs" style={{ color: 'var(--text-3)' }}>Loading sub-agent chat…</div>
+  useEffect(() => {
+    if (!isActive || !chatId) return
+    let refreshing = false
+    const refreshTimer = window.setInterval(() => {
+      if (refreshing) return
+      refreshing = true
+      void Promise.resolve()
+        .then(() => loadSessionMessages(chatId))
+        .catch(() => {})
+        .finally(() => { refreshing = false })
+    }, 1000)
+    return () => window.clearInterval(refreshTimer)
+  }, [chatId, isActive, loadSessionMessages])
+
+  if (!tool.subAgentId) {
+    return (
+      <section aria-label="Provider sub-agent event" className="space-y-1 text-xs">
+        <div className="font-semibold" style={{ color: 'var(--text-2)' }}>No separate transcript</div>
+        <div style={{ color: 'var(--text-3)' }}>{providerName} did not expose a child session ID, so UAM cannot show an internal conversation for this event.</div>
+      </section>
+    )
+  }
+  if (error) return <div role="alert" className="text-xs" style={{ color: 'var(--error)' }}>Transcript unavailable: {error}</div>
+  if (!chatId || !session) return <div role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>Loading subtask transcript from {providerName}…</div>
 
   return (
-    <section className="space-y-3" aria-label={`Sub-agent chat: ${session.name}`}>
+    <section className="space-y-3" aria-label={`Subtask transcript: ${session.name}`}>
       {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} onClose={() => setSelectedTool(null)} />}
-      <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
+      <div>
+        <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
+        <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>{providerName} · Transcript available</div>
+      </div>
       {messages.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No messages recorded.</div>}
       {messages.map((message) => (
         <article key={message.id} className="space-y-2" style={{ borderLeft: '2px solid var(--border-bright)', paddingLeft: 10 }}>
@@ -148,10 +184,14 @@ function CompactWorkingSummary({
 }) {
   const [open, setOpen] = useState(active)
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
+  const lastToolEvent = events.slice().reverse().find((event) => event.type === 'tool_call')
+  const lastTool = lastToolEvent?.type === 'tool_call' ? toolById.get(lastToolEvent.toolCallId) : undefined
   const lastTextUpdate = events.slice().reverse().find(
     (event) => (event.type === 'thought' || event.type === 'assistant_text') && event.text.trim()
   )
-  const lastUpdate = lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
+  const lastUpdate = lastTool
+    ? `${lastTool.title || lastTool.id} · ${lastTool.status || 'pending'}`
+    : lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
     ? lastNonEmptyLine(lastTextUpdate.text) || 'Reasoning completed'
     : tools.length > 0
       ? `${active ? 'Using' : 'Used'} a tool`
@@ -739,8 +779,8 @@ export function TurnTimelineContent({
   waitStaleReason?: string
   waitSeconds?: number
   onSelectTool: (toolId: string) => void
-  onResolvePermission: (requestId: string, optionId: string) => void
-  onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => void
+  onResolvePermission: (requestId: string, optionId: string) => Promise<boolean>
+  onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   onCancelTurn: () => void
   onStopRuntime: () => void
   sourceChatId?: string

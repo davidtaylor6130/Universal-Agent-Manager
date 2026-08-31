@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace uam
@@ -146,6 +147,13 @@ class IProviderRuntime
 
 	/// <summary>Builds the argv that launches the provider's structured (ACP/app-server) process over stdio.</summary>
 	virtual std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const = 0;
+	/// <summary>Returns environment values applied only to the structured provider child.</summary>
+	virtual std::vector<std::pair<std::string, std::string>> BuildStructuredLaunchEnvironment(const ProviderProfile& profile, const ChatSession& chat) const
+	{
+		(void)profile;
+		(void)chat;
+		return {};
+	}
 
 	/// <summary>
 	/// Returns true when <paramref name="tool_name"/> is a tool this provider treats as a sub-agent

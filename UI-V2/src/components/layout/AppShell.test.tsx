@@ -3,12 +3,19 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 
+const { mainPanelRenderCount } = vi.hoisted(() => ({
+  mainPanelRenderCount: { value: 0 },
+}))
+
 vi.mock('./Sidebar', () => ({
   Sidebar: () => <div data-testid="sidebar">Sidebar</div>,
 }))
 
 vi.mock('./MainPanel', () => ({
-  MainPanel: () => <div data-testid="main-panel">Main panel</div>,
+  MainPanel: () => {
+    mainPanelRenderCount.value += 1
+    return <div data-testid="main-panel">Main panel</div>
+  },
 }))
 
 import { AppShell } from './AppShell'
@@ -29,6 +36,8 @@ Object.defineProperty(window, 'localStorage', {
 describe('AppShell', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    mainPanelRenderCount.value = 0
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1400 })
     window.localStorage.clear()
     useAppStore.setState({
       folders: [],
@@ -44,11 +53,15 @@ describe('AppShell', () => {
       sidebarWidthPx: 320,
       commitPanelWidthPx: 420,
       shellActionNotification: '',
+      statusLine: '',
       appVersion: 'V4.1.0',
       updateChecksEnabled: true,
       updateLastCheckedAt: new Date().toISOString(),
       dismissedUpdateVersions: {},
       cliVersionManager: { providers: [] },
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' }],
+      acpBindingBySessionId: {},
+      cliBindingBySessionId: {},
     })
   })
 
@@ -69,7 +82,7 @@ describe('AppShell', () => {
           selectedVersion: '0.124.0',
           availableVersions: [{ version: '0.124.0', preferred: true }],
           preferredVersion: '0.124.0',
-          status: 'supported',
+          status: 'verified',
           message: '',
           running: false,
           lastCommand: '',
@@ -152,8 +165,8 @@ describe('AppShell', () => {
 
   it('offers notification-specific actions for missing workspace folders', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/relinked project')
-    const renameFolder = vi.fn()
-    const deleteFolder = vi.fn()
+    const renameFolder = vi.fn(async () => true)
+    const deleteFolder = vi.fn(async () => true)
     useAppStore.setState({
       folders: [{
         id: 'missing',
@@ -194,9 +207,15 @@ describe('AppShell', () => {
     expect(browseFolderDirectory).toHaveBeenCalledWith('/tmp/deleted project')
     expect(renameFolder).toHaveBeenCalledWith('missing', 'Deleted project', '/tmp/relinked project')
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renameFolder.mockResolvedValueOnce(false)
+    await act(async () => relink?.click())
+    expect(panel?.textContent).toContain('workspace could not be relinked')
+
     await act(async () => remove?.click())
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('delete 2 chats'))
+    expect(panel?.textContent).toContain('delete 2 chats')
+    expect(deleteFolder).not.toHaveBeenCalled()
+    const confirmRemoval = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Confirm removal')
+    await act(async () => confirmRemoval?.click())
     expect(deleteFolder).toHaveBeenCalledWith('missing')
 
     act(() => root.unmount())
@@ -215,6 +234,118 @@ describe('AppShell', () => {
     const panel = host.querySelector('[aria-label="Notifications"]')
     expect(panel?.textContent).toContain('Started shell action: Review Selection')
     expect(panel?.querySelector('.uam-btn')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows backend failures in notifications', () => {
+    useAppStore.setState({ statusLine: 'Failed to persist settings.' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
+    const panel = host.querySelector('[aria-label="Notifications"]')
+    expect(panel?.textContent).toContain('Application status')
+    expect(panel?.textContent).toContain('Failed to persist settings.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('notifies when a remote chat disconnects and when it reconnects', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      sessions: [{ id: 'remote-chat', name: 'Containers', viewMode: 'chat', folderId: null, executionHostId: 'lab', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: {
+        'remote-chat': { lastError: 'Provider model unavailable.' } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
+      },
+      cliBindingBySessionId: {
+        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'error', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'Codex app-server process exited during an active turn.' },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell />))
+
+    expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
+    act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('Homelab connection issue')
+    expect(host.textContent).toContain('Codex app-server process exited during an active turn.')
+
+    await act(async () => useAppStore.setState((state) => ({
+      cliBindingBySessionId: {
+        ...state.cliBindingBySessionId,
+        'remote-chat': { ...state.cliBindingBySessionId['remote-chat'], running: true, lifecycleState: 'idle', lastError: '' },
+      },
+    })))
+    expect(host.textContent).toContain('Homelab reconnected')
+    expect(host.textContent).toContain('The remote connection is available again.')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not rerender the shell for unrelated background runtime updates', async () => {
+    useAppStore.setState({
+      sessions: [{ id: 'background', name: 'Background', viewMode: 'chat', folderId: null, executionHostId: 'local', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: {
+        background: {
+          sessionId: 'native-background',
+          providerId: 'codex-cli',
+          protocolKind: 'codex-acp',
+          threadId: '',
+          running: true,
+          lifecycleState: 'processing',
+          processing: true,
+          readySinceLastSelect: false,
+          processingStartedAtMs: Date.now(),
+          lastError: '',
+          recentStderr: '',
+          lastExitCode: null,
+          diagnostics: [],
+          toolCalls: [],
+          planEntries: [],
+          availableModes: [],
+          currentModeId: 'default',
+          availableModels: [],
+          currentModelId: '',
+          turnEvents: [],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 1,
+          pendingPermission: null,
+          pendingUserInput: null,
+          agentInfo: null,
+        },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<AppShell />)
+      await Promise.resolve()
+    })
+    const rendersBeforeRuntimeUpdate = mainPanelRenderCount.value
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        background: {
+          ...state.acpBindingBySessionId.background,
+          turnEvents: [{ type: 'assistant_text', text: 'Streaming in the background.' }],
+        },
+      },
+    })))
+
+    expect(mainPanelRenderCount.value).toBe(rendersBeforeRuntimeUpdate)
 
     act(() => root.unmount())
     host.remove()
@@ -312,6 +443,48 @@ describe('AppShell', () => {
 
     expect(useAppStore.getState().sidebarWidthPx).toBe(520)
     expect(useAppStore.getState().commitPanelWidthPx).toBe(320)
+  })
+
+  it('temporarily hides the chat selector when both side panels would starve the chat', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1001 })
+    useAppStore.setState({ sidebarCollapsed: false, sidebarWidthPx: 320, commitPanelOpen: true, commitPanelWidthPx: 420 })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    expect(host.querySelector('[data-testid="commit-panel"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="chat-selector-panel"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('resizes both outer panels from accessible keyboard separators', () => {
+    useAppStore.setState({ commitPanelOpen: true })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<AppShell />))
+
+    const sidebar = host.querySelector('[aria-label="Resize chat selector"]') as HTMLElement
+    const commit = host.querySelector('[aria-label="Resize Git/SVN commit panel"]') as HTMLElement
+    expect(sidebar.tabIndex).toBe(0)
+    expect(sidebar.getAttribute('aria-valuemin')).toBe('260')
+    expect(sidebar.getAttribute('aria-valuenow')).toBe('320')
+    act(() => sidebar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+    expect(useAppStore.getState().sidebarWidthPx).toBe(336)
+    act(() => sidebar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })))
+    expect(useAppStore.getState().sidebarWidthPx).toBe(260)
+
+    expect(commit.getAttribute('aria-valuemax')).toBe('680')
+    act(() => commit.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })))
+    expect(useAppStore.getState().commitPanelWidthPx).toBe(436)
+    act(() => commit.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+    expect(useAppStore.getState().commitPanelWidthPx).toBe(680)
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('collapses and expands the sidebar without changing the active chat', () => {
@@ -626,6 +799,56 @@ describe('AppShell', () => {
 
     expect(summary.value).toBe('Second chat draft')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not apply a completed commit to a different active chat', async () => {
+    let finishCommit: (value: { ok: boolean; message: string; error: string }) => void = () => {}
+    const commitVcsChanges = vi.fn(() => new Promise<{ ok: boolean; message: string; error: string }>((resolve) => {
+      finishCommit = resolve
+    }))
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', name: 'Chat 1', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/one', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'chat-2', name: 'Chat 2', viewMode: 'chat', folderId: 'folder', workspaceDirectory: '/tmp/two', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      activeSessionId: 'chat-1',
+      commitPanelOpen: true,
+      getVcsCommitStatus: vi.fn(async (chatId: string) => ({
+        available: true,
+        vcsTypes: ['git' as const],
+        activeVcsType: 'git' as const,
+        workspaceDirectory: chatId === 'chat-1' ? '/tmp/one' : '/tmp/two',
+        branchOrRevision: 'main',
+        changedFiles: [{ path: chatId === 'chat-1' ? 'one.ts' : 'two.ts', status: ' M', staged: false, additions: 1, deletions: 0, binary: false }],
+        lineStatsReady: true,
+        warning: '',
+        error: '',
+      })),
+      commitVcsChanges,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<AppShell />); await Promise.resolve() })
+
+    act(() => (host.querySelector('button[aria-label="Select one.ts"]') as HTMLButtonElement).click())
+    const summary = host.querySelector('input[placeholder="Summary"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(summary, 'Commit chat one')
+      summary.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Commit selected files') as HTMLButtonElement).click())
+    await act(async () => {
+      useAppStore.setState({ activeSessionId: 'chat-2' })
+      finishCommit({ ok: true, message: 'Git commit created.', error: '' })
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).toContain('/tmp/two')
+    expect(host.textContent).not.toContain('Git commit created.')
+    expect(host.textContent).not.toContain('Committing…')
     act(() => root.unmount())
     host.remove()
   })

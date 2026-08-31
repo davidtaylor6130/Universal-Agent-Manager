@@ -1,21 +1,28 @@
 #include "application.h"
 
+#include "agent_run_ledger.h"
+#include "agent_run_scheduler.h"
 #include "chat_domain_service.h"
+#include "chat_lifecycle_service.h"
+#include "computer_use_service.h"
 #include "goal_service.h"
 #include "markdown_store_service.h"
 #include "persistence_coordinator.h"
 #include "provider_model_catalog_service.h"
 #include "provider_resolution_service.h"
 #include "resource_collection_service.h"
+#include "runtime_activity.h"
 #include "runtime_orchestration_services.h"
 #include "shell_action_service.h"
 #include "theme_service.h"
+#include "uam_control_service.h"
 #include "memory_service.h"
 
 #include "common/constants/app_constants.h"
 #include "common/models/app_models.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -23,7 +30,6 @@
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
-#include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
@@ -51,12 +57,13 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <iostream>
 #include <optional>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -88,37 +95,16 @@ namespace
 		{
 			result += folder.id;
 			result.push_back('\0');
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				result.push_back('1');
+				continue;
+			}
 			const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 			const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
 			result.push_back(folder.directory.empty() || !can_probe || uam::paths::IsDirectoryNoThrow(directory) ? '1' : '0');
 		}
 		return result;
-	}
-
-	bool IsMacAppBundleExecutable(const fs::path& exe_path)
-	{
-#if defined(__APPLE__)
-		const fs::path normalized = uam::paths::LexicallyNormalPath(exe_path);
-		const fs::path macos_dir = normalized.parent_path();
-		const fs::path contents_dir = macos_dir.parent_path();
-		const fs::path app_dir = contents_dir.parent_path();
-		if (app_dir.empty())
-		{
-			return false;
-		}
-		if (macos_dir.filename() != "MacOS")
-		{
-			return false;
-		}
-		if (contents_dir.filename() != "Contents")
-		{
-			return false;
-		}
-		return app_dir.extension() == ".app";
-#else
-		(void)exe_path;
-		return false;
-#endif
 	}
 
 	void ResetRuntimeCliVersionState(uam::AppState& app)
@@ -242,27 +228,6 @@ namespace
 		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
 	}
 
-	bool ShouldKeepSystemAwake(const uam::AppState& app)
-	{
-		for (const auto& session : app.acp_sessions)
-		{
-			if (session != nullptr && session->running && (session->processing || session->waiting_for_permission || session->waiting_for_user_input || !session->queued_prompt.empty()))
-			{
-				return true;
-			}
-		}
-
-		for (const ChatSession& chat : app.chats)
-		{
-			if (!chat.active_goal_id.empty() && uam::GoalService::FindActiveGoal(app, chat.id) != nullptr)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running)
 	{
 		if (dictation_running)
@@ -351,6 +316,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 void Application::PollTick()
 {
 	CEF_REQUIRE_UI_THREAD();
+	const auto poll_started = std::chrono::steady_clock::now();
 
 	if (m_done)
 	{
@@ -360,9 +326,12 @@ void Application::PollTick()
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
+	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	uam::FlushPendingChatSaves(m_app);
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
+	const bool computer_use_changed = uam::ComputerUseService::Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const std::string folder_availability = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	const bool folder_availability_changed = folder_availability != m_workspaceFolderAvailabilityFingerprint;
@@ -380,6 +349,7 @@ void Application::PollTick()
 #endif
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
+	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
 
 	// Poll the provider model catalog service for async model refresh completion.
 	if (m_app.provider_model_catalog != nullptr)
@@ -388,7 +358,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || cli_terminals_changed || memory_changed || shell_actions_changed || folder_availability_changed;
+	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -403,7 +373,17 @@ void Application::PollTick()
 
 	// Keep the machine awake while an agent turn or goal loop is active so
 	// display sleep / App Nap cannot pause this polling loop mid-goal.
-	m_platformServices->process_service.SetKeepSystemAwake(ShouldKeepSystemAwake(m_app));
+	m_platformServices->process_service.SetKeepSystemAwake(uam::RuntimeShouldKeepSystemAwake(m_app));
+
+	const auto poll_finished = std::chrono::steady_clock::now();
+	const auto poll_duration = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished - poll_started);
+	static auto last_slow_poll_report = std::chrono::steady_clock::time_point::min(); // ponytail: UI-thread rate limit; move to metrics state if telemetry needs aggregation.
+	if (poll_duration >= std::chrono::milliseconds(50) &&
+	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
+	{
+		std::cerr << "[performance] PollTick took " << poll_duration.count() << " ms.\n";
+		last_slow_poll_report = poll_finished;
+	}
 
 	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning()));
 }
@@ -423,89 +403,27 @@ void Application::ScheduleNextUpdate(int delay_ms)
 void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 {
 	m_browser = browser;
-	if (m_app.provider_model_catalog != nullptr)
-	{
-		std::unordered_set<std::string> providers_started;
-		for (const ChatSession& chat : m_app.chats)
-		{
-			if (std::string(ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpProtocolKind()) == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson) continue;
-			if (!providers_started.insert(chat.provider_id).second || !m_app.provider_model_catalog->BeginDiscoveryIfStale(chat.provider_id)) continue;
-			std::string discovery_error;
-			if (!uam::StartAcpModelDiscovery(m_app, chat.id, &discovery_error, true))
-			{
-				m_app.provider_model_catalog->RememberRefreshFailure(chat.provider_id, std::move(discovery_error));
-			}
-		}
-	}
 	// Start the polling loop as soon as the browser window exists.
 	ScheduleNextUpdate(50);
 }
 
 bool Application::InitializeState()
 {
-	std::vector<fs::path> data_root_candidates;
 	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
-	const bool running_from_mac_app_bundle = !executable_path.empty() && IsMacAppBundleExecutable(executable_path);
-
 	const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR");
-	if (data_root_env)
+	m_app.data_root = data_root_env.value_or(m_platformServices->path_service.DefaultDataRootPath());
+	std::string data_root_error;
+	if (m_app.data_root.empty() || !PersistenceCoordinator().EnsureDataRootLayout(m_app.data_root, &data_root_error))
 	{
-		data_root_candidates.push_back(*data_root_env);
-	}
-
-	data_root_candidates.push_back(m_platformServices->path_service.DefaultDataRootPath());
-
-	if (!executable_path.empty() && !running_from_mac_app_bundle)
-	{
-		data_root_candidates.push_back(executable_path.parent_path() / "data");
-	}
-
-	if (!running_from_mac_app_bundle)
-	{
-		if (const std::optional<fs::path> cwd = uam::paths::CurrentPathNoThrow())
-		{
-			data_root_candidates.push_back(*cwd / "data");
-		}
-	}
-
-	data_root_candidates.push_back(PersistenceCoordinator().TempFallbackDataRootPath());
-
-	std::unordered_set<std::string> tried_roots;
-	std::string last_data_root_error = "Unknown data directory initialization failure.";
-	bool initialized_data_root = false;
-
-	for (const fs::path& candidate_root : data_root_candidates)
-	{
-		if (candidate_root.empty())
-		{
-			continue;
-		}
-
-		const std::string key = uam::paths::NormalizedNativePathString(candidate_root);
-		if (tried_roots.contains(key))
-		{
-			continue;
-		}
-
-		tried_roots.insert(key);
-		std::string error;
-
-		if (PersistenceCoordinator().EnsureDataRootLayout(candidate_root, &error))
-		{
-			m_app.data_root = candidate_root;
-			initialized_data_root = true;
-			break;
-		}
-
-		last_data_root_error = std::move(error);
-	}
-
-	if (!initialized_data_root)
-	{
-		std::fprintf(stderr, "Failed to initialize application data directories: %s\n", last_data_root_error.c_str());
+		std::fprintf(stderr,
+		             "Failed to initialize the requested application data root '%s'. UAM will not open a fallback database: %s\n",
+		             uam::paths::Utf8PathString(m_app.data_root).c_str(),
+		             data_root_error.empty() ? "invalid or empty path" : data_root_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
+	std::fprintf(stderr, "[storage] data_root=%s\n", uam::paths::Utf8PathString(m_app.data_root).c_str());
+	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 
 	std::string shell_action_error;
 	if (!ShellActionService::QueueLaunchRequest(m_app.data_root, m_launchArguments, &m_shellActionInvocation, &shell_action_error))
@@ -532,8 +450,29 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	std::string uam_control_error;
+	if (!uam::UamControlService::Initialize(m_app, &uam_control_error))
+	{
+		std::fprintf(stderr, "%s\n", uam_control_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
+	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
+	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
+	m_app.agent_runs = std::move(agent_runs.runs);
+	for (const std::string& error : agent_runs.errors)
+	{
+		std::fprintf(stderr, "[agent-runs] %s\n", error.c_str());
+	}
 
-	PersistenceCoordinator().LoadSettings(m_app);
+	if (!PersistenceCoordinator().LoadSettings(m_app))
+	{
+		std::fprintf(stderr, "%s\n", m_app.status_line.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	m_settingsLoaded = true;
 	bool settings_dirty = false;
 	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
 	if (m_app.settings.markdown_store_directory.empty())
@@ -559,10 +498,13 @@ bool Application::InitializeState()
 	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
 	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	if (ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kCopilotCli) != nullptr)
+	if (!uam::RecoverPendingDeletionTransaction(m_app))
 	{
-		ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, uam::provider_ids::kCopilotCli, false);
+		std::fprintf(stderr, "%s\n", m_app.status_line.c_str());
+		m_exitCode = 1;
+		return false;
 	}
+	ProviderCliCompatibilityService().StartVersionCheck(m_app, false);
 	if (ProviderResolutionService().ActiveProvider(m_app) == nullptr && !m_app.provider_profiles.empty())
 	{
 		m_app.settings.active_provider_id = m_app.provider_profiles.front().id;
@@ -571,7 +513,6 @@ bool Application::InitializeState()
 
 	if (ProviderProfile* active_profile = ProviderResolutionService().ActiveProvider(m_app); active_profile != nullptr)
 	{
-		m_app.settings.runtime_backend = "provider-cli";
 
 		if (!ProviderRuntime::IsRuntimeEnabled(*active_profile))
 		{
@@ -581,14 +522,28 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, bundled_skills_ready ? configured_skills_root : fs::path{});
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 
-	ChatHistorySyncService().LoadSidebarChatsByDiscovery(m_app);
+	ChatHistorySyncService().LoadSidebarChats(m_app);
+	uam::MigrateWorkspaceFolderOwnership(m_app);
+	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
+	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
+	    reconnecting > 0)
+	{
+		m_app.status_line = "Reconnecting " + std::to_string(reconnecting) +
+		                    " remote turn" + (reconnecting == 1 ? "" : "s") + ".";
+	}
+	if (const std::size_t paused_goals = uam::GoalService::PauseActiveGoalsAfterRestart(m_app);
+	    paused_goals > 0)
+	{
+		m_app.status_line = "Paused " + std::to_string(paused_goals) +
+		                    " active goal" + (paused_goals == 1 ? "" : "s") +
+		                    " after the manager restarted.";
+	}
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
 	MemoryService::RefreshMemoryActivity(m_app);
 
@@ -604,6 +559,11 @@ bool Application::InitializeState()
 		}
 		if (!hydrate_warning.empty())
 			m_app.status_line = hydrate_warning;
+	}
+	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
+	{
+		m_app.status_line =
+		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
 
 	if (settings_dirty)
@@ -649,7 +609,12 @@ bool Application::InitializeCef(CefMainArgs main_args)
 #endif
 	}
 
-	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
+	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp([this](const std::string& error)
+	{
+		std::fprintf(stderr, "[CEF] %s\n", error.c_str());
+		m_exitCode = 1;
+		CefQuitMessageLoop();
+	}));
 
 	// OnBrowserReady is called from UamCefClient::OnAfterCreated() via the
 	// callback we pass here, giving us the browser reference for PushCliOutput etc.
@@ -673,6 +638,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		m_exitCode = 1;
 		return false;
 	}
+	m_cefInitialized = true;
 
 	return true;
 }
@@ -683,12 +649,20 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	if (m_shutdownComplete)
+	{
+		return;
+	}
+	m_shutdownComplete = true;
 	m_done = true;
 	if (m_platformServices != nullptr)
 	{
 		m_platformServices->dictation_service.Stop();
 	}
-	PersistenceCoordinator().SaveSettings(m_app);
+	if (m_settingsLoaded && m_dataRootLock != nullptr)
+	{
+		PersistenceCoordinator().SaveSettings(m_app);
+	}
 
 	for (PendingRuntimeCall& call : m_app.pending_calls)
 	{
@@ -699,15 +673,26 @@ void Application::Shutdown()
 	m_app.resolved_native_sessions_by_chat_id.clear();
 	ResetRuntimeCliVersionState(m_app);
 	MemoryService::StopMemoryTasks(m_app);
+	for (uam::AsyncPermissionReviewTask& task : m_app.permission_review_tasks)
+	{
+		uam::StopAsyncPermissionReviewTask(task);
+	}
+	m_app.permission_review_tasks.clear();
 	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
+	(void)uam::AgentRunScheduler::InterruptForShutdown(m_app);
 	uam::FastStopAcpSessionsForExit(m_app);
+	uam::UamControlService::Shutdown(m_app);
 	uam::FastStopCliTerminalsForExit(m_app);
 
 	m_browser = nullptr;
 	uam_cef_globals::g_client = nullptr;
 	uam_cef_globals::g_app_state = nullptr;
 
-	CefShutdown();
+	if (m_cefInitialized)
+	{
+		CefShutdown();
+		m_cefInitialized = false;
+	}
 	m_dataRootLock.reset();
 }

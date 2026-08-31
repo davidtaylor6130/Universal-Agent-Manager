@@ -31,7 +31,8 @@ namespace uam
 	bool LocalHistoryChatMatchesTerminalProvider(const ChatSession& chat, const ProviderProfile& terminal_provider);
 	bool TryAttachLocalHistorySessionFromChats(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, const std::vector<ChatSession>& local_chats);
 	bool UpdateNativeHistorySnapshotDigestIfChanged(uam::CliTerminalState& terminal, std::string_view native_snapshot_digest);
-	void StopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTerminalState& terminal, bool was_shutting_down);
+void StopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTerminalState& terminal, bool was_shutting_down);
+bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalState& terminal, double now_seconds);
 	bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::CliTerminalState& terminal, bool preserve_selection);
 	bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app);
 

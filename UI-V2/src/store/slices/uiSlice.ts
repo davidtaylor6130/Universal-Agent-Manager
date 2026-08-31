@@ -141,6 +141,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     pushChannelError: '',
     lastPushAtMs: null as number | null,
     uiBuildId: UI_RUNTIME_BUILD_MARKER,
+    repositoryReviewBySessionId: {} as AppState['repositoryReviewBySessionId'],
 
     setTheme: (theme: StoredTheme) => {
       const previousTheme = get().theme

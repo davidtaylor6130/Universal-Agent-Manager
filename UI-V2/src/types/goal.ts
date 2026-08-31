@@ -9,6 +9,7 @@ export interface Goal {
   tokensUsed?: number
   blockedTurnCount?: number
   lastBlocker?: string
+	lastBlockerKind?: string
   lastDiagnostic?: string
   completedItems?: string[]
   remainingItems?: string[]
@@ -21,4 +22,6 @@ export interface Goal {
   updatedAt: Date
 	executionOwner?: 'uam' | 'provider'
 	providerCommand?: string
+	workerModelId?: string
+	reviewerModelId?: string
 }

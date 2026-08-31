@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, TriangleAlert, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -35,16 +35,102 @@ import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, StatusDot } from '../ui'
+import { Button, IconButton, Notice, StatusDot } from '../ui'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
+
+const SIDEBAR_WIDTH_MIN = 260
+const SIDEBAR_WIDTH_MAX = 520
+const COMMIT_PANEL_WIDTH_MIN = 320
+const COMMIT_PANEL_WIDTH_MAX = 680
+const KEYBOARD_RESIZE_STEP = 16
+const MIN_CHAT_WIDTH = 360
+const ACTIVITY_RAILS_WIDTH = 88
+const RESIZE_HANDLE_WIDTH = 5
+const FIXED_RIGHT_PANEL_WIDTH = 360
 
 function shellActionNotificationId(detail: string): string {
   return `shell-action-${detail}`
 }
 
+function statusLineNotificationId(detail: string): string {
+  return `status-line-${detail}`
+}
+
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
   return `missing-folder-${folder.id}-${folder.name}-${folder.directory}`
+}
+
+type RemoteConnectionNotification = {
+  id: string
+  connectionKey: string
+  hostLabel: string
+  title: string
+  detail: string
+  warning?: boolean
+}
+
+const REMOTE_CONNECTION_ERROR = /remote|runner|ssh|bridge|disconnect|reconnect|transport|helper|app-server|process exited during an active turn|timed out/i
+
+function matchingRemoteConnectionError(...errors: Array<string | undefined>): string {
+  return errors.find((error) => error && REMOTE_CONNECTION_ERROR.test(error)) ?? ''
+}
+
+function remoteConnectionIssueSignature(state: ReturnType<typeof useAppStore.getState>): string {
+  const hosts = new Map(state.executionHosts.map((host) => [host.id, host]))
+  const signature: string[] = []
+  for (const host of state.executionHosts) {
+    if (host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
+      signature.push(['host', host.id, host.label, host.runnerStatus].join('\0'))
+    }
+  }
+  for (const session of state.sessions) {
+    const hostId = session.executionHostId ?? 'local'
+    if (hostId === 'local') continue
+    const error = matchingRemoteConnectionError(
+      state.acpBindingBySessionId[session.id]?.lastError,
+      state.cliBindingBySessionId[session.id]?.lastError,
+    )
+    if (!error) continue
+    signature.push(['session', session.id, session.name, hostId, hosts.get(hostId)?.label || hostId, error].join('\0'))
+  }
+  return signature.join('\n')
+}
+
+function remoteConnectionIssues(
+  executionHosts: ReturnType<typeof useAppStore.getState>['executionHosts'],
+  sessions: ReturnType<typeof useAppStore.getState>['sessions'],
+  acpBindings: ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'],
+  cliBindings: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'],
+): RemoteConnectionNotification[] {
+  const hosts = new Map(executionHosts.map((host) => [host.id, host]))
+  const issues = executionHosts.flatMap((host) => host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
+    id: `remote-host-${host.id}-${host.runnerStatus}`,
+    connectionKey: `host-${host.id}`,
+    hostLabel: host.label,
+    title: `${host.label} connection ${host.runnerStatus}`,
+    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH helper.' : 'The SSH helper needs attention in Remote Hosts.',
+    warning: true,
+  }] : [])
+  for (const session of sessions) {
+    const hostId = session.executionHostId ?? 'local'
+    if (hostId === 'local') continue
+    const error = matchingRemoteConnectionError(
+      acpBindings[session.id]?.lastError,
+      cliBindings[session.id]?.lastError,
+    )
+    if (!error) continue
+    const hostLabel = hosts.get(hostId)?.label || hostId
+    issues.push({
+      id: `remote-session-${session.id}-${error}`,
+      connectionKey: `session-${session.id}`,
+      hostLabel,
+      title: `${hostLabel} connection issue`,
+      detail: `${session.name}: ${error}`,
+      warning: true,
+    })
+  }
+  return issues
 }
 
 function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
@@ -115,31 +201,43 @@ function LeftActivityRail() {
 
 function NotificationsPanel({
   dismissedNotificationIds,
+  remoteNotifications,
   onClose,
   onDismiss,
 }: {
   dismissedNotificationIds: ReadonlySet<string>
+  remoteNotifications: RemoteConnectionNotification[]
   onClose: () => void
   onDismiss: (id: string) => void
 }) {
   const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+  const statusLine = useAppStore((s) => s.statusLine)
   const sessions = useAppStore((s) => s.sessions)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const renameFolder = useAppStore((s) => s.renameFolder)
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const [busyAction, setBusyAction] = useState('')
+  const [confirmingFolderId, setConfirmingFolderId] = useState('')
+  const [folderActionError, setFolderActionError] = useState('')
   const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
   type Notification = { id: string; title: string; detail: string; warning?: boolean; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
+    ...(statusLine ? [{
+      id: statusLineNotificationId(statusLine),
+      title: 'Application status',
+      detail: statusLine,
+      warning: /failed|could not|cannot|error|warning|corrupt|missing|unavailable|timed out|rejected/i.test(statusLine),
+    }] : []),
     ...(shellActionNotification ? [{
       id: shellActionNotificationId(shellActionNotification),
       title: 'Finder / Explorer action',
       detail: shellActionNotification,
     }] : []),
+    ...remoteNotifications,
     ...missingFolders.map((folder): Notification => ({
       id: missingFolderNotificationId(folder),
       title: `Workspace folder missing: ${folder.name}`,
@@ -151,21 +249,24 @@ function NotificationsPanel({
           variant: 'primary',
           run: async () => {
             const directory = await browseFolderDirectory(folder.directory)
-            if (directory) renameFolder(folder.id, folder.name, directory)
+            if (!directory) return
+            setFolderActionError('')
+            if (!await renameFolder(folder.id, folder.name, directory)) {
+              setFolderActionError('The workspace could not be relinked. Finish active work and try again.')
+            }
           },
         },
         {
           label: 'Remove',
           variant: 'danger',
-          run: () => {
-            const chatCount = sessions.filter((session) => session.folderId === folder.id).length
-            const chats = chatCount === 1 ? '1 chat' : `${chatCount} chats`
-            if (window.confirm(`Remove “${folder.name}” from Universal Agent Manager and delete ${chats}? The directory on disk will not be deleted.`)) deleteFolder(folder.id)
-          },
+          run: () => setConfirmingFolderId(folder.id),
         },
       ],
     })),
   ].filter((notification) => !dismissedNotificationIds.has(notification.id))
+  const confirmingFolder = missingFolders.find((folder) => folder.id === confirmingFolderId)
+  const confirmingChatCount = confirmingFolder ? sessions.filter((session) => session.folderId === confirmingFolder.id).length : 0
+  const confirmingChats = confirmingChatCount === 1 ? '1 chat' : `${confirmingChatCount} chats`
 
   const runAction = async (notificationId: string, action: NotificationAction) => {
     const actionId = `${notificationId}-${action.label}`
@@ -201,27 +302,53 @@ function NotificationsPanel({
           </div>
         ) : (
           <div className="grid gap-3">
+            {folderActionError && (
+              <Notice
+                tone="warning"
+                title="Workspace action failed"
+                dismissLabel="Dismiss workspace action error"
+                onDismiss={() => setFolderActionError('')}
+              >
+                {folderActionError}
+              </Notice>
+            )}
+            {confirmingFolder && (
+              <Notice
+                tone="warning"
+                title="Remove workspace folder?"
+                dismissLabel="Dismiss workspace removal warning"
+                onDismiss={() => setConfirmingFolderId('')}
+                actions={(
+                  <>
+                    <Button size="sm" onClick={() => setConfirmingFolderId('')}>Cancel</Button>
+                    <Button size="sm" variant="danger" loading={busyAction === 'remove-folder'} onClick={() => {
+                      setBusyAction('remove-folder')
+                      setFolderActionError('')
+                      void deleteFolder(confirmingFolder.id).then((deleted) => {
+                        if (deleted) setConfirmingFolderId('')
+                        else setFolderActionError('The workspace could not be removed. Finish active work and try again.')
+                      }).catch(() => {
+                        setFolderActionError('The workspace could not be removed. Finish active work and try again.')
+                      }).finally(() => setBusyAction(''))
+                    }}>Confirm removal</Button>
+                  </>
+                )}
+              >
+                Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
+              </Notice>
+            )}
             {notifications.map((notification) => (
-              <div key={notification.id} className="grid gap-2 rounded-xl p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <div className="flex items-start justify-between gap-2">
-                  <strong className="flex items-start gap-2" style={{ color: notification.warning ? 'var(--yellow)' : 'var(--text)' }}>
-                    {notification.warning && <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />}
-                    <span>{notification.title}</span>
-                  </strong>
-                  <IconButton
-                    icon={<X size={14} />}
-                    label={`Dismiss ${notification.title}`}
-                    size="sm"
-                    tooltipSide="left"
-                    onClick={() => {
-                      onDismiss(notification.id)
-                      headingRef.current?.focus()
-                    }}
-                  />
-                </div>
-                <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
-                {notification.actions && (
-                  <div className="flex gap-2 pt-1">
+              <Notice
+                key={notification.id}
+                tone={notification.warning ? 'warning' : 'info'}
+                title={notification.title}
+                dismissLabel={`Dismiss ${notification.title}`}
+                onDismiss={() => {
+                  onDismiss(notification.id)
+                  headingRef.current?.focus()
+                }}
+                actions={notification.actions && (
+                  <>
                     {notification.actions.map((action) => {
                       const actionId = `${notification.id}-${action.label}`
                       return (
@@ -237,9 +364,11 @@ function NotificationsPanel({
                         </Button>
                       )
                     })}
-                  </div>
+                  </>
                 )}
-              </div>
+              >
+                <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
+              </Notice>
             ))}
           </div>
         )}
@@ -269,7 +398,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
   const updateCount = monitor.updates.length
-  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId).length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || update.remoteHostId).length
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -327,15 +456,32 @@ export function AppShell() {
   const setSidebarWidthPx = useAppStore((s) => s.setSidebarWidthPx)
   const setCommitPanelWidthPx = useAppStore((s) => s.setCommitPanelWidthPx)
   const folders = useAppStore((s) => s.folders)
+  const connectionIssueSignature = useAppStore(remoteConnectionIssueSignature)
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
+  const statusLine = useAppStore((s) => s.statusLine)
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
+  const connectionIssues = useMemo(() => {
+    const state = useAppStore.getState()
+    return remoteConnectionIssues(
+      state.executionHosts,
+      state.sessions,
+      state.acpBindingBySessionId,
+      state.cliBindingBySessionId,
+    )
+  }, [connectionIssueSignature])
+  const previousConnectionIssues = useRef(connectionIssues)
+  const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
+    ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+    ...connectionIssues.map((notification) => notification.id),
+    ...connectionRecoveries.map((notification) => notification.id),
   ]
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
@@ -344,16 +490,44 @@ export function AppShell() {
   }, [refreshCustomThemes])
 
   useEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', updateViewportWidth)
+    return () => window.removeEventListener('resize', updateViewportWidth)
+  }, [])
+
+  useEffect(() => {
+    const currentKeys = new Set(connectionIssues.map((issue) => issue.connectionKey))
+    const recovered = previousConnectionIssues.current.filter((issue) => !currentKeys.has(issue.connectionKey))
+    if (recovered.length > 0) {
+      const now = Date.now()
+      setConnectionRecoveries((current) => [
+        ...current.filter((notification) => !recovered.some((issue) => issue.connectionKey === notification.connectionKey)),
+        ...recovered.map((issue, index) => ({
+          id: `remote-reconnected-${issue.connectionKey}-${now + index}`,
+          connectionKey: issue.connectionKey,
+          hostLabel: issue.hostLabel,
+          title: `${issue.hostLabel} reconnected`,
+          detail: 'The remote connection is available again.',
+        })),
+      ])
+    }
+    previousConnectionIssues.current = connectionIssues
+  }, [connectionIssues])
+
+  useEffect(() => {
     const activeIds = new Set([
+      ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
+      ...connectionIssues.map((notification) => notification.id),
+      ...connectionRecoveries.map((notification) => notification.id),
     ])
     setDismissedNotificationIds((dismissed) => {
       const currentIds = [...dismissed]
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [folders, shellActionNotification])
+  }, [connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -400,6 +574,29 @@ export function AppShell() {
     document.addEventListener('mouseup', onMouseUp)
   }, [commitPanelWidthPx, setCommitPanelWidthPx, setSidebarWidthPx, sidebarWidthPx])
 
+  const resizeFromKeyboard = useCallback((side: 'sidebar' | 'commit', event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const minimum = side === 'sidebar' ? SIDEBAR_WIDTH_MIN : COMMIT_PANEL_WIDTH_MIN
+    const maximum = side === 'sidebar' ? SIDEBAR_WIDTH_MAX : COMMIT_PANEL_WIDTH_MAX
+    const current = side === 'sidebar' ? sidebarWidthPx : commitPanelWidthPx
+    const direction = side === 'sidebar' ? 1 : -1
+    const next = event.key === 'Home' ? minimum
+      : event.key === 'End' ? maximum
+        : current + (event.key === 'ArrowRight' ? direction : -direction) * KEYBOARD_RESIZE_STEP
+    if (side === 'sidebar') setSidebarWidthPx(next)
+    else setCommitPanelWidthPx(next)
+  }, [commitPanelWidthPx, setCommitPanelWidthPx, setSidebarWidthPx, sidebarWidthPx])
+
+  const rightPanelWidth = commitPanelOpen
+    ? commitPanelWidthPx
+    : alertsOpen || updatesOpen
+      ? FIXED_RIGHT_PANEL_WIDTH
+      : 0
+  const resizeHandlesWidth = (sidebarCollapsed ? 0 : RESIZE_HANDLE_WIDTH) + (commitPanelOpen ? RESIZE_HANDLE_WIDTH : 0)
+  const sidebarWouldStarveChat = !sidebarCollapsed && rightPanelWidth > 0 &&
+    viewportWidth - ACTIVITY_RAILS_WIDTH - resizeHandlesWidth - sidebarWidthPx - rightPanelWidth < MIN_CHAT_WIDTH
+
   return (
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
@@ -408,7 +605,7 @@ export function AppShell() {
     >
       <LeftActivityRail />
 
-      {!sidebarCollapsed && (
+      {!sidebarCollapsed && !sidebarWouldStarveChat && (
         <>
           <aside
             className="uam-side-panel-in uam-shell-panel uam-shell-panel--left flex h-full flex-col overflow-hidden"
@@ -421,8 +618,13 @@ export function AppShell() {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize chat selector"
+            aria-valuemin={SIDEBAR_WIDTH_MIN}
+            aria-valuemax={SIDEBAR_WIDTH_MAX}
+            aria-valuenow={sidebarWidthPx}
+            tabIndex={0}
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('sidebar', event)}
+            onKeyDown={(event) => resizeFromKeyboard('sidebar', event)}
           />
         </>
       )}
@@ -437,8 +639,13 @@ export function AppShell() {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize Git/SVN commit panel"
+            aria-valuemin={COMMIT_PANEL_WIDTH_MIN}
+            aria-valuemax={COMMIT_PANEL_WIDTH_MAX}
+            aria-valuenow={commitPanelWidthPx}
+            tabIndex={0}
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('commit', event)}
+            onKeyDown={(event) => resizeFromKeyboard('commit', event)}
           />
           <aside
             className="uam-shell-panel uam-shell-panel--right flex h-full flex-col overflow-hidden"
@@ -455,6 +662,7 @@ export function AppShell() {
       {alertsOpen && (
         <NotificationsPanel
           dismissedNotificationIds={dismissedNotificationIds}
+          remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
           onClose={() => setAlertsOpen(false)}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {

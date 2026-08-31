@@ -2,13 +2,28 @@
 
 #include "common/utils/string_utils.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace uam::env
 {
+	inline bool IsVariableName(std::string_view value)
+	{
+		if (value.empty() || !(std::isalpha(static_cast<unsigned char>(value.front())) || value.front() == '_'))
+		{
+			return false;
+		}
+		for (const char c : value)
+		{
+			if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+		}
+		return true;
+	}
+
 	inline std::optional<std::string> GetNonEmptyString(const char* name)
 	{
 		if (name == nullptr || name[0] == '\0')
@@ -77,5 +92,14 @@ namespace uam::env
 #endif
 
 		return GetTrimmedPath("HOME");
+	}
+
+	inline bool SetString(const char* name, const std::string& value)
+	{
+#if defined(_WIN32)
+		return _putenv_s(name, value.c_str()) == 0;
+#else
+		return setenv(name, value.c_str(), 1) == 0;
+#endif
 	}
 } // namespace uam::env

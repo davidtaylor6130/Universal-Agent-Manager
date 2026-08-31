@@ -26,6 +26,9 @@ class ProviderCliCompatibilityService
 	std::vector<CliProviderVersionOption> SupportedVersionsForProvider(std::string_view provider_id) const;
 	std::string PreferredVersionForProvider(std::string_view provider_id) const;
 	bool IsSupportedVersionForProvider(std::string_view provider_id, std::string_view version) const;
+	std::string CompatibilityStatusForProvider(std::string_view provider_id, std::string_view version) const;
+	std::string VerifiedVersionForProvider(std::string_view provider_id) const;
+	std::string VerifiedAtForProvider(std::string_view provider_id) const;
 	std::string VersionProbeCommandForProvider(std::string_view provider_id) const;
 	std::string InstallCommandForProviderVersion(std::string_view provider_id, std::string_view version) const;
 };
@@ -38,6 +41,7 @@ std::string ExtractCliProviderInstallMethodForTests(std::string_view output);
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);
 bool ProviderCliInstallBlockedByActiveRuntimeForTests(const uam::AppState& app, std::string_view provider_id);
 std::string CopilotLaunchBlockReason(const uam::AppState& app);
+std::string OpenCodeLaunchBlockReason(const uam::AppState& app);
 
 /// <summary>Returns the npm package name for a CLI provider id, or empty if unknown.</summary>
 std::string GetNpmPackageNameForProvider(std::string_view provider_id);

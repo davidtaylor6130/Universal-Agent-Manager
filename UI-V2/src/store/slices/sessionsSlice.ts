@@ -1,7 +1,8 @@
-import type { Session } from '../../types/session'
+import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
+import type { McpServerConfiguration } from '../cpp/types'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -9,7 +10,6 @@ import {
   COPILOT_CLI_PROVIDER_ID,
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
-  buildProviderCliInstallCommand,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
   providerCapabilities,
@@ -19,11 +19,12 @@ import {
   cefPayloadOrRawResponse,
   clampedFiniteNumberOr,
   DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+  DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+  DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
   DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
   defaultEditorFileAssociations,
   emptyCliVersionManager,
-  emptyCliVersionProviderState,
   emptyMemoryActivity,
   finiteNumberOr,
   failedGitWorktreeResult,
@@ -37,6 +38,9 @@ import {
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
   normalizeMemoryLevel,
+  normalizeGoalMaxLoopIterations,
+  normalizeAcpSetupInactivityTimeoutSeconds,
+  normalizeAcpTurnOutputLimitMiB,
   providerChatDefaultsForNewChat,
   sanitizeAttachment,
   sanitizeEditorFileAssociations,
@@ -48,10 +52,8 @@ import {
   sanitizeVcsCommitResult,
   sanitizeVcsCommitStatus,
   stringOr,
-  upsertCliVersionProviderState,
 } from '../cpp/sanitizers'
 import {
-  clearPendingCodexOptions,
   clearPendingRequest,
   cliLifecycleIsProcessing,
   isLatestPendingRequest,
@@ -61,7 +63,7 @@ import {
   rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import { pendingCodexOptionsByChatId, pendingModelByChatId, pendingRequestIdsByKey } from '../push/pushBuffers'
+import { pendingModelByChatId, pendingRequestIdsByKey, pendingViewModeBySessionId } from '../push/pushBuffers'
 import type {
   AcpBinding,
   AcpLifecycleState,
@@ -75,21 +77,26 @@ import type {
   EditorFileAssociation,
   GitWorktreeResult,
   GitWorktreeStatus,
+  GitTurnCheckpointResult,
   MemoryActivity,
   MemoryWorkerBinding,
+  UamAgentCycleShortcut,
+  UamAgentSummary,
   OpenNativeSessionChatResponse,
   OpenWorkspaceEditorResponse,
   ProviderChatDefaults,
+  ProviderAgentImportPreview,
+  ProviderModelCatalog,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
   VcsCommitStatus,
   VcsFileDiffResponse,
   VcsType,
-  VoiceInputCapabilities,
-  VoiceInputMode,
 } from '../cpp/types'
+
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
-import { removeChatsFromGrid } from '../../utils/chatGridStorage'
+import { removeChatsFromGrid, writeChatViewMode } from '../../utils/chatGridStorage'
+import { removeComposerDrafts } from '../../utils/composerDraftStorage'
 
 const initialFolders = [
   {
@@ -131,6 +138,12 @@ function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
 }
 
+const computerUseSuccess: ComputerUseActionResult = { ok: true }
+
+function computerUseFailure(error?: string): ComputerUseActionResult {
+  return error ? { ok: false, error } : { ok: false }
+}
+
 function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
   return Object.fromEntries(Object.entries(values).filter(([id]) => !deletedIds.has(id)))
 }
@@ -148,6 +161,7 @@ function deleteSessionsFromState(state: AppState, deletedIds: Set<string>, selec
     acpBindingBySessionId: withoutDeletedKeys(state.acpBindingBySessionId, deletedIds),
     cliTranscriptBySessionId: withoutDeletedKeys(state.cliTranscriptBySessionId, deletedIds),
     markdownStoreAttachedBySessionId: withoutDeletedKeys(state.markdownStoreAttachedBySessionId, deletedIds),
+    repositoryReviewBySessionId: withoutDeletedKeys(state.repositoryReviewBySessionId, deletedIds),
     activeSessionId: selectedChatId !== undefined
       ? selectedChatId
       : state.activeSessionId && deletedIds.has(state.activeSessionId)
@@ -191,7 +205,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     }).then((response) => {
       if (!isLatestPendingRequest(requestKey, response.requestId)) return
       clearPendingRequest(requestKey, response.requestId)
-      if (!response.ok || !response.data) return
+      if (!response.ok || !response.data) {
+        const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
+        set({ statusLine: `Failed to load chat history for ${chatName}: ${response.error ?? 'The chat history response was empty.'}` })
+        return
+      }
 
       const data = response.data
       if (data.chatId && data.chatId !== chatId) return
@@ -238,6 +256,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
     acpBindingBySessionId: {} as Record<string, AcpBinding>,
+    providerModelCatalogs: [] as ProviderModelCatalog[],
     cliTranscriptBySessionId: {} as Record<string, CliTranscript>,
     cliDebugState: null as CppCliDebugState | null,
     memoryEnabledDefault: true,
@@ -245,30 +264,35 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-    appVersion: 'V4.5.4',
+    acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+    acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
+    appVersion: 'V4.8.0',
+    runnerProtocolVersion: 0,
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
     memoryLastStatus: '',
     memoryWorkerBindings: {} as Record<string, MemoryWorkerBinding>,
+    permissionReviewerProviderId: '',
+    permissionReviewerModelId: '',
     memoryActivity: { ...emptyMemoryActivity } as MemoryActivity,
     cliVersionManager: { ...emptyCliVersionManager } as CliVersionManager,
     defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
-    voiceInputMode: 'system' as VoiceInputMode,
-    voiceInputServerBaseUrl: '',
-    voiceInputServerEndpoint: '/v1/audio/transcriptions',
-    voiceInputServerModel: 'whisper-1',
-    voiceInputApiKeyEnv: 'OPENAI_API_KEY',
-    voiceInputCapabilities: {
-      system: { supported: true, reason: '' },
-      local: { supported: false, reason: 'Coming soon.' },
-      server: { supported: false, reason: 'Unavailable.' },
-    } as VoiceInputCapabilities,
+    mcpServers: [] as McpServerConfiguration[],
+    executionHosts: [{
+      id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
+      runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
+    }] as AppState['executionHosts'],
+    favoriteUamAgentIds: [] as string[],
+    uamAgentCycleShortcut: 'shift+tab' as UamAgentCycleShortcut,
+    uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
+    statusLine: '',
 
     setActiveSession: (id: string | null) => {
+      if (get().activeSessionId === id) return
       intentionalSelectionRevision += 1
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
@@ -320,12 +344,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string) => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
         : null
-      if (!selectedFolderId) {
+      const isRemote = executionHostId !== 'local'
+	  const selectedFolder = current.folders.find((folder) => folder.id === selectedFolderId)
+	  if (selectedFolder && (selectedFolder.executionHostId || 'local') !== executionHostId) {
+		console.error('[UAM] createSession workspace belongs to a different computer')
+		return false
+	  }
+      if (!selectedFolderId && !isRemote) {
         console.error('[UAM] createSession requires a workspace folder')
         return false
       }
@@ -341,16 +371,34 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
 
       if (isCefContext()) {
-        const resp = await sendToCEF({
+        const resp = await sendToCEF<{ chatId?: string }>({
           action: 'createSession',
-          payload: { title: name, folderId: selectedFolderId, providerId: requestedProviderId, defaults },
+          payload: {
+            title: name,
+            folderId: selectedFolderId ?? '',
+            providerId: requestedProviderId,
+            defaults,
+            ...(executionHostId === 'local' ? {} : { executionHostId, workspaceDirectory }),
+          },
         })
         if (!resp.ok) {
           console.error('[CEF] createSession failed:', resp.error)
           return false
         }
 
-        set({ isNewChatModalOpen: false, newChatFolderId: null })
+        const chatId = resp.data?.chatId ?? ''
+		if (chatId) writeChatViewMode(chatId, viewMode)
+        let appliedViewMode = viewMode === 'chat'
+        set((state) => ({
+          isNewChatModalOpen: false,
+          newChatFolderId: null,
+          sessions: viewMode === 'chat' ? state.sessions : state.sessions.map((session) => {
+            if (session.id !== chatId) return session
+            appliedViewMode = true
+            return { ...session, viewMode }
+          }),
+        }))
+        if (!appliedViewMode && chatId) pendingViewModeBySessionId.set(chatId, viewMode)
         return true
       }
 
@@ -360,16 +408,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const now = new Date()
       const session: Session = {
         id,
+        executionHostId,
         name,
-        viewMode: 'chat',
+        viewMode,
         folderId: selectedFolderId,
         providerId: requestedProviderId,
+		...(isRemote ? { workspaceDirectory } : {}),
         modelId: defaults.modelId,
+        reviewerModelId: defaults.reviewerModelId,
         reasoningEffort: defaults.reasoningEffort,
         serviceTier: defaults.serviceTier,
-        approvalMode: defaults.approvalMode === 'acceptEdits' ? 'default' : defaults.approvalMode,
-        commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : 'medium',
-        autoApproveCommands: defaults.autoApproveCommands,
+        serviceTierExplicit: defaults.serviceTier !== '',
+        approvalMode: defaults.approvalMode,
+        commandSafetyTier: defaults.commandSafetyTier,
         memoryLevel: defaults.memoryLevel,
         memoryEnabled: defaults.memoryEnabled,
         smallModelMode: defaults.smallModelMode,
@@ -618,7 +669,33 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return failedGitWorktreeResult('Git worktree actions require the desktop runtime.')
     },
 
-    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; requestId?: string } = {}): Promise<VcsCommitStatus | null> => {
+    previewChatTurnRollback: async (id: string, messageIndex: number): Promise<GitTurnCheckpointResult | null> => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<GitTurnCheckpointResult>({
+        action: 'previewChatTurnRollback',
+        payload: { chatId: id, messageIndex },
+      })
+      if (!response.ok) {
+        console.error('[CEF] previewChatTurnRollback failed:', response.error)
+        return null
+      }
+      return response.data ?? null
+    },
+
+    rollbackChatTurn: async (id: string, messageIndex: number): Promise<GitTurnCheckpointResult | null> => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<GitTurnCheckpointResult>({
+        action: 'rollbackChatTurn',
+        payload: { chatId: id, messageIndex },
+      })
+      if (!response.ok) {
+        console.error('[CEF] rollbackChatTurn failed:', response.error)
+        return null
+      }
+      return response.data ?? null
+    },
+
+    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
@@ -627,6 +704,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             vcsType,
             includeLineStats: options.includeLineStats ?? true,
             requestId: options.requestId,
+            comparisonRef: options.comparisonRef,
           },
         })
         if (!response.ok) {
@@ -666,15 +744,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
     },
 
-    getVcsFileDiff: async (id: string, path: string, vcsType: VcsType): Promise<string> => {
+    getVcsFileDiff: async (id: string, path: string, vcsType: VcsType, comparisonRef?: string): Promise<string> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsFileDiffResponse>({
           action: 'getVcsFileDiff',
-          payload: { chatId: id, path, vcsType },
+          payload: { chatId: id, path, vcsType, comparisonRef },
         })
         if (!response.ok) {
           console.error('[CEF] getVcsFileDiff failed:', response.error)
-          return response.error || ''
+          throw new Error(response.error || 'Failed to load this diff.')
         }
         return typeof response.data?.diff === 'string' ? response.data.diff : ''
       }
@@ -858,11 +936,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               ...s,
               providerId: requestedProviderId,
               modelId: defaults.modelId,
+              reviewerModelId: defaults.reviewerModelId,
               reasoningEffort: defaults.reasoningEffort,
               serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
-              approvalMode: defaults.approvalMode === 'acceptEdits' ? 'default' : defaults.approvalMode,
-              commandSafetyTier: defaults.approvalMode === 'acceptEdits' ? 'acceptEdits' : s.commandSafetyTier,
-              autoApproveCommands: defaults.autoApproveCommands,
+              serviceTierExplicit: providerCapabilities(requestedProviderId).hasServiceTier && defaults.serviceTier !== '',
+              approvalMode: defaults.approvalMode,
+              commandSafetyTier: defaults.commandSafetyTier,
               memoryLevel: defaults.memoryLevel,
               memoryEnabled: defaults.memoryEnabled,
               smallModelMode: defaults.smallModelMode,
@@ -894,11 +973,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               ...s,
               providerId: previousSession.providerId,
               modelId: previousSession.modelId,
+              reviewerModelId: previousSession.reviewerModelId,
               reasoningEffort: previousSession.reasoningEffort,
               serviceTier: previousSession.serviceTier,
+              serviceTierExplicit: previousSession.serviceTierExplicit,
               approvalMode: previousSession.approvalMode,
               commandSafetyTier: previousSession.commandSafetyTier,
-              autoApproveCommands: previousSession.autoApproveCommands,
               memoryLevel: previousSession.memoryLevel,
               memoryEnabled: previousSession.memoryEnabled,
               smallModelMode: previousSession.smallModelMode,
@@ -943,6 +1023,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const requestedServiceTier = targetModel && currentServiceTier && !targetSpeedTiers.includes(currentServiceTier)
         ? ''
         : currentServiceTier
+	  const requestedServiceTierExplicit = previousSession.serviceTierExplicit ?? currentServiceTier !== ''
 
       const applyModel = () => {
         set((state) => ({
@@ -952,6 +1033,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 			  modelId: requestedModelId,
 			  reasoningEffort: requestedReasoningEffort,
 			  serviceTier: requestedServiceTier,
+			  serviceTierExplicit: requestedServiceTierExplicit,
 			  updatedAt: optimisticUpdatedAt,
 			} : s
           ),
@@ -967,9 +1049,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           modelId: requestedModelId,
           reasoningEffort: requestedReasoningEffort,
           serviceTier: requestedServiceTier,
+          serviceTierExplicit: requestedServiceTierExplicit,
         })
         applyModel()
-        const response = await sendToCEF<{ modelId?: string; reasoningEffort?: string; serviceTier?: string }>({
+        const response = await sendToCEF<{ modelId?: string; reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }>({
           action: 'setChatModel',
           payload: { chatId: id, modelId: requestedModelId },
           requestId,
@@ -980,10 +1063,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             const canonicalModelId = response.data?.modelId
             const canonicalReasoningEffort = response.data?.reasoningEffort
             const canonicalServiceTier = response.data?.serviceTier
+			const canonicalServiceTierExplicit = response.data?.serviceTierExplicit
             if (typeof canonicalModelId === 'string' && typeof canonicalReasoningEffort === 'string' && typeof canonicalServiceTier === 'string') {
               set((state) => ({
                 sessions: state.sessions.map((session) => session.id === id
-                  ? { ...session, modelId: canonicalModelId, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier }
+                  ? { ...session, modelId: canonicalModelId, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier, serviceTierExplicit: typeof canonicalServiceTierExplicit === 'boolean' ? canonicalServiceTierExplicit : requestedServiceTierExplicit }
                   : session),
               }))
               pendingModelByChatId.delete(id)
@@ -1000,6 +1084,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               modelId: previousSession.modelId,
               reasoningEffort: previousSession.reasoningEffort,
               serviceTier: previousSession.serviceTier,
+              serviceTierExplicit: previousSession.serviceTierExplicit,
               updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
             } : s),
           }))
@@ -1014,7 +1099,30 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string }): Promise<boolean> => {
+    setSessionReviewerModel: async (id: string, modelId: string): Promise<boolean> => {
+      const requestedModelId = modelId.trim()
+      if (!isAllowedAcpModelId(requestedModelId) || !get().sessions.some((session) => session.id === id)) return false
+      if (!isCefContext()) {
+        set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: requestedModelId } : session) }))
+        return true
+      }
+
+      const requestKey = `setSessionReviewerModel:${id}`
+      const requestId = createRequestId('setSessionReviewerModel')
+      rememberPendingRequest(requestKey, requestId)
+      const response = await sendToCEF<{ reviewerModelId?: string }>({
+        action: 'setChatModel',
+        payload: { chatId: id, modelId: requestedModelId, modelRole: 'reviewer' },
+        requestId,
+      })
+      if (!isLatestPendingRequest(requestKey, response.requestId)) return response.ok
+      clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok || typeof response.data?.reviewerModelId !== 'string') return false
+      set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: response.data!.reviewerModelId } : session) }))
+      return true
+    },
+
+    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
 	  if (!previousSession) {
         return false
@@ -1036,14 +1144,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	    : normalizedEffort
 	  const normalizedServiceTier = options.serviceTier === undefined ? previousSession.serviceTier ?? '' : codexProvider ? normalizeCodexServiceTier(options.serviceTier) : ''
 	  const requestedServiceTier = runtimeModel && normalizedServiceTier && !supportedServiceTiers.includes(normalizedServiceTier) ? '' : normalizedServiceTier
-      if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier) {
+	  const requestedServiceTierExplicit = codexProvider && (options.serviceTierExplicit ?? (options.serviceTier === undefined ? previousSession.serviceTierExplicit ?? normalizedServiceTier !== '' : true))
+      if ((previousSession.reasoningEffort ?? '') === requestedReasoningEffort && (previousSession.serviceTier ?? '') === requestedServiceTier && (previousSession.serviceTierExplicit ?? (previousSession.serviceTier ?? '') !== '') === requestedServiceTierExplicit) {
         return true
       }
 
       const applyOptions = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier, updatedAt: new Date() } : s
+            s.id === id ? { ...s, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier, serviceTierExplicit: requestedServiceTierExplicit, updatedAt: new Date() } : s
           ),
         }))
       }
@@ -1052,46 +1161,28 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionCodexOptions:${id}`
         const requestId = createRequestId('setSessionCodexOptions')
         rememberPendingRequest(requestKey, requestId)
-        pendingCodexOptionsByChatId.set(id, {
-          requestId,
-          reasoningEffort: requestedReasoningEffort,
-          serviceTier: requestedServiceTier,
-        })
-        applyOptions()
-        const response = await sendToCEF<{ reasoningEffort?: string; serviceTier?: string }>({
+        const response = await sendToCEF<{ reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }>({
           action: 'setChatCodexOptions',
-          payload: { chatId: id, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier },
+          payload: { chatId: id, reasoningEffort: requestedReasoningEffort, serviceTier: requestedServiceTier, serviceTierExplicit: requestedServiceTierExplicit },
           requestId,
         })
 
         if (response.ok) {
           if (isLatestPendingRequest(requestKey, response.requestId)) {
-            const canonicalReasoningEffort = response.data?.reasoningEffort
-            const canonicalServiceTier = response.data?.serviceTier
-            if (typeof canonicalReasoningEffort === 'string' && typeof canonicalServiceTier === 'string') {
-              set((state) => ({
-                sessions: state.sessions.map((session) => session.id === id
-                  ? { ...session, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier }
-                  : session),
-              }))
-              pendingCodexOptionsByChatId.delete(id)
-            }
+			const canonicalReasoningEffort = typeof response.data?.reasoningEffort === 'string' ? response.data.reasoningEffort : requestedReasoningEffort
+			const canonicalServiceTier = typeof response.data?.serviceTier === 'string' ? response.data.serviceTier : requestedServiceTier
+			const canonicalServiceTierExplicit = typeof response.data?.serviceTierExplicit === 'boolean' ? response.data.serviceTierExplicit : requestedServiceTierExplicit
+			set((state) => ({
+			  sessions: state.sessions.map((session) => session.id === id
+				? { ...session, reasoningEffort: canonicalReasoningEffort, serviceTier: canonicalServiceTier, serviceTierExplicit: canonicalServiceTierExplicit }
+				: session),
+			}))
             clearPendingRequest(requestKey, response.requestId)
           }
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) {
-          set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? {
-              ...s,
-              reasoningEffort: previousSession.reasoningEffort,
-              serviceTier: previousSession.serviceTier,
-            } : s)),
-          }))
-          pendingRequestIdsByKey.delete(requestKey)
-          clearPendingCodexOptions(id, response.requestId)
-        }
+        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
         return false
       }
 
@@ -1117,17 +1208,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
-      const applyMode = () => {
+	  const applyMode = (confirmedModeId: string, confirmedRuntimeModeId?: string) => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, approvalMode: requestedModeId, updatedAt: new Date() } : s
+			s.id === id ? { ...s, approvalMode: confirmedModeId, updatedAt: new Date() } : s
           ),
-          acpBindingBySessionId: state.acpBindingBySessionId[id]
+		  acpBindingBySessionId: state.acpBindingBySessionId[id] && confirmedRuntimeModeId
             ? {
                 ...state.acpBindingBySessionId,
                 [id]: {
                   ...state.acpBindingBySessionId[id],
-                  currentModeId: requestedModeId,
+				  currentModeId: confirmedRuntimeModeId,
                 },
               }
             : state.acpBindingBySessionId,
@@ -1138,128 +1229,257 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionApprovalMode:${id}`
         const requestId = createRequestId('setSessionApprovalMode')
         rememberPendingRequest(requestKey, requestId)
-        applyMode()
-        const response = await sendToCEF({
+		const response = await sendToCEF<{ approvalMode?: string; currentModeId?: string }>({
           action: 'setChatApprovalMode',
           payload: { chatId: id, modeId: requestedModeId },
           requestId,
         })
 
-        if (response.ok) {
-          clearPendingRequest(requestKey, response.requestId)
-          return true
-        }
+		if (response.ok) {
+		  if (isLatestPendingRequest(requestKey, response.requestId)) {
+			const confirmedModeId = normalizeAcpApprovalMode(response.data?.approvalMode ?? requestedModeId)
+			const confirmedRuntimeModeId = typeof response.data?.currentModeId === 'string' ? response.data.currentModeId : undefined
+			applyMode(confirmedModeId, confirmedRuntimeModeId)
+		  }
+		  clearPendingRequest(requestKey, response.requestId)
+		  return true
+		}
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) {
-          set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? {
-              ...s,
-              approvalMode: previousSession.approvalMode,
-            } : s)),
-            acpBindingBySessionId: previousBinding && state.acpBindingBySessionId[id]
-              ? {
-                  ...state.acpBindingBySessionId,
-                  [id]: {
-                    ...state.acpBindingBySessionId[id],
-                    currentModeId: previousBinding.currentModeId,
-                  },
-                }
-              : state.acpBindingBySessionId,
-          }))
-          pendingRequestIdsByKey.delete(requestKey)
+		if (isLatestPendingRequest(requestKey, response.requestId)) {
+		  pendingRequestIdsByKey.delete(requestKey)
         }
 
         return false
       }
 
-      applyMode()
+	  applyMode(requestedModeId, requestedModeId)
       return true
     },
 
-    setSessionAutoApproveCommands: async (id: string, enabled: boolean): Promise<boolean> => {
-      const previousSession = get().sessions.find((s) => s.id === id)
-      if (!previousSession) {
-        return false
-      }
-      if ((previousSession.autoApproveCommands ?? false) === enabled) {
-        return true
-      }
-
-      const applyAutoApprove = () => {
-        set((state) => ({
-          sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, autoApproveCommands: enabled, updatedAt: new Date() } : s
-          ),
-        }))
-      }
-
-      if (isCefContext()) {
-        const requestKey = `setSessionAutoApproveCommands:${id}`
-        const requestId = createRequestId('setSessionAutoApproveCommands')
-        rememberPendingRequest(requestKey, requestId)
-        applyAutoApprove()
-        const response = await sendToCEF({
-          action: 'setChatAutoApproveCommands',
-          payload: { chatId: id, enabled },
-          requestId,
-        })
-
-        if (response.ok) {
-          clearPendingRequest(requestKey, response.requestId)
-          return true
-        }
-
-        if (isLatestPendingRequest(requestKey, response.requestId)) {
-          set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? {
-              ...s,
-              autoApproveCommands: previousSession.autoApproveCommands,
-            } : s)),
-          }))
-          pendingRequestIdsByKey.delete(requestKey)
-        }
-
-        return false
-      }
-
-      applyAutoApprove()
-      return true
+    setSessionUamAgent: async (id: string, agentId: string): Promise<boolean> => {
+	  const requestedAgentId = agentId.trim() || 'build'
+	  const previousSession = get().sessions.find((session) => session.id === id)
+	  if (!previousSession) return false
+	  if ((previousSession.uamAgentId ?? 'build') === requestedAgentId) return true
+	  const applyAgent = (confirmedAgentId: string) => set((state) => ({
+		sessions: state.sessions.map((session) => session.id === id
+		  ? { ...session, uamAgentId: confirmedAgentId, updatedAt: new Date() }
+		  : session),
+	  }))
+	  if (!isCefContext()) {
+		applyAgent(requestedAgentId)
+		return true
+	  }
+	  const requestKey = `setSessionUamAgent:${id}`
+	  const requestId = createRequestId('setSessionUamAgent')
+	  rememberPendingRequest(requestKey, requestId)
+	  const response = await sendToCEF<{ uamAgentId?: string }>({
+		action: 'setChatUamAgent',
+		payload: { chatId: id, agentId: requestedAgentId },
+		requestId,
+	  })
+	  if (response.ok) {
+		if (isLatestPendingRequest(requestKey, response.requestId)) {
+		  applyAgent(response.data?.uamAgentId?.trim() || requestedAgentId)
+		}
+		clearPendingRequest(requestKey, response.requestId)
+		return true
+	  }
+	  if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+	  return false
     },
 
-    setSessionCommandSafetyTier: async (id: string, tier: 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'): Promise<boolean> => {
+    setSessionUamControlEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
       const previousSession = get().sessions.find((session) => session.id === id)
-      if (!previousSession || (previousSession.commandSafetyTier ?? 'medium') === tier) return Boolean(previousSession)
-      const applyTier = () => set((state) => ({
-        sessions: state.sessions.map((session) => session.id === id ? { ...session, commandSafetyTier: tier, updatedAt: new Date() } : session),
+      if (!previousSession || (previousSession.uamControlEnabled ?? false) === enabled) return Boolean(previousSession)
+      const apply = (confirmed: boolean) => set((state) => ({
+        sessions: state.sessions.map((session) => session.id === id
+          ? { ...session, uamControlEnabled: confirmed, updatedAt: new Date() }
+          : session),
       }))
       if (!isCefContext()) {
-        applyTier()
+        apply(enabled)
         return true
+      }
+      const requestKey = `setSessionUamControlEnabled:${id}`
+      const requestId = createRequestId('setSessionUamControlEnabled')
+      rememberPendingRequest(requestKey, requestId)
+      const response = await sendToCEF<{ enabled?: boolean }>({
+        action: 'setChatUamControlEnabled',
+        payload: { chatId: id, enabled },
+        requestId,
+      })
+      if (response.ok) {
+        apply(typeof response.data?.enabled === 'boolean' ? response.data.enabled : enabled)
+        clearPendingRequest(requestKey, response.requestId)
+        return true
+      }
+      if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+      return false
+    },
+
+    refreshUamAgents: async (id: string): Promise<boolean> => {
+      const builtIns: UamAgentSummary[] = [
+        { id: 'build', description: 'Implement changes while obeying the current UAM permission policy.', builtIn: true },
+        { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true },
+      ]
+      if (!isCefContext()) {
+        set((state) => ({ uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: builtIns } }))
+        return true
+      }
+      const requestKey = `listUamAgents:${id}`
+      const requestId = createRequestId('listUamAgents')
+      rememberPendingRequest(requestKey, requestId)
+      const response = await sendToCEF<{ agents?: unknown[] }>({
+        action: 'listUamAgents',
+        payload: { chatId: id },
+        requestId,
+      })
+      if (!response.ok) {
+        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+        return false
+      }
+      const agents = Array.isArray(response.data?.agents)
+        ? response.data.agents.flatMap((entry): UamAgentSummary[] => {
+            if (!isRecord(entry)) return []
+            const agentId = stringOr(entry.id).trim().toLowerCase()
+            const mode = stringOr(entry.mode)
+            if (!agentId || mode === 'subagent') return []
+            return [{ id: agentId, description: stringOr(entry.description), builtIn: Boolean(entry.builtIn) }]
+          })
+        : builtIns
+      if (isLatestPendingRequest(requestKey, response.requestId)) {
+        set((state) => ({ uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: agents } }))
+      }
+      clearPendingRequest(requestKey, response.requestId)
+      return true
+    },
+
+    browseProviderAgentImport: async (currentValue = '') => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<{ selectedPath?: string }>({
+        action: 'browseProviderAgentImport',
+        payload: { currentValue },
+      })
+      const selected = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
+      return selected || null
+    },
+
+    previewProviderAgentImport: async (providerId: string, sourcePath: string) => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<ProviderAgentImportPreview>({
+        action: 'previewProviderAgentImport',
+        payload: { providerId, sourcePath },
+      })
+      return response.ok ? response.data ?? null : null
+    },
+
+    importProviderAgent: async (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF<{ id?: string }>({
+        action: 'importProviderAgent',
+        payload: options,
+      })
+      if (!response.ok) return false
+      await get().refreshUamAgents(options.chatId)
+      return true
+    },
+
+    setSessionCommandSafetyTier: async (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => {
+      const previousSession = get().sessions.find((session) => session.id === id)
+	  if (!previousSession) return { ok: false, error: 'Chat not found.' }
+	  const sameTier = (previousSession.commandSafetyTier ?? 'off') === tier
+	  const applyTier = (confirmedTier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => set((state) => ({
+		sessions: state.sessions.map((session) => session.id === id ? { ...session, commandSafetyTier: confirmedTier, updatedAt: new Date() } : session),
+	  }))
+	  if (!isCefContext()) {
+		if (!sameTier) applyTier(tier)
+        return { ok: true }
       }
 
 	  const requestKey = `setSessionCommandSafetyTier:${id}`
 	  const requestId = createRequestId('setSessionCommandSafetyTier')
 	  rememberPendingRequest(requestKey, requestId)
-      applyTier()
-      const response = await sendToCEF({
+	  const response = await sendToCEF<{ commandSafetyTier?: string }>({
         action: 'setChatCommandSafetyTier',
         payload: { chatId: id, commandSafetyTier: tier },
         requestId,
       })
+	  if (!isLatestPendingRequest(requestKey, response.requestId)) return { ok: false, cancelled: true }
+	  clearPendingRequest(requestKey, response.requestId)
 	  if (response.ok) {
-		clearPendingRequest(requestKey, response.requestId)
-		return true
+		const confirmed = response.data?.commandSafetyTier
+		applyTier(confirmed === 'off' || confirmed === 'acceptEdits' || confirmed === 'aiReview' || confirmed === 'yolo' ? confirmed : tier)
+		return { ok: true }
 	  }
-	  if (isLatestPendingRequest(requestKey, response.requestId)) {
-		set((state) => ({
-		  sessions: state.sessions.map((session) => session.id === id ? {
-		    ...session,
-		    commandSafetyTier: previousSession.commandSafetyTier,
-		  } : session),
-		}))
-		pendingRequestIdsByKey.delete(requestKey)
-	  }
-      return false
+      return { ok: false, error: response.error ?? 'Failed to change permission mode.' }
+    },
+
+    setSessionComputerUseBackend: async (id: string, backend: ComputerUseBackend): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if (session.computerUseEnabled) return computerUseFailure('Turn off computer use before changing its control method.')
+      if ((session.computerUseBackend ?? 'auto') === backend) return computerUseSuccess
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setChatComputerUseBackend', payload: { chatId: id, backend } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUseBackend: backend,
+          computerUseTargetId: '',
+          computerUseTargetTitle: '',
+          computerUseTargetKind: 'window',
+          computerUseTargetInputMode: 'foreground',
+          updatedAt: new Date(),
+        } : candidate),
+      }))
+      return computerUseSuccess
+    },
+
+	setSessionComputerUseEnabled: async (id: string, enabled: boolean): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if ((session.computerUseEnabled ?? false) === enabled) return computerUseSuccess
+	  if (enabled && (session.computerUseEffectiveBackend ?? 'uam') === 'uam') {
+		return computerUseFailure('Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.')
+      }
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setChatComputerUseEnabled', payload: { chatId: id, enabled } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUseEnabled: enabled,
+          computerUse: {
+            enabled,
+            state: enabled ? 'running' : 'stopped',
+            history: candidate.computerUse?.history ?? [],
+          },
+          updatedAt: new Date(),
+        } : candidate),
+      }))
+      return computerUseSuccess
+    },
+
+    setSessionComputerUseControl: async (id: string, controlState: ComputerUseControlState): Promise<ComputerUseActionResult> => {
+      const session = get().sessions.find((candidate) => candidate.id === id)
+      if (!session) return computerUseFailure('Chat not found.')
+      if (!session.computerUseEnabled || (session.computerUseEffectiveBackend ?? 'uam') !== 'uam') return computerUseFailure()
+      if (session.computerUse?.state === controlState) return computerUseSuccess
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setComputerUseControl', payload: { chatId: id, state: controlState } })
+        if (!response.ok) return computerUseFailure(response.error)
+      }
+      set((state) => ({
+        sessions: state.sessions.map((candidate) => candidate.id === id ? {
+          ...candidate,
+          computerUse: { enabled: true, state: controlState, history: candidate.computerUse?.history ?? [] },
+        } : candidate),
+      }))
+      return computerUseSuccess
     },
 
     setSessionMemoryEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
@@ -1359,14 +1579,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'memoryWorkerBindings'>>): Promise<boolean> => {
+    setMemorySettings: async (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>): Promise<boolean> => {
       const previous = {
         memoryEnabledDefault: get().memoryEnabledDefault,
         memoryLevelDefault: get().memoryLevelDefault,
         memoryIdleDelaySeconds: get().memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: get().memoryRecallBudgetBytes,
         goalMaxLoopIterations: get().goalMaxLoopIterations,
+        acpSetupInactivityTimeoutSeconds: get().acpSetupInactivityTimeoutSeconds,
+        acpTurnOutputLimitMiB: get().acpTurnOutputLimitMiB,
         memoryWorkerBindings: get().memoryWorkerBindings,
+        permissionReviewerProviderId: get().permissionReviewerProviderId,
+        permissionReviewerModelId: get().permissionReviewerModelId,
       }
       const requestedDefaultLevel = settings.memoryLevelDefault
         ?? (settings.memoryEnabledDefault === undefined ? previous.memoryLevelDefault : settings.memoryEnabledDefault ? 'strict' : 'off')
@@ -1375,8 +1599,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         memoryEnabledDefault: normalizeMemoryLevel(requestedDefaultLevel) !== 'off',
         memoryIdleDelaySeconds: clampedFiniteNumberOr(settings.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
         memoryRecallBudgetBytes: clampedFiniteNumberOr(settings.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
-        goalMaxLoopIterations: Math.max(0, Math.floor(finiteNumberOr(settings.goalMaxLoopIterations, previous.goalMaxLoopIterations))),
+        goalMaxLoopIterations: settings.goalMaxLoopIterations === undefined
+          ? previous.goalMaxLoopIterations
+          : normalizeGoalMaxLoopIterations(settings.goalMaxLoopIterations),
+        acpSetupInactivityTimeoutSeconds: settings.acpSetupInactivityTimeoutSeconds === undefined
+          ? previous.acpSetupInactivityTimeoutSeconds
+          : normalizeAcpSetupInactivityTimeoutSeconds(settings.acpSetupInactivityTimeoutSeconds),
+        acpTurnOutputLimitMiB: settings.acpTurnOutputLimitMiB === undefined
+          ? previous.acpTurnOutputLimitMiB
+          : normalizeAcpTurnOutputLimitMiB(settings.acpTurnOutputLimitMiB),
         memoryWorkerBindings: settings.memoryWorkerBindings ?? previous.memoryWorkerBindings,
+        permissionReviewerProviderId: settings.permissionReviewerProviderId ?? previous.permissionReviewerProviderId,
+        permissionReviewerModelId: settings.permissionReviewerModelId ?? previous.permissionReviewerModelId,
       }
       const ownedFields = Object.keys(settings)
       if (settings.memoryEnabledDefault !== undefined || settings.memoryLevelDefault !== undefined) {
@@ -1396,7 +1630,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             idleDelaySeconds: next.memoryIdleDelaySeconds,
             recallBudgetBytes: next.memoryRecallBudgetBytes,
             goalMaxLoopIterations: next.goalMaxLoopIterations,
+            acpSetupInactivityTimeoutSeconds: next.acpSetupInactivityTimeoutSeconds,
+            acpTurnOutputLimitMiB: next.acpTurnOutputLimitMiB,
             workerBindings: next.memoryWorkerBindings,
+            permissionReviewerProviderId: next.permissionReviewerProviderId,
+            permissionReviewerModelId: next.permissionReviewerModelId,
           },
           requestId,
         })
@@ -1409,32 +1647,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       applySettings()
       return true
-    },
-
-    setVoiceInputSettings: async (settings: Pick<AppState, 'voiceInputMode' | 'voiceInputServerBaseUrl' | 'voiceInputServerEndpoint' | 'voiceInputServerModel' | 'voiceInputApiKeyEnv'>): Promise<boolean> => {
-      const previous = {
-        voiceInputMode: get().voiceInputMode,
-        voiceInputServerBaseUrl: get().voiceInputServerBaseUrl,
-        voiceInputServerEndpoint: get().voiceInputServerEndpoint,
-        voiceInputServerModel: get().voiceInputServerModel,
-        voiceInputApiKeyEnv: get().voiceInputApiKeyEnv,
-      }
-      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
-      set(settings)
-      if (!isCefContext()) return true
-      const response = await sendToCEF({
-        action: 'setVoiceInputSettings',
-        payload: {
-          mode: settings.voiceInputMode,
-          serverBaseUrl: settings.voiceInputServerBaseUrl,
-          serverEndpoint: settings.voiceInputServerEndpoint,
-          serverModel: settings.voiceInputServerModel,
-          apiKeyEnv: settings.voiceInputApiKeyEnv,
-        },
-      })
-      if (response.ok) return true
-      set(latestOptimisticRollback(previous, optimisticRevision))
-      return false
     },
 
     setUpdateSettings: async (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
@@ -1496,6 +1708,59 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 
       applySettings()
+      return true
+    },
+
+    setMcpServers: async (servers: McpServerConfiguration[]): Promise<{ ok: boolean; error?: string }> => {
+      const previous = get().mcpServers
+      const optimisticRevision = rememberOptimisticFields(['mcpServers'])
+      set({ mcpServers: servers })
+      if (!isCefContext()) return { ok: true }
+
+      const response = await sendToCEF({
+        action: 'setMcpServers',
+        payload: { servers },
+        requestId: createRequestId('setMcpServers'),
+      })
+      if (!response.ok) set(latestOptimisticRollback({ mcpServers: previous }, optimisticRevision))
+      return { ok: response.ok, error: response.error }
+    },
+
+    setUamAgentPreferences: async (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }): Promise<boolean> => {
+      const previous = {
+        favoriteUamAgentIds: get().favoriteUamAgentIds,
+        uamAgentCycleShortcut: get().uamAgentCycleShortcut,
+      }
+      const favoriteUamAgentIds = Array.from(new Set(settings.favoriteUamAgentIds.map((id) => id.trim().toLowerCase())))
+        .filter((id) => id !== 'build' && id !== 'plan')
+        .slice(0, 64)
+      const next = { favoriteUamAgentIds, uamAgentCycleShortcut: settings.uamAgentCycleShortcut }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(next))
+      set(next)
+      if (!isCefContext()) return true
+
+      const requestKey = 'setUamAgentPreferences'
+      const requestId = createRequestId('setUamAgentPreferences')
+      rememberPendingRequest(requestKey, requestId)
+      const response = await sendToCEF<typeof next>({
+        action: 'setUamAgentPreferences',
+        payload: next,
+        requestId,
+      })
+      if (!response.ok) {
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          pendingRequestIdsByKey.delete(requestKey)
+          set(latestOptimisticRollback(previous, optimisticRevision))
+        }
+        return false
+      }
+      if (isLatestPendingRequest(requestKey, response.requestId)) {
+        set({
+          favoriteUamAgentIds: response.data?.favoriteUamAgentIds ?? favoriteUamAgentIds,
+          uamAgentCycleShortcut: response.data?.uamAgentCycleShortcut ?? settings.uamAgentCycleShortcut,
+        })
+      }
+      clearPendingRequest(requestKey, response.requestId)
       return true
     },
 
@@ -1576,18 +1841,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return response.ok
       }
 
-      set((state) => ({
-        cliVersionManager: {
-          providers: upsertCliVersionProviderState(state.cliVersionManager.providers, {
-            ...emptyCliVersionProviderState,
-            providerId: targetProviderId,
-            status: 'supported',
-            message: 'Provider CLI version is supported.',
-            running: false,
-          }),
-        },
-      }))
-      return true
+      return false
     },
 
     applyCliProviderVersion: async (providerId: string, version: string): Promise<boolean> => {
@@ -1604,114 +1858,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return response.ok
       }
 
-      set((state) => ({
-        cliVersionManager: {
-          providers: upsertCliVersionProviderState(state.cliVersionManager.providers, {
-            ...emptyCliVersionProviderState,
-            ...(state.cliVersionManager.providers.find((provider) => provider.providerId === targetProviderId) ?? {}),
-            providerId: targetProviderId,
-            selectedVersion: targetVersion,
-            installedVersion: targetVersion,
-            status: 'supported',
-            message: 'Provider CLI version is supported.',
-            running: false,
-            lastCommand: buildProviderCliInstallCommand(targetProviderId, targetVersion),
-            lastOutput: 'Dev mode install simulated.',
-          }),
-        },
-      }))
-      return true
+      return false
     },
 
-    deleteSession: (id: string) => {
-      if (isCefContext()) {
-        const current = get()
-        const deletedSession = current.sessions.find((s) => s.id === id)
-        if (!deletedSession) {
-          return
-        }
-
-        const deletedIndex = current.sessions.findIndex((s) => s.id === id)
-        const deletedMessages = current.messages[id] ?? []
-        const deletedBinding = current.cliBindingBySessionId[id]
-        const deletedAcpBinding = current.acpBindingBySessionId[id]
-        const deletedTranscript = current.cliTranscriptBySessionId[id]
-        const previousActiveSessionId = current.activeSessionId
-        const requestKey = `deleteSession:${id}`
-        const requestId = createRequestId('deleteSession')
-        rememberPendingRequest(requestKey, requestId)
-        set((state) => {
-          const remaining = state.sessions.filter((s) => s.id !== id)
-          const { [id]: _, ...msgs } = state.messages
-          const { [id]: __, ...bindings } = state.cliBindingBySessionId
-          const { [id]: ___, ...acpBindings } = state.acpBindingBySessionId
-          const { [id]: ____, ...transcripts } = state.cliTranscriptBySessionId
-          return {
-            sessions: remaining,
-            messages: msgs,
-            cliBindingBySessionId: bindings,
-            acpBindingBySessionId: acpBindings,
-            cliTranscriptBySessionId: transcripts,
-            activeSessionId:
-              state.activeSessionId === id ? (remaining[0]?.id ?? null) : state.activeSessionId,
-          }
-        })
-        const optimisticActiveSessionId = get().activeSessionId
-        const optimisticSelectionRevision = intentionalSelectionRevision
-
-        sendToCEF({ action: 'deleteSession', payload: { chatId: id }, requestId }).then((resp) => {
-          if (resp.ok) {
-            const deletedIds = new Set([id])
-            set((state) => deleteSessionsFromState(state, deletedIds))
-            removeChatsFromGrid(deletedIds)
-            clearPendingRequest(requestKey, resp.requestId)
-            return
-          }
-
-          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
-            return
-          }
-
-          set((state) => {
-            const sessions = state.sessions.some((s) => s.id === id)
-              ? state.sessions
-              : [
-                  ...state.sessions.slice(0, Math.min(deletedIndex, state.sessions.length)),
-                  deletedSession,
-                  ...state.sessions.slice(Math.min(deletedIndex, state.sessions.length)),
-                ]
-
-            return {
-              sessions,
-              messages: {
-                ...state.messages,
-                ...(!Object.prototype.hasOwnProperty.call(state.messages, id) ? { [id]: deletedMessages } : {}),
-              },
-              cliBindingBySessionId: deletedBinding && !Object.prototype.hasOwnProperty.call(state.cliBindingBySessionId, id)
-                ? { ...state.cliBindingBySessionId, [id]: deletedBinding }
-                : state.cliBindingBySessionId,
-              acpBindingBySessionId: deletedAcpBinding && !Object.prototype.hasOwnProperty.call(state.acpBindingBySessionId, id)
-                ? { ...state.acpBindingBySessionId, [id]: deletedAcpBinding }
-                : state.acpBindingBySessionId,
-              cliTranscriptBySessionId: deletedTranscript && !Object.prototype.hasOwnProperty.call(state.cliTranscriptBySessionId, id)
-                ? { ...state.cliTranscriptBySessionId, [id]: deletedTranscript }
-                : state.cliTranscriptBySessionId,
-              activeSessionId:
-                state.activeSessionId === optimisticActiveSessionId &&
-                intentionalSelectionRevision === optimisticSelectionRevision
-                  ? previousActiveSessionId
-                  : state.activeSessionId,
-            }
-          })
-          pendingRequestIdsByKey.delete(requestKey)
-        })
-        return
-      }
-
-      const deletedIds = new Set([id])
-      set((state) => deleteSessionsFromState(state, deletedIds))
-      removeChatsFromGrid(deletedIds)
-    },
+    deleteSession: (id: string) => get().deleteSessions([id]),
 
     deleteSessions: async (ids: string[]) => {
       const existingIds = new Set(get().sessions.map((session) => session.id))
@@ -1731,6 +1881,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const deletedIds = new Set(chatIds)
       set((state) => deleteSessionsFromState(state, deletedIds, selectedChatId))
       removeChatsFromGrid(deletedIds)
+      removeComposerDrafts(deletedIds)
       return true
     },
 
@@ -1833,6 +1984,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             attachments,
             goalMode: goalId != null,
             goalId,
+            computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
             steerNow,
           },
         })
@@ -1918,56 +2070,21 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
-      const now = new Date()
       set((state) => ({
-        messages: {
-          ...state.messages,
-          [sessionId]: [
-            ...(state.messages[sessionId] ?? []),
-            {
-              id: `dev-user-${Date.now()}`,
-              sessionId,
-              role: 'user',
-              content: prompt,
-              attachments: [
-                ...markdownStoreFiles.map((filePath) => ({
-                  id: filePath,
-                  name: filePath.split(/[\\/]/).pop() || filePath,
-                  type: 'markdown-store',
-                  size: 0,
-                  path: filePath,
-                })),
-                ...attachments,
-              ],
-              createdAt: now,
-            },
-            {
-              id: `dev-assistant-${Date.now()}`,
-              sessionId,
-              role: 'assistant',
-              content: 'ACP dev mode response placeholder.',
-              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId,
-              createdAt: now,
-            },
-          ],
-        },
-        markdownStoreAttachedBySessionId: {
-          ...state.markdownStoreAttachedBySessionId,
-          [sessionId]: [],
-        },
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: {
-            sessionId: 'dev-acp-session',
+            ...(state.acpBindingBySessionId[sessionId] ?? {}),
+            sessionId: state.acpBindingBySessionId[sessionId]?.sessionId ?? '',
             providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
             protocolKind: 'gemini-acp',
-            threadId: '',
-            running: true,
-            lifecycleState: 'ready',
+            threadId: state.acpBindingBySessionId[sessionId]?.threadId ?? '',
+            running: false,
+            lifecycleState: 'error',
             processing: false,
             readySinceLastSelect: false,
             processingStartedAtMs: null,
-            lastError: '',
+            lastError: 'Structured chat requires the desktop app.',
             recentStderr: '',
             lastExitCode: null,
             diagnostics: [],
@@ -1981,17 +2098,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             turnEvents: [],
             turnUserMessageIndex: -1,
             turnAssistantMessageIndex: -1,
-            turnSerial: (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0) + 1,
+            turnSerial: state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0,
             waitIsStale: false,
             waitStaleReason: '',
             waitSeconds: 0,
             pendingPermission: null,
             pendingUserInput: null,
-            agentInfo: { name: 'dev', title: 'Dev ACP', version: 'local' },
+            agentInfo: state.acpBindingBySessionId[sessionId]?.agentInfo ?? null,
           },
         },
       }))
-      return true
+      return false
     },
 
     removeQueuedAcpPrompt: async (sessionId: string, index: number): Promise<boolean> => {
@@ -2039,17 +2156,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    discoverProviderModels: async (sessionId: string): Promise<boolean> => {
-      if (!isCefContext()) return false
-      set((state) => ({
-        acpBindingBySessionId: {
+    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
+	  if (!isCefContext()) return false
+	  if (sessionId) set((state) => ({
+		acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelRefreshError: '' },
         },
       }))
-      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({ action: 'discoverProviderModels', payload: { chatId: sessionId } })
-      if (!response.ok) {
-        set((state) => ({
+	  const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
+		action: 'discoverProviderModels',
+		payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
+	  })
+	  if (!response.ok) {
+		if (sessionId) set((state) => ({
           acpBindingBySessionId: {
             ...state.acpBindingBySessionId,
             [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: false, modelRefreshError: response.error ?? 'Model discovery failed.' },
@@ -2057,13 +2177,24 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         }))
         return false
       }
-      if (response.data?.pending) set((state) => ({
+	  if (sessionId && response.data?.pending) set((state) => ({
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
         },
       }))
       return Boolean(response.data?.started || response.data?.pending)
+    },
+
+    setAcpConfigOption: async (sessionId: string, configId: string, value: string): Promise<boolean> => {
+      const option = get().acpBindingBySessionId[sessionId]?.configOptions?.find((candidate) => candidate.id === configId)
+      if (!option || !option.options.some((choice) => choice.value === value)) return false
+      if (!isCefContext()) return false
+      const response = await sendToCEF({
+        action: 'setAcpConfigOption',
+        payload: { chatId: sessionId, configId, value },
+      })
+      return response.ok
     },
 
     cancelAcpTurn: async (sessionId: string): Promise<boolean> => {

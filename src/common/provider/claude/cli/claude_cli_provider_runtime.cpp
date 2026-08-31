@@ -1,5 +1,6 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
 
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
@@ -12,18 +13,14 @@
 
 namespace
 {
-	constexpr const char* kClaudeDangerouslySkipPermissionsFlag = "--dangerously-skip-permissions";
-	constexpr const char* kClaudeBypassPermissionsMode = "bypassPermissions";
-
 	constexpr auto kClaudeProviderPermissionModes = std::to_array<std::string_view>({
 	    uam::approval_modes::kDefaultApprovalMode,
-	    uam::approval_modes::kAcceptEditsApprovalMode,
 	    uam::approval_modes::kPlanApprovalMode,
 	});
 
 	std::vector<std::string> ClaudeFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kClaudeDangerouslySkipPermissionsFlag);
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
 	}
 
 	bool ShouldPassClaudePermissionMode(std::string_view approval_mode)
@@ -33,38 +30,19 @@ namespace
 
 	std::string ClaudeStructuredPermissionMode(const ChatSession& chat)
 	{
-		if (uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode)
-		{
-			return uam::approval_modes::kPlanApprovalMode;
-		}
-
-		const std::string_view permission_tier = uam::strings::TrimAsciiView(chat.command_safety_tier);
-		if (permission_tier == uam::approval_modes::kAcceptEditsApprovalMode)
-		{
-			return uam::approval_modes::kAcceptEditsApprovalMode;
-		}
-		if (permission_tier == uam::approval_modes::kLegacyYoloApprovalMode)
-		{
-			return kClaudeBypassPermissionsMode;
-		}
-		if (permission_tier == "low" || permission_tier == "medium" || permission_tier == "high")
-		{
-			return uam::approval_modes::kProviderAutoApprovalMode;
-		}
-		return {};
+		return uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode
+		           ? uam::approval_modes::kPlanApprovalMode
+		           : uam::approval_modes::kDefaultApprovalMode;
 	}
 
 	void AppendClaudeModeArgs(std::vector<std::string>& argv, const ChatSession& chat, const AppSettings& settings)
 	{
 		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 
-		if (!settings.provider_yolo_mode)
+		const std::string approval_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, "off");
+		if (ShouldPassClaudePermissionMode(approval_mode))
 		{
-			const std::string approval_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
-			if (ShouldPassClaudePermissionMode(approval_mode))
-			{
-				uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", approval_mode);
-			}
+			uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", approval_mode);
 		}
 	}
 } // namespace
@@ -131,6 +109,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", ClaudeStructuredPermissionMode(chat));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
+	uam::computer_use::AppendClaudeMcpLaunchArguments(argv, chat);
 	return argv;
 }
 
@@ -140,8 +119,7 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSta
 	session.initialized = true;
 	session.load_session_supported = true;
 	session.available_modes = {
-	    uam::AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Claude default permissions."},
-	    uam::AcpModeState{uam::approval_modes::kAcceptEditsApprovalMode, "Accept Edits", "Auto-approve Claude file edits in the workspace."},
+	    uam::AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Claude's provider-managed permissions."},
 	    uam::AcpModeState{uam::approval_modes::kPlanApprovalMode, "Plan", "Let Claude research and propose changes without editing files."},
 	};
 	if (session.current_mode_id.empty())

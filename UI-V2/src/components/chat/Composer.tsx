@@ -2,18 +2,20 @@
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, Square, X, Check } from 'lucide-react'
-import type { AcpBinding } from '../../store/useAppStore'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, X, Check } from 'lucide-react'
+import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
 import {
   buildCodexReasoningOptions,
   buildCodexSpeedOptions,
+  CODEX_SPEED_INHERIT_ID,
   buildModelOptions,
   modelOptionFor,
   reasoningEffortForModel,
@@ -26,23 +28,17 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
-export const COMMAND_SAFETY_TIERS = [
-  { id: 'low', label: 'Low', detail: 'Warn about more potentially risky commands.' },
-  { id: 'medium', label: 'Medium', detail: 'Warn about a moderate number of potentially risky commands.' },
-  { id: 'high', label: 'High', detail: 'Warn only about the highest-risk commands.' },
-] as const
-
 export const PERMISSION_MODES = [
   { id: 'default', name: 'Default', description: 'Ask before commands and file changes.' },
   { id: 'acceptEdits', name: 'Accept Edits', description: 'Automatically approve workspace file edits.' },
   { id: 'yolo', name: 'YOLO', description: 'Automatically approve every permission request.' },
-  { id: 'auto', name: 'Auto Decide', description: 'Automatically approve requests allowed by command safety.' },
+  { id: 'aiReview', name: 'AI Review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
 ] as const
 
-export type CommandSafetyTier = 'off' | 'acceptEdits' | 'low' | 'medium' | 'high' | 'yolo'
+export type CommandSafetyTier = 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
 
-export function permissionModeForTier(tier: CommandSafetyTier): 'default' | 'acceptEdits' | 'yolo' | 'auto' {
-  return tier === 'off' ? 'default' : tier === 'acceptEdits' ? 'acceptEdits' : tier === 'yolo' ? 'yolo' : 'auto'
+export function permissionModeForTier(tier: CommandSafetyTier): 'default' | 'acceptEdits' | 'yolo' | 'aiReview' {
+  return tier === 'off' ? 'default' : tier === 'acceptEdits' ? 'acceptEdits' : tier === 'yolo' ? 'yolo' : 'aiReview'
 }
 
 export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
@@ -50,6 +46,13 @@ export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean
     acp?.processing ||
     acp?.lifecycleState === 'waitingPermission' ||
     acp?.lifecycleState === 'waitingUserInput'
+  )
+}
+
+export function providerConfigVariantOptions(acp: AcpBinding | undefined, providerId: string): AcpConfigOption[] {
+  if (providerId !== OPENCODE_CLI_PROVIDER_ID) return []
+  return (acp?.configOptions ?? []).filter((option) =>
+    ['effort', 'thought_level'].includes(option.id.toLowerCase()) && option.options.length > 0
   )
 }
 
@@ -77,7 +80,7 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
 }
 
 export function permissionModeIcon(id: string, size = 14) {
-  if (id === 'auto') return <Sparkles size={size} />
+  if (id === 'aiReview') return <Sparkles size={size} />
   if (id === 'yolo') return <ShieldAlert size={size} />
   if (id === 'acceptEdits') return <SquarePen size={size} />
   if (id === 'plan') return <ClipboardList size={size} />
@@ -86,7 +89,7 @@ export function permissionModeIcon(id: string, size = 14) {
 
 function ActiveModeChip({ label, compactLabel = label, icon, onClear }: { label: string; compactLabel?: string; icon: ReactNode; onClear?: () => void }) {
   const content = <>{icon}<span className="uam-mode-chip__label--full">{label}</span><span className="uam-mode-chip__label--compact">{compactLabel}</span>{onClear && <X size={11} aria-hidden style={{ color: 'var(--text-3)' }} />}</>
-  const className = "inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-[11px]"
+  const className = "inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs"
   const style = { border: '1px solid transparent', background: 'color-mix(in srgb, var(--surface-up) 72%, transparent)', color: 'var(--text-2)' }
   return onClear
     ? <button type="button" aria-label={`Disable ${label}`} data-mode-chip={label} onClick={onClear} className={`uam-choice-button ${className}`} style={style}>{content}</button>
@@ -103,14 +106,22 @@ export function ComposerToolbar({
   runtimeStatusLabel,
   runtimeStatusColor,
   modelId,
+  reviewerModelId,
   includeDefaultModel,
   session,
   reasoningEffort,
   serviceTier,
-  approvalModeId,
+  serviceTierExplicit,
+  providerModeId,
+  featurePreference,
+  uamAgentId,
+  uamAgentNextTurn,
   permissionModeId,
-  agentModes,
-  commandSafetyTier,
+  permissionsManagedByUam,
+  permissionControlsDisabled,
+  providerModes,
+  uamAgents,
+  computerUseMode,
   memoryLevel,
   defaultMemoryLevel,
   memoryChipVisible,
@@ -120,11 +131,15 @@ export function ComposerToolbar({
   onToggleModel,
   onSelectProvider,
   onSelectModel,
+  onSelectReviewerModel,
   onSelectReasoning,
   onSelectSpeed,
-  onSelectAgentMode,
+  onSelectConfigOption,
+  onSelectProviderMode,
+  onSelectUamAgent,
   onSelectPermissionMode,
-  onSetCommandSafetyTier,
+  onToggleComputerUseMode,
+  onOpenComputerUse,
   onSelectMemoryLevel,
   onClearMemoryLevel,
   onToggleSmallModelMode,
@@ -153,14 +168,22 @@ export function ComposerToolbar({
   runtimeStatusLabel: string
   runtimeStatusColor: string
   modelId?: string
+  reviewerModelId?: string
   includeDefaultModel?: boolean
   session: { id: string }
   reasoningEffort?: string
   serviceTier?: string
-  approvalModeId?: string
+  serviceTierExplicit?: boolean
+  providerModeId?: string
+  featurePreference: 'uam' | 'provider'
+  uamAgentId: string
+  uamAgentNextTurn: boolean
   permissionModeId: string
-  agentModes: Array<{ id: string; name: string; description?: string }>
-  commandSafetyTier: CommandSafetyTier
+  permissionsManagedByUam: boolean
+  permissionControlsDisabled: boolean
+  providerModes: Array<{ id: string; name: string; description?: string }>
+  uamAgents: Array<{ id: string; name: string; description?: string }>
+  computerUseMode: boolean
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
   memoryChipVisible: boolean
@@ -170,11 +193,15 @@ export function ComposerToolbar({
   onToggleModel: () => void
   onSelectProvider: (providerId: string) => void
   onSelectModel: (modelId: string) => void
+  onSelectReviewerModel: (modelId: string) => void
   onSelectReasoning: (reasoningEffort: string) => void
   onSelectSpeed: (serviceTier: string) => void
-  onSelectAgentMode: (modeId: string) => void
+  onSelectConfigOption: (configId: string, value: string) => void
+  onSelectProviderMode: (modeId: string) => void
+  onSelectUamAgent: (agentId: string) => void
   onSelectPermissionMode: (modeId: string) => void
-  onSetCommandSafetyTier: (tier: 'low' | 'medium' | 'high') => void
+  onToggleComputerUseMode: () => void
+  onOpenComputerUse: () => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
   onClearMemoryLevel: () => void
   onToggleSmallModelMode: () => void
@@ -197,6 +224,8 @@ export function ComposerToolbar({
   const caps = providerCapabilities(providerId, provider)
   const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel)
   const currentModel = modelOptionFor(modelOptions, modelId)
+  const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel)
+  const currentReviewerModel = modelOptionFor(reviewerModelOptions, reviewerModelId || modelId)
   const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
   const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
     ? buildCodexReasoningOptions(
@@ -207,18 +236,25 @@ export function ComposerToolbar({
       )
     : []
   const hasReasoningEffort = reasoningOptions.length > 0
+  const speedExplicit = serviceTierExplicit ?? (serviceTier ?? '') !== ''
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
   const currentReasoning = modelOptionFor(
     reasoningOptions,
     reasoningEffortForModel(acp, currentModel.id, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
   )
-  const currentSpeed = modelOptionFor(speedOptions, serviceTier)
-  const modelDisabled = acpRuntimeBlocksControlChanges(acp)
-  const selectorDisabled = modelDisabled && !canChangeProvider
+  const currentSpeed = modelOptionFor(speedOptions, speedExplicit ? serviceTier : CODEX_SPEED_INHERIT_ID)
+  const variantOptions = providerConfigVariantOptions(acp, providerId)
+  const goalPairLocked = featurePreference === 'uam' && smallModelMode && goalActive
+  const modelDisabled = acpRuntimeBlocksControlChanges(acp) || goalPairLocked
+  const architectModelsInOptions = featurePreference === 'uam' && smallModelMode
+  const selectorDisabled = architectModelsInOptions || (modelDisabled && !canChangeProvider)
   const providerName = providerShortName(provider, providerId)
-  const planActive = approvalModeId === 'plan'
+  const providerPlanActive = providerModeId === 'plan'
+  const selectedUamAgent = uamAgents.find((agent) => agent.id === uamAgentId) ?? uamAgents[0]
   const memoryDisabled = false
-  const permissionModes = PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
+  const permissionModes = permissionsManagedByUam
+    ? PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
+    : [{ id: 'provider', name: 'Provider managed', description: 'Respond to permission prompts in the provider interface.' }]
   const permissionMode = permissionModes.find((mode) => mode.id === permissionModeId) ?? permissionModes[0]
   const running = Boolean(acp?.processing)
   const dictationVisualState = dictationError ? 'error' : dictationState
@@ -246,6 +282,7 @@ export function ComposerToolbar({
   const optionsRef = useRef<HTMLDivElement>(null)
   const optionsTriggerRef = useRef<HTMLButtonElement>(null)
   const optionsMenuRef = useRef<HTMLDivElement>(null)
+  const optionsMenuId = useId()
   const modelTriggerRef = useRef<HTMLButtonElement>(null)
   const modelWasOpenRef = useRef(false)
   const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -303,12 +340,9 @@ export function ComposerToolbar({
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!optionsRef.current?.contains(target) && !optionsMenuRef.current?.contains(target)) setOptionsOpen(false)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOptionsOpen(false) }
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
     }
   }, [optionsOpen])
   const chipStyle = {
@@ -338,7 +372,9 @@ export function ComposerToolbar({
           type="button"
           title="Add files, goal, and options"
           aria-label="Options"
+          aria-haspopup="menu"
           aria-expanded={optionsOpen}
+          aria-controls={optionsOpen ? optionsMenuId : undefined}
           onClick={() => setOptionsOpen((v) => !v)}
           className="uam-composer-action inline-flex items-center"
           style={{
@@ -354,6 +390,10 @@ export function ComposerToolbar({
             ref={optionsMenuRef}
             anchorRef={optionsTriggerRef}
             side="top"
+            id={optionsMenuId}
+            role="menu"
+            aria-label="Composer options"
+            onRequestClose={() => setOptionsOpen(false)}
             className="flex flex-col gap-1.5 animate-fade-in"
             style={{
               minWidth: 210, padding: 8,
@@ -363,6 +403,7 @@ export function ComposerToolbar({
           >
             <button
               type="button"
+              role="menuitem"
               title="Attach files to the next message"
               onClick={() => { setOptionsOpen(false); onAttachFile() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
@@ -373,17 +414,17 @@ export function ComposerToolbar({
             </button>
             <button
               type="button"
+              role="menuitem"
               title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
               aria-pressed={goalActive || goalArmed}
               onClick={() => { setOptionsOpen(false); onToggleGoal() }}
-              disabled={modelDisabled}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)', background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background, color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
             >
               <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
               <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
             </button>
-            <label className="grid gap-1 px-1 py-1 text-[11px]">
+            <label className="grid gap-1 px-1 py-1 text-xs">
               <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>
               <input
                 type="number"
@@ -395,10 +436,23 @@ export function ComposerToolbar({
                 style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
               />
             </label>
-            {(hasReasoningEffort || caps.hasServiceTier) && (
+            <button
+              type="button"
+              role="menuitem"
+              title="Configure computer use"
+              aria-haspopup="dialog"
+              aria-pressed={computerUseMode}
+              onClick={() => { setOptionsOpen(false); onOpenComputerUse() }}
+              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
+              style={{ ...chipStyle, borderColor: computerUseMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: computerUseMode ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : chipStyle.background, color: computerUseMode ? 'var(--text)' : 'var(--text-2)' }}
+            >
+              <MousePointer2 size={13} aria-hidden style={{ color: computerUseMode ? 'var(--accent)' : 'var(--text-3)' }} />
+              <span>Computer use…</span>
+            </button>
+            {(hasReasoningEffort || caps.hasServiceTier || variantOptions.length > 0) && (
               <>
                 <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Model</div>
+                <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Model</div>
                 {hasReasoningEffort && (
                   <MenuSelect
                     label="Reasoning"
@@ -417,23 +471,53 @@ export function ComposerToolbar({
                     disabled={modelDisabled}
                   />
                 )}
+                {variantOptions.map((option) => (
+                  <div key={option.id} className="grid gap-1">
+                    <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{option.name || option.id}</div>
+                    <MenuSelect
+                      label={option.name || option.id}
+                      value={option.currentValue}
+                      options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))}
+                      onChange={(value) => onSelectConfigOption(option.id, value)}
+                      disabled={modelDisabled}
+                    />
+                  </div>
+                ))}
               </>
             )}
-            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Agent</div>
-            <MenuSelect
-              label="Agent mode"
-              value={approvalModeId ?? 'default'}
-              options={agentModes.map((mode) => ({
-                value: mode.id,
-                label: mode.name,
-                description: mode.description,
-                icon: permissionModeIcon(mode.id),
-              }))}
-              onChange={onSelectAgentMode}
-            />
-            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <div className="px-1 pb-0.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Permissions</div>
+            {featurePreference === 'uam' && <>
+			  <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+			  <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>UAM agent</div>
+			  <MenuSelect
+				label={uamAgentNextTurn ? "Next turn agent" : "UAM agent"}
+				value={uamAgentId}
+				options={uamAgents.map((agent) => ({
+				  value: agent.id,
+				  label: agent.name,
+				  description: agent.description,
+				  icon: permissionModeIcon(agent.id === 'plan' ? 'plan' : 'default'),
+				}))}
+				onChange={onSelectUamAgent}
+			  />
+			</>}
+			{featurePreference === 'provider' && providerModes.length > 0 && <>
+			  <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+			  <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Provider mode</div>
+			  <MenuSelect
+				label="Provider mode"
+				value={providerModeId ?? 'default'}
+				options={providerModes.map((mode) => ({
+				  value: mode.id,
+				  label: mode.name,
+				  description: mode.description,
+				  icon: permissionModeIcon(mode.id),
+				}))}
+				onChange={onSelectProviderMode}
+				disabled={modelDisabled}
+			  />
+			</>}
+			<div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
+            <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Permissions</div>
             <MenuSelect
               label="Permissions"
               value={permissionModeId}
@@ -444,20 +528,8 @@ export function ComposerToolbar({
                 icon: permissionModeIcon(mode.id),
               }))}
               onChange={onSelectPermissionMode}
+              disabled={!permissionsManagedByUam || permissionControlsDisabled}
             />
-            {permissionModeId === 'auto' && (
-              <MenuSelect
-                label="Auto Decide safety"
-                value={commandSafetyTier}
-                onChange={(value) => onSetCommandSafetyTier(value as 'low' | 'medium' | 'high')}
-                options={COMMAND_SAFETY_TIERS.map((tier) => ({
-                  value: tier.id,
-                  label: tier.label,
-                  description: tier.detail,
-                  icon: tier.id === 'low' ? <ShieldAlert size={14} /> : tier.id === 'medium' ? <ShieldCheck size={14} /> : <Shield size={14} />,
-                }))}
-              />
-            )}
             <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
             <MenuSelect
               label="Memory"
@@ -466,8 +538,9 @@ export function ComposerToolbar({
               onChange={(level) => onSelectMemoryLevel(level as MemoryLevel)}
               disabled={memoryDisabled}
             />
-            <button
+            {featurePreference === 'uam' && <button
               type="button"
+              role="menuitem"
               title="Plan first, then run and review one verified step at a time"
               aria-pressed={smallModelMode}
               onClick={onToggleSmallModelMode}
@@ -476,10 +549,35 @@ export function ComposerToolbar({
               style={{ ...chipStyle, borderColor: smallModelMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: smallModelMode ? 'var(--accent-dim)' : chipStyle.background, color: smallModelMode ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
             >
               <Cpu size={13} aria-hidden />
-              <span>Small-model workflow {smallModelMode ? 'on' : 'off'}</span>
-            </button>
+              <span>Architect + worker {smallModelMode ? 'on' : 'off'}</span>
+            </button>}
+            {featurePreference === 'uam' && smallModelMode && (
+              <div className="grid gap-2">
+                <div className="grid gap-1">
+                  <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{goalPairLocked ? 'Worker model · locked for active Goal' : 'Worker model'}</div>
+                  <MenuSelect
+                    label="Worker model"
+                    value={currentModel.id}
+                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                    onChange={onSelectModel}
+                    disabled={modelDisabled}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{goalPairLocked ? 'Reviewer model · locked for active Goal' : 'Reviewer model'}</div>
+                <MenuSelect
+                  label="Reviewer model"
+                  value={currentReviewerModel.id}
+                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  onChange={onSelectReviewerModel}
+                  disabled={modelDisabled}
+                />
+                </div>
+              </div>
+            )}
             <button
               type="button"
+              role="menuitem"
               title="Open Skills"
               onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
@@ -518,25 +616,28 @@ export function ComposerToolbar({
       ) : <>
       <div className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
-        {planActive && <ActiveModeChip label="Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectAgentMode('default')} />}
+        {computerUseMode && <ActiveModeChip label="Computer use" compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
+        {featurePreference === 'uam' && uamAgentId !== 'build' && <ActiveModeChip label={`${uamAgentNextTurn ? 'Next agent' : 'UAM agent'}: ${selectedUamAgent?.name ?? uamAgentId}`} compactLabel={selectedUamAgent?.name ?? uamAgentId} icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectUamAgent('build')} />}
+        {featurePreference === 'provider' && providerPlanActive && <ActiveModeChip label="Provider Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectProviderMode('default')} />}
         <ActiveModeChip
-          label={permissionModeId === 'default' ? 'Permissions: Default' : permissionModeId === 'auto' ? `Auto Decide: ${COMMAND_SAFETY_TIERS.find((tier) => tier.id === commandSafetyTier)?.label ?? 'Medium'}` : permissionMode.name}
-          compactLabel={permissionModeId === 'default' ? 'Default' : permissionModeId === 'auto' ? 'Auto' : permissionMode.name}
+          label={!permissionsManagedByUam ? 'Permissions: Provider managed' : permissionModeId === 'default' ? 'Permissions: Default' : permissionMode.name}
+          compactLabel={!permissionsManagedByUam ? 'Provider permissions' : permissionModeId === 'default' ? 'Default' : permissionMode.name}
           icon={permissionModeIcon(permissionModeId, 12)}
-          onClear={permissionModeId === 'default' ? undefined : () => onSelectPermissionMode('default')}
+          onClear={!permissionsManagedByUam || permissionModeId === 'default' ? undefined : () => onSelectPermissionMode('default')}
         />
         {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} compactLabel={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
-        {smallModelMode && <ActiveModeChip label="Small-model workflow" compactLabel="Small model" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
+        {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
+        {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
         {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} compactLabel={currentReasoning.label} icon={<Cpu size={12} aria-hidden />} />}
-        {serviceTier && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={modelDisabled ? undefined : () => onSelectSpeed('')} />}
+        {speedExplicit && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={modelDisabled ? undefined : () => onSelectSpeed(CODEX_SPEED_INHERIT_ID)} />}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <div ref={modelMenuRef} className="relative">
           <button
             ref={modelTriggerRef}
             type="button"
-            title={`${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}
-            aria-label="Select provider and model"
+            title={`${architectModelsInOptions ? 'Worker model is managed in Options' : 'Model'} · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}
+            aria-label={architectModelsInOptions ? 'Worker model is managed in Options' : 'Select provider and model'}
             onClick={onToggleModel}
             disabled={selectorDisabled}
             aria-haspopup="menu"
@@ -564,6 +665,7 @@ export function ComposerToolbar({
               id={modelListId}
               role="menu"
               aria-label="Provider and model"
+              manageFocus={false}
               onKeyDown={onModelKeyDown}
               className="animate-fade-in"
               style={{
@@ -577,7 +679,7 @@ export function ComposerToolbar({
             >
               {providers.length > 1 && (
                 <div role="group" aria-label="Provider">
-                  <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Provider</div>
+                  <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>Provider</div>
                   {providers.map((candidate) => {
                     const selected = candidate.id === providerId
                     const disabled = !selected && !canChangeProvider
@@ -601,8 +703,8 @@ export function ComposerToolbar({
                   <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
                 </div>
               )}
-              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>Model</div>
-              {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-[11px]" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
+              <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>{featurePreference === 'uam' && smallModelMode ? 'Worker model' : 'Model'}</div>
+              {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
               <div data-testid="model-options" style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {modelOptions.map((option, index) => {
                   const selected = option.id === currentModel.id
@@ -635,12 +737,12 @@ export function ComposerToolbar({
                         <span className="flex-1">{option.label}</span>
                         {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
                       </span>
-                      {!hideRepeatedCopilotDetail && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
+                      {!hideRepeatedCopilotDetail && <span className="text-xs" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
                     </button>
                   )
                 })}
               </div>
-              <div className="mt-1 flex items-center gap-2 border-t px-2 pt-2 text-[11px]" style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
+              <div className="mt-1 flex items-center gap-2 border-t px-2 pt-2 text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
                 <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: runtimeStatusColor }} />
                 <span>{runtimeStatusLabel}</span>
                 {acp?.agentInfo?.title && <span className="ml-auto truncate">{acp.agentInfo.title}</span>}

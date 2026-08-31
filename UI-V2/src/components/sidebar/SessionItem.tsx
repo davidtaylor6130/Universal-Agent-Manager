@@ -7,15 +7,17 @@ import {
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
-import { Tooltip, ViewportMenu } from '../ui'
+import { Button, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
+  chatGridLeaves,
   chatPaneColors,
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
 import { providerShortName } from '../../utils/providerMetadata'
 import { CollectionMenuItems } from './CollectionMenuItems'
+import { displayedChatStatus } from './chatSearch'
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -66,12 +68,6 @@ interface SessionItemProps {
   selected?: boolean
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
-
-type SidebarStatus =
-  | { type: 'attention'; kind: AcpAttentionKind; label: string }
-  | { type: 'processing'; label: string }
-  | { type: 'idle'; label: string }
-  | null
 
 const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
   question: 'Needs answer',
@@ -129,32 +125,33 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
   const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
-  const lifecycleStatus = useAppStore(useShallow((s): SidebarStatus => {
+  const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
-    const attention = acpBindings.find((binding) => binding.attentionKind)?.attentionKind
-    if (attention) return { type: 'attention', kind: attention, label: ATTENTION_LABELS[attention] }
-    if (acpBindings.some((binding) => binding.processing || binding.lifecycleState === 'waitingPermission') || cliBindings.some((binding) => binding.processing || binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown')) return { type: 'processing', label: 'Agent running' }
-    return acpBindings.some((binding) => binding.readySinceLastSelect) || cliBindings.some((binding) => binding.readySinceLastSelect) ? { type: 'idle', label: 'Done' } : null
+    return displayedChatStatus(cliBindings, acpBindings)
   }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
-  const deleteSession = useAppStore((s) => s.deleteSession)
+  const deleteSessions = useAppStore((s) => s.deleteSessions)
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   // Context/overflow menu anchored to a viewport position (cursor or button).
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const showMenu = menuPos !== null
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
   const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
-  const paneIndexes = gridLayout.sessionIds
-    .slice(0, gridLayout.paneCount)
-    .flatMap((id, index) => familySessionIds.includes(id) ? [index] : [])
+  const gridLeaves = chatGridLeaves(gridLayout.root)
+  const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
   const paneNumbers = paneIndexes.map((index) => index + 1)
   const paneLabel = paneNumbers.length === 1
     ? `Shown in pane ${paneNumbers[0]}`
@@ -172,13 +169,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   // Close context menu on outside click
   useEffect(() => {
     if (!showMenu) return
+    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
     const handler = (e: MouseEvent) => {
       if (e.target instanceof Element && e.target.closest('[data-viewport-menu]')) return
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuPos(null)
       }
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuPos(null) }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setMenuPos(null)
+      menuReturnFocusRef.current?.focus()
+    }
     document.addEventListener('mousedown', handler)
     document.addEventListener('keydown', onKey)
     return () => {
@@ -194,6 +196,24 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     setEditing(false)
   }
 
+  const confirmSessionDelete = async () => {
+    if (deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      if (await deleteSessions(familySessionIds)) {
+        setConfirmDelete(false)
+        rowRef.current?.focus()
+      } else {
+        setDeleteError('The chat could not be deleted. Finish active work and try again.')
+      }
+    } catch {
+      setDeleteError('The chat could not be deleted. Finish active work and try again.')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div
       className="relative group"
@@ -206,6 +226,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
+        ref={rowRef}
+        role="button"
+        tabIndex={0}
+        aria-current={isActive ? 'page' : undefined}
+        aria-label={`Open chat ${sessionName}`}
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
@@ -222,6 +247,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setEditing(true)
           setEditValue(sessionName)
         }}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget || editing) return
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            if (!isActive) setActiveSession(sessionId)
+          } else if (event.key === 'F2') {
+            event.preventDefault()
+            setEditing(true)
+            setEditValue(sessionName)
+          } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault()
+            const rect = event.currentTarget.getBoundingClientRect()
+            menuReturnFocusRef.current = event.currentTarget
+            setMenuPos({ x: rect.left + 16, y: rect.bottom })
+          }
+        }}
         onMouseEnter={(e) => {
           if (!isActive && !selected) e.currentTarget.style.background = 'var(--sidebar-item-hover)'
         }}
@@ -230,6 +271,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
         onContextMenu={(e) => {
           e.preventDefault()
+          menuReturnFocusRef.current = e.currentTarget
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
@@ -238,7 +280,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             <Check size={12} aria-hidden />
           </span>
         )}
-        {gridLayout.paneCount > 1 && paneIndexes.length > 0 && (
+        {gridLeaves.length > 1 && paneIndexes.length > 0 && (
           <span role="img" aria-label={paneLabel} className="inline-flex shrink-0 items-center gap-0.5">
             {paneIndexes.map((paneIndex) => (
               <span
@@ -310,17 +352,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </span>
               )}
               {lifecycleStatus?.type === 'processing' && (
-                <span className="session-status session-status--processing" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                <span className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
                   <span />
                 </span>
               )}
               {lifecycleStatus?.type === 'attention' && (
-                <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+                <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={ATTENTION_LABELS[lifecycleStatus.kind]} title={ATTENTION_LABELS[lifecycleStatus.kind]}>
                   {sidebarStatusIcon(lifecycleStatus.kind)}
                 </span>
               )}
-              {lifecycleStatus?.type === 'idle' && (
-                <span className="session-status session-status--idle" aria-label={lifecycleStatus.label} title={lifecycleStatus.label}>
+              {lifecycleStatus?.type === 'done' && (
+                <span className="session-status session-status--idle" aria-label="Done" title="Done">
                   <span />
                 </span>
               )}
@@ -377,6 +419,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                     e.stopPropagation()
                     if (menuPos) { setMenuPos(null); return }
                     const r = e.currentTarget.getBoundingClientRect()
+                    menuReturnFocusRef.current = e.currentTarget
                     setMenuPos({ x: r.right, y: r.bottom + 4 })
                   }}
                 >
@@ -393,6 +436,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         <ViewportMenu
           ref={menuRef}
           point={menuPos}
+          role="menu"
+          aria-label={`Actions for ${sessionName}`}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
             minWidth: 170,
@@ -402,6 +447,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           }}
         >
           <button
+            role="menuitem"
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
@@ -413,14 +459,32 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </button>
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
+            role="menuitem"
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
-            onClick={() => { setMenuPos(null); deleteSession(sessionId) }}
+            onClick={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }}
           >
             <Trash2 size={13} aria-hidden />
             Delete
           </button>
         </ViewportMenu>
+      )}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.5)' }}>
+          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${sessionName}`} className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete chat?</div>
+            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>{familySessionIds.length > 1
+                ? `${sessionName} and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
+                : `${sessionName} will be permanently deleted.`} This cannot be undone.</p>
+              {deleteError && <p role="alert" className="mt-3" style={{ color: 'var(--red)' }}>{deleteError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <Button size="sm" disabled={deleting} onClick={() => { setConfirmDelete(false); setDeleteError(''); rowRef.current?.focus() }}>Cancel</Button>
+              <Button size="sm" variant="danger" loading={deleting} onClick={() => { void confirmSessionDelete() }}>Delete chat</Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

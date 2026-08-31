@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel } from './modelOptions'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, reasoningEffortForModel } from './modelOptions'
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {
@@ -25,6 +25,23 @@ describe('reasoningEffortForModel', () => {
     expect(options[0]).toMatchObject({ id: '', label: 'Default' })
   })
 
+  it('uses ACP model config choices when the provider omits availableModels', () => {
+    const acp = {
+      availableModels: [],
+      configOptions: [{
+        id: 'model',
+        name: 'Model',
+        description: '',
+        category: 'model',
+        currentValue: 'opencode/big-pickle',
+        options: [{ value: 'opencode/big-pickle', name: 'Big Pickle', description: 'Remote model' }],
+      }],
+    } as AcpBinding
+
+    expect(buildModelOptions(acp, '', undefined, 'opencode-cli').map((option) => option.id))
+      .toEqual(['opencode/big-pickle'])
+  })
+
   it('keeps Copilot launch-time reasoning when ACP omits per-model efforts', () => {
     const acp = {
       availableModels: [{ id: 'gpt-5.1', name: 'GPT-5.1', supportedReasoningEfforts: [] }],
@@ -44,9 +61,10 @@ describe('reasoningEffortForModel', () => {
       ],
     } as AcpBinding
 
-    expect(buildCodexSpeedOptions(acp, 'gpt-5.6-sol').map((option) => option.id)).toEqual(['', 'fast'])
-    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini', 'flex').map((option) => option.id)).toEqual([''])
-    expect(buildCodexSpeedOptions(undefined, '').map((option) => option.id)).toEqual(['', 'fast', 'flex'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.6-sol').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, '', 'fast'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini', 'flex').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, ''])
+    expect(buildCodexSpeedOptions(undefined, '').map((option) => option.id)).toEqual([CODEX_SPEED_INHERIT_ID, '', 'fast', 'flex'])
+    expect(buildCodexSpeedOptions(acp, 'gpt-5.4-mini').map((option) => option.label).slice(0, 2)).toEqual(['Inherit', 'Standard'])
   })
 
   it('keeps current Codex efforts in the offline fallback catalog', () => {

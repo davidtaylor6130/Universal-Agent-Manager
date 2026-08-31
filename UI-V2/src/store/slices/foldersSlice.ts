@@ -1,4 +1,4 @@
-import type { Folder, WorkspaceFolderRecoveryPreview } from '../../types/session'
+import type { Folder, RemoteDirectoryBrowseResult, RemoteDirectoryListing, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
@@ -40,9 +40,9 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
 
-    addFolder: (name: string, _parentId: string | null, directory: string) => {
+    addFolder: (name: string, _parentId: string | null, directory: string, executionHostId = 'local') => {
       if (isCefContext()) {
-        return sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory } }).then((resp) => {
+        return sendToCEF<CppFolder>({ action: 'createFolder', payload: { title: name, directory, executionHostId } }).then((resp) => {
           if (!resp.ok || !resp.data?.id) {
             if (!resp.ok) console.error('[CEF] createFolder failed:', resp.error)
             return false
@@ -58,6 +58,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
               name: resp.data!.title,
               parentId: null,
               directory: resp.data!.directory ?? '',
+              executionHostId: resp.data!.executionHostId || 'local',
               isExpanded: !resp.data!.collapsed,
               createdAt: new Date(),
             }
@@ -76,6 +77,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         name,
         parentId: null,
         directory,
+        executionHostId,
         isExpanded: true,
         createdAt: new Date(),
       }
@@ -157,12 +159,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
     rescanFolderChats: async (id: string): Promise<boolean> => {
       if (!isCefContext()) return true
-      const response = await sendToCEF({
+      const response = await sendToCEF<{ success?: boolean; partial?: boolean }>({
         action: 'rescanFolderChats',
         payload: { folderId: id },
         requestId: createRequestId('rescanFolderChats'),
       })
-      return response.ok
+      return response.ok && (response.data?.success !== false || response.data?.partial === true)
     },
 
     previewUnsortedWorkspaceFolders: async (): Promise<WorkspaceFolderRecoveryPreview | null> => {
@@ -193,11 +195,11 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    renameFolder: (id: string, name: string, directory: string) => {
+    renameFolder: async (id: string, name: string, directory: string): Promise<boolean> => {
       if (isCefContext()) {
         const previousFolder = get().folders.find((folder) => folder.id === id)
         if (!previousFolder) {
-          return
+          return false
         }
 
         const requestKey = `renameFolder:${id}`
@@ -208,49 +210,41 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
             folder.id === id ? { ...folder, name, directory } : folder
           ),
         }))
-        sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory }, requestId }).then(
-          (resp) => {
-            if (resp.ok) {
-              clearPendingRequest(requestKey, resp.requestId)
-              return
-            }
+        const response = await sendToCEF({ action: 'renameFolder', payload: { folderId: id, title: name, directory }, requestId })
+        if (response.ok) {
+          clearPendingRequest(requestKey, response.requestId)
+          return true
+        }
 
-            if (!isLatestPendingRequest(requestKey, resp.requestId)) {
-              return
-            }
-
-            set((state) => ({
-              folders: state.folders.map((folder) => (folder.id === id ? {
-                ...folder,
-                name: previousFolder.name,
-                directory: previousFolder.directory,
-              } : folder)),
-            }))
-            pendingRequestIdsByKey.delete(requestKey)
-          }
-        )
-        return
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          set((state) => ({
+            folders: state.folders.map((folder) => (folder.id === id ? {
+              ...folder,
+              name: previousFolder.name,
+              directory: previousFolder.directory,
+            } : folder)),
+          }))
+          pendingRequestIdsByKey.delete(requestKey)
+        }
+        return false
       }
 
       set((state) => ({
         folders: state.folders.map((f) => (f.id === id ? { ...f, name, directory } : f)),
       }))
+      return true
     },
 
-    deleteFolder: (id: string) => {
+    deleteFolder: async (id: string): Promise<boolean> => {
       if (isCefContext()) {
         const deletedFolder = get().folders.find((folder) => folder.id === id)
         if (!deletedFolder) {
-          return
+          return false
         }
 
         const requestId = createRequestId('deleteFolder')
-        sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId }).then((resp) => {
-          if (!resp.ok) {
-            console.error('[CEF] deleteFolder failed:', resp.error)
-          }
-        })
-        return
+        const response = await sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        return response.ok
       }
 
       set((state) => {
@@ -284,6 +278,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
               : state.activeSessionId,
         }
       })
+      return true
     },
 
     browseFolderDirectory: async (currentValue: string) => {
@@ -298,6 +293,31 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
       const selectedPath = response.ok ? response.data?.selectedPath?.trim() ?? '' : ''
       return selectedPath.length > 0 ? selectedPath : null
+    },
+
+    listRemoteDirectories: async (executionHostId: string, directory: string): Promise<RemoteDirectoryBrowseResult> => {
+      if (!isCefContext()) {
+        return { ok: false, error: 'Remote directory browsing requires the desktop app.' }
+      }
+
+      const response = await sendToCEF<RemoteDirectoryListing>({
+        action: 'listRemoteDirectories',
+        payload: { executionHostId, directory },
+      })
+      if (!response.ok || !response.data) {
+        return { ok: false, error: response.error ?? 'The remote directory could not be listed.' }
+      }
+      const resultDirectory = typeof response.data.directory === 'string' ? response.data.directory.trim() : ''
+      const parentDirectory = typeof response.data.parentDirectory === 'string' ? response.data.parentDirectory.trim() : ''
+      const directories = Array.isArray(response.data.directories)
+        ? response.data.directories.flatMap((entry) => {
+          const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
+          const path = typeof entry?.path === 'string' ? entry.path.trim() : ''
+          return name && path ? [{ name, path }] : []
+        })
+        : []
+      if (!resultDirectory) return { ok: false, error: 'The remote helper returned an invalid directory listing.' }
+      return { ok: true, listing: { directory: resultDirectory, parentDirectory, directories, truncated: response.data.truncated === true } }
     },
 
     browseMarkdownStoreDirectory: async (currentValue: string) => {

@@ -4,7 +4,7 @@ import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Switch } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Switch } from '../ui'
 
 function newAction(): ShellAction {
   const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -45,6 +45,7 @@ export function ShellActionsSettings() {
   const [error, setError] = useState('')
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({})
   const [groupDrafts, setGroupDrafts] = useState<Record<string, string>>({})
+  const [pendingDeleteActionId, setPendingDeleteActionId] = useState('')
 
   useEffect(() => {
     setActions(savedActions)
@@ -103,8 +104,29 @@ export function ShellActionsSettings() {
             <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{action.label || 'Untitled action'}</span>
             {(groupDrafts[action.id] ?? groupPathText(action)) && <span className="hidden sm:flex max-w-52 items-center gap-1 truncate rounded-md px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)', background: 'var(--bg)' }}><FolderTree size={12} aria-hidden />{groupDrafts[action.id] ?? groupPathText(action)}</span>}
             <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-            <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="danger" onClick={() => { if (window.confirm(`Delete shell action “${action.label}”?`)) setActions((current) => current.filter((item) => item.id !== action.id)) }} />
+            <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="danger" onClick={() => setPendingDeleteActionId(action.id)} />
           </div>
+          {pendingDeleteActionId === action.id && (
+            <div className="p-3">
+              <Notice
+                tone="warning"
+                title="Delete shell action?"
+                dismissLabel={`Dismiss delete ${action.label} warning`}
+                onDismiss={() => setPendingDeleteActionId('')}
+                actions={(
+                  <>
+                    <Button size="sm" onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
+                    <Button size="sm" variant="danger" onClick={() => {
+                      setActions((current) => current.filter((item) => item.id !== action.id))
+                      setPendingDeleteActionId('')
+                    }}>Delete action</Button>
+                  </>
+                )}
+              >
+                Delete “{action.label}”? This change is saved when you apply the shell action settings.
+              </Notice>
+            </div>
+          )}
           {expanded && <div className="grid gap-3 p-4 animate-fade-in">
           <div className="flex gap-3 items-center">
             <label className="grid gap-1 flex-1 text-xs" style={{ color: 'var(--text-2)' }}>

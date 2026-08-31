@@ -1,6 +1,7 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 
 #include "app/chat_domain_service.h"
+#include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
@@ -128,6 +129,22 @@ CliTerminalSteerRecoveryAction CliTerminalSteerRecovery(const CliTerminalState& 
 	return CliTerminalSteerRecoveryAction::None;
 }
 
+CliTerminalInactivityRecoveryAction CliTerminalInactivityRecovery(const CliTerminalState& terminal, double now_seconds, double timeout_seconds, double interrupt_grace_seconds)
+{
+	if (!terminal.running || terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
+	{
+		return CliTerminalInactivityRecoveryAction::None;
+	}
+	if (terminal.inactivity_interrupt_requested_time_s > 0.0)
+	{
+		return now_seconds - terminal.inactivity_interrupt_requested_time_s >= interrupt_grace_seconds ? CliTerminalInactivityRecoveryAction::Stop : CliTerminalInactivityRecoveryAction::None;
+	}
+	// A PTY has no structured progress signal: provider output can be a spinner and input can be
+	// an interrupt or control sequence. Enforce a hard ceiling from the busy transition, then retain
+	// the existing interrupt grace for cleanup.
+	return terminal.last_busy_time_s > 0.0 && now_seconds - terminal.last_busy_time_s >= timeout_seconds ? CliTerminalInactivityRecoveryAction::Interrupt : CliTerminalInactivityRecoveryAction::None;
+}
+
 const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 {
 	switch (state)
@@ -214,6 +231,7 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 	terminal.turn_state = CliTerminalTurnState::Busy;
 	terminal.generation_in_progress = true;
 	terminal.last_busy_time_s = now;
+	terminal.inactivity_interrupt_requested_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
 }
 
@@ -226,6 +244,7 @@ void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 	terminal.turn_state = CliTerminalTurnState::Idle;
 	terminal.generation_in_progress = false;
 	terminal.last_idle_confirmed_time_s = now;
+	terminal.inactivity_interrupt_requested_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
 }
 
@@ -257,6 +276,7 @@ void MarkCliTerminalStopped(CliTerminalState& terminal)
 	terminal.last_idle_confirmed_time_s = 0.0;
 	terminal.last_busy_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
+	terminal.inactivity_interrupt_requested_time_s = 0.0;
 }
 
 void MarkCliTerminalDisabled(CliTerminalState& terminal)
@@ -412,6 +432,8 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 
 void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
 {
+	const ChatSession* chat = ChatDomainService().FindChatById(app, terminal.attached_chat_id);
+	if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId) return;
 	const std::string sync_target_id = CliTerminalSyncTargetId(terminal);
 	if (!sync_target_id.empty())
 	{

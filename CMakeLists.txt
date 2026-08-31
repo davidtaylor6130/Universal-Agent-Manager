@@ -2,14 +2,59 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.5.4 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 4.8.0 LANGUAGES C CXX)
+set(UAM_PRODUCT_VERSION "4.8.0")
+
+option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
+option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
+set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
+  "Directory containing linux-arm64, linux-x86_64, and windows-x86_64 runner folders.")
 
 if(APPLE)
   enable_language(OBJCXX)
 endif()
 
-if(NOT WIN32 AND NOT APPLE)
+if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
+endif()
+
+if(NOT UAM_RUNNER_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
+  set(UAM_REQUIRED_REMOTE_RUNNERS
+    "linux-arm64/uam-runner"
+    "linux-x86_64/uam-runner"
+    "windows-x86_64/uam-runner.exe"
+  )
+  foreach(UAM_REMOTE_RUNNER IN LISTS UAM_REQUIRED_REMOTE_RUNNERS)
+    cmake_path(GET UAM_REMOTE_RUNNER PARENT_PATH UAM_REMOTE_RUNNER_DIR)
+    set(UAM_REMOTE_RUNNER_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER}")
+    set(UAM_REMOTE_RUNNER_SHA256_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.sha256")
+    set(UAM_REMOTE_RUNNER_VERSION_PATH
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.version")
+    foreach(UAM_REMOTE_RUNNER_FILE
+        "${UAM_REMOTE_RUNNER_PATH}"
+        "${UAM_REMOTE_RUNNER_SHA256_PATH}"
+        "${UAM_REMOTE_RUNNER_VERSION_PATH}")
+      if(NOT EXISTS "${UAM_REMOTE_RUNNER_FILE}")
+        message(FATAL_ERROR
+          "Full app builds require every remote helper. Missing: ${UAM_REMOTE_RUNNER_FILE}")
+      endif()
+    endforeach()
+    file(READ "${UAM_REMOTE_RUNNER_VERSION_PATH}" UAM_REMOTE_RUNNER_VERSION)
+    string(STRIP "${UAM_REMOTE_RUNNER_VERSION}" UAM_REMOTE_RUNNER_VERSION)
+    if(NOT UAM_REMOTE_RUNNER_VERSION STREQUAL UAM_PRODUCT_VERSION)
+      message(FATAL_ERROR
+        "Remote helper version mismatch for ${UAM_REMOTE_RUNNER}: "
+        "expected ${UAM_PRODUCT_VERSION}, got ${UAM_REMOTE_RUNNER_VERSION}")
+    endif()
+    file(READ "${UAM_REMOTE_RUNNER_SHA256_PATH}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+    string(STRIP "${UAM_REMOTE_RUNNER_EXPECTED_SHA256}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+    file(SHA256 "${UAM_REMOTE_RUNNER_PATH}" UAM_REMOTE_RUNNER_ACTUAL_SHA256)
+    if(NOT UAM_REMOTE_RUNNER_ACTUAL_SHA256 STREQUAL UAM_REMOTE_RUNNER_EXPECTED_SHA256)
+      message(FATAL_ERROR "Remote helper checksum mismatch: ${UAM_REMOTE_RUNNER}")
+    endif()
+  endforeach()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -123,6 +168,7 @@ set(CMAKE_FOLDER "ThirdParty/nlohmann_json")
 FetchContent_Declare(
   nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -134,20 +180,42 @@ set(CMAKE_FOLDER "")
 # CEF (Chromium Embedded Framework) — platform-aware prebuilt download
 # ---------------------------------------------------------------------------
 
+if(NOT UAM_RUNNER_ONLY)
+
 # Platform-specific CEF versions (latest stable from cef-builds.spotifycdn.com).
 if(WIN32)
   set(CEF_PLATFORM "windows64")
+  set(PROJECT_ARCH "x86_64")
   set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
+  set(CEF_SHA256 "f5b0a6fcd3c6d4abd7486e849db2640c27bb4d94d7b792691be348dec8063ff6")
 elseif(APPLE)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+  if(CMAKE_OSX_ARCHITECTURES)
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+      set(CEF_PLATFORM "macosarm64")
+      set(PROJECT_ARCH "arm64")
+      set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+      set(CEF_PLATFORM "macosx64")
+      set(PROJECT_ARCH "x86_64")
+      set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
+    else()
+      message(FATAL_ERROR "CEF macOS builds require exactly one architecture: arm64 or x86_64.")
+    endif()
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(CEF_PLATFORM "macosarm64")
+    set(PROJECT_ARCH "arm64")
+    set(CEF_SHA256 "7ac8e9ba2980bfa607c64f3e4d67feb630ebb9ba2d680f8945212b79d30da2ae")
   else()
     set(CEF_PLATFORM "macosx64")
+    set(PROJECT_ARCH "x86_64")
+    set(CEF_SHA256 "a245962946c4ae90cd7b31a998a5b0b4aac88f71d55c682c5c7ec4099486271c")
   endif()
   set(CEF_VERSION "146.0.10+g8219561+chromium-146.0.7680.179")
 else()
   set(CEF_PLATFORM "linux64")
+  set(PROJECT_ARCH "x86_64")
   set(CEF_VERSION "138.0.61+g664e74a+chromium-138.0.7204.308")
+  set(CEF_SHA256 "dd2de7339c4f56de23ed2d80c9b11db81a6553180c18af64f694963a50be5707")
 endif()
 
 # Encode the + characters as %2B for the URL.
@@ -157,6 +225,7 @@ set(CMAKE_FOLDER "ThirdParty/CEF")
 FetchContent_Declare(
   cef_binary
   URL "https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION_ENCODED}_${CEF_PLATFORM}_minimal.tar.bz2"
+  URL_HASH "SHA256=${CEF_SHA256}"
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 # Force libcef_dll_wrapper to be a STATIC library regardless of BUILD_SHARED_LIBS.
@@ -167,6 +236,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cef_binary)
 set(BUILD_SHARED_LIBS ${_saved_bsl} CACHE BOOL "" FORCE)
 set(CMAKE_FOLDER "")
+endif()
 
 # FetchContent_MakeAvailable already processes the CEF CMakeLists.txt, which
 # builds libcef_dll_wrapper and creates the libcef_dll_wrapper target.
@@ -210,6 +280,7 @@ endif()
 
 set(UAM_PLATFORM_SOURCES)
 set(UAM_PLATFORM_IMPL_SOURCES)
+set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
@@ -220,9 +291,13 @@ if(WIN32)
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
   )
+  list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
+    src/computer_use/computer_use_platform_windows.cpp
+  )
 elseif(APPLE)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_application_macos.mm
+    src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_services_macos_impl.cpp
     src/common/platform/platform_pty_macos.cpp
     src/common/platform/platform_process_macos.cpp
@@ -230,8 +305,12 @@ elseif(APPLE)
     src/common/platform/platform_paths_macos.cpp
     src/common/platform/platform_dictation_macos.mm
   )
+  list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
+    src/computer_use/computer_use_platform_macos.mm
+  )
   set_source_files_properties(
     src/common/platform/platform_dictation_macos.mm
+    src/computer_use/computer_use_platform_macos.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
   )
 endif()
@@ -239,6 +318,82 @@ endif()
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
+
+add_executable(uam_runner
+  src/remote/runner_main.cpp
+  src/remote/runner_client.cpp
+  src/remote/runner_protocol.cpp
+  src/remote/runner_proxy.cpp
+  src/remote/runner_state.cpp
+)
+set_target_properties(uam_runner PROPERTIES
+  OUTPUT_NAME "uam-runner"
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  FOLDER "Remote"
+)
+target_include_directories(uam_runner PRIVATE src)
+target_link_libraries(uam_runner PRIVATE nlohmann_json::nlohmann_json)
+if(APPLE)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_parent_watchdog_macos.cpp
+    src/common/platform/platform_process_macos.cpp
+    src/remote/runner_service_posix.cpp
+  )
+  target_link_libraries(uam_runner PRIVATE
+    "-Wl,-framework,Security"
+    "-Wl,-framework,AppKit"
+    "-Wl,-framework,IOKit"
+    "-Wl,-framework,Foundation"
+  )
+elseif(WIN32)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_process_windows.cpp
+    src/remote/runner_service_windows.cpp
+  )
+  target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32)
+elseif(UNIX)
+  find_package(Threads REQUIRED)
+  target_sources(uam_runner PRIVATE
+    src/common/platform/platform_process_linux.cpp
+    src/remote/runner_service_posix.cpp
+  )
+  target_link_libraries(uam_runner PRIVATE Threads::Threads)
+endif()
+if(MSVC)
+  set_property(TARGET uam_runner PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+elseif(MINGW)
+  target_link_options(uam_runner PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+target_compile_definitions(uam_runner PRIVATE
+  NOMINMAX
+  UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
+  UAM_HEADLESS_RUNNER=1
+  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+  UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+)
+set(UAM_RUNNER_SHA256_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.sha256")
+set(UAM_RUNNER_VERSION_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.version")
+add_custom_command(TARGET uam_runner POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=$<TARGET_FILE:uam_runner>
+    -DOUTPUT=${UAM_RUNNER_SHA256_FILE}
+    -DVERSION=${UAM_PRODUCT_VERSION}
+    -DVERSION_OUTPUT=${UAM_RUNNER_VERSION_FILE}
+    -P "${CMAKE_SOURCE_DIR}/cmake/write_sha256.cmake"
+  VERBATIM
+  COMMENT "Writing the remote runner checksum and version"
+)
+
+if(UAM_RUNNER_ONLY)
+  return()
+endif()
 
 set(UAM_EXECUTABLE_KIND "")
 if(APPLE AND UAM_MACOS_BUNDLE)
@@ -250,11 +405,20 @@ endif()
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_SOURCES}
   ${UAM_PLATFORM_IMPL_SOURCES}
+  ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
+	  src/computer_use/computer_use_mcp_config.cpp
+	  src/computer_use/computer_use_mcp_server.cpp
+	  src/app/agent_definition_service.cpp
+	  src/app/agent_run_ledger.cpp
+	  src/app/agent_run_scheduler.cpp
+	  src/app/uam_control_service.cpp
   src/app/application.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
+  src/app/computer_use_service.cpp
   src/app/git_worktree_service.cpp
+  src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
@@ -281,6 +445,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
+  src/cef/remote_host_handlers.cpp
+  src/cef/local_chat_bundle_handlers.cpp
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
@@ -340,6 +506,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/gemini_cli_compat.cpp
   ${UAM_PROVIDER_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
+  src/remote/runner_bootstrap.cpp
+  src/remote/runner_client.cpp
+  src/remote/runner_proxy.cpp
   src/common/platform/platform_services.cpp
 )
 
@@ -377,6 +546,11 @@ if(APPLE)
     "-Wl,-framework,AVFoundation"
     "-Wl,-framework,Foundation"
     "-Wl,-framework,Speech"
+    "-Wl,-framework,ApplicationServices"
+    "-Wl,-framework,Carbon"
+    "-Wl,-framework,ImageIO"
+    "-Wl,-framework,QuartzCore"
+    "-Wl,-weak_framework,ScreenCaptureKit"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -386,11 +560,18 @@ elseif(WIN32)
     advapi32
     shell32
     windowsapp
+    gdi32
+    ole32
+    oleaut32
+    user32
+    uiautomationcore
+    windowscodecs
   )
 endif()
 
 target_compile_definitions(universal_agent_manager PRIVATE
   NOMINMAX
+  UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
@@ -454,6 +635,16 @@ if(APPLE)
 </dict>
 </plist>")
 
+    # The Screen Recording + Accessibility companion never initializes CEF/V8.
+    # Keep its high-privilege process free of JIT and library-validation bypasses.
+    set(_computer_use_entitlements "${_cef_plists_dir}/computer-use.entitlements")
+    file(WRITE "${_computer_use_entitlements}"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict/>
+</plist>")
+
     # Write Info.plists and accumulate cmake_script content at configure time.
     set(_helper_script_content
 "# Auto-generated by CMakeLists.txt — do not edit.
@@ -495,7 +686,7 @@ file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
   <key>CFBundleName</key><string>${_hname}</string>
   <key>CFBundleDisplayName</key><string>Universal Agent Manager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>
+  <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.15.0</string>
@@ -527,6 +718,44 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
 ")
     endforeach()
 
+    # Computer Use is a separate UI-element companion so macOS grants its
+    # screen-capture and accessibility permissions to the least-privileged process.
+    set(_computer_use_name "UAM Computer Use")
+    file(WRITE "${_cef_plists_dir}/computer-use-Info.plist"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>${_computer_use_name}</string>
+  <key>CFBundleIdentifier</key><string>com.universalagentmanager.desktop.computer-use</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>${_computer_use_name}</string>
+  <key>CFBundleDisplayName</key><string>${_computer_use_name}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
+  <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+</dict>
+</plist>")
+    string(APPEND _helper_script_content
+"
+set(_computer_use_dir \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app/Contents\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/MacOS\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/Frameworks\")
+file(MAKE_DIRECTORY \"\${_computer_use_dir}/Resources\")
+file(COPY_FILE \"\${UAM_MAIN_EXE}\" \"\${_computer_use_dir}/MacOS/${_computer_use_name}\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${_cef_plists_dir}/computer-use-Info.plist\" \"\${_computer_use_dir}/Info.plist\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png\" \"\${_computer_use_dir}/Resources/SoftwareCursor.png\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/gemini-policy.toml\" \"\${_computer_use_dir}/Resources/gemini-policy.toml\" ONLY_IF_DIFFERENT)
+if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\")
+  file(CREATE_LINK \"../../../Chromium Embedded Framework.framework\"
+       \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\"
+       SYMBOLIC)
+endif()
+")
+
     # Sign the main executable binary with the JIT entitlement.
     # We sign only the binary (not the whole bundle) to avoid the sealed-resources
     # error caused by non-code assets (e.g. .woff fonts) inside the bundle.
@@ -534,6 +763,12 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
 "require_dictation_usage_descriptions(\"\${UAM_BUNDLE_CONTENTS}/Info.plist\")
 execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitlements}\"
   \"\${UAM_MAIN_EXE}\")
+execute_process(COMMAND codesign --force --sign - --entitlements \"${_computer_use_entitlements}\"
+  \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app\"
+  RESULT_VARIABLE _computer_use_sign_result)
+if(NOT _computer_use_sign_result EQUAL 0)
+  message(FATAL_ERROR \"Failed to sign the Computer Use companion\")
+endif()
 ")
 
     # Write the script to the build dir.
@@ -638,7 +873,7 @@ else()
   find_program(UAM_NPM_EXECUTABLE NAMES npm REQUIRED)
 endif()
 string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
-set(UAM_UI_BUILD_VERSION "${PROJECT_VERSION}")
+set(UAM_UI_BUILD_VERSION "${UAM_PRODUCT_VERSION}")
 if(UAM_UI_BUILD_VERSION STREQUAL "")
   set(UAM_UI_BUILD_VERSION "local")
 endif()
@@ -652,7 +887,21 @@ add_custom_target(uam_ui_v2_build
   VERBATIM
 )
 add_dependencies(universal_agent_manager uam_ui_v2_build)
+add_dependencies(universal_agent_manager uam_runner)
 set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
+
+if(APPLE AND UAM_MACOS_BUNDLE)
+  set(UAM_REMOTE_ARTIFACT_DEST
+    "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote")
+else()
+  set(UAM_REMOTE_ARTIFACT_DEST "$<TARGET_FILE_DIR:universal_agent_manager>/remote")
+endif()
+set(UAM_REMOTE_ARTIFACT_COPY_COMMAND)
+if(UAM_PACKAGE_REMOTE_RUNNERS)
+  set(UAM_REMOTE_ARTIFACT_COPY_COMMAND
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}" "${UAM_REMOTE_ARTIFACT_DEST}")
+endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -674,6 +923,21 @@ if(APPLE AND UAM_MACOS_BUNDLE)
       "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/gemini-policy.toml"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:uam_runner>"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${UAM_RUNNER_SHA256_FILE}"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.sha256"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_VERSION_FILE}"
+	  "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.version"
+	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
 else()
@@ -696,6 +960,21 @@ else()
       "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
       "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
     COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/gemini-policy.toml"
+	COMMAND ${CMAKE_COMMAND} -E make_directory
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "$<TARGET_FILE:uam_runner>"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/$<TARGET_FILE_NAME:uam_runner>"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_SHA256_FILE}"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.sha256"
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	  "${UAM_RUNNER_VERSION_FILE}"
+	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.version"
+	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
 endif()
@@ -755,7 +1034,9 @@ endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND codesign --force --deep --sign - --entitlements "${_jit_entitlements}"
+    COMMAND codesign --force --sign -
+      "$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework"
+    COMMAND codesign --force --sign - --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
@@ -779,7 +1060,7 @@ if(APPLE)
       MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
       MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
-      MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${UAM_PRODUCT_VERSION}"
       MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
     )
   endif()
@@ -797,6 +1078,8 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+	    tests/computer_use_tests.cpp
+    tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
     tests/acp_session_tests.cpp
     tests/terminal_tests.cpp
@@ -804,9 +1087,18 @@ if(UAM_BUILD_TESTS)
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
     ${UAM_PLATFORM_IMPL_SOURCES}
+	    ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
+	    src/computer_use/computer_use_mcp_config.cpp
+	    src/computer_use/computer_use_mcp_server.cpp
+	    src/app/agent_definition_service.cpp
+	    src/app/agent_run_ledger.cpp
+	    src/app/agent_run_scheduler.cpp
+	    src/app/uam_control_service.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
+    src/app/computer_use_service.cpp
     src/app/git_worktree_service.cpp
+    src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
     src/app/memory_library_service.cpp
     src/app/memory_service.cpp
@@ -874,6 +1166,11 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
+    src/remote/runner_protocol.cpp
+    src/remote/runner_bootstrap.cpp
+    src/remote/runner_client.cpp
+    src/remote/runner_proxy.cpp
+    src/remote/runner_state.cpp
     src/common/platform/platform_services.cpp
   )
   set_target_properties(uam_core_tests PROPERTIES
@@ -899,6 +1196,11 @@ if(UAM_BUILD_TESTS)
       "-Wl,-framework,AVFoundation"
       "-Wl,-framework,Foundation"
       "-Wl,-framework,Speech"
+      "-Wl,-framework,ApplicationServices"
+      "-Wl,-framework,Carbon"
+      "-Wl,-framework,ImageIO"
+      "-Wl,-framework,QuartzCore"
+      "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
     target_link_libraries(uam_core_tests PRIVATE
@@ -908,6 +1210,20 @@ if(UAM_BUILD_TESTS)
       advapi32
       shell32
       windowsapp
+      gdi32
+      ole32
+      oleaut32
+      user32
+      uiautomationcore
+      windowscodecs
+    )
+    add_custom_command(TARGET uam_core_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll"
+        "$<TARGET_FILE_DIR:uam_core_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll"
+        "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
@@ -919,6 +1235,7 @@ if(UAM_BUILD_TESTS)
     UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
   )
   if(MSVC)
+    target_compile_options(uam_core_tests PRIVATE /bigobj)
     set_property(TARGET uam_core_tests PROPERTY
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
@@ -928,6 +1245,7 @@ if(UAM_BUILD_TESTS)
     )
   endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
+  add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
   if(APPLE)
     add_executable(uam_macos_application_tests
@@ -941,5 +1259,17 @@ if(UAM_BUILD_TESTS)
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake
+  )
+  add_test(
+    NAME uam_windows_process_containment_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_windows_process_containment.cmake
+  )
+  add_test(
+    NAME uam_macos_process_spawn_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_macos_process_spawn_contract.cmake
+  )
+  add_test(
+    NAME uam_computer_use_permission_contract
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_computer_use_permission_contract.cmake
   )
 endif()

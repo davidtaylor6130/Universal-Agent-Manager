@@ -445,6 +445,38 @@ void StopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTerminalState&
 	app.status_line = terminal.last_error;
 }
 
+bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalState& terminal, double now_seconds)
+{
+	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(app.settings.active_turn_inactivity_timeout_seconds));
+	if (action == CliTerminalInactivityRecoveryAction::None)
+	{
+		return false;
+	}
+	if (action == CliTerminalInactivityRecoveryAction::Interrupt)
+	{
+		constexpr char interrupt = '\x03';
+		terminal.inactivity_interrupt_requested_time_s = now_seconds;
+		const std::string message = "Provider terminal turn exceeded the " + std::to_string(app.settings.active_turn_inactivity_timeout_seconds) + "-second busy limit. Interrupting it now; the delivered prompt will not be replayed.";
+		if (!WriteToCliTerminal(terminal, &interrupt, 1))
+		{
+			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
+			terminal.should_launch = false;
+		}
+		terminal.last_error = message;
+		app.status_line = message;
+		uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_interrupt", &terminal, message);
+		return true;
+	}
+
+	const std::string message = "Provider terminal stopped after the inactivity interrupt grace period. The delivered prompt was not replayed.";
+	uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_force_stop", &terminal, message);
+	StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
+	terminal.should_launch = false;
+	terminal.last_error = message;
+	app.status_line = message;
+	return true;
+}
+
 bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::CliTerminalState& terminal, bool preserve_selection)
 {
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
@@ -455,6 +487,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	bool changed = false;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const ChatSession* terminal_chat = FindChatForCliTerminal(app, terminal);
+	const bool terminal_is_controller_local = terminal_chat != nullptr &&
+	    uam::paths::IsControllerLocalWorkspace(*terminal_chat);
 	const int previous_chat_message_count = (terminal_chat != nullptr) ? static_cast<int>(terminal_chat->messages.size()) : -1;
 	const bool terminal_uses_native_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
@@ -465,6 +499,14 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (!terminal.running)
 	{
 		return false;
+	}
+	std::string input_error;
+	if (terminal.input_writer != nullptr && terminal.input_writer->FailureOrStall(&input_error))
+	{
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "async_input_failed", &terminal, input_error);
+		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error"));
+		app.status_line = terminal.last_error;
+		return true;
 	}
 	if (!platform_terminal_runtime.HasReadableTerminalOutputHandle(terminal))
 	{
@@ -590,7 +632,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	const bool sync_interval_elapsed = now - terminal.last_sync_time_s > kCliNativeHistoryRefreshIntervalSeconds;
 	const bool should_refresh_native_history = terminal_uses_native_history && sync_interval_elapsed;
-	if (terminal.running && !terminal_uses_native_history && terminal_uses_codex_cli && CliTerminalAttachedSessionId(terminal).empty() && terminal_chat != nullptr && sync_interval_elapsed)
+	if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && terminal_uses_codex_cli && CliTerminalAttachedSessionId(terminal).empty() && sync_interval_elapsed)
 	{
 		terminal.last_sync_time_s = now;
 		ChatSession* codex_chat = FindChatForCliTerminal(app, terminal);
@@ -599,7 +641,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			return changed;
 		}
 
-		const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, *codex_chat);
+		const std::filesystem::path workspace_root =
+		    uam::paths::ResolveControllerWorkspaceRootPath(app, *codex_chat);
 		const std::string discovered = uam::codex::PickNewSessionId(terminal.session_ids_before, workspace_root);
 		if (!discovered.empty())
 		{
@@ -612,7 +655,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			changed = true;
 		}
 	}
-	else if (terminal.running && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && terminal_chat != nullptr && sync_interval_elapsed)
+	else if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && sync_interval_elapsed)
 	{
 		const std::vector<ChatSession> local_now = ChatRepository::LoadLocalChatSummaries(app.data_root);
 		const bool retry_without_snapshot = terminal.session_ids_before.empty();
@@ -737,6 +780,12 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 
 		if (!terminal->running)
 		{
+			continue;
+		}
+
+		if (HandleCliTerminalInactivityTimeout(app, *terminal, now))
+		{
+			changed = true;
 			continue;
 		}
 

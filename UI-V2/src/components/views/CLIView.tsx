@@ -9,6 +9,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
 import type { CliLifecycleState } from '../../store/useAppStore'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import { readTerminalSteerDraft, writeTerminalSteerDraft } from '../../utils/composerDraftStorage'
 
 interface CLIViewProps {
   session: Session
@@ -110,7 +111,9 @@ export function CLIView({ session }: CLIViewProps) {
   const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
   const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
-  const [steerDraft, setSteerDraft] = useState('')
+  const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
+  const [steerDraft, setSteerDraft] = useState(() => readTerminalSteerDraft(session.id))
   const [steerSubmitting, setSteerSubmitting] = useState(false)
   const [terminalStartAttempt, setTerminalStartAttempt] = useState(0)
   const [dismissedTerminalError, setDismissedTerminalError] = useState('')
@@ -131,6 +134,10 @@ export function CLIView({ session }: CLIViewProps) {
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
 
   useEffect(() => {
+    writeTerminalSteerDraft(session.id, steerDraft)
+  }, [session.id, steerDraft])
+
+  useEffect(() => {
     currentSessionIdRef.current = session.id
     steerInFlightRef.current = false
     copilotCompatibilityRetryPendingRef.current = false
@@ -148,7 +155,7 @@ export function CLIView({ session }: CLIViewProps) {
 
   useEffect(() => {
     const compatibilityCheckFinished =
-      copilotVersionStatus === 'supported' || copilotVersionStatus === 'unsupported'
+      copilotVersionStatus !== 'unknown' && copilotVersionStatus !== 'checking' && copilotVersionStatus !== 'installing'
     if (compatibilityCheckFinished && copilotCompatibilityRetryPendingRef.current) {
       copilotCompatibilityRetryPendingRef.current = false
       setTerminalStartAttempt((attempt) => attempt + 1)
@@ -241,7 +248,7 @@ export function CLIView({ session }: CLIViewProps) {
           const status = useAppStore.getState().cliVersionManager.providers.find(
             (provider) => provider.providerId === COPILOT_CLI_PROVIDER_ID
           )?.status
-          if (status === 'supported' || status === 'unsupported') {
+          if (status !== 'unknown' && status !== 'checking' && status !== 'installing') {
             copilotCompatibilityRetryPendingRef.current = false
             setTerminalStartAttempt((attempt) => attempt + 1)
           }
@@ -487,6 +494,12 @@ export function CLIView({ session }: CLIViewProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      <div
+        className="flex-shrink-0 px-3 py-1.5 text-[11px]"
+        style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+      >
+        Terminal permissions are provider-managed. Approve or deny requests in the terminal.
+      </div>
       {!!visibleTerminalError && (
         <div
           className="flex-shrink-0 px-3 py-2 text-xs"
@@ -513,6 +526,24 @@ export function CLIView({ session }: CLIViewProps) {
                 Retry
               </button>
             )}
+            <button
+              type="button"
+              aria-label="Check provider CLI"
+              onClick={() => void refreshCliProviderVersion(currentProviderId)}
+              className="rounded px-2 py-0.5 font-medium"
+              style={{ color: 'inherit', border: '1px solid currentColor' }}
+            >
+              Check CLI
+            </button>
+            <button
+              type="button"
+              aria-label="Open CLI settings"
+              onClick={() => setSettingsOpen(true)}
+              className="rounded px-2 py-0.5 font-medium"
+              style={{ color: 'inherit', border: '1px solid currentColor' }}
+            >
+              Settings
+            </button>
             <button
               type="button"
               aria-label="Dismiss terminal error"

@@ -12,8 +12,8 @@ namespace uam
 namespace
 {
 
-constexpr std::string_view kPreferredGeminiCliVersion = "0.38.1";
-constexpr std::string_view kMinimumSupportedGeminiCliVersion = "0.36.0";
+constexpr std::string_view kPreferredGeminiCliVersion = "latest";
+constexpr std::string_view kMinimumSupportedGeminiCliVersion = "0.55.1";
 constexpr std::array<std::string_view, 2> kSupportedGeminiCliVersions{{
 	kPreferredGeminiCliVersion,
 	kMinimumSupportedGeminiCliVersion,
@@ -26,7 +26,7 @@ struct Semver
 	int patch = -1;
 };
 
-constexpr Semver kMinimumSupportedGeminiCliSemver{0, 36, 0};
+constexpr Semver kMinimumSupportedGeminiCliSemver{0, 55, 1};
 
 std::optional<int> ParseSemverComponent(std::string_view value)
 {
@@ -78,6 +78,11 @@ std::string_view PreferredGeminiCliVersion()
 
 bool IsSupportedGeminiCliVersion(std::string_view version)
 {
+	if (version == kPreferredGeminiCliVersion)
+	{
+		return true;
+	}
+
 	if (std::ranges::find(kSupportedGeminiCliVersions, version) != kSupportedGeminiCliVersions.end())
 	{
 		return true;
@@ -89,24 +94,24 @@ bool IsSupportedGeminiCliVersion(std::string_view version)
 		return false;
 	}
 
-	if (parsed->major > 0)
+	if (parsed->major != kMinimumSupportedGeminiCliSemver.major)
 	{
-		return true;
+		return parsed->major > kMinimumSupportedGeminiCliSemver.major;
 	}
-
-	return parsed->major == kMinimumSupportedGeminiCliSemver.major &&
-	       parsed->minor >= kMinimumSupportedGeminiCliSemver.minor;
+	if (parsed->minor != kMinimumSupportedGeminiCliSemver.minor)
+	{
+		return parsed->minor > kMinimumSupportedGeminiCliSemver.minor;
+	}
+	return parsed->patch >= kMinimumSupportedGeminiCliSemver.patch;
 }
 
 std::string SupportedGeminiCliVersionsLabel()
 {
-	constexpr std::string_view kPreferredVersionPrefix = " or newer (preferred ";
+	constexpr std::string_view kVerifiedVersionSuffix = " or newer (verified 2026-08-27)";
 	std::string label;
-	label.reserve(kMinimumSupportedGeminiCliVersion.size() + kPreferredVersionPrefix.size() + kPreferredGeminiCliVersion.size() + 1);
+	label.reserve(kMinimumSupportedGeminiCliVersion.size() + kVerifiedVersionSuffix.size());
 	label.append(kMinimumSupportedGeminiCliVersion);
-	label.append(kPreferredVersionPrefix);
-	label.append(kPreferredGeminiCliVersion);
-	label.push_back(')');
+	label.append(kVerifiedVersionSuffix);
 	return label;
 }
 

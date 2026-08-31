@@ -100,6 +100,39 @@ UAM_TEST(ResourceCollectionsRejectInvalidAndDuplicateReferences)
 	UAM_ASSERT(app.resource_collections.empty());
 }
 
+UAM_TEST(ResourceCollectionsRecoverValidatedBackupWhenPrimaryIsMissingOrCorrupt)
+{
+	for (const bool missing_primary : {false, true})
+	{
+		TempDir temp(std::string("uam-resource-backup-") + (missing_primary ? "missing" : "corrupt"));
+		uam::AppState app = ResourceTestApp(temp.root);
+		std::string error;
+		ResourceCollection collection;
+		UAM_ASSERT(uam::ResourceCollectionService::Create(app, "Recovered", &collection, &error));
+		UAM_ASSERT(uam::ResourceCollectionService::Rename(app, collection.id, "Replacement", &error));
+
+		const fs::path primary = temp.root / "resource_collections.json";
+		if (missing_primary)
+		{
+			std::error_code remove_error;
+			UAM_ASSERT(fs::remove(primary, remove_error));
+			UAM_ASSERT(!remove_error);
+		}
+		else
+		{
+			const nlohmann::json unsupported_version = {
+			    {"version", 2}, {"collections", nlohmann::json::array()},
+			};
+			UAM_ASSERT(uam::io::WriteTextFile(primary, unsupported_version.dump()));
+		}
+
+		const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(loaded.front().id, collection.id);
+		UAM_ASSERT_EQ(loaded.front().name, std::string("Recovered"));
+	}
+}
+
 UAM_TEST(ResourceCollectionMutationsRollbackWhenPersistenceFails)
 {
 	TempDir temp("uam-resource-rollback");

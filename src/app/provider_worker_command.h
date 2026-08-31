@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -46,6 +47,8 @@ namespace uam
 		std::string standard_input;
 		std::string shell_command;
 		std::string command_preview;
+		std::vector<std::pair<std::string, std::string>> environment_overrides;
+		std::shared_ptr<const std::filesystem::path> isolated_working_directory;
 
 		bool Empty() const
 		{

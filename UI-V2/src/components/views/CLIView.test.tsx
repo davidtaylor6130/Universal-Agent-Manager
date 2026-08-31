@@ -255,7 +255,7 @@ describe('CLIView', () => {
     await act(async () => {
       useAppStore.setState({
         cliVersionManager: {
-          providers: [{ ...copilotVersion, installedVersion: '1.0.75', status: 'supported', running: false }],
+          providers: [{ ...copilotVersion, installedVersion: '1.0.75', status: 'verified', running: false }],
         },
       })
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -373,6 +373,33 @@ describe('CLIView', () => {
     await act(async () => { retry?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(startCalls).toBe(2)
     expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({ running: true, terminalId: 'term-2' })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers provider check and settings beside terminal startup retry', async () => {
+    const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
+    const setSettingsOpen = vi.fn()
+    useAppStore.setState({
+      refreshCliProviderVersion,
+      setSettingsOpen,
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
+    })
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
+      if (JSON.parse(request).action === 'startCliTerminal') onFailure(500, 'Provider failed to start.')
+      else onSuccess('{}')
+    }
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    await act(async () => { (host.querySelector('button[aria-label="Check provider CLI"]') as HTMLButtonElement).click(); await Promise.resolve() })
+    act(() => (host.querySelector('button[aria-label="Open CLI settings"]') as HTMLButtonElement).click())
+    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
+    expect(setSettingsOpen).toHaveBeenCalledWith(true)
 
     act(() => root.unmount())
     host.remove()
@@ -620,6 +647,12 @@ describe('CLIView', () => {
     })
     const first = { id: 'chat-1', name: 'First', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
     const second = { ...first, id: 'chat-2', name: 'Second' }
+    useAppStore.setState({
+      cliBindingBySessionId: {
+        'chat-1': { terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
+        'chat-2': { terminalId: 'term-2', sourceChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
+      },
+    })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -648,6 +681,48 @@ describe('CLIView', () => {
       root.unmount()
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
+    host.remove()
+  })
+
+  it('restores terminal steer drafts per chat across navigation and remount', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    })
+    useAppStore.setState({
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
+      cliBindingBySessionId: {
+        'chat-1': { terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
+        'chat-2': { terminalId: 'term-2', sourceChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
+      },
+    })
+    const first = { id: 'chat-1', name: 'First', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const second = { ...first, id: 'chat-2', name: 'Second' }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const typeDraft = (value: string) => {
+      const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    await act(async () => { root.render(<CLIView key={first.id} session={first} />); await Promise.resolve() })
+    act(() => typeDraft('First terminal draft'))
+    await act(async () => { root.render(<CLIView key={second.id} session={second} />); await Promise.resolve() })
+    act(() => typeDraft('Second terminal draft'))
+    await act(async () => { root.render(<CLIView key={first.id} session={first} />); await Promise.resolve() })
+    expect((host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement).value).toBe('First terminal draft')
+
+    await act(async () => { root.unmount(); await Promise.resolve() })
+    const remounted = createRoot(host)
+    await act(async () => { remounted.render(<CLIView key={second.id} session={second} />); await Promise.resolve() })
+    expect((host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement).value).toBe('Second terminal draft')
+
+    await act(async () => { remounted.unmount(); await Promise.resolve() })
     host.remove()
   })
 })

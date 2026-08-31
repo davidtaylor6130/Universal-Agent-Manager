@@ -1,12 +1,17 @@
 #include "cef/uam_query_handler.h"
+#include "cef/uam_query_handler_async.h"
 #include "cef/uam_query_handler_internal.h"
 
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/message_attachment_json.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/platform/platform_state_fields.h"
+#include "common/provider/provider_ids.h"
+#include "common/provider/provider_profile.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/utils/base64.h"
@@ -14,14 +19,17 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
-#include <cerrno>
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -32,11 +40,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#endif
-
-#if defined(__APPLE__)
-#include <sys/wait.h>
-#include <unistd.h>
 #endif
 
 // ---------------------------------------------------------------------------
@@ -74,131 +77,33 @@ namespace
 	}
 #endif
 
-#if defined(__APPLE__)
-	bool WriteAllToFileDescriptor(int fd, const std::string& text, std::string* error_out)
-	{
-		std::size_t offset = 0;
-		while (offset < text.size())
-		{
-			const ssize_t written = write(fd, text.data() + offset, text.size() - offset);
-			if (written > 0)
-			{
-				offset += static_cast<std::size_t>(written);
-				continue;
-			}
-
-			if (written < 0 && errno == EINTR)
-			{
-				continue;
-			}
-
-			if (error_out != nullptr)
-			{
-				*error_out = written == 0 ? "Failed to write clipboard text: write made no progress." : "Failed to write clipboard text: " + std::string(std::strerror(errno)) + ".";
-			}
-			return false;
-		}
-
-		return true;
-	}
-
-	bool WaitForClipboardProcess(const pid_t pid, std::string* error_out)
-	{
-		int status = 0;
-		while (waitpid(pid, &status, 0) < 0)
-		{
-			if (errno == EINTR)
-			{
-				continue;
-			}
-
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed waiting for pbcopy: " + std::string(std::strerror(errno)) + ".";
-			}
-			return false;
-		}
-
-		if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-		{
-			return true;
-		}
-
-		if (error_out != nullptr)
-		{
-			if (WIFEXITED(status))
-			{
-				*error_out = "pbcopy exited with status " + std::to_string(WEXITSTATUS(status)) + ".";
-			}
-			else if (WIFSIGNALED(status))
-			{
-				*error_out = "pbcopy terminated by signal " + std::to_string(WTERMSIG(status)) + ".";
-			}
-			else
-			{
-				*error_out = "pbcopy ended without a normal exit status.";
-			}
-		}
-
-		return false;
-	}
-#endif
-
 	bool WriteNativeClipboardText(const std::string& text, std::string* error_out)
 	{
 #if defined(__APPLE__)
-		int stdin_pipe[2] = {-1, -1};
-		if (pipe(stdin_pipe) != 0)
+		auto& process_service = PlatformServicesFactory::Instance().process_service;
+		uam::platform::StdioProcessPlatformFields process;
+		if (!process_service.StartStdioProcessWithInput(process, {}, {"/usr/bin/pbcopy"}, text, error_out))
 		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create pbcopy pipe: " + std::string(std::strerror(errno)) + ".";
-			}
 			return false;
 		}
 
-		const pid_t pid = fork();
-		if (pid < 0)
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		int exit_code = -1;
+		while (!process_service.PollStdioProcessExited(process, &exit_code))
 		{
-			close(stdin_pipe[0]);
-			close(stdin_pipe[1]);
-			if (error_out != nullptr)
+			if (std::chrono::steady_clock::now() >= deadline)
 			{
-				*error_out = "Failed to launch pbcopy: " + std::string(std::strerror(errno)) + ".";
+				process_service.TerminateStdioProcess(process, true);
+				process_service.CloseStdioProcessHandles(process);
+				if (error_out != nullptr) *error_out = "pbcopy timed out.";
+				return false;
 			}
-			return false;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
-
-		if (pid == 0)
-		{
-			close(stdin_pipe[1]);
-			if (dup2(stdin_pipe[0], STDIN_FILENO) < 0)
-			{
-				_exit(126);
-			}
-			close(stdin_pipe[0]);
-			execl("/usr/bin/pbcopy", "pbcopy", static_cast<char*>(nullptr));
-			_exit(127);
-		}
-
-		close(stdin_pipe[0]);
-		std::string write_error;
-		const bool write_ok = WriteAllToFileDescriptor(stdin_pipe[1], text, &write_error);
-		close(stdin_pipe[1]);
-
-		std::string wait_error;
-		const bool wait_ok = WaitForClipboardProcess(pid, &wait_error);
-
-		if (!write_ok || !wait_ok)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = !write_ok ? write_error : wait_error;
-			}
-			return false;
-		}
-
-		return true;
+		process_service.CloseStdioProcessHandles(process);
+		if (exit_code == 0) return true;
+		if (error_out != nullptr) *error_out = "pbcopy exited with status " + std::to_string(exit_code) + ".";
+		return false;
 #elif defined(_WIN32)
 		const std::wstring wide = WideFromUtf8(text);
 		if (wide.empty() && !text.empty())
@@ -386,6 +291,140 @@ namespace
 		}
 		return attachments;
 	}
+
+	struct RemoteAttachmentResult
+	{
+		bool ok = false;
+		int status = 500;
+		std::string error;
+		nlohmann::json attachments = nlohmann::json::array();
+	};
+
+	RemoteAttachmentResult StageRemoteAttachments(const nlohmann::json& items,
+	                                              const ExecutionHost& host,
+	                                              const std::string& chat_id,
+	                                              const std::string& workspace_root)
+	{
+		RemoteAttachmentResult result;
+		if (!uam::execution_hosts::IsPortableId(chat_id))
+		{
+			result.status = 400;
+			result.error = "Remote attachments require a portable chat id.";
+			return result;
+		}
+		uam::remote::RunnerClient client(
+		    PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                               host.runner_directory),
+		    host.runner_version);
+		std::vector<std::filesystem::path> committed;
+		std::size_t index = 0;
+		for (const nlohmann::json& item : items)
+		{
+			if (!item.is_object()) continue;
+			const std::string requested_kind = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kKindField});
+			const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
+			if (attachment_kind == attachment_frontend_fields::kDirectoryKind)
+			{
+				result.status = 400;
+				result.error = "Remote directory attachments are not supported; attach files instead.";
+				break;
+			}
+			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kPathField});
+			std::string bytes;
+			if (const nlohmann::json* data = uam::nlohmann_json::FindStringField(
+			        item, attachment_frontend_fields::kDataBase64Field); data != nullptr)
+			{
+				if (!uam::base64::Decode(data->get_ref<const std::string&>(), bytes))
+				{
+					result.status = 400;
+					result.error = "Attachment data is not valid base64.";
+					break;
+				}
+			}
+			else if (!source_path_text.empty())
+			{
+				const std::filesystem::path source = PlatformServicesFactory::Instance()
+				    .path_service.ExpandLeadingTildePath(source_path_text);
+				const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(source);
+				if (!size || !uam::paths::IsRegularFileNoThrow(source))
+				{
+					result.status = 400;
+					result.error = "File attachment does not exist: " + source_path_text;
+					break;
+				}
+				if (*size > kMaxAttachmentBytes)
+				{
+					result.status = 413;
+					result.error = "Attachment is larger than the 25 MB limit.";
+					break;
+				}
+				if (!uam::io::TryReadBinaryFile(source, bytes))
+				{
+					result.error = "Failed to read attachment: " + source_path_text;
+					break;
+				}
+			}
+			else
+			{
+				result.status = 400;
+				result.error = "File attachments require data or a filesystem path.";
+				break;
+			}
+			if (bytes.size() > kMaxAttachmentBytes)
+			{
+				result.status = 413;
+				result.error = "Attachment is larger than the 25 MB limit.";
+				break;
+			}
+
+			MessageAttachment attachment;
+			attachment.id = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_fields::kIdField});
+			if (attachment.id.empty()) attachment.id = AttachmentId();
+			const std::string fallback_name = source_path_text.empty()
+			    ? "attachment"
+			    : uam::paths::Utf8PathString(
+			          uam::paths::PathFromUtf8(source_path_text).filename());
+			attachment.name = SafeAttachmentName(
+			    uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(
+			        item, attachment_fields::kNameField), fallback_name), "attachment");
+			attachment.kind = attachment_kind;
+			attachment.mime_type = uam::nlohmann_json::TrimmedStringValue(
+			    item, {attachment_frontend_fields::kMimeTypeInputField});
+			const std::string relative = ".UAM/attachments/" + chat_id + "/" +
+			    uam::time::SystemEpochMicrosecondsTokenNow() + "-" +
+			    std::to_string(index) + "-" + attachment.name;
+			const std::filesystem::path target(uam::execution_hosts::JoinRemotePath(
+			    host.platform, workspace_root, relative));
+			std::string error;
+			if (!client.UploadFile("attachment-" + std::to_string(index) + "-" +
+			                       uam::time::SystemEpochMicrosecondsTokenNow(),
+			                       target, bytes, &error))
+			{
+				result.error = error.empty() ? "Remote attachment upload failed." : error;
+				break;
+			}
+			committed.push_back(target);
+			attachment.path = relative;
+			if (host.platform == "windows" || host.platform == "Windows")
+				std::ranges::replace(attachment.path, '/', '\\');
+			attachment.size_bytes = bytes.size();
+			attachment.copied = true;
+			result.attachments.push_back(AttachmentToJson(attachment));
+			++index;
+		}
+		if (!result.error.empty())
+		{
+			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
+				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			return result;
+		}
+		result.ok = true;
+		return result;
+	}
 } // namespace
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -417,10 +456,11 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
+	const bool computer_use_mode = payload.value("computerUseMode", false) && chat->computer_use_enabled;
 	const bool steer_now = payload.value("steerNow", false);
 	const bool sent = steer_now
-	                    ? uam::SteerAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id)
-	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id);
+	                    ? uam::SteerAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode)
+	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode);
 	if (!sent)
 	{
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
@@ -456,32 +496,144 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 
 void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
-	if (chat == nullptr) return;
-	if (!ChatProviderAvailableOrFail(m_app, *chat, cb)) return;
+	const std::string chat_id = uam::strings::Trim(payload.value("chatId", ""));
+	ChatSession* chat = chat_id.empty() ? nullptr : FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (!chat_id.empty() && chat == nullptr) return;
+	if (chat != nullptr && !ChatProviderAvailableOrFail(m_app, *chat, cb)) return;
+
+	std::string provider_id;
+	std::string workspace_directory;
+	std::string execution_host_id = std::string(uam::execution_hosts::kLocalHostId);
+	if (chat != nullptr)
+	{
+		provider_id = chat->provider_id;
+		workspace_directory = uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string();
+		execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(chat->execution_host_id),
+		    std::string(uam::execution_hosts::kLocalHostId));
+	}
+	else
+	{
+		provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(uam::strings::Trim(payload.value("providerId", "")));
+		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id);
+		if (provider == nullptr || !provider->supports_structured)
+		{
+			cb->Failure(400, "A valid structured provider is required for model discovery.");
+			return;
+		}
+		execution_host_id = uam::strings::NonEmptyOrFallback(
+		    uam::strings::Trim(payload.value("executionHostId", "local")),
+		    std::string(uam::execution_hosts::kLocalHostId));
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(
+		    m_app.settings.execution_hosts, execution_host_id);
+		if (execution_host == nullptr)
+		{
+			cb->Failure(400, "The selected execution host no longer exists.");
+			return;
+		}
+		const std::string requested_workspace_text = uam::strings::Trim(payload.value("workspaceDirectory", ""));
+		if (requested_workspace_text.empty())
+		{
+			cb->Failure(400, "Model discovery requires a configured workspace folder.");
+			return;
+		}
+		if (execution_host->id != uam::execution_hosts::kLocalHostId)
+		{
+			if (execution_host->runner_status != "ready")
+			{
+				cb->Failure(409, "The selected remote runner is not ready.");
+				return;
+			}
+			if (!uam::execution_hosts::IsAbsoluteRemotePath(
+			        execution_host->platform, requested_workspace_text))
+			{
+				cb->Failure(400, "Model discovery requires an absolute remote workspace path.");
+				return;
+			}
+			workspace_directory = requested_workspace_text;
+		}
+		else
+		{
+			const std::filesystem::path requested_workspace =
+			    uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(
+			        PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+			            requested_workspace_text)));
+			const auto matching_folder = std::ranges::find_if(
+			    m_app.folders, [&requested_workspace](const ChatFolder& folder) {
+				    if (!uam::paths::IsControllerLocalWorkspace(folder)) return false;
+				    const std::filesystem::path folder_workspace =
+				        uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(
+				            PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
+				                folder.directory)));
+				    return !requested_workspace.empty() && folder_workspace == requested_workspace;
+			    });
+			if (matching_folder == m_app.folders.end())
+			{
+				cb->Failure(400, "Model discovery requires a configured workspace folder.");
+				return;
+			}
+			workspace_directory = requested_workspace.generic_string();
+		}
+	}
 	if (m_app.provider_model_catalog == nullptr)
 	{
 		cb->Failure(500, "Provider model catalog is unavailable.");
 		return;
 	}
-	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(chat->provider_id);
+	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(
+	    provider_id, workspace_directory, execution_host_id);
 	if (!should_start)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(chat->provider_id)}}.dump());
+		cb->Success(nlohmann::json{{"started", false}, {"pending", m_app.provider_model_catalog->IsDiscoveryPending(provider_id, workspace_directory, execution_host_id)}}.dump());
 		return;
 	}
 	std::string error;
-	if (!uam::StartAcpModelDiscovery(m_app, chat->id, &error))
+	const bool started = chat != nullptr
+	    ? uam::StartAcpModelDiscovery(m_app, chat->id, &error)
+	    : uam::StartEphemeralAcpModelDiscovery(
+	          m_app, provider_id, workspace_directory, execution_host_id, &error);
+	if (!started)
 	{
-		m_app.provider_model_catalog->RememberRefreshFailure(chat->provider_id, FailureDetailOrFallback(error, "Provider model discovery failed to start."));
+		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(
+		        m_app, chat == nullptr ? std::string{} : chat->id, provider_id,
+		        workspace_directory, execution_host_id, error))
+		{
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(nlohmann::json{{"started", false}, {"pending", true}, {"compatibilityBlocked", true}}.dump());
+			return;
+		}
+		m_app.provider_model_catalog->RememberRefreshFailure(provider_id,
+		    FailureDetailOrFallback(error, "Provider model discovery failed to start."),
+		    workspace_directory, execution_host_id);
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(500, FailureDetailOrFallback(error, "Provider model discovery failed to start."));
 		return;
 	}
+	m_app.provider_model_catalog->MarkDiscoveryLaunchStarted(
+	    provider_id, workspace_directory, execution_host_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"started", true}, {"pending", true}}.dump());
+}
+
+void UamQueryHandler::HandleSetAcpConfigOption(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = uam::strings::Trim(payload.value("chatId", ""));
+	const std::string config_id = uam::strings::Trim(payload.value("configId", ""));
+	const std::string value = uam::strings::Trim(payload.value("value", ""));
+	if (chat_id.empty() || config_id.empty() || value.empty() || config_id.size() > 256 || value.size() > 512)
+	{
+		cb->Failure(400, "A valid chat, config option, and value are required.");
+		return;
+	}
+	std::string error;
+	if (!uam::SetAcpSessionConfigOption(m_app, chat_id, config_id, value, &error))
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to set provider model variant."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"pending", true}}.dump());
 }
 
 void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -511,6 +663,37 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	if (workspace_root.empty())
 	{
 		cb->Failure(400, "Chat has no workspace directory.");
+		return;
+	}
+	const ExecutionHost* execution_host = uam::execution_hosts::Find(
+	    m_app.settings.execution_hosts, chat->execution_host_id);
+	if (execution_host == nullptr)
+	{
+		cb->Failure(409, "The chat's execution host no longer exists.");
+		return;
+	}
+	const bool remote = execution_host->id != uam::execution_hosts::kLocalHostId;
+	if (remote)
+	{
+		if (execution_host->runner_status != "ready" ||
+		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
+		        workspace_root.string()))
+		{
+			cb->Failure(409, "The selected remote runner or workspace is not ready.");
+			return;
+		}
+		auto result = std::make_shared<RemoteAttachmentResult>();
+		uam::query_handler_async::RunAsyncCefQuery(
+		    cb,
+		    [items = *items, host = *execution_host, chat_id,
+		     workspace = workspace_root.string(), result]()
+		    {
+			    *result = StageRemoteAttachments(items, host, chat_id, workspace);
+			    return result->ok
+			        ? uam::query_handler_async::AsyncSuccess(
+			              {{"attachments", result->attachments}})
+			        : uam::query_handler_async::AsyncFailure(result->status, result->error);
+		    });
 		return;
 	}
 
@@ -729,12 +912,12 @@ void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 
-	std::string error;
-	if (!WriteNativeClipboardText(text, &error))
-	{
-		cb->Failure(500, FailureDetailOrFallback(error, "Failed to write clipboard text."));
-		return;
-	}
-
-	cb->Success(R"({"copied":true})");
+	uam::query_handler_async::RunAsyncCefQuery(cb, [text]() {
+		std::string error;
+		if (!WriteNativeClipboardText(text, &error))
+		{
+			return uam::query_handler_async::AsyncFailure(500, FailureDetailOrFallback(error, "Failed to write clipboard text."));
+		}
+		return uam::query_handler_async::AsyncSuccess({{"copied", true}});
+	});
 }

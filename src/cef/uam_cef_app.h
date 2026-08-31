@@ -1,7 +1,9 @@
 #pragma once
 
 #include "cef/cef_includes.h"
+#include <functional>
 #include <string>
+#include <utility>
 
 /// <summary>
 /// CefApp implementation for both the browser (main) process and renderer subprocesses.
@@ -11,7 +13,12 @@
 class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRenderProcessHandler
 {
   public:
-	UamCefApp() = default;
+	using FatalStartupCallback = std::function<void(const std::string&)>;
+
+	explicit UamCefApp(FatalStartupCallback on_fatal_startup = {})
+		: m_onFatalStartup(std::move(on_fatal_startup))
+	{
+	}
 
 	// CefApp
 	CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override
@@ -24,6 +31,7 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
 	}
 
 	void OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line) override;
+	void OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) override;
 
 	// CefBrowserProcessHandler
 	void OnContextInitialized() override;
@@ -36,8 +44,11 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
 	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
 
   private:
+	void FailStartup(const std::string& error);
+
 	std::string m_trustedUiIndexUrl;
 	CefRefPtr<CefMessageRouterRendererSide> m_renderer_router;
+	FatalStartupCallback m_onFatalStartup;
 
 	IMPLEMENT_REFCOUNTING(UamCefApp);
 };

@@ -1,0 +1,11 @@
+[[rule]]
+mcpName = "uam-computer"
+toolName = "computer_observe"
+decision = "allow"
+priority = 999
+
+[[rule]]
+mcpName = "uam-computer"
+toolName = "computer_action"
+decision = "allow"
+priority = 999

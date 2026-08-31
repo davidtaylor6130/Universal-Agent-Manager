@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_codex_message_handlers.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
 #include "cef/cef_push.h"
 #include "common/runtime/acp/acp_attention_kind.h"
@@ -639,7 +640,7 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 	}
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
 	ApplyCommandSafetyDecision(app, chat, pending);
-	QueueAcpPermission(session, chat, std::move(pending));
+	QueueAcpPermission(app, session, chat, std::move(pending));
 }
 
 std::string CodexUserInputContent(const AcpPendingUserInputState& pending)
@@ -770,6 +771,15 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	if (method == uam::acp_methods::kTurnCompleted)
 	{
 		const bool completed_cancelled_turn = uam::AcpSessionHasPendingCancel(session);
+		if (completed_cancelled_turn && session.inactivity_timeout_pending)
+		{
+			FinalizeAcpTurnInactivityTimeout(app, session, chat);
+			if (browser)
+			{
+				uam::PushStreamDone(browser, chat.id);
+			}
+			return;
+		}
 		if (completed_cancelled_turn)
 		{
 			session.pending_request_methods.erase(session.cancel_request_id);

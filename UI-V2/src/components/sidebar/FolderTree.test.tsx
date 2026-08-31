@@ -4,11 +4,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
-import { defaultChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+function gridLayout(...sessionIds: string[]) {
+  let layout = defaultChatGridLayout
+  while (chatGridLeaves(layout.root).length < sessionIds.length) layout = splitChatLeaf(layout, layout.activeLeafId, 'horizontal')
+  chatGridLeaves(layout.root).forEach((leaf, index) => { layout = setChatInLeaf(layout, sessionIds[index] ?? '', leaf.id) })
+  return layout
+}
+
 const now = new Date('2026-01-01T12:00:00.000Z')
+const originalAddFolder = useAppStore.getState().addFolder
+const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 
 function makeFolder(): Folder {
   return {
@@ -48,6 +57,9 @@ describe('FolderTree', () => {
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {},
       resourceCollections: [],
+	  executionHosts: [
+		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+	  ],
       isNewChatModalOpen: false,
       newChatFolderId: null,
       openFolderMemoryLibrary: vi.fn(() => Promise.resolve(true)),
@@ -55,6 +67,8 @@ describe('FolderTree', () => {
       previewUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(null)),
       rebuildUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(true)),
       workspaceFolderRecoveryError: '',
+      addFolder: originalAddFolder,
+      listRemoteDirectories: originalListRemoteDirectories,
     })
   })
 
@@ -98,6 +112,112 @@ describe('FolderTree', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('does not rescan the sidebar runtime model when only turn event text changes', () => {
+    const sessions = Array.from({ length: 120 }, (_, index) => makeSession(index + 1))
+    let historicalStatusReads = 0
+    const acpBindingBySessionId = Object.fromEntries(sessions.map((session, index) => {
+      const binding = { turnEvents: [] as Array<{ type: 'assistant_text'; text: string }> }
+      const countRead = <T,>(value: T) => ({
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          if (index >= 49) historicalStatusReads += 1
+          return value
+        },
+      })
+      Object.defineProperties(binding, {
+        processing: countRead(false),
+        lifecycleState: countRead('ready'),
+        readySinceLastSelect: countRead(false),
+        attentionKind: countRead(null),
+      })
+      return [session.id, binding]
+    }))
+    useAppStore.setState({
+      sessions,
+      acpBindingBySessionId: acpBindingBySessionId as never,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelectorAll('[data-session-id]')).toHaveLength(5)
+    expect(historicalStatusReads).toBe(284)
+    historicalStatusReads = 0
+    const currentBinding = acpBindingBySessionId['chat-1']
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...currentBinding,
+          turnEvents: [{ type: 'assistant_text', text: 'A new streaming fragment.' }],
+        } as never,
+      },
+    })))
+
+    expect(historicalStatusReads).toBe(0)
+    expect(host.textContent).toContain('Show 115 more')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the actual execution computer on workspace rows only', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'gaming-ai', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      folders: [{ ...useAppStore.getState().folders[0], executionHostId: 'gaming-ai' }],
+      sessions: Array.from({ length: 2 }, (_, index) => ({ ...makeSession(index + 1), executionHostId: 'gaming-ai' })),
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Gaming AI Desktop')
+    expect(host.querySelectorAll('[data-testid^="workspace-machine-"]')).toHaveLength(1)
+
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session, index) => index === 0 ? { ...session, executionHostId: 'local' } : session) })))
+    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Gaming AI Desktop')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps same-directory workspaces on different computers separate', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+        { id: 'nas', label: 'NAS', transport: 'ssh', sshAlias: 'nas', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      folders: [
+        { ...useAppStore.getState().folders[0], id: 'homelab-workspace', name: 'Homelab project', directory: '/srv/project', executionHostId: 'homelab' },
+        { ...useAppStore.getState().folders[0], id: 'nas-workspace', name: 'NAS project', directory: '/srv/project', executionHostId: 'nas' },
+      ],
+      sessions: [
+        { ...makeSession(1), folderId: 'homelab-workspace', workspaceDirectory: '/srv/project', executionHostId: 'homelab' },
+        { ...makeSession(2), folderId: 'nas-workspace', workspaceDirectory: '/srv/project', executionHostId: 'nas' },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.querySelector('[data-testid="workspace-machine-homelab-workspace"]')?.getAttribute('aria-label')).toBe('Runs on Homelab')
+    expect(host.querySelector('[data-testid="workspace-machine-nas-workspace"]')?.getAttribute('aria-label')).toBe('Runs on NAS')
+    expect(host.querySelectorAll('[data-testid^="workspace-machine-"]')).toHaveLength(2)
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -541,7 +661,7 @@ describe('FolderTree', () => {
     expect(host.textContent).not.toContain('Chat 3')
     expect((host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement).style.color).toBe('var(--text-3)')
 
-    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+    act(() => writeChatGridLayout(gridLayout('chat-1', 'chat-3', '', '')))
 
     const folderIcon = host.querySelector('[data-testid="folder-icon-project"]') as HTMLElement
     expect(folderIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
@@ -578,7 +698,7 @@ describe('FolderTree', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
-    act(() => writeChatGridLayout({ ...defaultChatGridLayout, paneCount: 4, activePane: 1, sessionIds: ['chat-1', 'chat-3', '', ''] }))
+    act(() => writeChatGridLayout(gridLayout('chat-1', 'chat-3', '', '')))
 
     const collectionIcon = host.querySelector('[data-testid="collection-icon-work"]') as HTMLElement
     expect(collectionIcon.getAttribute('stroke')).not.toMatch(/^url\(#.+\)$/)
@@ -626,28 +746,155 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('does not rerender for runtime binding updates while status filtering is off', () => {
-    let filterReads = 0
-    const filters = {
-      providerIds: [],
-      get statusIds() {
-        filterReads++
-        return []
-      },
-    }
+  it('shows runtime-active chats with state counts above pinned chats without requiring a status filter', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, isPinned: true } : session),
+    }))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
 
     act(() => {
-      root.render(<FolderTree searchQuery="" filters={filters} />)
+      root.render(<FolderTree searchQuery="" />)
     })
-    filterReads = 0
+    expect(host.textContent).not.toContain('Active chats')
 
-    act(() => useAppStore.getState().setCliBinding('chat-1', { processing: true }))
-    act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': {} as never } }))
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.getState().setCliBinding('chat-3', { readySinceLastSelect: true })
+      useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-2': { running: true, processing: false, lifecycleState: 'waitingPermission', attentionKind: 'permission' },
+        },
+      }))
+    })
 
-    expect(filterReads).toBe(0)
+    expect(host.textContent).toContain('Active chats')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
+    expect(host.textContent!.indexOf('Active chats')).toBeLessThan(host.textContent!.indexOf('Pinned chats'))
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 done')
+
+    act(() => useAppStore.getState().setCliBinding('chat-1', {
+      processing: false,
+      readySinceLastSelect: true,
+    }))
+
+    expect(host.textContent).toContain('Active chats')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('collapses Active chats and keeps an attention strip that expands the section', () => {
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-2': { running: true, processing: false, lifecycleState: 'waitingPermission', attentionKind: 'permission' },
+        },
+      }))
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-label="Collapse Active chats"]')
+    const list = host.querySelector<HTMLElement>('#active-chat-list')
+    expect(toggle?.tagName).toBe('BUTTON')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    act(() => toggle?.focus())
+    expect(document.activeElement).toBe(toggle)
+
+    act(() => toggle?.click())
+    expect(host.querySelector('button[aria-label="Expand Active chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    expect(list?.hasAttribute('inert')).toBe(true)
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    const strip = host.querySelector<HTMLButtonElement>('[data-testid="active-attention-strip"]')
+    expect(strip?.textContent).toContain('1 chat needs attention')
+
+    act(() => root.render(<FolderTree searchQuery="Chat 2" />))
+    expect(host.querySelector('button[aria-label="Collapse Active chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(host.querySelector('[data-testid="active-attention-strip"]')).toBeNull()
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelector('button[aria-label="Expand Active chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    const restoredStrip = host.querySelector<HTMLButtonElement>('[data-testid="active-attention-strip"]')
+    expect(restoredStrip?.textContent).toContain('1 chat needs attention')
+
+    act(() => restoredStrip?.click())
+    expect(host.querySelector('button[aria-label="Collapse Active chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(list?.hasAttribute('inert')).toBe(false)
+    expect(host.querySelector('[data-testid="active-attention-strip"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('collapses Pinned chats but reveals matching rows while searching', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'chat-1' ? { ...session, isPinned: true } : session
+      ),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-label="Collapse Pinned chats"]')
+    const list = host.querySelector<HTMLElement>('#pinned-chat-list')
+    expect(toggle?.tagName).toBe('BUTTON')
+    act(() => toggle?.focus())
+    expect(document.activeElement).toBe(toggle)
+    act(() => toggle?.click())
+    expect(host.querySelector('button[aria-label="Expand Pinned chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+    expect(list?.hasAttribute('inert')).toBe(true)
+
+    act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+    expect(host.querySelector('button[aria-label="Collapse Pinned chats"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(list?.hidden).toBe(false)
+    expect(list?.hasAttribute('inert')).toBe(false)
+    expect(list?.textContent).toContain('Chat 1')
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.querySelector('button[aria-label="Expand Pinned chats"]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(list?.hidden).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shift-selects from the clicked duplicate row occurrence', () => {
+    act(() => {
+      useAppStore.getState().setCliBinding('chat-1', { processing: true })
+      useAppStore.getState().setCliBinding('chat-3', { processing: true })
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const folder = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const first = folder.querySelector('[data-session-id="chat-1"]') as HTMLElement
+    const second = folder.querySelector('[data-session-id="chat-2"]') as HTMLElement
+    act(() => first.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    act(() => second.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+
+    expect(host.textContent).toContain('2 selected')
+    expect(host.querySelector('[data-testid="session-row-chat-3"][data-selected="true"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -726,6 +973,179 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('treats folder actions as a keyboard menu and restores trigger focus', () => {
+    const previousResizeObserver = globalThis.ResizeObserver
+    Object.defineProperty(globalThis, 'ResizeObserver', {
+      configurable: true,
+      value: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const trigger = host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement
+    trigger.focus()
+    act(() => trigger.click())
+    const menu = document.body.querySelector('[role="menu"][aria-label="Project actions"]')
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement?.textContent).toContain('New chat')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(document.activeElement?.textContent).toContain('Project memory')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.contains(menu)).toBe(false)
+    expect(document.activeElement).toBe(trigger)
+
+    act(() => root.unmount())
+    host.remove()
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: previousResizeObserver })
+  })
+
+  it('keeps folder rename and delete failures visible', async () => {
+    const renameFolder = vi.fn(async () => false)
+    const deleteFolder = vi.fn(async () => false)
+    useAppStore.setState({ renameFolder, deleteFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    const rename = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!
+    act(() => rename.click())
+    const directory = host.querySelector('input[placeholder="Workspace directory"]') as HTMLInputElement
+    act(() => {
+      directory.value = '/tmp/other'
+      directory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save')!.click())
+    expect(host.textContent).toContain('workspace could not be updated')
+    expect(host.querySelector('input[placeholder="Workspace directory"]')).toBeTruthy()
+
+    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
+    act(() => remove.click())
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete Folder')!.click())
+    expect(document.body.querySelector('[aria-label="Delete folder and chats"]')?.textContent).toContain('workspace could not be deleted')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+	it('creates a workspace with the selected execution computer', async () => {
+	  const addFolder = vi.fn(async () => true)
+	  useAppStore.setState({
+		addFolder,
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  const name = host.querySelector<HTMLInputElement>('input[placeholder="Folder name"]')!
+	  const directory = host.querySelector<HTMLInputElement>('input[placeholder="Absolute directory on selected computer"]')!
+	  const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+	  act(() => {
+		setInputValue?.call(name, 'Containers')
+		name.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  act(() => {
+		setInputValue?.call(directory, '/opt/containers')
+		directory.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+	  expect(create.disabled).toBe(false)
+	  await act(async () => create.click())
+
+	  expect(addFolder).toHaveBeenCalledWith('Containers', null, '/opt/containers', 'lab')
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
+	it('shows an existing workspace computer with the same read-only field styling', () => {
+	  useAppStore.setState({
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+		folders: [{ id: 'project', name: 'Containers', parentId: null, directory: '/opt/containers', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!.click())
+	  const computer = host.querySelector<HTMLInputElement>('input[aria-label="Workspace computer"]')!
+	  const name = host.querySelector<HTMLInputElement>('input[aria-label="Workspace name"]')!
+	  const directory = host.querySelector<HTMLInputElement>('input[aria-label="Workspace directory"]')!
+	  expect(computer.value).toBe('Homelab')
+	  expect(computer.readOnly).toBe(true)
+	  expect(computer.className).toBe(name.className)
+	  expect(computer.style.background).toBe(name.style.background)
+	  expect(computer.style.border).toBe(directory.style.border)
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
+	it('browses remote directories only after an explicit Browse action', async () => {
+	  const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
+		ok: true as const,
+		listing: {
+		  directory,
+		  parentDirectory: directory === '/' ? '' : '/',
+		  directories: directory === '/' ? [{ name: 'srv', path: '/srv' }] : [],
+		  truncated: false,
+		},
+	  }))
+	  useAppStore.setState({
+		listRemoteDirectories,
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  expect(listRemoteDirectories).not.toHaveBeenCalled()
+	  await act(async () => {
+		Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Browse')!.click()
+		await Promise.resolve()
+		await Promise.resolve()
+	  })
+	  expect(listRemoteDirectories).toHaveBeenCalledWith('lab', '/')
+	  await act(async () => {
+		Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'srv')!.click()
+		await Promise.resolve()
+		await Promise.resolve()
+	  })
+	  expect(listRemoteDirectories).toHaveBeenLastCalledWith('lab', '/srv')
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Use this directory')!.click())
+	  expect(host.querySelector<HTMLInputElement>('input[placeholder="Absolute directory on selected computer"]')!.value).toBe('/srv')
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
   it('opens the shared new-chat flow from the folder context menu', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -759,6 +1179,48 @@ describe('FolderTree', () => {
     act(() => rescan?.click())
 
     expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers the same rescan action for a remote workspace', () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'uam-windows-ai', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      folders: [{ ...makeFolder(), directory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
+      sessions: [{ ...makeSession(1), workspaceDirectory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    act(() => rescan?.click())
+
+    expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a failed rescan visible instead of looking empty', async () => {
+    useAppStore.setState({ rescanFolderChats: vi.fn(() => Promise.resolve(false)) })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    await act(async () => { rescan?.click(); await Promise.resolve() })
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
 
     act(() => root.unmount())
     host.remove()

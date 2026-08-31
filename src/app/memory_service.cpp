@@ -462,6 +462,20 @@ namespace
 		return uam::parse::IntOr(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start), 0);
 	}
 
+	std::vector<std::string> ExistingExtractionKeys(const std::string& text)
+	{
+		std::vector<std::string> keys;
+		constexpr std::string_view marker = "Extraction key: ";
+		for (std::size_t at = text.find(marker); at != std::string::npos; at = text.find(marker, at + marker.size()))
+		{
+			const std::size_t start = at + marker.size();
+			const std::size_t end = text.find_first_of("\r\n", start);
+			const std::string key = uam::strings::Trim(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+			if (!key.empty() && !uam::ranges::Contains(keys, key)) keys.push_back(key);
+		}
+		return keys;
+	}
+
 	struct MemoryMarkdownFields
 	{
 		std::string title;
@@ -471,6 +485,7 @@ namespace
 		std::string source_chat_id;
 		std::string body;
 		std::string evidence;
+		std::vector<std::string> extraction_keys;
 		int occurrence_count = 1;
 	};
 
@@ -481,6 +496,7 @@ namespace
 		markdown += "Category: " + fields.category + "\n";
 		markdown += "Confidence: " + fields.confidence + "\n";
 		markdown += "Source chat: " + fields.source_chat_id + "\n";
+		for (const std::string& key : fields.extraction_keys) markdown += "Extraction key: " + key + "\n";
 		markdown += "Last observed: " + uam::time::TimestampNow() + "\n";
 		markdown += "Occurrence count: " + std::to_string(std::max(1, fields.occurrence_count)) + "\n\n";
 		markdown += "## Memory\n";
@@ -654,7 +670,7 @@ namespace
 		}
 	}
 
-	bool WriteMemoryEntry(const fs::path& root, const std::string& scope, const std::string& source_chat_id, const nlohmann::json& entry, bool* wrote_out, std::string* error_out)
+	bool WriteMemoryEntry(const fs::path& root, const std::string& scope, const std::string& source_chat_id, const std::string& extraction_key, const nlohmann::json& entry, bool* wrote_out, std::string* error_out)
 	{
 		if (wrote_out != nullptr)
 		{
@@ -691,9 +707,13 @@ namespace
 
 		fs::path target = FindExistingMemoryFile(category_path, title);
 		int count = 1;
+		std::vector<std::string> extraction_keys;
 		if (!target.empty())
 		{
-			count = ExistingCount(uam::io::ReadTextFile(target)) + 1;
+			const std::string existing = uam::io::ReadTextFile(target);
+			extraction_keys = ExistingExtractionKeys(existing);
+			if (!extraction_key.empty() && uam::ranges::Contains(extraction_keys, extraction_key)) return true;
+			count = ExistingCount(existing) + 1;
 		}
 		else
 		{
@@ -713,6 +733,9 @@ namespace
 		fields.source_chat_id = source_chat_id;
 		fields.body = body;
 		fields.evidence = evidence;
+		if (!extraction_key.empty()) extraction_keys.push_back(extraction_key);
+		if (extraction_keys.size() > 32) extraction_keys.erase(extraction_keys.begin(), extraction_keys.end() - 32);
+		fields.extraction_keys = std::move(extraction_keys);
 		fields.occurrence_count = count;
 
 		const bool wrote = uam::io::WriteTextFile(target, BuildMemoryMarkdown(fields));
@@ -799,7 +822,9 @@ namespace
 
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		return !MemoryEnabled(chat) || !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) || !MemoryRetryDue(app, chat.id, now);
+		return !uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		       !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) ||
+		       !MemoryRetryDue(app, chat.id, now);
 	}
 
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat, const uam::QueuedMemoryExtractionTask& queued)
@@ -1019,6 +1044,16 @@ namespace
 
 	bool StartWorkerTask(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, int start_message_index = -1)
 	{
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			app.memory_last_status = "Target-side memory workers are not supported for remote chats yet.";
+			return false;
+		}
+		if (chat.imported_read_only)
+		{
+			app.memory_last_status = "Imported transcripts are read-only and cannot run memory workers.";
+			return false;
+		}
 		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
 		const ProviderProfile* worker_provider = worker.provider;
 		if (worker_provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*worker_provider))
@@ -1214,6 +1249,10 @@ namespace
 		}
 		for (const ChatFolder& folder : app.folders)
 		{
+			if (!uam::paths::IsControllerLocalWorkspace(folder))
+			{
+				continue;
+			}
 			const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder.directory);
 			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
@@ -1222,7 +1261,7 @@ namespace
 		}
 		for (const ChatSession& chat : app.chats)
 		{
-			const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+			const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 			if (!workspace_root.empty() && PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(workspace_root))
 			{
 				AddUniqueMemoryRoot(roots, seen, MemoryService::LocalMemoryRoot(workspace_root));
@@ -1273,7 +1312,7 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 
 	std::vector<std::string> previews;
 	CollectMemoryPreviews(GlobalMemoryRoot(app.data_root), previews);
-	const fs::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 	if (!workspace_root.empty())
 	{
 		CollectMemoryPreviews(LocalMemoryRoot(workspace_root), previews);
@@ -1323,6 +1362,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 	}
 
 	int wrote_count = 0;
+	const std::string extraction_key = processed_message_count < 0 ? "" : chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
 	for (const nlohmann::json& entry : (*parsed)["memories"])
 	{
 		if (!ShouldSaveWorkerMemoryEntry(entry, MemoryLevel(chat)))
@@ -1347,7 +1387,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 			return false;
 		}
 		bool wrote = false;
-		if (!WriteMemoryEntry(root, scope == "global" ? "global" : "local", chat.id, entry, &wrote, error_out))
+		if (!WriteMemoryEntry(root, scope == "global" ? "global" : "local", chat.id, extraction_key, entry, &wrote, error_out))
 		{
 			return false;
 		}
@@ -1419,7 +1459,9 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!MemoryEnabled(chat) || chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || HasQueuedTaskForChat(app, chat.id))
+		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1463,7 +1505,8 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!MemoryEnabled(chat) || chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1561,7 +1604,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
-			if (StartWorkerTask(app, chat, uam::paths::ResolveWorkspaceRootPath(app, chat), queued.scan_start_message_index))
+			if (StartWorkerTask(app, chat, uam::paths::ResolveControllerWorkspaceRootPath(app, chat), queued.scan_start_message_index))
 			{
 				started = true;
 				changed = true;

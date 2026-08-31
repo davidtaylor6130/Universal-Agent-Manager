@@ -198,6 +198,11 @@ namespace
 
 		return candidate.id > existing.id;
 	}
+
+	std::size_t EffectiveMessageCount(const ChatSession& chat)
+	{
+		return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	}
 } // namespace
 
 std::string ChatDomainService::NewFolderId() const
@@ -239,22 +244,13 @@ void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 			continue;
 		}
 
-		const std::filesystem::path chat_workspace = uam::paths::NormalizeExistingPath(
-		    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
-		        uam::strings::Trim(chat.workspace_directory)));
-
-		if (chat_workspace.empty())
-		{
-			continue;
-		}
+		const std::string chat_key = uam::paths::WorkspaceOwnershipKey(
+		    app, chat.execution_host_id, chat.workspace_directory);
 
 		for (const ChatFolder& folder : app.folders)
 		{
-			const std::filesystem::path folder_directory = uam::paths::NormalizeExistingPath(
-			    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(
-			        uam::strings::Trim(folder.directory)));
-
-			if (!folder_directory.empty() && chat_workspace == folder_directory)
+			if (uam::paths::WorkspaceOwnershipKey(
+			        app, folder.execution_host_id, folder.directory) == chat_key)
 			{
 				chat.folder_id = folder.id;
 				break;
@@ -441,9 +437,16 @@ void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
 {
-	if (candidate.messages.size() != existing.messages.size())
+	const std::size_t candidate_message_count = EffectiveMessageCount(candidate);
+	const std::size_t existing_message_count = EffectiveMessageCount(existing);
+	if (candidate_message_count != existing_message_count)
 	{
-		return candidate.messages.size() > existing.messages.size();
+		return candidate_message_count > existing_message_count;
+	}
+
+	if (candidate.messages_loaded != existing.messages_loaded)
+	{
+		return candidate.messages_loaded;
 	}
 
 	if (candidate.updated_at != existing.updated_at)
@@ -669,16 +672,21 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.branch_from_message_index = message_index;
 	branch.branch_message_edited = replacement_content.has_value();
 	branch.linked_files = source.linked_files;
+	branch.execution_host_id = source.execution_host_id;
 	branch.model_id = source.model_id;
+	branch.reviewer_model_id = source.reviewer_model_id;
 	branch.reasoning_effort = source.reasoning_effort;
 	branch.service_tier = source.service_tier;
+	branch.service_tier_explicit = source.service_tier_explicit;
 	branch.extra_flags = source.extra_flags;
 	branch.approval_mode = source.approval_mode;
-	branch.auto_approve_commands = source.auto_approve_commands;
+	branch.uam_agent_id = source.uam_agent_id;
 	branch.command_safety_tier = source.command_safety_tier;
+	branch.computer_use_backend = source.computer_use_backend;
 	branch.memory_level = source.memory_level;
 	branch.memory_enabled = source.memory_enabled;
 	branch.small_model_mode = source.small_model_mode;
+	branch.imported_read_only = source.imported_read_only;
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);

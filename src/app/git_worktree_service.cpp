@@ -14,6 +14,7 @@
 
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <vector>
 
@@ -24,6 +25,8 @@ namespace uam
 		constexpr int kDefaultGitCommandTimeoutMs = 120000;
 		constexpr std::uintmax_t kMaxManagedSnapshotBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 		constexpr std::size_t kMaxManagedSnapshotFiles = 100000;
+		constexpr std::string_view kRemoteWorkspaceUnsupported =
+		    "Local Git worktrees are unavailable for remote workspaces.";
 
 		struct SnapshotFile
 		{
@@ -33,9 +36,9 @@ namespace uam
 			std::filesystem::file_time_type modified_at;
 		};
 
-		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultGitCommandTimeoutMs)
+		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultGitCommandTimeoutMs, std::stop_token stop_token = {})
 		{
-			return PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout_ms);
+			return PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout_ms, stop_token);
 		}
 
 		std::string CommandOutputOrError(const ProcessExecutionResult& result)
@@ -68,14 +71,14 @@ namespace uam
 			return result.ok && !result.timed_out && !result.canceled && result.exit_code == 0;
 		}
 
-		bool GitCommand(const std::filesystem::path& cwd, const std::string& args, std::string* error_out = nullptr)
+		bool GitCommand(const std::filesystem::path& cwd, const std::string& args, std::string* error_out = nullptr, std::stop_token stop_token = {})
 		{
 			if (error_out != nullptr)
 			{
 				error_out->clear();
 			}
 
-			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args));
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args), kDefaultGitCommandTimeoutMs, stop_token);
 			if (CommandSucceeded(result))
 			{
 				return true;
@@ -88,7 +91,7 @@ namespace uam
 			return false;
 		}
 
-		bool GitOutput(const std::filesystem::path& cwd, const std::string& args, std::string* output_out, std::string* error_out = nullptr)
+		bool GitOutput(const std::filesystem::path& cwd, const std::string& args, std::string* output_out, std::string* error_out = nullptr, std::stop_token stop_token = {})
 		{
 			if (output_out != nullptr)
 			{
@@ -99,7 +102,7 @@ namespace uam
 				error_out->clear();
 			}
 
-			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args));
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(cwd, args), kDefaultGitCommandTimeoutMs, stop_token);
 			if (!CommandSucceeded(result))
 			{
 				if (error_out != nullptr)
@@ -323,7 +326,7 @@ namespace uam
 			return "uam/" + uam::strings::NonEmptyOrFallback(safe, "chat");
 		}
 
-		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr)
+		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr, std::stop_token stop_token = {})
 		{
 			if (dirty_out != nullptr)
 			{
@@ -331,7 +334,7 @@ namespace uam
 			}
 
 			std::string status;
-			if (!GitOutput(repo, "status --porcelain", &status, error_out))
+			if (!GitOutput(repo, "status --porcelain", &status, error_out, stop_token))
 			{
 				return false;
 			}
@@ -556,11 +559,21 @@ namespace uam
 			result.message = message;
 			result.status = status;
 		}
+
+		bool IsCommitId(std::string_view value)
+		{
+			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char c) { return std::isxdigit(c) != 0; });
+		}
 	} // namespace
 
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
 	{
 		GitWorktreeStatus status;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			status.warning = std::string(kRemoteWorkspaceUnsupported);
+			return status;
+		}
 		status.isolated = uam::paths::IsGitWorktreeIsolated(chat);
 		status.source_directory = uam::strings::Trim(chat.workspace_source_directory);
 		status.worktree_directory = uam::strings::Trim(chat.workspace_worktree_directory);
@@ -586,6 +599,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateForChat(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (result.status.isolated)
 		{
@@ -712,6 +730,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::DiscardChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (!result.status.isolated)
 		{
@@ -747,6 +770,11 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::PortChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
 		result.status = Status(app, chat);
 		if (!result.status.isolated || result.status.worktree_missing)
 		{
@@ -845,6 +873,201 @@ namespace uam
 
 		result.patch_path = patch_path;
 		CompleteSuccessfulResult(result, Status(app, chat), "Applied chat worktree changes and returned to the source workspace.");
+		return result;
+	}
+
+	bool GitWorktreeService::CanCheckpointTurn(const AppState& /*app*/, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const
+	{
+		if (reason_out != nullptr) reason_out->clear();
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			if (reason_out != nullptr) *reason_out = std::string(kRemoteWorkspaceUnsupported);
+			return false;
+		}
+		if (!uam::paths::IsGitWorktreeIsolated(chat))
+		{
+			if (reason_out != nullptr) *reason_out = "Automatic checkpoints require an available UAM isolated Git worktree.";
+			return false;
+		}
+		const std::filesystem::path worktree = TrimmedPathOrEmpty(chat.workspace_worktree_directory);
+		if (worktree.empty() || !uam::paths::IsDirectoryNoThrow(worktree))
+		{
+			if (reason_out != nullptr) *reason_out = "Automatic checkpoints require an available UAM isolated Git worktree.";
+			return false;
+		}
+		bool dirty = false;
+		std::string error;
+		if (!IsDirty(worktree, &dirty, &error, stop_token))
+		{
+			if (reason_out != nullptr) *reason_out = uam::strings::NonEmptyOrFallback(error, "Failed to inspect the isolated worktree.");
+			return false;
+		}
+		if (dirty)
+		{
+			if (reason_out != nullptr) *reason_out = "The isolated worktree already had changes before this turn, so UAM will not absorb them into an automatic checkpoint.";
+			return false;
+		}
+		return true;
+	}
+
+	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token) const
+	{
+		GitTurnCheckpointResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
+		if (assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()) || chat.messages[assistant_message_index].role != MessageRole::Assistant)
+		{
+			result.message = "The completed assistant turn is unavailable for checkpointing.";
+			return result;
+		}
+		Message& message = chat.messages[assistant_message_index];
+		if (!message.checkpoint_sha.empty())
+		{
+			result.ok = true;
+			result.checkpoint_sha = message.checkpoint_sha;
+			result.parent_sha = message.checkpoint_parent_sha;
+			result.message = "This turn already has a checkpoint.";
+			return result;
+		}
+		if (!uam::paths::IsGitWorktreeIsolated(chat))
+		{
+			result.message = "Automatic checkpoints require an available UAM isolated Git worktree.";
+			return result;
+		}
+		const std::filesystem::path worktree = TrimmedPathOrEmpty(chat.workspace_worktree_directory);
+		if (worktree.empty() || !uam::paths::IsDirectoryNoThrow(worktree))
+		{
+			result.message = "Automatic checkpoints require an available UAM isolated Git worktree.";
+			return result;
+		}
+		bool dirty = false;
+		if (!IsDirty(worktree, &dirty, &result.message, stop_token)) return result;
+		if (!dirty)
+		{
+			result.ok = true;
+			result.message = "The completed turn did not change the isolated worktree.";
+			return result;
+		}
+		if (!GitOutput(worktree, "rev-parse HEAD", &result.parent_sha, &result.message, stop_token) || !IsCommitId(result.parent_sha))
+		{
+			return result;
+		}
+		if (!GitCommand(worktree, "add -A", &result.message, stop_token))
+		{
+			(void)GitCommand(worktree, "reset --mixed " + uam::shell::EscapeArg(result.parent_sha));
+			result.message = uam::strings::NonEmptyOrFallback(result.message, "Automatic checkpoint staging was cancelled or failed.");
+			return result;
+		}
+		const std::string commit_message = "UAM checkpoint: " + chat.id + " turn " + std::to_string(assistant_message_index);
+		if (!GitCommand(worktree, "-c user.name=UAM -c user.email=uam@local.invalid commit -m " + uam::shell::EscapeArg(commit_message), &result.message, stop_token) ||
+		    !GitOutput(worktree, "rev-parse HEAD", &result.checkpoint_sha, &result.message, stop_token) || !IsCommitId(result.checkpoint_sha))
+		{
+			(void)GitCommand(worktree, "reset --mixed " + uam::shell::EscapeArg(result.parent_sha));
+			result.message = uam::strings::NonEmptyOrFallback(result.message, "Automatic checkpoint creation was cancelled or failed.");
+			return result;
+		}
+
+		message.checkpoint_sha = result.checkpoint_sha;
+		message.checkpoint_parent_sha = result.parent_sha;
+		chat.updated_at = uam::time::TimestampNow();
+		if (!SaveChat(app, chat, &result.message))
+		{
+			message.checkpoint_sha.clear();
+			message.checkpoint_parent_sha.clear();
+			(void)GitCommand(worktree, "reset --mixed " + uam::shell::EscapeArg(result.parent_sha));
+			return result;
+		}
+		result.ok = true;
+		result.changed = true;
+		result.message = "Created an automatic checkpoint for this completed turn.";
+		return result;
+	}
+
+	GitTurnCheckpointResult GitWorktreeService::PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const
+	{
+		GitTurnCheckpointResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
+		if (assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()))
+		{
+			result.message = "The requested turn is unavailable.";
+			return result;
+		}
+		const Message& message = chat.messages[assistant_message_index];
+		result.checkpoint_sha = message.checkpoint_sha;
+		result.parent_sha = message.checkpoint_parent_sha;
+		if (!IsCommitId(result.checkpoint_sha) || !IsCommitId(result.parent_sha))
+		{
+			result.message = "This turn has no valid rollback checkpoint.";
+			return result;
+		}
+		const GitWorktreeStatus status = Status(app, chat);
+		if (!status.isolated || status.worktree_missing)
+		{
+			result.message = "The isolated worktree is unavailable.";
+			return result;
+		}
+		std::string head;
+		const std::filesystem::path worktree = WorktreePathFromStatus(status);
+		if (!GitOutput(worktree, "rev-parse HEAD", &head, &result.message)) return result;
+		if (head != result.checkpoint_sha)
+		{
+			result.message = "Later commits or source drift exist. Roll back the newest checkpoint first or resolve the worktree manually.";
+			return result;
+		}
+		bool dirty = false;
+		if (!IsDirty(worktree, &dirty, &result.message)) return result;
+		if (dirty)
+		{
+			result.message = "The isolated worktree has uncommitted changes. Preserve or discard them before rollback.";
+			return result;
+		}
+		const ProcessExecutionResult diff = RunCommand(BuildGitCommandInDirectory(worktree, "diff --stat " + uam::shell::EscapeArg(result.parent_sha) + " " + uam::shell::EscapeArg(result.checkpoint_sha)));
+		if (!CommandSucceeded(diff))
+		{
+			result.message = CommandOutputOrFallback(diff, "Failed to preview the checkpoint rollback.");
+			return result;
+		}
+		result.diff = diff.output.substr(0, 64 * 1024);
+		result.ok = true;
+		result.changed = true;
+		result.message = "Rollback preview is ready.";
+		return result;
+	}
+
+	GitTurnCheckpointResult GitWorktreeService::RollbackTurn(AppState& app, ChatSession& chat, int assistant_message_index) const
+	{
+		GitTurnCheckpointResult result = PreviewTurnRollback(app, chat, assistant_message_index);
+		if (!result.ok) return result;
+		const GitWorktreeStatus status = Status(app, chat);
+		const std::filesystem::path worktree = WorktreePathFromStatus(status);
+		if (!GitCommand(worktree, "reset --hard " + uam::shell::EscapeArg(result.parent_sha), &result.message))
+		{
+			result.ok = false;
+			return result;
+		}
+		Message& message = chat.messages[assistant_message_index];
+		const std::string checkpoint_sha = message.checkpoint_sha;
+		const std::string parent_sha = message.checkpoint_parent_sha;
+		message.checkpoint_sha.clear();
+		message.checkpoint_parent_sha.clear();
+		chat.updated_at = uam::time::TimestampNow();
+		if (!SaveChat(app, chat, &result.message))
+		{
+			message.checkpoint_sha = checkpoint_sha;
+			message.checkpoint_parent_sha = parent_sha;
+			(void)GitCommand(worktree, "reset --hard " + uam::shell::EscapeArg(checkpoint_sha));
+			result.ok = false;
+			return result;
+		}
+		result.ok = true;
+		result.message = "Rolled the isolated worktree back to before this turn.";
 		return result;
 	}
 } // namespace uam

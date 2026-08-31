@@ -61,12 +61,32 @@ function searchModel(
 }
 
 function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
-  return [
+  return [...new Set([
     ...model.pinnedSessionIds,
+    ...model.activeSessionIds,
     ...model.folderRows.flatMap((row) => row.sessionIds),
     ...model.unfolderedSessionIds,
-  ]
+  ])]
 }
+
+  it('duplicates every displayed status and pinned chat without removing it from all chats', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('pinned', 'Pinned', 'general', now, now, true),
+      makeSession('running', 'Running', 'general'),
+      makeSession('done', 'Done', 'general'),
+      makeSession('idle', 'Idle', 'general'),
+    ]
+    const model = searchModel('', folders, sessions, undefined, { acpBindingBySessionId: {
+      pinned: { processing: true },
+      running: { processing: true },
+      done: { readySinceLastSelect: true },
+    } })
+    expect(model.pinnedSessionIds).toEqual(['pinned'])
+    expect(model.activeSessionIds).toEqual(['done', 'pinned', 'running'])
+    expect(model.folderRows[0].sessionIds).toEqual(['done', 'idle', 'pinned', 'running'])
+    expect(new Set(visibleSessionIds(model)).size).toBe(4)
+  })
 
 describe('chatSearch', () => {
   it('keeps all chats and current folder expansion state with an empty query', () => {
@@ -186,7 +206,7 @@ describe('chatSearch', () => {
     expect(model.folderRows[0].sessionIds).toEqual(['s-new', 's-middle', 's-old'])
   })
 
-  it('lifts pinned chats into the top section without duplicating them in folders', () => {
+  it('duplicates pinned chats into the top section and their normal folder', () => {
     const folders = [makeFolder('general'), makeFolder('work')]
     const sessions = [
       makeSession('s-pinned', 'Pinned Chat', 'general', now, now, true),
@@ -201,7 +221,7 @@ describe('chatSearch', () => {
       folderId: row.folder.id,
       sessionIds: row.sessionIds,
     }))).toEqual([
-      { folderId: 'general', sessionIds: ['s-folder'] },
+      { folderId: 'general', sessionIds: ['s-folder', 's-pinned'] },
       { folderId: 'work', sessionIds: ['s-work'] },
     ])
   })
@@ -216,7 +236,7 @@ describe('chatSearch', () => {
 
     const matchModel = searchModel('needle', folders, sessions)
     expect(matchModel.pinnedSessionIds).toEqual(['s-pinned-match'])
-    expect(matchModel.folderRows[0].sessionIds).toEqual(['s-folder-match'])
+    expect(matchModel.folderRows[0].sessionIds).toEqual(['s-folder-match', 's-pinned-match'])
 
     const folderOnlyModel = searchModel('folder', folders, sessions)
     expect(folderOnlyModel.pinnedSessionIds).toEqual([])
@@ -279,10 +299,27 @@ describe('chatSearch', () => {
     }
 
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['pinned'] }, context))).toEqual(['s-pinned'])
-    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual(['s-attention', 's-done', 's-running'])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual(['s-running'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['attention'] }, context))).toEqual(['s-attention'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['done'] }, context))).toEqual(['s-done'])
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['idle'] }, context))).toEqual(['s-idle'])
+  })
+
+  it('does not invent a displayed status from a bound process or hidden error', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-bound', 'Bound', 'general'),
+      makeSession('s-error', 'Error', 'general'),
+    ]
+    const context = { acpBindingBySessionId: {
+      's-bound': { running: true, lifecycleState: 'ready' },
+      's-error': { lastError: 'hidden failure', lifecycleState: 'error', attentionKind: 'error' },
+    } }
+
+    const model = searchModel('', folders, sessions, undefined, context)
+    expect(model.activeSessionIds).toEqual([])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['running'] }, context))).toEqual([])
+    expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['attention'] }, context))).toEqual([])
   })
 
   it('uses OR behavior between search text and active filters', () => {

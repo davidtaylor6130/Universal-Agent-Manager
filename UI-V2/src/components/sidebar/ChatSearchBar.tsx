@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
 import { Tooltip, ViewportMenu } from '../ui'
@@ -45,6 +45,8 @@ export function ChatSearchBar({
   const popoverRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+  const closeFilters = useCallback(() => setFiltersOpen(false), [])
   const activeFilterCount = filters.providerIds.length + filters.statusIds.length + (deepSearch ? 1 : 0)
 
   useEffect(() => {
@@ -53,13 +55,13 @@ export function ChatSearchBar({
     const onMouseDown = (event: MouseEvent) => {
       const target = event.target
       if (target instanceof Node && !popoverRef.current?.contains(target) && !menuRef.current?.contains(target)) {
-        setFiltersOpen(false)
+        closeFilters()
       }
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setFiltersOpen(false)
+        closeFilters()
       }
     }
 
@@ -69,7 +71,7 @@ export function ChatSearchBar({
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [filtersOpen])
+  }, [closeFilters, filtersOpen])
 
   return (
     <div
@@ -142,7 +144,9 @@ export function ChatSearchBar({
             ref={triggerRef}
             type="button"
             aria-label="Filter chats"
+            aria-haspopup="menu"
             aria-expanded={filtersOpen}
+            aria-controls={filtersOpen ? menuId : undefined}
             className="relative flex items-center justify-center rounded-md transition-colors duration-fast"
             style={{
               width: 32,
@@ -177,6 +181,10 @@ export function ChatSearchBar({
               ref={menuRef}
               anchorRef={triggerRef}
               align="end"
+              id={menuId}
+              role="menu"
+              aria-label="Chat filters"
+              onRequestClose={closeFilters}
               className="w-56 rounded-md p-2 text-xs shadow-xl"
               style={{
                 background: 'var(--surface-up)',
@@ -189,7 +197,8 @@ export function ChatSearchBar({
                 {(activeFilterCount > 0) && (
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[10px]"
+                    role="menuitem"
+                    className="rounded px-1.5 py-0.5 text-xs"
                     style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}
                     onClick={() => {
                       if (deepSearch) onToggleDeepSearch()
@@ -203,6 +212,8 @@ export function ChatSearchBar({
 
               <button
                 type="button"
+                role="menuitemcheckbox"
+                aria-checked={deepSearch}
                 className="mb-2 flex w-full items-center justify-between rounded px-2 py-1.5"
                 style={{
                   background: deepSearch ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : 'transparent',
@@ -215,7 +226,7 @@ export function ChatSearchBar({
                 <span style={{ color: deepSearch ? 'var(--accent)' : 'var(--text-3)' }}>{deepSearch ? 'On' : 'Off'}</span>
               </button>
 
-              <div className="mb-1 text-[10px] uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
+              <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 State
               </div>
               <div className="mb-2 space-y-1">
@@ -225,6 +236,8 @@ export function ChatSearchBar({
                     <button
                       key={option.id}
                       type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={active}
                       className="flex w-full items-center justify-between rounded px-2 py-1"
                       style={{
                         background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
@@ -239,7 +252,7 @@ export function ChatSearchBar({
                 })}
               </div>
 
-              <div className="mb-1 text-[10px] uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
+              <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 Provider
               </div>
               <div className="max-h-40 space-y-1 overflow-auto">
@@ -249,6 +262,8 @@ export function ChatSearchBar({
                     <button
                       key={provider.id}
                       type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={active}
                       className="flex w-full items-center justify-between rounded px-2 py-1"
                       style={{
                         background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',

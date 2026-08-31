@@ -21,11 +21,6 @@ class WindowsDictationService final : public IPlatformDictationService
   public:
 	bool Start(const DictationOptions& options, std::string* error_out = nullptr) override
 	{
-		if (options.mode != "system")
-		{
-			if (error_out) *error_out = options.mode == "local" ? "Local AI transcription is coming soon." : "Server transcription audio capture is not available on Windows yet.";
-			return false;
-		}
 		std::jthread previous_worker;
 		std::uint64_t generation = 0;
 		{

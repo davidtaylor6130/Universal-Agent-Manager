@@ -1,22 +1,31 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Columns2, Grid2X2, MessageSquare, Square, SquareTerminal, X } from 'lucide-react'
+import { Columns2, MessageSquare, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
-import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
+import { isCefContext } from '../../ipc/cefBridge'
 import { IconButton, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
-  assignChatToPane,
+  chatGridLeaves,
   chatPaneColors,
+  clearChatLeaf,
+  clearMissingChats,
+  closeChatLeaf,
+  MAX_CHAT_PANES,
   readChatGridLayout,
+  resizeChatSplit,
+  setChatInLeaf,
+  splitChatLeaf,
   subscribeChatGridLayout,
+  writeChatViewMode,
   writeChatGridLayout,
   type ChatGridLayout,
-  type ChatPaneCount,
+  type ChatPaneNode,
+  type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
 
 const PushStatusDot = memo(function PushStatusDot() {
@@ -41,15 +50,16 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
-const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane, onActivate, onClose }: {
+const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, multiPane, onActivate, onClose }: {
   session: Session
   active: boolean
+  leafId: string
   paneIndex: number
   multiPane: boolean
-  onActivate: (paneIndex: number, sessionId?: string) => void
-  onClose: (paneIndex: number, sessionId: string) => void
+  onActivate: (leafId: string, sessionId?: string) => void
+  onClose: (leafId: string, sessionId: string) => void
 }) {
-  const [view, setView] = useState<'chat' | 'cli'>('chat')
+  const [view, setView] = useState<'chat' | 'cli'>(session.importedReadOnly ? 'chat' : session.viewMode)
   const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const cliBinding = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const folderDirectory = useAppStore((s) =>
@@ -66,6 +76,11 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
 
+  useEffect(() => {
+    if (session.importedReadOnly) writeChatViewMode(session.id, 'chat')
+    setView(session.importedReadOnly ? 'chat' : session.viewMode)
+  }, [session.id, session.importedReadOnly, session.viewMode])
+
   return (
     <div
       className="uam-chat-pane relative flex flex-col h-full overflow-hidden"
@@ -73,8 +88,8 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
       data-pane={paneIndex + 1}
       data-focused={active}
       data-multi-pane={multiPane}
-      onMouseDown={() => { if (!active) onActivate(paneIndex, session.id) }}
-      onFocusCapture={() => { if (!active) onActivate(paneIndex, session.id) }}
+      onMouseDown={() => { if (!active) onActivate(leafId, session.id) }}
+      onFocusCapture={() => { if (!active) onActivate(leafId, session.id) }}
       style={{
         '--pane-color': paneColor,
       } as React.CSSProperties}
@@ -114,16 +129,7 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
             <button
               type="button"
               onClick={() => {
-                if (view === 'cli' && isCefContext()) {
-                  void sendToCEF({
-                    action: 'stopCliTerminal',
-                    payload: {
-                      chatId: cliBinding?.boundChatId ?? session.id,
-                      terminalId: cliBinding?.terminalId ?? '',
-                      quit: true,
-                    },
-                  })
-                }
+                writeChatViewMode(session.id, 'chat')
                 setView('chat')
               }}
               aria-label="Chat view"
@@ -138,22 +144,25 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
               <MessageSquare size={14} aria-hidden />
             </button>
           </Tooltip>
-          <Tooltip label={cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
+          <Tooltip label={session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
             <button
               type="button"
-              disabled={cliSwitchLocked && view !== 'cli'}
+              disabled={session.importedReadOnly || (cliSwitchLocked && view !== 'cli')}
               aria-label="Terminal fallback"
               aria-pressed={view === 'cli'}
               onClick={() => {
-                if (!cliSwitchLocked) setView('cli')
+                if (!session.importedReadOnly && !cliSwitchLocked) {
+                  writeChatViewMode(session.id, 'cli')
+                  setView('cli')
+                }
               }}
               className="uam-segment-button flex h-7 w-7 items-center justify-center"
               style={{
                 borderRadius: 5,
                 color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
                 background: view === 'cli' ? 'var(--surface-high)' : 'transparent',
-                opacity: cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
-                cursor: cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
+                opacity: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
+                cursor: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
               }}
             >
               <SquareTerminal size={14} aria-hidden />
@@ -167,7 +176,7 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
           tooltipSide="bottom"
           size="sm"
           onMouseDown={(event) => event.stopPropagation()}
-          onClick={() => onClose(paneIndex, session.id)}
+          onClick={() => onClose(leafId, session.id)}
         />
 
       </div>
@@ -175,14 +184,18 @@ const ChatPane = memo(function ChatPane({ session, active, paneIndex, multiPane,
       {/* View content */}
       <div className="flex-1 overflow-hidden">
         {view === 'chat'
-          ? <ChatView session={session} />
+          ? <ChatView session={session} onOpenTerminalFallback={() => {
+              if (session.importedReadOnly || cliSwitchLocked) return
+              writeChatViewMode(session.id, 'cli')
+              setView('cli')
+            }} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}
       </div>
     </div>
   )
 })
 
-const EmptyPane = memo(function EmptyPane({ active, paneIndex, multiPane, onActivate }: { active: boolean; paneIndex: number; multiPane: boolean; onActivate: (paneIndex: number, sessionId?: string) => void }) {
+const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane, onActivate }: { active: boolean; leafId: string; paneIndex: number; multiPane: boolean; onActivate: (leafId: string, sessionId?: string) => void }) {
   const paneColor = chatPaneColors[paneIndex]
   return (
     <button
@@ -190,51 +203,28 @@ const EmptyPane = memo(function EmptyPane({ active, paneIndex, multiPane, onActi
       className="uam-chat-pane relative flex h-full w-full items-center justify-center text-center"
       data-focused={active}
       data-multi-pane={multiPane}
-      onClick={() => onActivate(paneIndex)}
-      onFocus={() => { if (!active) onActivate(paneIndex) }}
+      onClick={() => onActivate(leafId)}
+      onFocus={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
       <span>
         <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
-        <span className="block text-sm">Select chat</span>
+        <span className="block text-sm">Drag a chat here or select one</span>
       </span>
     </button>
   )
 })
 
-function LayoutButton({ count, current, onClick, children }: {
-  count: ChatPaneCount
-  current: ChatPaneCount
-  onClick: (count: ChatPaneCount) => void
-  children: React.ReactNode
-}) {
-  const label = `Show ${count === 1 ? 'one chat' : count === 2 ? 'two chats' : 'four chats'}`
-  return (
-    <Tooltip label={label} side="bottom">
-      <button
-        type="button"
-        className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-        aria-label={label}
-        aria-pressed={current === count}
-        onClick={() => onClick(count)}
-        style={{ color: current === count ? 'var(--accent)' : 'var(--text-2)', background: current === count ? 'var(--accent-dim)' : 'transparent' }}
-      >
-        {children}
-      </button>
-    </Tooltip>
-  )
-}
-
 export function MainPanel() {
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const lastAppliedStateRevision = useAppStore((s) => s.lastAppliedStateRevision)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const [layout, setLayout] = useState<ChatGridLayout>(readChatGridLayout)
-  const [dropTargetPane, setDropTargetPane] = useState<number | null>(null)
-
-  const visibleIds = layout.sessionIds.slice(0, layout.paneCount)
-  const visibleSessions = visibleIds.map((id) => sessions.find((session) => session.id === id) ?? null)
+  const [dropTargetPane, setDropTargetPane] = useState<string | null>(null)
+  const leaves = chatGridLeaves(layout.root)
+  const visibleIds = leaves.map((leaf) => leaf.sessionId)
   const visibleAcpSignatures = useAppStore(useShallow((s) => visibleIds.map((id) => {
     const binding = id ? s.acpBindingBySessionId[id] : undefined
     return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
@@ -245,15 +235,39 @@ export function MainPanel() {
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
 
   useEffect(() => {
-    if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) return
+    if (isCefContext() && lastAppliedStateRevision < 0) return
+    setLayout((current) => clearMissingChats(current, sessions.map((session) => session.id)))
+  }, [lastAppliedStateRevision, sessions])
+
+  useEffect(() => {
+    if (!activeSessionId) return
+    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+    const selectedSession = sessionsById.get(activeSessionId)
+    if (!selectedSession) return
+    const selectedBranchRoot = selectedSession.branchRootChatId || selectedSession.parentChatId || selectedSession.id
     setLayout((current) => {
-      if (current.sessionIds[current.activePane] === activeSessionId) return current
-      const existingPane = current.sessionIds.slice(0, current.paneCount).indexOf(activeSessionId)
-      if (existingPane >= 0) return { ...current, activePane: existingPane }
-      if (current.paneCount > 1) return current
-      const sessionIds = [...current.sessionIds]
-      sessionIds[current.activePane] = activeSessionId
-      return { ...current, sessionIds }
+      const currentLeaves = chatGridLeaves(current.root)
+      const activeLeaf = currentLeaves.find((leaf) => leaf.id === current.activeLeafId)
+      const branchLeaves = currentLeaves.filter((leaf) => {
+        const session = sessionsById.get(leaf.sessionId)
+        return session && (session.branchRootChatId || session.parentChatId || session.id) === selectedBranchRoot
+      })
+      const existingPane = branchLeaves.find((leaf) => leaf.sessionId === activeSessionId)
+      const branchTarget = existingPane ?? branchLeaves.find((leaf) => leaf.id === current.activeLeafId) ?? branchLeaves[0]
+      if (branchTarget) {
+        if (branchLeaves.length === 1 && existingPane && current.activeLeafId === branchTarget.id) return current
+        let next = existingPane
+          ? { ...current, activeLeafId: branchTarget.id }
+          : setChatInLeaf(current, activeSessionId, branchTarget.id)
+        for (const leaf of branchLeaves) {
+          if (leaf.id !== branchTarget.id) next = clearChatLeaf(next, leaf.id)
+        }
+        return next.activeLeafId === branchTarget.id ? next : { ...next, activeLeafId: branchTarget.id }
+      }
+      const targetLeaf = activeLeaf && !activeLeaf.sessionId
+        ? activeLeaf
+        : currentLeaves.find((leaf) => !leaf.sessionId) ?? activeLeaf ?? currentLeaves[0]
+      return targetLeaf ? setChatInLeaf(current, activeSessionId, targetLeaf.id) : current
     })
   }, [activeSessionId, sessions])
 
@@ -286,48 +300,49 @@ export function MainPanel() {
     previousVisibleAcp.current = current
   }, [activeSessionId, loadSessionMessages, visibleIds.join('|'), visibleAcpSignatures.join('|')])
 
-  const selectPane = useCallback((index: number, sessionId?: string) => {
-    setLayout((current) => ({ ...current, activePane: index }))
-    if (sessionId) setActiveSession(sessionId)
+  const selectPane = useCallback((leafId: string, sessionId?: string) => {
+    setLayout((current) => ({ ...current, activeLeafId: leafId }))
+    setActiveSession(sessionId || null)
   }, [setActiveSession])
 
-  const setPaneCount = (paneCount: ChatPaneCount) => {
-    setLayout((current) => {
-      const activePane = Math.min(current.activePane, paneCount - 1)
-      const sessionIds = [...current.sessionIds]
-      while (sessionIds.length < paneCount) sessionIds.push('')
-      if (activeSessionId) sessionIds[activePane] = activeSessionId
-      return { ...current, paneCount, activePane, sessionIds }
-    })
-  }
+  const splitActivePane = (direction: ChatSplitDirection) => setLayout((current) => {
+    const next = splitChatLeaf(current, current.activeLeafId, direction)
+    if (next !== current) setActiveSession(null)
+    return next
+  })
 
-  const closePane = useCallback((index: number, sessionId: string) => {
-    setLayout((current) => {
-      const sessionIds = [...current.sessionIds]
-      sessionIds[index] = ''
-      return { ...current, sessionIds }
-    })
+  const clearChat = useCallback((leafId: string, sessionId: string) => {
+    setLayout((current) => clearChatLeaf(current, leafId))
     if (activeSessionId === sessionId) setActiveSession(null)
   }, [activeSessionId, setActiveSession])
 
-  const pane = (index: number) => {
-    const session = visibleSessions[index]
+  const closePane = useCallback((leafId: string) => {
+    setLayout((current) => {
+      const next = closeChatLeaf(current, leafId)
+      setActiveSession(chatGridLeaves(next.root).find((leaf) => leaf.id === next.activeLeafId)?.sessionId || null)
+      return next
+    })
+  }, [setActiveSession])
+
+  const pane = (leafId: string, index: number, sessionId: string) => {
+    const session = sessions.find((candidate) => candidate.id === sessionId)
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} onClose={closePane} />
-      : <EmptyPane active={layout.activePane === index} paneIndex={index} multiPane={layout.paneCount > 1} onActivate={selectPane} />
+      ? <ChatPane key={session.id} session={session} active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} onClose={clearChat} />
+      : <EmptyPane active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} />
   }
 
-  const paneDropTarget = (index: number) => (
+  const paneDropTarget = (leafId: string, index: number, sessionId: string) => (
     <div
       className="h-full"
       data-testid={`pane-drop-target-${index + 1}`}
-      data-drop-target={dropTargetPane === index}
-      style={{ outline: dropTargetPane === index ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
+      data-leaf-id={leafId}
+      data-drop-target={dropTargetPane === leafId}
+      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
       onDragOver={(event) => {
         if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
         event.preventDefault()
         event.dataTransfer.dropEffect = 'copy'
-        setDropTargetPane(index)
+        setDropTargetPane(leafId)
       }}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetPane(null)
@@ -338,16 +353,53 @@ export function MainPanel() {
         const sessionId = event.dataTransfer.getData('text/x-uam-chat-id').trim()
         setDropTargetPane(null)
         if (!sessions.some((session) => session.id === sessionId)) return
-        setLayout(assignChatToPane(sessionId, index))
+        setLayout((current) => setChatInLeaf(current, sessionId, leafId))
         setActiveSession(sessionId)
       }}
     >
-      {pane(index)}
+      {pane(leafId, index, sessionId)}
     </div>
   )
 
-  const verticalHandle = <PanelResizeHandle style={{ width: 1 }} />
-  const horizontalHandle = <PanelResizeHandle style={{ height: 1 }} />
+  const renderNode = (node: ChatPaneNode): React.ReactNode => {
+    if (node.type === 'leaf') {
+      const index = leaves.findIndex((leaf) => leaf.id === node.id)
+      return paneDropTarget(node.id, index, node.sessionId)
+    }
+    const columns = node.direction === 'horizontal'
+    return (
+      <PanelGroup key={node.id} direction={node.direction} onLayout={(sizes) => setLayout((current) => resizeChatSplit(current, node.id, sizes))}>
+        <Panel defaultSize={node.sizes[0]} minSize={12}>{renderNode(node.children[0])}</Panel>
+        <PanelResizeHandle
+          className="uam-pane-resize-handle"
+          style={columns ? { width: 3, cursor: 'col-resize' } : { height: 3, cursor: 'row-resize' }}
+          aria-label={`Resize ${columns ? 'columns' : 'rows'}`}
+          tabIndex={0}
+        />
+        <Panel defaultSize={node.sizes[1]} minSize={12}>{renderNode(node.children[1])}</Panel>
+      </PanelGroup>
+    )
+  }
+
+  const paneLimitReached = leaves.length >= MAX_CHAT_PANES
+  const activeLeaf = leaves.find((leaf) => leaf.id === layout.activeLeafId) ?? leaves[0]
+  const splitButton = (direction: ChatSplitDirection, icon: React.ReactNode) => {
+    const label = `Split active pane ${direction === 'horizontal' ? 'into columns' : 'into rows'}`
+    return (
+      <Tooltip label={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : label} side="bottom">
+        <button
+          type="button"
+          className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+          aria-label={label}
+          disabled={paneLimitReached}
+          onClick={() => splitActivePane(direction)}
+          style={{ color: 'var(--text-2)', background: 'transparent', opacity: paneLimitReached ? 0.45 : 1 }}
+        >
+          {icon}
+        </button>
+      </Tooltip>
+    )
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -355,42 +407,27 @@ export function MainPanel() {
         className="flex h-9 flex-shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}
       >
-        <div className="flex items-center gap-1" aria-label="Chat grid layout">
-          <LayoutButton count={1} current={layout.paneCount} onClick={setPaneCount}><Square size={15} /></LayoutButton>
-          <LayoutButton count={2} current={layout.paneCount} onClick={setPaneCount}><Columns2 size={15} /></LayoutButton>
-          <LayoutButton count={4} current={layout.paneCount} onClick={setPaneCount}><Grid2X2 size={15} /></LayoutButton>
+        <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
+          {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
+          {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
+          <Tooltip label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'} side="bottom">
+            <button
+              type="button"
+              className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+              aria-label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'}
+              disabled={!activeLeaf?.sessionId && leaves.length === 1}
+              onClick={() => activeLeaf && closePane(activeLeaf.id)}
+              style={{ color: 'var(--text-2)', background: 'transparent', opacity: !activeLeaf?.sessionId && leaves.length === 1 ? 0.45 : 1 }}
+            >
+              <X size={15} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
         {isCefContext() && <PushStatusDot />}
       </div>
 
-      <div className="min-h-0 flex-1" data-testid={`chat-grid-${layout.paneCount}`}>
-        {layout.paneCount === 1 && paneDropTarget(0)}
-        {layout.paneCount === 2 && (
-          <PanelGroup direction="horizontal" onLayout={(columnSizes) => setLayout((current) => ({ ...current, columnSizes }))}>
-            <Panel defaultSize={layout.columnSizes[0]} minSize={20}>{paneDropTarget(0)}</Panel>
-            {verticalHandle}
-            <Panel defaultSize={layout.columnSizes[1]} minSize={20}>{paneDropTarget(1)}</Panel>
-          </PanelGroup>
-        )}
-        {layout.paneCount === 4 && (
-          <PanelGroup direction="horizontal" onLayout={(columnSizes) => setLayout((current) => ({ ...current, columnSizes }))}>
-            <Panel defaultSize={layout.columnSizes[0]} minSize={20}>
-              <PanelGroup direction="vertical" onLayout={(rowSizes) => setLayout((current) => ({ ...current, rowSizes }))}>
-                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{paneDropTarget(0)}</Panel>
-                {horizontalHandle}
-                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{paneDropTarget(2)}</Panel>
-              </PanelGroup>
-            </Panel>
-            {verticalHandle}
-            <Panel defaultSize={layout.columnSizes[1]} minSize={20}>
-              <PanelGroup direction="vertical" onLayout={(rowSizes) => setLayout((current) => ({ ...current, rowSizes }))}>
-                <Panel defaultSize={layout.rowSizes[0]} minSize={20}>{paneDropTarget(1)}</Panel>
-                {horizontalHandle}
-                <Panel defaultSize={layout.rowSizes[1]} minSize={20}>{paneDropTarget(3)}</Panel>
-              </PanelGroup>
-            </Panel>
-          </PanelGroup>
-        )}
+      <div className="min-h-0 flex-1" data-testid={`chat-grid-${leaves.length}`}>
+        {renderNode(layout.root)}
       </div>
     </div>
   )

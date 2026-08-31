@@ -271,18 +271,30 @@ std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::
 	return GeminiJsonHistoryStore::Load(chats_dir, profile, native_options, stop_token);
 }
 
-std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources()
+std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources(std::string* error_out)
 {
 	std::vector<ProviderChatSource> sources;
+	if (error_out != nullptr) error_out->clear();
 	const fs::path gemini_home = AppPaths::GeminiHomePath();
 	const fs::path tmp_root = gemini_home / "tmp";
 
-	if (!uam::paths::IsDirectoryNoThrow(tmp_root))
+	std::error_code ec;
+	const bool tmp_exists = fs::exists(tmp_root, ec);
+	if (ec)
+	{
+		if (error_out != nullptr) *error_out = "Could not inspect Gemini history: " + ec.message();
+		return sources;
+	}
+	if (!tmp_exists)
 	{
 		return sources;
 	}
+	if (!fs::is_directory(tmp_root, ec) || ec)
+	{
+		if (error_out != nullptr) *error_out = ec ? "Could not inspect Gemini history: " + ec.message() : "Gemini history path is not a directory.";
+		return sources;
+	}
 
-	std::error_code ec;
 	for (fs::directory_iterator it(tmp_root, ec), end; !ec && it != end; it.increment(ec))
 	{
 		const fs::directory_entry& item = *it;
@@ -315,5 +327,6 @@ std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources()
 		source.chats_dir = chats_dir;
 		sources.push_back(std::move(source));
 	}
+	if (ec && error_out != nullptr) *error_out = "Could not finish scanning Gemini history: " + ec.message();
 	return sources;
 }

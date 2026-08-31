@@ -9,6 +9,7 @@
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/string_utils.h"
 
@@ -22,10 +23,10 @@ namespace fs = std::filesystem;
 
 namespace
 {
-	constexpr const char* kDefaultDataDirectoryName = "data";
-	constexpr const char* kFallbackDataRootDirectoryName = "universal_agent_manager_data";
 	constexpr const char* kChatsDirectoryName = "chats";
 	constexpr const char* kThemesDirectoryName = "themes";
+	constexpr const char* kAgentsDirectoryName = "agents";
+	constexpr const char* kAgentRunsDirectoryName = "agent-runs";
 	constexpr const char* kProviderCliNoOutputMessage = "(Provider CLI returned no output.)";
 	constexpr const char* kProviderCliExitCodePrefix = "\n\n[Provider CLI exited with code ";
 
@@ -39,13 +40,12 @@ namespace
 
 	void NormalizeProviderCliSettings(AppSettings& settings)
 	{
-		settings.active_provider_id = provider_build_config::EnabledCliProviderIdOrFirst(settings.active_provider_id);
-		settings.runtime_backend = "provider-cli";
-		settings.gemini_yolo_mode = settings.provider_yolo_mode;
-		settings.gemini_extra_flags = uam::strings::Trim(settings.provider_extra_flags);
-		settings.provider_extra_flags = settings.gemini_extra_flags;
+		settings.active_provider_id = uam::strings::NonEmptyOrFallback(
+		    uam::provider_ids::NormalizeCliProviderAlias(settings.active_provider_id),
+		    provider_build_config::FirstEnabledProviderId());
+		settings.provider_extra_flags = uam::strings::Trim(settings.provider_extra_flags);
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
-		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, uam::settings::kMinCliIdleTimeoutSeconds, uam::settings::kMaxCliIdleTimeoutSeconds);
+		uam::settings::ClampRuntimeTimeoutSettings(settings);
 		uam::settings::ClampWindowSettings(settings);
 	}
 
@@ -102,16 +102,6 @@ std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::strin
 	return output;
 }
 
-fs::path PersistenceCoordinator::TempFallbackDataRootPath() const
-{
-	if (const std::optional<fs::path> temp = uam::paths::TempDirectoryPathNoThrow())
-	{
-		return *temp / kFallbackDataRootDirectoryName;
-	}
-
-	return fs::path(kDefaultDataDirectoryName);
-}
-
 bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std::string* error_out) const
 {
 	if (!EnsureDirectory(data_root, "data root", error_out))
@@ -128,6 +118,11 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 	{
 		return false;
 	}
+	if (!EnsureDirectory(data_root / kAgentsDirectoryName, "agents dir", error_out) ||
+	    !EnsureDirectory(data_root / kAgentRunsDirectoryName, "agent runs dir", error_out))
+	{
+		return false;
+	}
 
 	return true;
 }
@@ -136,7 +131,7 @@ bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 {
 	NormalizeProviderCliSettings(app.settings);
 	ChatDomainService().RefreshRememberedSelection(app);
-	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode))
+	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings))
 	{
 		app.status_line = "Failed to persist settings.";
 		return false;
@@ -145,10 +140,20 @@ bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 	return true;
 }
 
-void PersistenceCoordinator::LoadSettings(uam::AppState& app) const
+bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 {
-	SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings, app.center_view_mode);
+	const SettingsLoadResult result = SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), app.settings);
+	if (result.unrecovered_error)
+	{
+		app.status_line = result.warning;
+		return false;
+	}
+	if (result.recovered_from_backup)
+	{
+		app.status_line = result.warning;
+	}
 	NormalizeProviderCliSettings(app.settings);
+	return true;
 }
 
 void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const

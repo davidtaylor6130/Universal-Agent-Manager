@@ -13,6 +13,7 @@
 #include "common/state/app_state.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +27,7 @@ namespace uam::runtime_orch_impl
 		app.chats = ChatDomainService().DeduplicateChatsById(std::move(chats));
 		ChatBranching::Normalize(app.chats);
 		ChatDomainService().NormalizeChatFolderAssignments(app);
+		std::ranges::stable_partition(app.chats, [](const ChatSession& chat) { return chat.agent_run_id.empty(); });
 
 		std::unordered_map<std::string, std::string> next_resolved_native_sessions_by_chat_id;
 		next_resolved_native_sessions_by_chat_id.reserve(app.chats.size());

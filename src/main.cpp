@@ -4,7 +4,9 @@
 // GPU, and utility subprocess invocations before the main process continues.
 
 #include "app/application.h"
+#include "app/uam_control_service.h"
 #include "cef/uam_cef_app.h"
+#include "computer_use/computer_use_mcp_server.h"
 
 #include "include/cef_app.h"
 
@@ -49,6 +51,10 @@ namespace
 
 int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/)
 {
+	const std::vector<std::string> arguments = LaunchArguments();
+	if (uam::computer_use::IsMcpServerInvocation(arguments))
+		return uam::computer_use::RunMcpServer(arguments);
+
 	CefMainArgs main_args(GetModuleHandle(nullptr));
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
@@ -56,15 +62,27 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
 		return exit_code;
+	if (uam::UamControlService::IsStdioServerInvocation(arguments))
+		return uam::UamControlService::RunStdioServerFromEnvironment();
 
 	Application application;
-	return application.Run(main_args, LaunchArguments());
+	return application.Run(main_args, arguments);
 }
 
 #else
 
 int main(int argc, char* argv[])
 {
+#if defined(__APPLE__)
+	if (const std::optional<int> watchdog_exit = uam::platform::RunMacParentDeathWatchdogIfRequested(argc, argv); watchdog_exit.has_value())
+	{
+		return *watchdog_exit;
+	}
+#endif
+	const std::vector<std::string> arguments(argv, argv + argc);
+	if (uam::computer_use::IsMcpServerInvocation(arguments))
+		return uam::computer_use::RunMcpServer(arguments);
+
 	CefMainArgs main_args(argc, argv);
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
@@ -72,6 +90,8 @@ int main(int argc, char* argv[])
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
 		return exit_code;
+	if (uam::UamControlService::IsStdioServerInvocation(arguments))
+		return uam::UamControlService::RunStdioServerFromEnvironment();
 
 #if defined(__APPLE__)
 	if (!uam::platform::InitializeMacApplication())
@@ -82,7 +102,7 @@ int main(int argc, char* argv[])
 #endif
 
 	Application application;
-	return application.Run(main_args, std::vector<std::string>(argv, argv + argc));
+	return application.Run(main_args, arguments);
 }
 
 #endif

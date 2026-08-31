@@ -51,20 +51,24 @@ class ProviderModelCatalogService
 	nlohmann::json GetCachedCodexModels() const;
 
 	/// Persist a provider's latest successful runtime model discovery without replacing a valid cache on empty results.
-	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models);
+	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array(), std::string_view execution_host_id = "local");
 
 	/// Record a refresh failure while retaining the last successful provider cache.
-	void RememberRefreshFailure(const std::string& provider_id, std::string error);
+	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 
 	/// Return the isolated persistent cache for the provider's current configuration.
-	nlohmann::json GetCachedProviderModels(const std::string& provider_id) const;
-	std::string GetProviderRefreshError(const std::string& provider_id) const;
+	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	nlohmann::json GetCatalogScopes() const;
 	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
-	bool BeginDiscoveryIfStale(const std::string& provider_id);
+	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	/// Start a user-requested discovery even when the cache is fresh.
-	bool BeginDiscovery(const std::string& provider_id);
-	bool BeginDiscoveryIfMissing(const std::string& provider_id);
-	bool IsDiscoveryPending(const std::string& provider_id) const;
+	bool BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	bool BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	bool IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 
 	/// Merge fallback models with runtime models (same logic as before).
 	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
@@ -73,7 +77,7 @@ class ProviderModelCatalogService
 	static nlohmann::json ParseOpenCodeZenFreeModels(const nlohmann::json& root);
 
 	/// Get fallback models for a chat (OpenCode Zen + configured, or Codex cache).
-	nlohmann::json FallbackAcpModelsForChat(const std::string& provider_id) const;
+	nlohmann::json FallbackAcpModelsForChat(const std::string& provider_id, std::string_view workspace_directory = {}) const;
 
 	/// Get fallback current model for a chat.
 	std::string FallbackAcpCurrentModelForChat(const std::string& provider_id, const std::string& chat_model_id) const;
@@ -98,11 +102,12 @@ class ProviderModelCatalogService
 	nlohmann::json m_persistent_catalogs;
 	std::map<std::string, std::string> m_catalog_key_by_provider_id;
 	std::map<std::string, std::string> m_refresh_error_by_provider_id;
+	std::map<std::string, nlohmann::json> m_scope_by_catalog_key;
 	std::set<std::string> m_pending_discovery_provider_ids;
 	std::set<std::string> m_refresh_attempted_provider_ids;
 
-	// OpenCode config file mtime for cache invalidation.
-	std::filesystem::file_time_type m_open_code_config_mtime;
+	// OpenCode config files fingerprint for cache invalidation.
+	std::string m_open_code_config_fingerprint;
 
 	// Async refresh state (heap-allocated to avoid complete type issues in header).
 	std::unique_ptr<AsyncCommandTask> m_refresh_task;
@@ -121,7 +126,8 @@ class ProviderModelCatalogService
 
 	// Internal helpers.
 	std::filesystem::path OpenCodeZenFreeModelsCachePath() const;
-	std::filesystem::path OpenCodeConfigPath() const;
+	std::vector<std::filesystem::path> OpenCodeConfigPaths() const;
+	std::string OpenCodeConfigFingerprint() const;
 	nlohmann::json BuiltInOpenCodeZenFreeModels() const;
 	nlohmann::json ReadOpenCodeZenFreeModelsCache() const;
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
@@ -129,7 +135,7 @@ class ProviderModelCatalogService
 	nlohmann::json ReadConfiguredOpenCodeModels();
 	std::string ReadConfiguredOpenCodeDefaultModel();
 	nlohmann::json ReadCachedCodexModels();
-	std::string CatalogKey(const std::string& provider_id) const;
+	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	void LoadPersistentCatalogs();
 	bool WritePersistentCatalogs() const;
 

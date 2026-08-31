@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/runtime/acp/acp_content.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -59,22 +60,33 @@ nlohmann::json BuildCodexRateLimitsReadRequest(int request_id)
 	};
 }
 
-nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd)
+nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat)
 {
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionNew,
 	                                  {
 	                                      {"cwd", cwd},
-	                                      {"mcpServers", nlohmann::json::array()},
+	                                      {"mcpServers", chat == nullptr ? nlohmann::json::array() : uam::computer_use::AcpMcpServers(*chat)},
 	                                  });
 }
 
-nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd)
+nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd, const ChatSession* chat)
 {
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionLoad,
 	                                  {
 	                                      {"sessionId", session_id},
 	                                      {"cwd", cwd},
-	                                      {"mcpServers", nlohmann::json::array()},
+	                                      {"mcpServers", chat == nullptr ? nlohmann::json::array() : uam::computer_use::AcpMcpServers(*chat)},
+	                                  });
+}
+
+nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id,
+	                                     const std::string& cwd, const ChatSession* chat)
+{
+	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionResume,
+	                                  {
+	                                      {"sessionId", session_id},
+	                                      {"cwd", cwd},
+	                                      {"mcpServers", chat == nullptr ? nlohmann::json::array() : uam::computer_use::AcpMcpServers(*chat)},
 	                                  });
 }
 
@@ -109,10 +121,10 @@ nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession&
 	const std::string resume_id = ValidGeminiResumeId(chat);
 	if (!resume_id.empty() && load_session_supported)
 	{
-		return BuildLoadSessionRequest(request_id, resume_id, cwd);
+		return BuildLoadSessionRequest(request_id, resume_id, cwd, &chat);
 	}
 
-	return BuildNewSessionRequest(request_id, cwd);
+	return BuildNewSessionRequest(request_id, cwd, &chat);
 }
 
 bool TextContainsAnyCaseInsensitive(std::string_view text, std::initializer_list<std::string_view> needles)
@@ -218,7 +230,7 @@ nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thr
 	{
 		params["effort"] = reasoning_effort;
 	}
-	params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
+	if (chat.service_tier_explicit) params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
 
 	const std::string app_mode_id = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
 	const std::string requested_mode_id = app_mode_id == uam::approval_modes::kPlanApprovalMode ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;

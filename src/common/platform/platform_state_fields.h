@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/platform/async_byte_writer.h"
 
 #include <atomic>
 #include <exception>
@@ -14,11 +15,13 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#include <wincontypes.h>
-#elif defined(__APPLE__)
+#if defined(__MINGW32__)
+using HPCON = HANDLE;
+#endif
+#elif defined(__APPLE__) || defined(__linux__)
 #include <sys/types.h>
 #else
-#error "platform_state_fields.h is only supported on Windows and macOS."
+#error "platform_state_fields.h is only supported on Windows, macOS, and Linux."
 #endif
 
 namespace uam::platform
@@ -26,36 +29,41 @@ namespace uam::platform
 
 	struct CliTerminalPlatformFields
 	{
+		std::shared_ptr<AsyncByteWriter> input_writer;
 #if defined(_WIN32)
 		HANDLE pipe_input = INVALID_HANDLE_VALUE;
 		HANDLE pipe_output = INVALID_HANDLE_VALUE;
 		PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
 		HPCON pseudo_console = nullptr;
+		std::unique_ptr<std::jthread> pseudo_console_closer;
 		LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
 		HANDLE job_object = nullptr;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
 		int master_fd = -1;
 		pid_t child_pid = -1;
+		pid_t watchdog_pid = -1;
 #else
-#error "CliTerminalPlatformFields is only supported on Windows and macOS."
+#error "CliTerminalPlatformFields is only supported on Windows, macOS, and Linux."
 #endif
 	};
 
 	struct StdioProcessPlatformFields
 	{
+		std::shared_ptr<AsyncByteWriter> stdin_writer;
 #if defined(_WIN32)
 		HANDLE stdin_write = INVALID_HANDLE_VALUE;
 		HANDLE stdout_read = INVALID_HANDLE_VALUE;
 		HANDLE stderr_read = INVALID_HANDLE_VALUE;
 		PROCESS_INFORMATION process_info = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, 0, 0};
 		HANDLE job_object = nullptr;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
 		int stdin_write_fd = -1;
 		int stdout_read_fd = -1;
 		int stderr_read_fd = -1;
 		pid_t child_pid = -1;
+		pid_t watchdog_pid = -1;
 #else
-#error "StdioProcessPlatformFields is only supported on Windows and macOS."
+#error "StdioProcessPlatformFields is only supported on Windows, macOS, and Linux."
 #endif
 	};
 
@@ -63,10 +71,10 @@ namespace uam::platform
 	{
 #if defined(_WIN32)
 		return fields.pipe_input != INVALID_HANDLE_VALUE;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
 		return fields.master_fd >= 0;
 #else
-#error "CliTerminalHasWritableInput is only supported on Windows and macOS."
+#error "CliTerminalHasWritableInput is only supported on Windows, macOS, and Linux."
 #endif
 	}
 

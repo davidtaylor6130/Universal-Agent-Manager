@@ -14,11 +14,14 @@ namespace
 	namespace fs = std::filesystem;
 
 	constexpr std::string_view kFoldersFileName = "folders.txt";
+	constexpr std::string_view kFoldersFormatVersion = "folders_format_version=1";
+	constexpr std::string_view kFoldersComplete = "folders_complete=1";
 	constexpr std::string_view kFolderSection = "[folder]";
 	constexpr std::string_view kFolderIdKey = "id";
 	constexpr std::string_view kFolderTitleKey = "title";
 	constexpr std::string_view kFolderDirectoryKey = "directory";
 	constexpr std::string_view kFolderCollapsedKey = "collapsed";
+	constexpr std::string_view kFolderExecutionHostIdKey = "execution_host_id";
 
 	fs::path FolderFilePath(const fs::path& data_root)
 	{
@@ -51,6 +54,12 @@ namespace
 		return count;
 	}
 
+	bool IsValidFolderFile(std::string_view text)
+	{
+		const bool modern = text.starts_with(kFoldersFormatVersion);
+		return modern ? text.find(kFoldersComplete) != std::string_view::npos : CountFolderEntries(text) > 0;
+	}
+
 	void ApplyFolderField(ChatFolder& folder, std::string_view key, std::string_view value)
 	{
 		const std::string_view normalized_key = uam::strings::TrimAsciiView(key);
@@ -70,6 +79,10 @@ namespace
 		else if (normalized_key == kFolderCollapsedKey)
 		{
 			folder.collapsed = uam::parse::BoolOr(value, folder.collapsed);
+		}
+		else if (normalized_key == kFolderExecutionHostIdKey)
+		{
+			folder.execution_host_id = uam::strings::Trim(value);
 		}
 	}
 
@@ -97,7 +110,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 	}
 
 	const std::string primary_text = uam::io::ReadTextFile(file);
-	const std::string text = (CountFolderEntries(primary_text) > 0 || !uam::paths::PathExistsNoThrow(backup)) ? primary_text : uam::io::ReadTextFile(backup);
+	const std::string text = (IsValidFolderFile(primary_text) || !uam::paths::PathExistsNoThrow(backup)) ? primary_text : uam::io::ReadTextFile(backup);
 	std::istringstream lines(text);
 	std::string line;
 	ChatFolder current;
@@ -147,6 +160,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders)
 {
 	std::ostringstream out;
+	out << kFoldersFormatVersion << "\n\n";
 
 	for (const ChatFolder& folder : folders)
 	{
@@ -162,8 +176,12 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		WriteEncodedFolderField(out, kFolderTitleKey, folder.title);
 		WriteEncodedFolderField(out, kFolderDirectoryKey, folder.directory);
 		WriteBoolFolderField(out, kFolderCollapsedKey, folder.collapsed);
+		WriteEncodedFolderField(out, kFolderExecutionHostIdKey,
+		                        uam::strings::NonEmptyOrFallback(
+		                            uam::strings::Trim(folder.execution_host_id), "local"));
 		out << '\n';
 	}
+	out << kFoldersComplete << '\n';
 
-	return uam::io::WriteTextFile(FolderFilePath(data_root), out.str());
+	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), out.str());
 }

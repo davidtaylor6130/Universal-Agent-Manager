@@ -18,10 +18,15 @@
 *.key
 *.p12
 *.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
 
 # IDE/system files
 /.vs/
 /.idea/
+/.vscode/settings.json
 .DS_Store
 /Builds_New
 /BuildsTest

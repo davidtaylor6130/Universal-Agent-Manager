@@ -20,9 +20,12 @@ export interface ModelOption {
   detail: string
 }
 
-export const FRIENDLY_MODEL_LABELS = GEMINI_DEFAULT_MODEL_LABELS
+type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind' | 'configOptions'>>
 
-export function providerRuntimeLabel(provider?: Provider, acp?: AcpBinding) {
+export const FRIENDLY_MODEL_LABELS = GEMINI_DEFAULT_MODEL_LABELS
+export const CODEX_SPEED_INHERIT_ID = '__uam_inherit__'
+
+export function providerRuntimeLabel(provider?: Provider, acp?: ModelCatalogSource) {
   return providerRuntimeKindLabel(provider, acp?.protocolKind)
 }
 
@@ -62,14 +65,14 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
   }
 }
 
-export function selectedRuntimeModel(acp: AcpBinding | undefined, modelId: string): AcpModel | undefined {
+export function selectedRuntimeModel(acp: ModelCatalogSource | undefined, modelId: string): AcpModel | undefined {
   const models = acp?.availableModels ?? []
   if (modelId) return models.find((model) => model.id === modelId)
   return models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
 }
 
 export function buildModelOptions(
-  acp: AcpBinding | undefined,
+  acp: ModelCatalogSource | undefined,
   selectedModelId: string,
   provider: Provider | undefined,
   providerId: string,
@@ -81,6 +84,14 @@ export function buildModelOptions(
     const option = modelOptionFromRuntime(model, caps.usesFriendlyModelLabels)
     return option ? [option] : []
   })
+  const configModelOptions = (acp?.configOptions ?? [])
+    .find((option) => option.category === 'model' || option.id === 'model')
+    ?.options.flatMap((choice) => {
+      const id = choice.value.trim()
+      if (!id) return []
+      const label = choice.name.trim() || titleFromModelId(id)
+      return [{ id, label, shortLabel: label.length <= 16 ? label : titleFromModelId(id), detail: choice.description.trim() || id }]
+    }) ?? []
   const fallbackOptions = caps.memoryModelIds.length > 0
     ? caps.memoryModelIds.filter(Boolean).map((id) => {
       const label = caps.memoryModelLabels[id]?.label ?? titleFromModelId(id)
@@ -92,8 +103,9 @@ export function buildModelOptions(
       }
     })
     : []
-  const baseOptions = runtimeOptions.length > 0
-    ? runtimeOptions
+  const reportedOptions = [...runtimeOptions, ...configModelOptions]
+  const baseOptions = reportedOptions.length > 0
+    ? reportedOptions
     : fallbackOptions
   const options: ModelOption[] = includeDefault
     ? [{
@@ -142,7 +154,7 @@ export function labeledOption(id: string, labels: Record<string, Pick<ModelOptio
 }
 
 export function buildCodexReasoningOptions(
-  acp: AcpBinding | undefined,
+  acp: ModelCatalogSource | undefined,
   modelId: string,
   selectedReasoningEffort = '',
   fallbackEfforts?: string[]
@@ -159,7 +171,7 @@ export function buildCodexReasoningOptions(
 }
 
 export function reasoningEffortForModel(
-  acp: AcpBinding | undefined,
+  acp: ModelCatalogSource | undefined,
   modelId: string,
   currentEffort = '',
   preserveWhenRuntimeOmitsEfforts = false
@@ -173,15 +185,15 @@ export function reasoningEffortForModel(
 	return supported.includes(defaultEffort) ? defaultEffort : supported[0]
 }
 
-export function serviceTierForModel(acp: AcpBinding | undefined, modelId: string, currentTier = '') {
+export function serviceTierForModel(acp: ModelCatalogSource | undefined, modelId: string, currentTier = '') {
 	const model = selectedRuntimeModel(acp, modelId)
 	if (!model || !currentTier) return currentTier
 	return (model.additionalSpeedTiers ?? []).includes(currentTier) ? currentTier : ''
 }
 
-export function buildCodexSpeedOptions(acp: AcpBinding | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
+export function buildCodexSpeedOptions(acp: ModelCatalogSource | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
-  const ids = ['', ...new Set(runtimeModel ? runtimeModel.additionalSpeedTiers ?? [] : ['fast', 'flex'])]
+  const ids = [CODEX_SPEED_INHERIT_ID, '', ...new Set(runtimeModel ? runtimeModel.additionalSpeedTiers ?? [] : ['fast', 'flex'])]
   if (!runtimeModel && selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
   return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_SPEED_LABELS))
 }

@@ -34,14 +34,21 @@ export function VcsCommitPanel() {
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
   const latestStatusRequestRef = useRef('')
+  const latestGenerateRequestRef = useRef(0)
+  const latestCommitRequestRef = useRef(0)
 
   useEffect(() => {
     latestStatusRequestRef.current = ''
+    latestGenerateRequestRef.current += 1
+    latestCommitRequestRef.current += 1
     setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
     setSelectedFiles([])
     setTitle('')
     setDescription('')
     setNotice('')
+    setLoading(false)
+    setGenerating(false)
+    setCommitting(false)
   }, [activeSessionId, session?.workspaceDirectory])
 
   const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
@@ -96,10 +103,11 @@ export function VcsCommitPanel() {
   const generateMessage = async () => {
     if (!activeSessionId || generateDisabled) return
     const sourceSessionId = activeSessionId
+    const request = ++latestGenerateRequestRef.current
     setGenerating(true)
     setNotice('')
     const suggestion = await generateVcsCommitMessage(sourceSessionId, selectedVcsType, selectedFiles)
-    if (useAppStore.getState().activeSessionId !== sourceSessionId) return
+    if (latestGenerateRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setGenerating(false)
     if (!suggestion) {
       setNotice('Failed to generate a commit message.')
@@ -111,9 +119,12 @@ export function VcsCommitPanel() {
 
   const commit = async () => {
     if (!activeSessionId || commitDisabled) return
+    const sourceSessionId = activeSessionId
+    const request = ++latestCommitRequestRef.current
     setCommitting(true)
     setNotice('')
-    const result = await commitVcsChanges(activeSessionId, selectedVcsType, commitMessage, selectedFiles)
+    const result = await commitVcsChanges(sourceSessionId, selectedVcsType, commitMessage, selectedFiles)
+    if (latestCommitRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setCommitting(false)
     if (!result.ok) {
       setNotice(result.error || 'Failed to commit changes.')

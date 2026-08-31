@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ChatView } from './ChatView'
+import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -25,6 +25,7 @@ function openWorkspaceActions(host: HTMLElement) {
 
 describe('ChatView', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals()
     vi.restoreAllMocks()
     useAppStore.setState({
       workingDisplayMode: 'verbose',
@@ -50,6 +51,19 @@ describe('ChatView', () => {
         },
       ],
       activeSessionId: 'chat-1',
+      goalsByChatId: {},
+      activeGoalIdByChatId: {},
+      favoriteUamAgentIds: [],
+      providerChatDefaults: {},
+      uamAgentCycleShortcut: 'shift+tab',
+      uamAgentsBySessionId: {
+        'chat-1': [
+          { id: 'build', description: 'Build', builtIn: true },
+          { id: 'plan', description: 'Plan', builtIn: true },
+        ],
+      },
+      refreshUamAgents: vi.fn(() => Promise.resolve(true)),
+      repositoryReviewBySessionId: {},
       messages: {
         'chat-1': [
           {
@@ -140,38 +154,228 @@ describe('ChatView', () => {
     })
   })
 
-  it('summarizes only repository changes made after the current chat starts', async () => {
-    const baseline = {
+  it('builds the agent shortcut cycle from ordered selectable favorites only', () => {
+    const agents = [
+      { id: 'build', description: '', builtIn: true },
+      { id: 'plan', description: '', builtIn: true },
+      { id: 'reviewer', description: '', builtIn: false },
+      { id: 'writer', description: '', builtIn: false },
+    ]
+    expect(buildUamAgentCycle(agents, ['writer', 'reviewer', 'writer', 'missing', 'plan'])).toEqual([
+      'build', 'plan', 'writer', 'reviewer',
+    ])
+    expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBe(true)
+    expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(false)
+    expect(matchesUamAgentCycleShortcut('control+shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(true)
+    expect(matchesUamAgentCycleShortcut('disabled', { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBe(false)
+  })
+
+  it('cycles a favorite only from the composer textarea and ignores repeat and composition', () => {
+    const setSessionUamAgent = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, uamAgentId: 'plan' })),
+      favoriteUamAgentIds: ['reviewer'],
+      uamAgentsBySessionId: {
+        'chat-1': [
+          { id: 'build', description: 'Build', builtIn: true },
+          { id: 'plan', description: 'Plan', builtIn: true },
+          { id: 'reviewer', description: 'Review', builtIn: false },
+        ],
+      },
+      setSessionUamAgent,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, repeat: true, bubbles: true })))
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, isComposing: true, bubbles: true })))
+    act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, ctrlKey: true, bubbles: true })))
+    expect(setSessionUamAgent).not.toHaveBeenCalled()
+
+    const exactShortcut = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => textarea.dispatchEvent(exactShortcut))
+    expect(exactShortcut.defaultPrevented).toBe(true)
+    expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'reviewer')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('confirms provider handoff before changing anything', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const setSessionProvider = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          pendingUserInput: null,
+          queuedPrompts: [],
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const openProviderMenu = () => act(() => {
+      (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click()
+    })
+    const providerButton = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+      .find((button) => button.textContent?.includes(label))
+
+    openProviderMenu()
+    act(() => providerButton('Gemini')?.click())
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(setSessionProvider).not.toHaveBeenCalled()
+
+    openProviderMenu()
+    act(() => providerButton('Codex')?.click())
+    let dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+    expect(dialog?.textContent).toContain('Chat messages and recorded tool results')
+    expect(dialog?.textContent).toContain('Selected UAM agent and goals')
+    expect(dialog?.textContent).toContain('Native session and provider-specific live tool state')
+    expect(dialog?.textContent).not.toContain('agent defaults')
+    expect(dialog?.textContent).toContain('Anything the current provider did not record in UAM will not transfer.')
+    expect(setSessionProvider).not.toHaveBeenCalled()
+
+    act(() => (Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(setSessionProvider).not.toHaveBeenCalled()
+
+    openProviderMenu()
+    act(() => providerButton('Codex')?.click())
+    dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+    await act(async () => {
+      (Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledOnce()
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli')
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('blocks handoff to a provider that cannot start structured chats', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    const setSessionProvider = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      cliVersionManager: { providers: [{ providerId: 'codex-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Codex CLI is unavailable.', running: false, lastCommand: '', lastOutput: '' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((button) => button.textContent?.includes('Codex'))?.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Codex CLI is unavailable.')
+    expect(confirm?.disabled).toBe(true)
+    expect(setSessionProvider).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider, cliVersionManager: originalCliVersionManager })
+  })
+
+  it('restores a separate unsent draft for each chat across navigation and remount', () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    })
+    useAppStore.setState((state) => ({
+      sessions: [state.sessions[0], { ...state.sessions[0], id: 'chat-2', name: 'Second chat' }],
+      messages: { ...state.messages, 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2', processing: false, pendingPermission: null, turnEvents: [] },
+      },
+    }))
+    const [first, second] = useAppStore.getState().sessions
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const typeDraft = (value: string) => {
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    act(() => root.render(<ChatView key={first.id} session={first} />))
+    act(() => typeDraft('First unsent draft'))
+    act(() => root.render(<ChatView key={second.id} session={second} />))
+    act(() => typeDraft('Second unsent draft'))
+    act(() => root.render(<ChatView key={first.id} session={first} />))
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('First unsent draft')
+
+    act(() => root.unmount())
+    const remounted = createRoot(host)
+    act(() => remounted.render(<ChatView key={second.id} session={second} />))
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Second unsent draft')
+
+    act(() => remounted.unmount())
+    host.remove()
+  })
+
+  it('recomputes exact isolated-chat changes after renderer state is lost and reports diff failures', async () => {
+    const comparisonRef = 'b'.repeat(40)
+    const rangeStatus = {
       available: true,
       vcsTypes: ['git' as const],
       activeVcsType: 'git' as const,
-      workspaceDirectory: '/tmp/project',
-      branchOrRevision: 'main',
+      workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+      branchOrRevision: 'uam/chat-1',
       changedFiles: [
-        { path: 'pre-existing.ts', status: ' M', staged: false, additions: 20, deletions: 4, binary: false, contentFingerprint: 'pre-existing' },
-        { path: 'src/app.ts', status: ' M', staged: false, additions: 5, deletions: 1, binary: false, contentFingerprint: 'app-before' },
-        { path: 'same-count.ts', status: ' M', staged: false, additions: 1, deletions: 1, binary: false, contentFingerprint: 'same-count-before' },
+        { path: 'src/exact.ts', status: 'M', staged: false, additions: 2, deletions: 1, binary: false, contentFingerprint: 'exact' },
       ],
       lineStatsReady: true,
       warning: '',
       error: '',
     }
-    const current = {
-      ...baseline,
-      changedFiles: [
-        baseline.changedFiles[0],
-        { path: 'src/app.ts', status: ' M', staged: false, additions: 12, deletions: 3, binary: false, contentFingerprint: 'app-after' },
-        { path: 'same-count.ts', status: ' M', staged: false, additions: 1, deletions: 1, binary: false, contentFingerprint: 'same-count-after' },
-        { path: 'README.md', status: '??', staged: false, additions: 8, deletions: 0, binary: false, contentFingerprint: 'readme-new' },
-      ],
-    }
-    const getVcsCommitStatus = vi.fn()
-      .mockResolvedValueOnce(baseline)
-      .mockResolvedValueOnce(current)
-    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve(rangeStatus))
+    const getVcsFileDiff = vi.fn(() => Promise.reject(new Error('The saved comparison commit is unavailable.')))
+    const setCommitPanelOpen = vi.fn()
     useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
       getVcsCommitStatus,
-      sendAcpPrompt,
+      getVcsFileDiff,
+      setCommitPanelOpen,
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+        workspaceSourceDirectory: '/tmp/project',
+        workspaceIsolationKind: 'gitWorktree',
+        workspaceBaseRef: comparisonRef,
+      })),
+      messages: {
+        ...state.messages,
+        'chat-1': state.messages['chat-1'].map((message) => message.role === 'assistant'
+          ? { ...message, checkpointSha: 'a'.repeat(40), checkpointParentSha: comparisonRef }
+          : message),
+      },
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -180,6 +384,8 @@ describe('ChatView', () => {
           processing: false,
           processingStartedAtMs: null,
           pendingPermission: null,
+          pendingUserInput: null,
+          turnSerial: 2,
         },
       },
     }))
@@ -187,80 +393,36 @@ describe('ChatView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-
-    expect(getVcsCommitStatus).not.toHaveBeenCalled()
-    expect(host.querySelector('[aria-label="Repository changes"]')).toBeNull()
-
-    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Make the requested change')
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-      await Promise.resolve()
-    })
-    expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
-    expect(getVcsCommitStatus).toHaveBeenNthCalledWith(1, 'chat-1', 'git', expect.objectContaining({ requestId: 'chat-summary-baseline:chat-1' }))
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Make the requested change', [])
-    expect(getVcsCommitStatus.mock.invocationCallOrder[0]).toBeLessThan(sendAcpPrompt.mock.invocationCallOrder[0])
-
-    await act(async () => {
-      useAppStore.setState((state) => ({
-        messages: {
-          ...state.messages,
-          'chat-1': [
-            ...state.messages['chat-1'],
-            { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Make the requested change', createdAt: new Date() },
-          ],
-        },
-        acpBindingBySessionId: {
-          ...state.acpBindingBySessionId,
-          'chat-1': {
-            ...state.acpBindingBySessionId['chat-1'],
-            lifecycleState: 'running',
-            processing: true,
-            processingStartedAtMs: Date.now(),
-            turnSerial: 2,
-            turnUserMessageIndex: 2,
-            turnAssistantMessageIndex: -1,
-          },
-        },
-      }))
-      await Promise.resolve()
-      useAppStore.setState((state) => ({
-        messages: {
-          ...state.messages,
-          'chat-1': [
-            ...state.messages['chat-1'],
-            { id: 'm-4', sessionId: 'chat-1', role: 'assistant', content: 'Done', createdAt: new Date() },
-          ],
-        },
-        acpBindingBySessionId: {
-          ...state.acpBindingBySessionId,
-          'chat-1': {
-            ...state.acpBindingBySessionId['chat-1'],
-            lifecycleState: 'ready',
-            processing: false,
-            processingStartedAtMs: null,
-            pendingPermission: null,
-            turnAssistantMessageIndex: 3,
-          },
-        },
-      }))
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
-    expect(getVcsCommitStatus).toHaveBeenNthCalledWith(2, 'chat-1', 'git', expect.objectContaining({ requestId: 'chat-summary:chat-1:m-4:2:' }))
-    const summary = host.querySelector('[aria-label="Repository changes"]') as HTMLElement
-    expect(summary.textContent).toContain('3 changed files')
-    expect(summary.textContent).not.toContain('pre-existing.ts')
-    expect(summary.textContent).toContain('src/app.ts')
-    expect(summary.textContent).toContain('+7')
-    expect(summary.textContent).toContain('-2')
-    expect(summary.textContent).toContain('same-count.ts')
-    expect(summary.textContent).toContain('README.md')
+    expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({
+      comparisonRef,
+      requestId: expect.stringContaining('chat-summary:chat-1:'),
+    }))
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Review changes')
+    expect(summary.textContent).toContain('src/exact.ts')
+    expect(summary.textContent).toContain('isolated Git checkpoint')
+    expect(host.querySelector('[aria-label="Turn checkpoint"]')).toBeNull()
+
+    act(() => {
+      ;(summary.querySelector('button[aria-label="Open commit panel"]') as HTMLButtonElement).click()
+    })
+    expect(setCommitPanelOpen).toHaveBeenCalledWith(true)
+
+    await act(async () => {
+      ;(summary.querySelector('[aria-label="Review changes to src/exact.ts"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getVcsFileDiff).toHaveBeenCalledWith('chat-1', 'src/exact.ts', 'git', comparisonRef)
+    const dialog = document.body.querySelector('[aria-label="Changes in src/exact.ts"]') as HTMLElement
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('saved comparison commit is unavailable')
+    expect(dialog.querySelector('.uam-diff-line')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -903,6 +1065,49 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('submits one permission response at a time and retries a rejected response', async () => {
+    let finishResponse: ((accepted: boolean) => void) | undefined
+    const resolveAcpPermission = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))
+    useAppStore.setState({ resolveAcpPermission })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const allowButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Allow once'))
+    const denyButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')
+    expect(allowButton).toBeTruthy()
+    expect(denyButton).toBeTruthy()
+
+    act(() => {
+      allowButton?.click()
+      denyButton?.click()
+    })
+    expect(resolveAcpPermission).toHaveBeenCalledTimes(1)
+    expect(resolveAcpPermission).toHaveBeenCalledWith('chat-1', '5', 'allow-once')
+    expect(allowButton?.disabled).toBe(true)
+    expect(denyButton?.disabled).toBe(true)
+
+    await act(async () => {
+      finishResponse?.(false)
+      await Promise.resolve()
+    })
+    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('did not accept'))).toBe(true)
+    expect(allowButton?.disabled).toBe(false)
+
+    resolveAcpPermission.mockResolvedValueOnce(true)
+    await act(async () => {
+      allowButton?.click()
+      await Promise.resolve()
+    })
+    expect(resolveAcpPermission).toHaveBeenCalledTimes(2)
+    expect(allowButton?.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('flags stale permission waits and exposes recovery actions', async () => {
     const cancelAcpTurn = vi.fn(() => Promise.resolve(true))
     const stopAcpSession = vi.fn(() => Promise.resolve(true))
@@ -1054,6 +1259,68 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('locks Codex user input while submitting and permits retry after failure', async () => {
+    let finishResponse: ((accepted: boolean) => void) | undefined
+    const resolveAcpUserInput = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'codex-cli',
+          protocolKind: 'codex-app-server',
+          lifecycleState: 'waitingUserInput',
+          processing: true,
+          pendingPermission: null,
+          pendingUserInput: {
+            requestId: 'input-request',
+            itemId: 'input-item',
+            status: 'pending',
+            questions: [{ id: 'scope', header: 'Scope', question: 'Which scope?', isOther: false, isSecret: false, options: [{ label: 'Focused', description: '' }] }],
+          },
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const answerButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Focused'))
+    act(() => answerButton?.click())
+    const submitButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Submit')
+    expect(submitButton?.disabled).toBe(false)
+
+    act(() => {
+      submitButton?.click()
+      submitButton?.click()
+    })
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
+    expect(answerButton?.disabled).toBe(true)
+    expect(submitButton?.disabled).toBe(true)
+
+    await act(async () => {
+      finishResponse?.(false)
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
+    expect(submitButton?.disabled).toBe(false)
+
+    resolveAcpUserInput.mockResolvedValueOnce(true)
+    await act(async () => {
+      submitButton?.click()
+      await Promise.resolve()
+    })
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
+    expect(submitButton?.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders Codex provider labels from backend provider metadata', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
@@ -1128,11 +1395,47 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('keeps agent mode separate from permissions and exposes safety only for Auto Decide', async () => {
+	it('keeps a steer visibly tied to the response it interrupted', () => {
+		useAppStore.setState((state) => ({
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
+						content: 'I was changing the remote helper.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'steer', sessionId: 'chat-1', role: 'user',
+						content: 'Keep the work local.', prioritySteer: true,
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+		const text = host.textContent ?? ''
+		expect(text).toContain('Response interrupted')
+		expect(host.querySelector('[role="separator"][aria-label="Steered during this response"]')).toBeTruthy()
+		expect(text.indexOf('Response interrupted')).toBeLessThan(text.indexOf('Steered during this response'))
+		expect(text.indexOf('Steered during this response')).toBeLessThan(text.indexOf('Keep the work local.'))
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
+  it('shows either UAM agent or provider mode from the provider preference while permissions stay independent', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
-    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+    const setSessionUamAgent = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
-      sessions: state.sessions.map((session) => ({ ...session, approvalMode: 'default', commandSafetyTier: 'medium' as const })),
+      sessions: state.sessions.map((session) => ({ ...session, approvalMode: 'default', commandSafetyTier: 'aiReview' as const })),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -1144,6 +1447,7 @@ describe('ChatView', () => {
         },
       },
       setSessionApprovalMode,
+      setSessionUamAgent,
       setSessionCommandSafetyTier,
     }))
     const host = document.createElement('div')
@@ -1152,30 +1456,32 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     openComposerOptions(host)
 
-    const agent = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
-    expect(agent.textContent).toContain('Default')
+    const agent = document.body.querySelector('button[aria-label="UAM agent"]') as HTMLButtonElement
+    expect(agent.textContent).toContain('Build')
     act(() => agent.click())
     const plan = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
     await act(async () => { plan.click(); await Promise.resolve() })
+	expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'plan')
+
+	expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
+	act(() => useAppStore.setState({ providerChatDefaults: { 'gemini-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } } }))
+	expect(document.body.querySelector('button[aria-label="UAM agent"]')).toBeNull()
+	const providerMode = document.body.querySelector('button[aria-label="Provider mode"]') as HTMLButtonElement
+	act(() => providerMode.click())
+	const providerPlan = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Plan')) as HTMLButtonElement
+	await act(async () => { providerPlan.click(); await Promise.resolve() })
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
     const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('Auto Decide')
+    expect(permission.textContent).toContain('AI Review')
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
+    expect(host.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
-    const safety = document.body.querySelector('button[aria-label="Auto Decide safety"]') as HTMLButtonElement
-    expect(safety.textContent).toContain('Medium')
     expect(host.querySelector('select')).toBeNull()
-    act(() => safety.click())
-    expect(document.body.textContent).toContain('Warn about more potentially risky commands.')
-    expect(document.body.textContent).toContain('Warn about a moderate number of potentially risky commands.')
-    expect(document.body.textContent).toContain('Warn only about the highest-risk commands.')
-    const low = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Low')) as HTMLButtonElement
-    await act(async () => { low.click(); await Promise.resolve() })
-    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'low')
 
     const optionsButton = host.querySelector('button[aria-label="Options"]') as HTMLButtonElement
     if (optionsButton.getAttribute('aria-expanded') === 'true') {
@@ -1183,27 +1489,7 @@ describe('ChatView', () => {
     }
     expect(document.body.querySelector('button[aria-label="Permissions"]')).toBeNull()
     expect(document.body.querySelector('button[aria-label="Auto Decide safety"]')).toBeNull()
-
-    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
-    const setDraft = (value: string) => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
-      textarea.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-    await act(async () => {
-      setDraft('/safety high')
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-      await Promise.resolve()
-    })
-    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'high')
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Command safety changed to High.')
-
-    await act(async () => {
-      setDraft('/safety unrestricted')
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-      await Promise.resolve()
-    })
-    expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(3)
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported command safety tier "unrestricted"')
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(1)
 
     act(() => root.unmount())
     host.remove()
@@ -1211,7 +1497,7 @@ describe('ChatView', () => {
 
   it('discovers, inspects, validates, and applies permission slash commands', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
-    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1241,31 +1527,39 @@ describe('ChatView', () => {
     }
 
     act(() => setDraft('/p'))
-    expect(document.body.querySelector('[aria-label="Slash commands"]')?.textContent).toContain('/permission')
+    const slashMenu = document.body.querySelector('[aria-label="Slash commands"]') as HTMLElement
+    expect(slashMenu.textContent).toContain('/permission')
+    expect(slashMenu.parentElement).toBe(document.body)
+    expect(textarea.getAttribute('aria-expanded')).toBe('true')
+    expect(textarea.getAttribute('aria-controls')).toBe(slashMenu.id)
+    expect(textarea.getAttribute('aria-activedescendant')).toBe(slashMenu.querySelector('[aria-selected="true"]')?.id)
 
     await act(async () => {
       setDraft('/permission')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     const permissionMenu = document.body.querySelector('[aria-label="Permission modes"]')
-    expect(textarea.value).toBe('')
+    expect(textarea.value).toBe('/permission ')
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).not.toContain('Plan')
     expect(permissionMenu?.textContent).toContain('YOLO')
-    expect(permissionMenu?.textContent).toContain('Auto Decide')
+    expect(permissionMenu?.textContent).toContain('AI Review')
+    expect(permissionMenu?.textContent).toContain('Accept Edits')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
-    const slashAutoDecide = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('Auto Decide')) as HTMLButtonElement
-    await act(async () => { slashAutoDecide.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
-    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'medium')
+    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI Review')) as HTMLButtonElement
+    await act(async () => { slashAiReview.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(host.textContent).not.toContain('Permission mode changed')
 
     await act(async () => {
       setDraft('/permission yolo')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
+    expect(host.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
     expect(host.textContent).not.toContain('Permission mode changed')
 
@@ -1274,7 +1568,64 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Unsupported permission mode "unrestricted"')
+    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Unsupported permission mode "unrestricted"'))).toBe(true)
+    const dismissFeedback = host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement
+    act(() => dismissFeedback.click())
+    expect(host.textContent).not.toContain('Unsupported permission mode "unrestricted"')
+
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
+      textarea.setSelectionRange(18, 18)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const middleYolo = Array.from(document.body.querySelectorAll('[aria-label="Permission modes"] [role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
+    await act(async () => { middleYolo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(textarea.value).toBe('keep  tail')
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'yolo')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the permission backend error as dismissible feedback and keeps cancellation silent', async () => {
+    const setSessionCommandSafetyTier = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: 'Native permission update was rejected.' })
+      .mockResolvedValueOnce({ ok: false, cancelled: true })
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+      },
+      setSessionCommandSafetyTier,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const requestYolo = async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/permission yolo')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    }
+    const acceptYolo = async () => {
+      const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Enable YOLO') as HTMLButtonElement
+      expect(button).toBeTruthy()
+      button.click()
+      await Promise.resolve()
+    }
+
+    await act(requestYolo)
+    await act(acceptYolo)
+    expect(host.textContent).toContain('Native permission update was rejected.')
+    act(() => (host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement).click())
+    expect(host.textContent).not.toContain('Native permission update was rejected.')
+
+    await act(requestYolo)
+    await act(acceptYolo)
+    expect(host.textContent).not.toContain('Failed to change permission mode')
 
     act(() => root.unmount())
     host.remove()
@@ -1302,10 +1653,8 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     const palette = document.body.querySelector('[aria-label="Slash commands"]') as HTMLElement | null
-    expect(palette?.style.position).toBe('absolute')
-    expect(palette?.style.left).toBe('12px')
-    expect(palette?.style.right).toBe('12px')
-    expect(palette?.parentElement).toBe(textarea.previousElementSibling)
+    expect(palette?.style.position).toBe('fixed')
+    expect(palette?.parentElement).toBe(document.body)
     expect(palette?.textContent).toContain('/skills')
     expect(palette?.textContent).toContain('/github-review')
     expect(palette?.textContent).toContain('/github-release')
@@ -1406,6 +1755,36 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('stacks nested skill groups in the slash popup', async () => {
+    useAppStore.setState({
+      markdownStoreEntries: [
+        { id: 'parent', title: 'Release Notes', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'release-notes', group: 'Release', filePath: '/tmp/parent.uam' },
+        { id: 'child', title: 'GitHub Release', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', favorite: true, commandName: 'github-release', group: 'Release / GitHub', filePath: '/tmp/child.uam' },
+      ],
+      refreshMarkdownStore: vi.fn(() => Promise.resolve(true)),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/release')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    const release = document.body.querySelector('[aria-label="Slash commands"] [aria-haspopup="menu"]') as HTMLElement
+    act(() => release.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    const releaseMenu = document.body.querySelector('[aria-label="Release skills"]') as HTMLElement
+    expect(releaseMenu.textContent).toContain('/notes')
+    expect(releaseMenu.textContent).toContain('/github')
+    const github = releaseMenu.querySelector('[aria-haspopup="menu"]') as HTMLElement
+    act(() => github.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+    expect(document.body.querySelector('[aria-label="Release/GitHub skills"]')?.textContent).toContain('/release')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('hides the slash palette and submenu while an app modal is open', async () => {
     useAppStore.setState({
       markdownStoreEntries: [
@@ -1442,7 +1821,7 @@ describe('ChatView', () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
-        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', reasoningEffort: 'low', serviceTier: 'flex' }
+        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', reasoningEffort: 'low', serviceTier: 'flex', serviceTierExplicit: true }
         : session),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1492,10 +1871,13 @@ describe('ChatView', () => {
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(1, 'chat-1', { reasoningEffort: 'high' })
 
     act(() => speed.click())
-    const fast = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    const speedChoices = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+    expect(speedChoices.some((option) => option.textContent?.startsWith('Inherit'))).toBe(true)
+    expect(speedChoices.some((option) => option.textContent?.startsWith('Standard'))).toBe(true)
+    const fast = speedChoices
       .find((option) => option.textContent?.startsWith('Fast')) as HTMLButtonElement
     await act(async () => { fast.click(); await Promise.resolve() })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { serviceTier: 'fast' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(2, 'chat-1', { serviceTier: 'fast', serviceTierExplicit: true })
 
     openComposerOptions(host)
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
@@ -1517,7 +1899,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
 
     act(() => root.unmount())
@@ -1576,7 +1958,7 @@ describe('ChatView', () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
-        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', serviceTier: 'flex' }
+        ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', serviceTier: 'flex', serviceTierExplicit: true }
         : session),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1943,6 +2325,7 @@ describe('ChatView', () => {
 
   it('renders OpenCode model options without Gemini fallback labels', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
+	const discoverProviderModels = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       providers: [
         ...state.providers,
@@ -1970,6 +2353,7 @@ describe('ChatView', () => {
         },
       },
       setSessionModel,
+	  discoverProviderModels,
     }))
 
     const host = document.createElement('div')
@@ -1986,6 +2370,7 @@ describe('ChatView', () => {
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
+	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/tmp/project')
 
     expect(document.body.textContent).not.toContain('CLI default')
     expect(document.body.textContent).toContain('Qwen3.6 35B A3B Q4')
@@ -2006,6 +2391,103 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('uses provider-reported OpenCode variants without optimistic current-state changes', async () => {
+    const setAcpConfigOption = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      providers: [
+        ...state.providers,
+        { id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#14b8a6', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' },
+      ],
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'opencode-cli' } : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          providerId: 'opencode-cli',
+          protocolKind: 'opencode-acp',
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          pendingPermission: null,
+		  availableModes: [],
+          configOptions: [
+            { id: 'theme', name: 'Theme', description: '', category: 'ui', currentValue: 'dark', options: [{ value: 'dark', name: 'Dark', description: '' }] },
+			{
+			  id: 'effort',
+			  name: 'Effort',
+			  description: 'Available effort levels for this model.',
+			  category: 'thought_level',
+			  currentValue: 'low',
+			  options: [
+				{ value: 'low', name: 'Low', description: '' },
+				{ value: 'xhigh', name: 'Extra High', description: '' },
+			  ],
+			},
+			{
+			  id: 'mode',
+			  name: 'Session Mode',
+			  description: 'OpenCode native session agent.',
+			  category: 'mode',
+			  currentValue: 'build',
+			  options: [
+				{ value: 'build', name: 'Build', description: '' },
+				{ value: 'plan', name: 'Plan', description: '' },
+			  ],
+			},
+            {
+              id: 'thought_level',
+              name: 'Thinking Style',
+              description: 'Provider-owned model variant.',
+              category: 'custom/provider-category',
+              currentValue: 'balanced.v2',
+              options: [
+                { value: 'balanced.v2', name: 'Balanced 2.0', description: 'Normal thinking.' },
+                { value: 'deep/custom', name: 'Deep + Custom', description: 'Provider-specific value.' },
+              ],
+            },
+          ],
+        },
+      },
+      setAcpConfigOption,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    openComposerOptions(host)
+    expect(document.body.querySelector('button[aria-label="Theme"]')).toBeNull()
+	expect(document.body.querySelector('button[aria-label="Effort"]')?.textContent).toContain('Low')
+	expect(document.body.querySelector('button[aria-label="Session Mode"]')).toBeNull()
+	expect(document.body.textContent).toContain('Effort')
+	expect(document.body.textContent).not.toContain('Session Mode')
+	expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
+    const variant = document.body.querySelector('button[aria-label="Thinking Style"]') as HTMLButtonElement
+    expect(variant.textContent).toContain('Balanced 2.0')
+    act(() => variant.click())
+    const deep = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('Deep + Custom')) as HTMLButtonElement
+    await act(async () => { deep.click(); await Promise.resolve() })
+    expect(setAcpConfigOption).toHaveBeenCalledWith('chat-1', 'thought_level', 'deep/custom')
+
+    expect((document.body.querySelector('button[aria-label="Thinking Style"]') as HTMLButtonElement).textContent).toContain('Balanced 2.0')
+    act(() => (document.body.querySelector('button[aria-label="Options"]') as HTMLButtonElement)?.click())
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/variants custom')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await Promise.resolve()
+    })
+    const palette = document.body.querySelector('[aria-label="OpenCode variants"]') as HTMLElement
+    expect(palette.textContent).toContain('Deep + Custom')
+    expect(palette.textContent).toContain('Provider-specific value.')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -2133,6 +2615,80 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('selects a reviewer in Architect mode and locks the active Goal model pair', async () => {
+    const setSessionReviewerModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, modelId: 'auto-gemini-3', reviewerModelId: 'auto-gemini-3', smallModelMode: true }
+        : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+        },
+      },
+      setSessionReviewerModel,
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    act(() => useAppStore.setState({ setSessionModel }))
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+    openComposerOptions(host)
+    const worker = document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement
+    expect(worker.textContent).toContain('Auto 3')
+    act(() => worker.click())
+    const workerFlash = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('Gemini 3 Flash')) as HTMLButtonElement
+    await act(async () => { workerFlash.click(); await Promise.resolve() })
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'gemini-3-flash-preview')
+
+    const reviewer = document.body.querySelector('button[aria-label="Reviewer model"]') as HTMLButtonElement
+    expect(reviewer.textContent).toContain('Auto 3')
+    act(() => reviewer.click())
+    const flash = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.startsWith('Gemini 3 Flash')) as HTMLButtonElement
+    await act(async () => { flash.click(); await Promise.resolve() })
+    expect(setSessionReviewerModel).toHaveBeenCalledWith('chat-1', 'gemini-3-flash-preview')
+
+    act(() => useAppStore.setState({
+      goalsByChatId: {
+        'chat-1': [{
+          id: 'goal-1', chatId: 'chat-1', objective: 'Ship it', status: 'active', executionOwner: 'uam',
+          workerModelId: 'auto-gemini-3', reviewerModelId: 'gemini-3-flash-preview',
+          createdAt: new Date(), updatedAt: new Date(),
+        }],
+      },
+      activeGoalIdByChatId: { 'chat-1': 'goal-1' },
+    }))
+
+    expect(document.body.textContent).toContain('Worker: Auto 3 · Reviewer: Gemini 3 Flash · locked')
+    expect((document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.body.querySelector('button[aria-label="Reviewer model"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, smallModelMode: false } : session),
+        goalsByChatId: { 'chat-1': [{ ...state.goalsByChatId['chat-1'][0], status: 'paused' }] },
+        activeGoalIdByChatId: { 'chat-1': null },
+      }))
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+    expect(document.body.textContent).not.toContain('Worker: Auto 3 · Reviewer: Gemini 3 Flash · locked')
+    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('disables the model chip while ACP is processing', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     useAppStore.setState({ setSessionModel })
@@ -2149,7 +2705,8 @@ describe('ChatView', () => {
     expect(modelButton).toBeTruthy()
     expect(modelButton?.disabled).toBe(true)
     openComposerOptions(host)
-    expect((document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+	expect((document.body.querySelector('button[aria-label="Next turn agent"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+    expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
     expect((document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement | null)?.disabled).toBe(false)
 
     act(() => {
@@ -2165,6 +2722,33 @@ describe('ChatView', () => {
     host.remove()
   })
 
+	it('keeps next-turn agent available while provider mode and permissions are blocked', () => {
+	  useAppStore.setState((state) => ({
+		acpBindingBySessionId: {
+		  ...state.acpBindingBySessionId,
+		  'chat-1': {
+			...state.acpBindingBySessionId['chat-1'],
+			lifecycleState: 'processing',
+			processing: true,
+			pendingPermission: null,
+		  },
+		},
+	  }))
+
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+	  openComposerOptions(host)
+
+	  expect((document.body.querySelector('button[aria-label="Next turn agent"]') as HTMLButtonElement | null)?.disabled).toBe(false)
+	  expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
+	  expect((document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement | null)?.disabled).toBe(true)
+
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
   it('does not surface a runtime-only Plan mode as a user-selected chip', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session),
@@ -2178,15 +2762,16 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeNull()
+	expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
   })
 
-  it('selects Plan only from Agent mode and clears only the Plan chip', () => {
+  it('selects provider Plan only from Provider mode and clears only its chip', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
+      providerChatDefaults: { ...state.providerChatDefaults, 'gemini-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
       sessions: state.sessions.map((session) =>
         session.id === 'chat-1' ? { ...session, approvalMode: 'default' } : session
       ),
@@ -2213,7 +2798,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const agentButton = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
+    const agentButton = document.body.querySelector('button[aria-label="Provider mode"]') as HTMLButtonElement
     expect(agentButton.textContent).toContain('Default')
     act(() => agentButton.click())
     const planOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('Plan')) as HTMLButtonElement
@@ -2236,7 +2821,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeTruthy()
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2253,7 +2838,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Plan"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -2261,11 +2846,11 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('changes Permissions without changing Plan, reasoning, speed, or memory', () => {
-    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+  it('changes Permissions without changing Plan, reasoning, speed, or memory', async () => {
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === 'chat-1' ? { ...session, approvalMode: 'plan', commandSafetyTier: 'medium', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' } : session
+        session.id === 'chat-1' ? { ...session, approvalMode: 'plan', commandSafetyTier: 'aiReview', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' } : session
       ),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -2297,7 +2882,9 @@ describe('ChatView', () => {
     const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
     act(() => permissionButton.click())
     const yoloOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('YOLO')) as HTMLButtonElement
-    act(() => yoloOption.click())
+    await act(async () => { yoloOption.click(); await Promise.resolve() })
+    expect(host.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     act(() => {
@@ -2324,6 +2911,7 @@ describe('ChatView', () => {
   it('switches Claude from plan mode back to default', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
+      providerChatDefaults: { ...state.providerChatDefaults, 'claude-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
       sessions: state.sessions.map((session) =>
         session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session
       ),
@@ -2358,8 +2946,10 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
     expect(host.textContent).toContain('model discovery is limited to the active model')
+    act(() => (host.querySelector('button[aria-label="Dismiss Claude structured mode warning"]') as HTMLButtonElement).click())
+    expect(host.textContent).not.toContain('Claude structured mode cannot surface interactive permission')
 
-    const planButton = host.querySelector('button[aria-label="Disable Plan"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('button[aria-label="Disable Provider Plan"]') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
@@ -2374,10 +2964,11 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('keeps Claude Accept Edits in Permissions and independent from Agent mode', () => {
+  it('labels Claude structured permissions as provider managed', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
-    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
+      providerChatDefaults: { ...state.providerChatDefaults, 'claude-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
       sessions: state.sessions.map((session) =>
         session.id === 'chat-1'
           ? { ...session, providerId: 'claude-cli', approvalMode: 'plan', commandSafetyTier: 'off', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' }
@@ -2414,35 +3005,17 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const agentButton = document.body.querySelector('button[aria-label="Agent mode"]') as HTMLButtonElement
+    const agentButton = document.body.querySelector('button[aria-label="Provider mode"]') as HTMLButtonElement
     act(() => agentButton.click())
     expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).some((option) => option.textContent?.startsWith('Accept Edits'))).toBe(false)
     act(() => agentButton.click())
 
     const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    act(() => permissionButton.click())
-    const acceptEditsButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('Accept Edits')) as HTMLButtonElement
-    expect(acceptEditsButton).toBeTruthy()
-    act(() => acceptEditsButton.click())
-
-    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'acceptEdits')
+    expect(permissionButton.textContent).toContain('Provider managed')
+    expect(permissionButton.disabled).toBe(true)
+    expect(document.body.textContent).not.toContain('Accept Edits')
+    expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
-
-    act(() => {
-      useAppStore.setState((state) => ({
-        sessions: state.sessions.map((session) =>
-          session.id === 'chat-1' ? { ...session, commandSafetyTier: 'acceptEdits' } : session
-        ),
-      }))
-      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
-    })
-
-    const acceptEditsChip = host.querySelector('button[aria-label="Disable Accept Edits"]') as HTMLButtonElement
-    expect(acceptEditsChip).toBeTruthy()
-    act(() => acceptEditsChip.click())
-    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'off')
-    expect(setSessionApprovalMode).not.toHaveBeenCalled()
-    expect(useAppStore.getState().sessions[0]).toMatchObject({ approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' })
 
     act(() => {
       root.unmount()
@@ -2452,7 +3025,7 @@ describe('ChatView', () => {
 
   it('asks how to proceed before sending a prompt from Claude plan mode', async () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
-    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>
@@ -2521,8 +3094,40 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('drops a held Claude plan prompt when its provider context changes', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', lifecycleState: 'ready', processing: false, currentModeId: 'plan' },
+      },
+      sendAcpPrompt,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'held prompt')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => { (host.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+    expect(host.textContent).toContain('Claude Plan mode is read-only')
+
+    const changed = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli', approvalMode: 'default' }
+    act(() => root.render(<ChatView session={changed} />))
+    expect(host.textContent).not.toContain('Claude Plan mode is read-only')
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('arms the next message as a goal and sends the same text with the default budget', async () => {
-    const setGoal = vi.fn(() => Promise.resolve('goal-1'))
+    let finishGoal: (result: { ok: boolean; goalId: string }) => void = () => {}
+    const setGoal = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>((resolve) => { finishGoal = resolve }))
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       setGoal,
@@ -2565,11 +3170,18 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form') as HTMLFormElement | null
-    await act(async () => {
+    act(() => {
+      form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
 	expect(setGoal).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', 1234, 'uam')
+    expect(setGoal).toHaveBeenCalledTimes(1)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    await act(async () => {
+      finishGoal({ ok: true, goalId: 'goal-1' })
+      await Promise.resolve()
+    })
     expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', [])
 
     act(() => {
@@ -2579,11 +3191,13 @@ describe('ChatView', () => {
   })
 
 	it('delegates a configured provider goal command exactly once', async () => {
-	  const setGoal = vi.fn(() => Promise.resolve('goal-native'))
+	  let finishGoal: (result: { ok: boolean; goalId: string }) => void = () => {}
+	  const setGoal = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>((resolve) => { finishGoal = resolve }))
 	  const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
 	  useAppStore.setState((state) => ({
 		setGoal,
 		sendAcpPrompt,
+		providerChatDefaults: { ...state.providerChatDefaults, 'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
 		defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 0 },
 		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
 		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
@@ -2599,22 +3213,55 @@ describe('ChatView', () => {
 		valueSetter?.call(textarea, '/goal Keep the objective literal')
 		textarea.dispatchEvent(new Event('input', { bubbles: true }))
 	  })
-	  await act(async () => {
+	  act(() => {
+		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
 		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
 	  })
 
 	  expect(setGoal).toHaveBeenCalledWith('chat-1', 'Keep the objective literal', 0, 'provider')
+	  expect(setGoal).toHaveBeenCalledTimes(1)
+	  expect(sendAcpPrompt).not.toHaveBeenCalled()
+	  await act(async () => {
+		finishGoal({ ok: true, goalId: 'goal-native' })
+		await Promise.resolve()
+	  })
 	  expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
 	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', '/ralph Keep the objective literal', [])
 	  act(() => root.unmount())
 	  host.remove()
 	})
 
+	it('submits a multi-line /goal command', async () => {
+	  const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+	  const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+	  useAppStore.setState({ setGoal, sendAcpPrompt })
+
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+	  const textarea = host.querySelector('textarea')!
+	  act(() => {
+		const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+		valueSetter?.call(textarea, '/goal First line.\n\nSecond line.')
+		textarea.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  await act(async () => {
+		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+	  })
+
+	  expect(setGoal).toHaveBeenCalledWith('chat-1', 'First line.\n\nSecond line.', 0, 'uam')
+	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'First line.\n\nSecond line.', [])
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
   it('renders active goal pause/delete controls and paused goal resume control', async () => {
-    const updateGoalStatus = vi.fn(() => Promise.resolve(true))
-    const removeGoal = vi.fn(() => Promise.resolve(true))
-    let finishResume: ((ok: boolean) => void) | undefined
-    const resumeGoal = vi.fn(() => new Promise<boolean>((resolve) => { finishResume = resolve }))
+    const updateGoalStatus = vi.fn(() => Promise.resolve({ ok: true }))
+    const removeGoal = vi.fn(() => Promise.resolve({ ok: true }))
+    let finishResume: ((result: { ok: boolean; error?: string }) => void) | undefined
+    const resumeGoal = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finishResume = resolve }))
     const goal = {
       id: 'goal-1',
       chatId: 'chat-1',
@@ -2669,7 +3316,7 @@ describe('ChatView', () => {
     act(() => {
       pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(updateGoalStatus).toHaveBeenCalledWith('goal-1', 'paused')
+    expect(updateGoalStatus).toHaveBeenCalledWith('chat-1', 'goal-1', 'paused')
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2689,7 +3336,7 @@ describe('ChatView', () => {
     const pendingResume = menuItem('Resuming…')
     expect(pendingResume?.disabled).toBe(true)
     await act(async () => {
-      finishResume?.(false)
+      finishResume?.({ ok: false })
       await Promise.resolve()
     })
     expect(host.textContent).toContain('Failed to resume goal.')
@@ -2697,7 +3344,7 @@ describe('ChatView', () => {
     act(() => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(removeGoal).toHaveBeenCalledWith('goal-1')
+    expect(removeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2855,6 +3502,74 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('does not rebuild historical message rows when the streaming tail changes', () => {
+    let historicalContentReads = 0
+    const state = useAppStore.getState()
+    const historicalMessage = { ...state.messages['chat-1'][1], id: 'm-history' }
+    Object.defineProperty(historicalMessage, 'content', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        historicalContentReads += 1
+        return 'Stable historical response.'
+      },
+    })
+    const streamingMessage = {
+      id: 'm-streaming',
+      sessionId: 'chat-1',
+      role: 'assistant' as const,
+      content: 'Streaming response one.',
+      isStreaming: true,
+      createdAt: new Date('2026-01-01T00:00:02.000Z'),
+    }
+    useAppStore.setState({
+      messages: {
+        ...state.messages,
+        'chat-1': [state.messages['chat-1'][0], historicalMessage, streamingMessage],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          processingStartedAtMs: null,
+          turnEvents: [],
+          turnUserMessageIndex: -1,
+          turnAssistantMessageIndex: -1,
+          pendingPermission: null,
+        },
+      },
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    })
+    const readsAfterInitialRender = historicalContentReads
+    expect(readsAfterInitialRender).toBeGreaterThan(0)
+
+    act(() => useAppStore.setState((current) => ({
+      messages: {
+        ...current.messages,
+        'chat-1': [
+          current.messages['chat-1'][0],
+          historicalMessage,
+          { ...streamingMessage, content: 'Streaming response two.' },
+        ],
+      },
+    })))
+
+    expect(host.textContent).toContain('Streaming response two.')
+    expect(historicalContentReads).toBe(readsAfterInitialRender)
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -3457,6 +4172,31 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('offers provider check, settings, and terminal recovery for structured runtime failures', async () => {
+    const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
+    const setSettingsOpen = vi.fn()
+    const openTerminalFallback = vi.fn()
+    useAppStore.setState((state) => ({
+      refreshCliProviderVersion,
+      setSettingsOpen,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', lastError: 'Provider failed to launch.' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} onOpenTerminalFallback={openTerminalFallback} />))
+
+    await act(async () => { (host.querySelector('button[aria-label="Check provider CLI"]') as HTMLButtonElement).click(); await Promise.resolve() })
+    act(() => (host.querySelector('button[aria-label="Open CLI settings"]') as HTMLButtonElement).click())
+    await act(async () => { (host.querySelector('button[aria-label="Open fallback terminal"]') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
+    expect(setSettingsOpen).toHaveBeenCalledWith(true)
+    expect(openTerminalFallback).toHaveBeenCalledOnce()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('uses turn serials to isolate the active ACP turn and close stale tool details', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -3724,9 +4464,12 @@ describe('ChatView', () => {
   it('expands multiple sub-agent chats inline without replacing the current chat', async () => {
     vi.useFakeTimers()
     const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
+    const originalLoadSessionMessages = useAppStore.getState().loadSessionMessages
     const openSubAgentSession = vi.fn((_sourceChatId: string, nativeSessionId: string) => Promise.resolve(nativeSessionId === 'agent-session-2' ? 'agent-chat-2' : 'agent-chat'))
+    const loadSessionMessages = vi.fn(() => Promise.resolve())
     useAppStore.setState((state) => ({
       openSubAgentSession,
+      loadSessionMessages,
       sessions: [
         ...state.sessions,
         { ...state.sessions[0], id: 'agent-chat', name: 'Planner history' },
@@ -3800,8 +4543,9 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Sub-agent:'))
+    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Subtask:'))
     expect(summaries).toHaveLength(2)
+    expect(summaries.every((summary) => summary.textContent?.includes('Transcript available'))).toBe(true)
     expect(summaries[0].querySelector('[data-tool-status="running"][aria-label="Tool status: Running"]')).toBeTruthy()
     expect(summaries[1].querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
 
@@ -3831,15 +4575,71 @@ describe('ChatView', () => {
       vi.advanceTimersByTime(1000)
       await Promise.resolve()
     })
-    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(2)
+    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(1)
     expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
+    expect(loadSessionMessages).toHaveBeenCalledWith('agent-chat')
 
     act(() => {
       root.unmount()
     })
     host.remove()
-    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession, loadSessionMessages: originalLoadSessionMessages })
     vi.useRealTimers()
+  })
+
+  it('keeps opaque provider sub-agent events distinct from transcript load failures', async () => {
+    const originalOpenSubAgentSession = useAppStore.getState().openSubAgentSession
+    const openSubAgentSession = vi.fn(() => Promise.resolve(null))
+    useAppStore.setState((state) => ({
+      openSubAgentSession,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'ready',
+          processing: false,
+          pendingPermission: null,
+          pendingUserInput: null,
+          toolCalls: [
+            { id: 'opaque-agent', title: 'Opaque worker', kind: 'sub-agent', status: 'completed', content: 'Provider event', isSubAgent: true },
+            { id: 'missing-agent', title: 'Missing worker', kind: 'sub-agent', status: 'completed', content: 'Child event', isSubAgent: true, subAgentId: 'missing-child' },
+          ],
+          turnEvents: [
+            { type: 'tool_call', toolCallId: 'opaque-agent' },
+            { type: 'tool_call', toolCallId: 'missing-agent' },
+          ],
+          turnSerial: 3,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) =>
+      candidate.textContent?.includes('Provider sub-agent event:') || candidate.textContent?.includes('Subtask:')
+    )
+    expect(summaries).toHaveLength(2)
+    await act(async () => {
+      for (const summary of summaries) {
+        const details = summary.closest('details') as HTMLDetailsElement
+        details.open = true
+        details.dispatchEvent(new Event('toggle', { bubbles: true }))
+      }
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(host.textContent).toContain('No separate transcript')
+    expect(host.textContent).toContain('Gemini did not expose a child session ID')
+    expect(host.textContent).toContain('Transcript unavailable: Sub-agent chat history is unavailable.')
+    expect(openSubAgentSession).toHaveBeenCalledOnce()
+    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'missing-child', undefined, false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
   })
 
   it('opens the current workspace from the composer workspace row', async () => {
@@ -3871,6 +4671,27 @@ describe('ChatView', () => {
     })
     host.remove()
     useAppStore.setState({ openSessionWorkspace: originalOpenSessionWorkspace })
+  })
+
+  it('does not offer controller-local workspace actions for a remote directory', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1'
+        ? { ...session, executionHostId: 'ssh-lab', workspaceDirectory: '/srv/project' }
+        : session),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const menu = openWorkspaceActions(host)
+    expect(menu?.textContent).toContain('This directory lives on the remote computer')
+    expect(menu?.querySelector('[role="menuitem"]')).toBeNull()
+    expect(menu?.textContent).not.toContain('Open workspace')
+    expect(menu?.textContent).not.toContain('Create worktree')
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('expires successful workspace feedback but keeps errors until dismissed', async () => {
@@ -3963,6 +4784,78 @@ describe('ChatView', () => {
       })
     })
     expect(discard.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('previews and confirms an isolated turn rollback before applying it', async () => {
+    const previewChatTurnRollback = vi.fn(() => Promise.resolve({
+      message: 'Rollback preview is ready.',
+      diff: ' app.txt | 2 +-',
+      checkpointSha: 'a'.repeat(40),
+      parentSha: 'b'.repeat(40),
+    }))
+    const rollbackChatTurn = vi.fn(() => Promise.resolve({
+      message: 'Rolled the isolated worktree back to before this turn.',
+      diff: ' app.txt | 2 +-',
+      checkpointSha: 'a'.repeat(40),
+      parentSha: 'b'.repeat(40),
+    }))
+    useAppStore.setState((state) => ({
+      previewChatTurnRollback,
+      rollbackChatTurn,
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
+        workspaceSourceDirectory: '/tmp/project',
+        workspaceIsolationKind: 'gitWorktree',
+      })),
+      messages: {
+        ...state.messages,
+        'chat-1': state.messages['chat-1'].map((message) => message.role === 'assistant'
+          ? { ...message, checkpointSha: 'a'.repeat(40), checkpointParentSha: 'b'.repeat(40) }
+          : message),
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          running: false,
+          processing: false,
+          pendingPermission: null,
+          pendingUserInput: null,
+          queuedPrompts: [],
+          turnEvents: [],
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const rollback = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Roll back turn')
+    expect(rollback).toBeTruthy()
+    await act(async () => {
+      rollback?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(previewChatTurnRollback).toHaveBeenCalledWith('chat-1', 1)
+    expect(host.textContent).toContain('app.txt | 2 +-')
+    expect(rollbackChatTurn).not.toHaveBeenCalled()
+    const confirmRollback = Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button'))
+      .find((button) => button.textContent === 'Roll back turn')
+    await act(async () => {
+      confirmRollback?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(rollbackChatTurn).toHaveBeenCalledWith('chat-1', 1)
+    expect(host.textContent).toContain('Rolled the isolated worktree back to before this turn.')
 
     act(() => root.unmount())
     host.remove()
@@ -4593,5 +5486,20 @@ describe('ChatView', () => {
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
+  })
+
+  it('keeps imported portable transcripts visibly read-only', () => {
+    const session = { ...useAppStore.getState().sessions[0], importedReadOnly: true }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={session} />))
+
+    expect(host.textContent).toContain('This portable transcript is read-only')
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
   })
 })

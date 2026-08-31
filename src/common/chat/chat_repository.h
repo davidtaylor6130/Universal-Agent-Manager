@@ -16,12 +16,13 @@ struct ChatStorageDeleteResult
 	std::error_code metadata_backup_file_error;
 	std::error_code summary_file_error;
 	std::error_code summary_backup_file_error;
+	std::error_code computer_use_directory_error;
 
 	bool Failed() const
 	{
 		return unsafe_chat_id || static_cast<bool>(legacy_directory_error) || static_cast<bool>(metadata_file_error) ||
 		       static_cast<bool>(metadata_backup_file_error) || static_cast<bool>(summary_file_error) ||
-		       static_cast<bool>(summary_backup_file_error);
+		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(computer_use_directory_error);
 	}
 };
 
@@ -33,6 +34,8 @@ class ChatRepository
   public:
 	/// <summary>Saves one chat session to disk.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat);
+	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
+	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Loads locally persisted chat sessions from disk.</summary>
 	static std::vector<ChatSession> LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
 	/// <summary>Loads locally persisted chat sessions without hydrating message bodies.</summary>
@@ -43,4 +46,7 @@ class ChatRepository
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
+
+  private:
+	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists);
 };

@@ -6,10 +6,9 @@
 import type { Session, Folder } from '../../types/session'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import type { Provider } from '../../types/provider'
+import { readChatViewMode } from '../../utils/chatGridStorage'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
-  CODEX_CLI_PROVIDER_ID,
-  COPILOT_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
 } from '../../utils/providerMetadata'
 import {
@@ -22,14 +21,15 @@ import {
   normalizeMemoryLevel,
 } from './sanitizers'
 import {
-  pendingCodexOptionsByChatId,
   pendingModelByChatId,
   pendingRequestIdsByKey,
+  pendingViewModeBySessionId,
 } from '../push/pushBuffers'
 import type {
   AcpAgentInfo,
   AcpBinding,
   AcpCommand,
+  AcpConfigOption,
   AcpDiagnosticEntry,
   AcpLifecycleState,
   AcpMode,
@@ -77,6 +77,7 @@ export function normalizeProviderIdForVisibleProviders(
 export function foldersEquivalent(previous: Folder, next: Folder): boolean {
   return previous.name === next.name &&
     previous.directory === next.directory &&
+    previous.executionHostId === next.executionHostId &&
     previous.isExpanded === next.isExpanded &&
     previous.missing === next.missing
 }
@@ -87,6 +88,7 @@ export function folderFromCppFolder(folder: CppFolder, previous: Folder | undefi
     name: folder.title,
     parentId: null,
     directory: folder.directory ?? '',
+    executionHostId: folder.executionHostId || 'local',
     isExpanded: !folder.collapsed,
     missing: folder.missing,
     createdAt: previous?.createdAt ?? new Date(),
@@ -105,6 +107,8 @@ export function providersEquivalent(previous: Provider, next: Provider): boolean
     previous.supportsCli === next.supportsCli &&
     previous.supportsStructured === next.supportsStructured &&
     previous.structuredProtocol === next.structuredProtocol &&
+	previous.structuredPermissionControl === next.structuredPermissionControl &&
+	previous.terminalPermissionControl === next.terminalPermissionControl &&
 	previous.npmPackageName === next.npmPackageName &&
 	previous.nativeGoalCommand === next.nativeGoalCommand
 }
@@ -120,6 +124,8 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
     supportsCli: provider.supportsCli,
     supportsStructured: provider.supportsStructured,
     structuredProtocol: provider.structuredProtocol,
+	structuredPermissionControl: provider.structuredPermissionControl,
+	terminalPermissionControl: provider.terminalPermissionControl,
     npmPackageName: provider.npmPackageName,
 	  nativeGoalCommand: provider.nativeGoalCommand,
   }
@@ -132,7 +138,9 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 }
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
-  return previous.name === next.name &&
+  return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+    (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
+    previous.name === next.name &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
@@ -141,11 +149,22 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.branchFromMessageIndex ?? -1) === (next.branchFromMessageIndex ?? -1) &&
     (previous.branchMessageEdited ?? false) === (next.branchMessageEdited ?? false) &&
     (previous.modelId ?? '') === (next.modelId ?? '') &&
+    (previous.reviewerModelId ?? '') === (next.reviewerModelId ?? '') &&
     (previous.reasoningEffort ?? '') === (next.reasoningEffort ?? '') &&
     (previous.serviceTier ?? '') === (next.serviceTier ?? '') &&
+    (previous.serviceTierExplicit ?? (previous.serviceTier ?? '') !== '') === (next.serviceTierExplicit ?? false) &&
     (previous.approvalMode ?? 'default') === next.approvalMode &&
-    (previous.autoApproveCommands ?? false) === (next.autoApproveCommands ?? false) &&
-    (previous.commandSafetyTier ?? 'medium') === (next.commandSafetyTier ?? 'medium') &&
+    (previous.uamAgentId ?? 'build') === (next.uamAgentId ?? 'build') &&
+    (previous.commandSafetyTier ?? 'off') === (next.commandSafetyTier ?? 'off') &&
+    (previous.computerUseEnabled ?? false) === (next.computerUseEnabled ?? false) &&
+    (previous.computerUseBackend ?? 'auto') === (next.computerUseBackend ?? 'auto') &&
+    (previous.computerUseEffectiveBackend ?? 'uam') === (next.computerUseEffectiveBackend ?? 'uam') &&
+    (previous.computerUseProviderAvailable ?? false) === (next.computerUseProviderAvailable ?? false) &&
+    (previous.computerUseTargetKind ?? 'window') === (next.computerUseTargetKind ?? 'window') &&
+    (previous.computerUseTargetId ?? '') === (next.computerUseTargetId ?? '') &&
+    (previous.computerUseTargetTitle ?? '') === (next.computerUseTargetTitle ?? '') &&
+    (previous.computerUseTargetInputMode ?? 'foreground') === (next.computerUseTargetInputMode ?? 'foreground') &&
+    JSON.stringify(previous.computerUse) === JSON.stringify(next.computerUse) &&
     (previous.memoryEnabled ?? true) === next.memoryEnabled &&
     (previous.memoryLevel ?? ((previous.memoryEnabled ?? true) ? 'strict' : 'off')) === next.memoryLevel &&
     (previous.smallModelMode ?? false) === (next.smallModelMode ?? false) &&
@@ -157,6 +176,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.workspaceBaseRef ?? '') === (next.workspaceBaseRef ?? '') &&
     (previous.workspaceBranchName ?? '') === (next.workspaceBranchName ?? '') &&
     (previous.workspaceWorktreeDirectory ?? '') === (next.workspaceWorktreeDirectory ?? '') &&
+    (previous.importedReadOnly ?? false) === (next.importedReadOnly ?? false) &&
     (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
     previous.viewMode === next.viewMode &&
@@ -173,10 +193,14 @@ export function sessionFromCppChat(
   const createdAt = new Date(chat.createdAt || Date.now())
   const updatedAt = new Date(chat.updatedAt || Date.now())
   const lastOpenedAt = new Date(chat.lastOpenedAt || chat.updatedAt || chat.createdAt || Date.now())
+  const pendingViewMode = pendingViewModeBySessionId.get(chat.id)
+  if (pendingViewMode) pendingViewModeBySessionId.delete(chat.id)
   const nextSession: Session = {
+    uamControlEnabled: chat.uamControlEnabled ?? false,
     id: chat.id,
+    executionHostId: chat.executionHostId ?? 'local',
     name: chat.title || 'Untitled',
-    viewMode: 'chat',
+    viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,
     providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
@@ -185,11 +209,22 @@ export function sessionFromCppChat(
     branchFromMessageIndex: chat.branchFromMessageIndex ?? -1,
     branchMessageEdited: chat.branchMessageEdited ?? false,
     modelId: chat.modelId ?? '',
+    reviewerModelId: chat.reviewerModelId ?? '',
     reasoningEffort: normalizeCodexReasoningEffort(chat.reasoningEffort),
     serviceTier: normalizeCodexServiceTier(chat.serviceTier),
+    serviceTierExplicit: chat.serviceTierExplicit ?? normalizeCodexServiceTier(chat.serviceTier) !== '',
     approvalMode: normalizeAcpApprovalMode(chat.approvalMode),
-    autoApproveCommands: chat.autoApproveCommands ?? false,
+    uamAgentId: chat.uamAgentId?.trim() || 'build',
     commandSafetyTier: normalizeCommandSafetyTier(chat.commandSafetyTier),
+    computerUseEnabled: chat.computerUseEnabled ?? chat.computerUse?.enabled ?? false,
+    computerUseBackend: chat.computerUseBackend ?? 'auto',
+    computerUseEffectiveBackend: chat.computerUseEffectiveBackend ?? 'uam',
+    computerUseProviderAvailable: chat.computerUseProviderAvailable ?? false,
+    computerUseTargetKind: chat.computerUseTargetKind ?? 'window',
+    computerUseTargetId: chat.computerUseTargetId ?? '',
+    computerUseTargetTitle: chat.computerUseTargetTitle ?? '',
+    computerUseTargetInputMode: chat.computerUseTargetInputMode ?? 'foreground',
+    computerUse: chat.computerUse,
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
     smallModelMode: chat.smallModelMode ?? false,
@@ -201,6 +236,7 @@ export function sessionFromCppChat(
     workspaceBaseRef: chat.workspaceBaseRef ?? '',
     workspaceBranchName: chat.workspaceBranchName ?? '',
     workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
+    importedReadOnly: chat.importedReadOnly ?? false,
     messageCount: chat.messageCount ?? 0,
     messagesDigest: chat.messagesDigest ?? '',
     createdAt,
@@ -339,6 +375,18 @@ function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
   })
 }
 
+function configOptionsEquivalent(existing: AcpConfigOption[], next: AcpConfigOption[]) {
+  return existing.length === next.length && existing.every((option, index) => {
+    const other = next[index]
+    return option.id === other.id && option.name === other.name && option.description === other.description &&
+      option.category === other.category && option.currentValue === other.currentValue &&
+      option.options.length === other.options.length && option.options.every((choice, choiceIndex) => {
+        const otherChoice = other.options[choiceIndex]
+        return choice.value === otherChoice.value && choice.name === otherChoice.name && choice.description === otherChoice.description
+      })
+  })
+}
+
 function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
   if (existing.length !== next.length) return false
   return existing.every((event, index) => {
@@ -436,6 +484,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     modesEquivalent(existing.availableModes, next.availableModes) &&
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
+    configOptionsEquivalent(existing.configOptions ?? [], next.configOptions ?? []) &&
     existing.modelsLoading === next.modelsLoading &&
     existing.modelRefreshError === next.modelRefreshError &&
     existing.currentModelId === next.currentModelId &&
@@ -535,6 +584,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     availableModes: Array.isArray(acp?.availableModes) ? acp!.availableModes : [],
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
+    configOptions: Array.isArray(acp?.configOptions) ? acp!.configOptions : [],
     modelsLoading: Boolean(acp?.modelsLoading),
     modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
@@ -667,6 +717,10 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     messageBlocksEquivalent(existing.blocks ?? [], next.blocks ?? []) &&
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
+		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
+		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
+    (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
+    (existing.checkpointParentSha ?? '') === (next.checkpointParentSha ?? '') &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
   )
 }
@@ -686,6 +740,10 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     blocks: message.blocks ?? [],
     attachments: messageAttachments(message),
     processingTimeMs: message.processingTimeMs ?? 0,
+		interrupted: Boolean(message.interrupted),
+		prioritySteer: Boolean(message.prioritySteer),
+    checkpointSha: message.checkpointSha,
+    checkpointParentSha: message.checkpointParentSha,
     createdAt: new Date(createdAtMillis),
   }
 }
@@ -746,6 +804,7 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.kind === other.kind &&
       tool.status === other.status &&
       tool.content === other.content &&
+      Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
       (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')
@@ -787,6 +846,7 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
     return prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&
+      Boolean(prompt.computerUseMode) === Boolean(other.computerUseMode) &&
       Boolean(prompt.prioritySteer) === Boolean(other.prioritySteer) &&
       sameArrayEntries(prompt.markdownStoreFiles, other.markdownStoreFiles) &&
       attachmentsEquivalent(prompt.attachments, other.attachments)
@@ -799,15 +859,8 @@ export function clearPendingRequest(key: string, requestId?: string) {
   }
 }
 
-export function clearPendingCodexOptions(chatId: string, requestId?: string) {
-  const pending = pendingCodexOptionsByChatId.get(chatId)
-  if (pending && pending.requestId === requestId) {
-    pendingCodexOptionsByChatId.delete(chatId)
-  }
-}
-
 export function applyPendingCodexOptions(sessions: Session[]): Session[] {
-  if (pendingCodexOptionsByChatId.size === 0 && pendingModelByChatId.size === 0) return sessions
+	if (pendingModelByChatId.size === 0) return sessions
   let changed = false
   const nextSessions = sessions.map((session) => {
     let nextSession = session
@@ -816,7 +869,8 @@ export function applyPendingCodexOptions(sessions: Session[]): Session[] {
       if (
         (session.modelId ?? '') === pendingModel.modelId &&
         (session.reasoningEffort ?? '') === pendingModel.reasoningEffort &&
-        (session.serviceTier ?? '') === pendingModel.serviceTier
+        (session.serviceTier ?? '') === pendingModel.serviceTier &&
+		(session.serviceTierExplicit ?? (session.serviceTier ?? '') !== '') === pendingModel.serviceTierExplicit
       ) {
         pendingModelByChatId.delete(session.id)
       } else {
@@ -826,24 +880,11 @@ export function applyPendingCodexOptions(sessions: Session[]): Session[] {
           modelId: pendingModel.modelId,
           reasoningEffort: pendingModel.reasoningEffort,
           serviceTier: pendingModel.serviceTier,
+		  serviceTierExplicit: pendingModel.serviceTierExplicit,
         }
       }
     }
-    const pending = pendingCodexOptionsByChatId.get(session.id)
-    const providerId = session.providerId ?? GEMINI_CLI_PROVIDER_ID
-    if (!pending || (providerId !== CODEX_CLI_PROVIDER_ID && providerId !== COPILOT_CLI_PROVIDER_ID)) {
-      return nextSession
-    }
-    if ((session.reasoningEffort ?? '') === pending.reasoningEffort && (session.serviceTier ?? '') === pending.serviceTier) {
-      pendingCodexOptionsByChatId.delete(session.id)
-      return nextSession
-    }
-    changed = true
-    return {
-      ...nextSession,
-      reasoningEffort: pending.reasoningEffort,
-      serviceTier: pending.serviceTier,
-    }
+	return nextSession
   })
   return changed ? nextSessions : sessions
 }

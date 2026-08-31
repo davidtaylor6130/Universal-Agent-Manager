@@ -101,6 +101,8 @@ describe('themeStorage', () => {
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#101820')
     expect(document.documentElement.style.getPropertyValue('--message-user-bg')).toBe('#173047')
     expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#38bdf8')
+    expect(document.documentElement.style.getPropertyValue('--text-2')).toContain('72%')
+    expect(document.documentElement.style.getPropertyValue('--text-3')).toContain('82%')
     expect(normalizeCustomTheme({ ...theme, colors: { ...theme?.colors, accent: 'blue' } })).toBeNull()
   })
 })

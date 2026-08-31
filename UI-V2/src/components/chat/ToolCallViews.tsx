@@ -1,7 +1,7 @@
 // Tool call inline rows, permission cards, user-input cards, tool modal, and
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
-import { ReactNode, useEffect, useState } from 'react'
+import { ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench } from 'lucide-react'
 import type {
@@ -30,6 +30,10 @@ function cleanToolOutput(value: string) {
     .replace(/\\n/g, '\n')
 }
 
+function managedTranscriptChatId(value: string) {
+  return value.match(/"transcriptChatId"\s*:\s*"([^"\\]+)"/)?.[1] ?? ''
+}
+
 export function SubAgentRunningPanel({
   tool,
   onSelectTool,
@@ -41,6 +45,7 @@ export function SubAgentRunningPanel({
 }) {
   const [open, setOpen] = useState(false)
   const displayTitle = toolDisplayTitle(tool)
+  const transcriptAvailable = Boolean(tool.subAgentId)
   return (
     <details
       className="w-full uam-subagent-panel"
@@ -85,7 +90,7 @@ export function SubAgentRunningPanel({
           </span>
           <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
-              Sub-agent:
+              {transcriptAvailable ? 'Subtask:' : 'Provider sub-agent event:'}
               <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
                 {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
               </span>
@@ -93,7 +98,10 @@ export function SubAgentRunningPanel({
             <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
           </span>
         </span>
-        <ToolStatusIcon status={tool.status} />
+        <span className="flex flex-col items-end gap-1">
+          <ToolStatusIcon status={tool.status} />
+          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{transcriptAvailable ? 'Transcript available' : 'Provider event'}</span>
+        </span>
       </summary>
       {open && (
         <div className="space-y-3" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
@@ -168,7 +176,7 @@ export function PermissionInlineCard({
   onStopRuntime,
 }: {
   permission: AcpPendingPermission
-  onResolve: (requestId: string, optionId: string) => void
+  onResolve: (requestId: string, optionId: string) => Promise<boolean>
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -176,6 +184,36 @@ export function PermissionInlineCard({
   onStopRuntime?: () => void
 }) {
   const normalizedOptions = normalizePermissionOptions(permission.options)
+  const [submittingOptionId, setSubmittingOptionId] = useState('')
+  const [submitError, setSubmitError] = useState('')
+  const submittingRef = useRef(false)
+
+  useEffect(() => {
+    submittingRef.current = false
+    setSubmittingOptionId('')
+    setSubmitError('')
+  }, [permission.requestId])
+
+  const resolve = async (optionId: string) => {
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSubmittingOptionId(optionId)
+    setSubmitError('')
+    let accepted = false
+    try {
+      accepted = await onResolve(permission.requestId, optionId)
+      if (!accepted) {
+        setSubmitError('The provider did not accept that response. Try again.')
+      }
+    } catch {
+      setSubmitError('The permission response failed. Try again.')
+    } finally {
+      if (!accepted) {
+        submittingRef.current = false
+        setSubmittingOptionId('')
+      }
+    }
+  }
 
   return (
     <div
@@ -234,6 +272,7 @@ export function PermissionInlineCard({
                 color: 'var(--text)',
               }}
               onClick={onCancelTurn}
+              disabled={Boolean(submittingOptionId)}
             >
               Cancel turn
             </button>
@@ -247,6 +286,7 @@ export function PermissionInlineCard({
                 color: 'var(--text-2)',
               }}
               onClick={onStopRuntime}
+              disabled={Boolean(submittingOptionId)}
             >
               Stop runtime
             </button>
@@ -265,12 +305,15 @@ export function PermissionInlineCard({
               background: option.kind.startsWith('allow') ? 'var(--accent-dim)' : 'var(--surface-up)',
               color: 'var(--text)',
             }}
-            onClick={() => onResolve(permission.requestId, option.id)}
+            disabled={Boolean(submittingOptionId)}
+            aria-busy={submittingOptionId === option.id}
+            onClick={() => void resolve(option.id)}
           >
-            {option.displayName}
+            {submittingOptionId === option.id ? 'Submitting…' : option.displayName}
           </button>
         ))}
       </div>
+      {submitError && <div role="alert" className="mt-2 text-[11px]" style={{ color: 'var(--error)' }}>{submitError}</div>}
     </div>
   )
 }
@@ -329,7 +372,7 @@ export function UserInputInlineCard({
   onStopRuntime,
 }: {
   input: AcpPendingUserInput
-  onResolve: (requestId: string, answers: AcpUserInputAnswers) => void
+  onResolve: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -343,6 +386,9 @@ export function UserInputInlineCard({
     }
     return initial
   })
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const submittingRef = useRef(false)
 
   useEffect(() => {
     setValues((current) => {
@@ -352,16 +398,38 @@ export function UserInputInlineCard({
       }
       return next
     })
-  }, [input.requestId, input.questions])
+  }, [input.questions])
+
+  useEffect(() => {
+    submittingRef.current = false
+    setSubmitting(false)
+    setSubmitError('')
+  }, [input.requestId])
 
   const canSubmit = input.questions.every((question) => (values[question.id] ?? '').trim().length > 0)
-  const submit = () => {
-    if (!canSubmit) return
+  const submit = async () => {
+    if (!canSubmit || submittingRef.current) return
     const answers: AcpUserInputAnswers = {}
     for (const question of input.questions) {
       answers[question.id] = [(values[question.id] ?? '').trim()]
     }
-    onResolve(input.requestId, answers)
+    submittingRef.current = true
+    setSubmitting(true)
+    setSubmitError('')
+    let accepted = false
+    try {
+      accepted = await onResolve(input.requestId, answers)
+      if (!accepted) {
+        setSubmitError('The provider did not accept that response. Check the answers and try again.')
+      }
+    } catch {
+      setSubmitError('The input response failed. Try again.')
+    } finally {
+      if (!accepted) {
+        submittingRef.current = false
+        setSubmitting(false)
+      }
+    }
   }
 
   return (
@@ -407,6 +475,7 @@ export function UserInputInlineCard({
                 color: 'var(--text)',
               }}
               onClick={onCancelTurn}
+              disabled={submitting}
             >
               Cancel turn
             </button>
@@ -420,6 +489,7 @@ export function UserInputInlineCard({
                 color: 'var(--text-2)',
               }}
               onClick={onStopRuntime}
+              disabled={submitting}
             >
               Stop runtime
             </button>
@@ -450,6 +520,7 @@ export function UserInputInlineCard({
                       <button
                         key={`${question.id}-${option.label}`}
                         type="button"
+                        disabled={submitting}
                         className="uam-choice-button px-3 py-1.5 text-[11px] text-left"
                         style={{
                           borderRadius: 6,
@@ -480,6 +551,7 @@ export function UserInputInlineCard({
               {showTextInput && (
                 <input
                   type={question.isSecret ? 'password' : 'text'}
+                  disabled={submitting}
                   value={selected}
                   aria-label={question.question || question.header || question.id}
                   className="w-full text-xs outline-none"
@@ -507,18 +579,20 @@ export function UserInputInlineCard({
         <button
           type="button"
           className="uam-choice-button px-3 h-7 text-[11px] font-medium"
-          disabled={!canSubmit}
+          disabled={!canSubmit || submitting}
+          aria-busy={submitting}
           style={{
             borderRadius: 6,
             border: '1px solid var(--border-bright)',
             background: canSubmit ? 'var(--accent)' : 'var(--surface-up)',
             color: canSubmit ? '#ffffff' : 'var(--text-3)',
           }}
-          onClick={submit}
+          onClick={() => void submit()}
         >
-          Submit
+          {submitting ? 'Submitting…' : 'Submit'}
         </button>
       </div>
+      {submitError && <div role="alert" className="mt-2 text-right text-[11px]" style={{ color: 'var(--error)' }}>{submitError}</div>}
     </div>
   )
 }
@@ -538,12 +612,17 @@ export function ToolCallModal({
 }) {
   const [deferredContent, setDeferredContent] = useState<string | null>(null)
   const [contentError, setContentError] = useState('')
+  const [managedTranscript, setManagedTranscript] = useState<{ runId: string; title: string; status: string; executionCapability: string; messages: Array<{ role: string; content: string; thoughts: string }> } | null>(null)
+  const [managedTranscriptError, setManagedTranscriptError] = useState('')
+  const [managedTranscriptLoading, setManagedTranscriptLoading] = useState(false)
+  const [managedResumeMessage, setManagedResumeMessage] = useState('')
   const shouldLoadContent = Boolean(tool.contentDeferred && chatId && isCefContext())
   const output = cleanToolOutput(
     shouldLoadContent && deferredContent === null
       ? contentError || 'Loading tool output…'
       : deferredContent ?? (tool.content || 'No tool output yet.')
   )
+  const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
   const toolCopyText = [
     toolDisplayTitle(tool) || tool.id || 'Tool call',
     `id: ${tool.id || 'unknown'}`,
@@ -578,6 +657,58 @@ export function ToolCallModal({
     })
     return () => { canceled = true }
   }, [chatId, shouldLoadContent, tool.id])
+
+  useEffect(() => {
+    setManagedTranscript(null)
+    setManagedTranscriptError('')
+    setManagedTranscriptLoading(false)
+    setManagedResumeMessage('')
+  }, [tool.id])
+
+  const openManagedTranscript = async () => {
+    if (!chatId || !transcriptChatId) return
+    setManagedTranscriptLoading(true)
+    setManagedTranscriptError('')
+    const response = await sendToCEF<{ runId?: string; title?: string; status?: string; executionCapability?: string; messages?: unknown[] }>({
+      action: 'getManagedAgentTranscript',
+      payload: { chatId, transcriptChatId },
+    })
+    if (!response.ok) {
+      setManagedTranscriptError(response.error || 'Managed agent transcript is unavailable.')
+      setManagedTranscriptLoading(false)
+      return
+    }
+    const messages = Array.isArray(response.data?.messages)
+      ? response.data.messages.flatMap((value) => {
+          if (!value || typeof value !== 'object') return []
+          const message = value as Record<string, unknown>
+          const role = typeof message.role === 'string' ? message.role : ''
+          const content = typeof message.content === 'string' ? message.content : ''
+          const thoughts = typeof message.thoughts === 'string' ? message.thoughts : ''
+          return role && (content || thoughts) ? [{ role, content, thoughts }] : []
+        })
+      : []
+    setManagedTranscript({
+      runId: response.data?.runId || '',
+      title: response.data?.title || 'Managed agent transcript',
+      status: response.data?.status || 'unknown',
+	  executionCapability: response.data?.executionCapability || 'unknown',
+      messages,
+    })
+    setManagedTranscriptLoading(false)
+  }
+
+  const resumeManagedRun = async () => {
+    if (!managedTranscript?.runId || managedTranscript.status !== 'interrupted') return
+    setManagedResumeMessage('Resuming…')
+    const response = await sendToCEF<{ runId?: string }>({
+      action: 'resumeAgentRun',
+      payload: { runId: managedTranscript.runId },
+    })
+    setManagedResumeMessage(response.ok
+      ? `Fresh run queued${response.data?.runId ? `: ${response.data.runId}` : '.'}`
+      : response.error || 'Failed to resume the interrupted run.')
+  }
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -680,6 +811,48 @@ export function ToolCallModal({
           >
             {output}
           </pre>
+          {transcriptChatId && !managedTranscript && (
+            <button
+              type="button"
+              onClick={() => void openManagedTranscript()}
+              disabled={managedTranscriptLoading}
+              className="mt-3 h-8 rounded px-3 text-xs"
+              style={{ border: '1px solid var(--border-bright)', background: 'var(--accent-dim)', color: 'var(--text)' }}
+            >
+              {managedTranscriptLoading ? 'Loading transcript…' : 'View managed agent transcript'}
+            </button>
+          )}
+          {managedTranscriptError && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{managedTranscriptError}</div>}
+          {managedTranscript && (
+            <section className="mt-3 grid gap-2" aria-label="Managed agent transcript">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <strong>{managedTranscript.title}</strong>
+                <span className="flex items-center gap-2">
+				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
+				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.executionCapability}</span>
+                  {managedTranscript.status === 'interrupted' && (
+                    <button
+                      type="button"
+                      onClick={() => void resumeManagedRun()}
+                      disabled={managedResumeMessage === 'Resuming…'}
+                      className="h-7 rounded px-2"
+                      style={{ border: '1px solid var(--border-bright)', background: 'var(--accent-dim)', color: 'var(--text)' }}
+                    >Resume as fresh run</button>
+                  )}
+                </span>
+              </div>
+              {managedResumeMessage && <div role="status" className="text-xs" style={{ color: managedResumeMessage.startsWith('Failed') ? 'var(--red)' : 'var(--text-2)' }}>{managedResumeMessage}</div>}
+              {managedTranscript.messages.length === 0 ? (
+                <div className="text-xs" style={{ color: 'var(--text-3)' }}>No persisted messages yet.</div>
+              ) : managedTranscript.messages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className="rounded border p-2 text-xs" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+                  <div className="mb-1 font-semibold capitalize" style={{ color: 'var(--text-2)' }}>{message.role}</div>
+                  {message.thoughts && <div className="mb-2 whitespace-pre-wrap" style={{ color: 'var(--text-3)' }}>{message.thoughts}</div>}
+                  <div className="whitespace-pre-wrap">{message.content}</div>
+                </div>
+              ))}
+            </section>
+          )}
         </div>
       </section>
     </div>,

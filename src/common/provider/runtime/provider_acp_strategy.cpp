@@ -38,6 +38,13 @@ void IProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, cons
 	if (agent_capabilities.is_object())
 	{
 		session.load_session_supported = JsonBooleanValueOr(agent_capabilities, "loadSession", false);
+		const nlohmann::json session_capabilities = JsonObjectValue(agent_capabilities, "sessionCapabilities");
+		session.resume_session_supported = session_capabilities.is_object() &&
+		                                   session_capabilities.contains("resume") &&
+		                                   session_capabilities["resume"].is_object();
+		const nlohmann::json mcp_capabilities = JsonObjectValue(agent_capabilities, "mcpCapabilities");
+		session.mcp_http_supported = JsonBooleanValueOr(mcp_capabilities, "http", false);
+		session.mcp_sse_supported = JsonBooleanValueOr(mcp_capabilities, "sse", false);
 	}
 }
 
@@ -47,10 +54,10 @@ nlohmann::json IProviderRuntime::OnAcpBuildSetupRequest(int request_id, const Ch
 	if (can_load && !uam::strings::IsBlank(chat.native_session_id))
 	{
 		out_method = uam::acp_methods::kSessionLoad;
-		return BuildLoadSessionRequest(request_id, chat.native_session_id, cwd);
+		return BuildLoadSessionRequest(request_id, chat.native_session_id, cwd, &chat);
 	}
 	out_method = uam::acp_methods::kSessionNew;
-	return BuildNewSessionRequest(request_id, cwd);
+	return BuildNewSessionRequest(request_id, cwd, &chat);
 }
 
 std::string IProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const

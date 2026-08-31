@@ -1,6 +1,7 @@
 #include "native_session_link_service.h"
 
 #include "common/paths/app_paths.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/parse_utils.h"
@@ -326,7 +327,7 @@ std::string NativeSessionLinkService::RealNativeSessionId(const ChatSession& cha
 
 std::optional<std::string> NativeSessionLinkService::MatchNativeSessionIdForLocalDraft(const ChatSession& local_chat, const std::vector<ChatSession>& native_chats, const std::unordered_set<std::string>& blocked_ids) const
 {
-	if (!IsLocalDraftChatId(local_chat.id))
+	if (!uam::paths::IsControllerLocalWorkspace(local_chat) || !IsLocalDraftChatId(local_chat.id))
 	{
 		return std::nullopt;
 	}

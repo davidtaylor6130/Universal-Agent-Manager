@@ -73,6 +73,19 @@ describe('providerMetadata', () => {
     }
     expect(providerMetadataForId(COPILOT_CLI_PROVIDER_ID).capabilities.reasoningOptions.map((option) => option.id))
       .toContain('max')
+
+    for (const id of [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]) {
+      expect(providerMetadataForId(id).capabilities).toMatchObject({
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+      })
+    }
+    expect(providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).capabilities).toMatchObject({
+      hasAcceptEditsMode: false,
+      structuredPermissionControl: 'provider',
+      terminalPermissionControl: 'provider',
+    })
   })
 
   it('normalization aliases resolve to the same canonical ids in both directions', () => {

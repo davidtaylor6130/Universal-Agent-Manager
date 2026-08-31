@@ -52,10 +52,18 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 	{
 		if (const nlohmann::json* config_options = uam::nlohmann_json::FindArrayField(update, "configOptions"))
 		{
+			(void)UpdateAcpConfigOptions(session, *config_options);
 			(void)UpdateCopilotReasoningFromConfigOptions(session, chat, *config_options);
+			if (session.config_option_change_request_id != 0)
+			{
+				const auto confirmed = std::ranges::find_if(session.available_config_options, [&](const AcpConfigOptionState& option) {
+					return option.id == session.config_option_change_id && option.current_value == session.config_option_change_requested_value;
+				});
+				if (confirmed != session.available_config_options.end()) ClearAcpConfigOptionChangeRequest(session);
+			}
 			session.awaiting_model_config_options = false;
 			(void)ReconcileCopilotReasoningEffort(app, session, chat);
-			(void)SendQueuedPromptIfReady(session, chat);
+			(void)SendQueuedPromptIfReady(app, session, chat);
 		}
 		return;
 	}

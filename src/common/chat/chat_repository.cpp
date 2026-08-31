@@ -14,6 +14,7 @@
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <limits>
@@ -51,7 +52,10 @@ namespace
 	constexpr std::string_view kMessageEstimatedCostUsdField = "estimated_cost_usd";
 	constexpr std::string_view kMessageTimeToFirstTokenMsField = "time_to_first_token_ms";
 	constexpr std::string_view kMessageProcessingTimeMsField = "processing_time_ms";
+	constexpr std::string_view kMessageCheckpointShaField = "checkpoint_sha";
+	constexpr std::string_view kMessageCheckpointParentShaField = "checkpoint_parent_sha";
 	constexpr std::string_view kMessageInterruptedField = "interrupted";
+	constexpr std::string_view kMessagePrioritySteerField = "priority_steer";
 	constexpr std::string_view kMessageThoughtsField = "thoughts";
 	constexpr std::string_view kMessagePlanSummaryField = "plan_summary";
 	constexpr std::string_view kMessagePlanEntriesField = "plan_entries";
@@ -79,8 +83,10 @@ namespace
 	constexpr std::string_view kMessageBlockRequestIdField = "request_id";
 
 	constexpr std::string_view kChatIdField = "id";
+	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
 	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
 	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
@@ -98,12 +104,22 @@ namespace
 	constexpr std::string_view kChatWorkspaceBaseRefField = "workspace_base_ref";
 	constexpr std::string_view kChatWorkspaceBranchNameField = "workspace_branch_name";
 	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
+	constexpr std::string_view kChatImportedReadOnlyField = "imported_read_only";
 	constexpr std::string_view kChatApprovalModeField = "approval_mode";
+	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
+	constexpr std::string_view kChatAgentRunIdField = "agent_run_id";
+	constexpr std::string_view kChatGoalOwnerChatIdField = "goal_owner_chat_id";
+	constexpr std::string_view kChatGoalIterationGoalIdField = "goal_iteration_goal_id";
+	constexpr std::string_view kChatGoalIterationTurnKindField = "goal_iteration_turn_kind";
+	constexpr std::string_view kChatGoalIterationRepairAttemptsField = "goal_iteration_repair_attempts";
 	constexpr std::string_view kChatAutoApproveCommandsField = "auto_approve_commands";
 	constexpr std::string_view kChatCommandSafetyTierField = "commandSafetyTier";
+	constexpr std::string_view kChatComputerUseBackendField = "computer_use_backend";
 	constexpr std::string_view kChatModelIdField = "model_id";
+	constexpr std::string_view kChatReviewerModelIdField = "reviewer_model_id";
 	constexpr std::string_view kChatReasoningEffortField = "reasoning_effort";
 	constexpr std::string_view kChatServiceTierField = "service_tier";
+	constexpr std::string_view kChatServiceTierExplicitField = "service_tier_explicit";
 	constexpr std::string_view kChatExtraFlagsField = "extra_flags";
 	constexpr std::string_view kChatMemoryLevelField = "memory_level";
 	constexpr std::string_view kChatMemoryEnabledField = "memory_enabled";
@@ -182,6 +198,15 @@ namespace
 		return static_cast<int>(bounded);
 	}
 
+	int64_t NonNegativeInt64FieldOrZero(const JsonValue* value)
+	{
+		// JsonValue stores numbers as double, so 2^53-1 is the largest exact integer contract.
+		constexpr double kMaxExactJsonInteger = 9'007'199'254'740'991.0;
+		const double parsed = JsonNumberOrDefault(value, 0.0);
+		const double bounded = std::clamp(parsed, 0.0, kMaxExactJsonInteger);
+		return static_cast<int64_t>(bounded);
+	}
+
 	int IntFieldAtLeastOrDefault(const JsonValue* value, int minimum, int fallback)
 	{
 		const double parsed = JsonNumberOrDefault(value, static_cast<double>(fallback));
@@ -241,6 +266,12 @@ namespace
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
+		if (msg.priority_steer)
+		{
+			uam::json::SetBool(obj, kMessagePrioritySteerField, true);
+		}
+		SetNonEmptyString(obj, kMessageCheckpointShaField, msg.checkpoint_sha);
+		SetNonEmptyString(obj, kMessageCheckpointParentShaField, msg.checkpoint_parent_sha);
 		SetNonEmptyString(obj, kMessageThoughtsField, msg.thoughts);
 		SetNonEmptyString(obj, kMessagePlanSummaryField, msg.plan_summary);
 		if (!msg.plan_entries.empty())
@@ -350,6 +381,9 @@ namespace
 		msg.time_to_first_token_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageTimeToFirstTokenMsField));
 		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
+		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
+		msg.checkpoint_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointShaField));
+		msg.checkpoint_parent_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointParentShaField));
 		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
 		msg.plan_summary = JsonStringOrEmpty(obj.Find(kMessagePlanSummaryField));
 
@@ -562,7 +596,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -611,7 +645,8 @@ namespace
 
 	bool ChatIdentityFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return lhs.id == rhs.id && lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id;
+		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
+		       lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id;
 	}
 
 	bool ChatBranchFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -649,16 +684,25 @@ namespace
 			return false;
 		}
 
-		return lhs.workspace_branch_name == rhs.workspace_branch_name && lhs.workspace_worktree_directory == rhs.workspace_worktree_directory;
+		return lhs.workspace_branch_name == rhs.workspace_branch_name &&
+		       lhs.workspace_worktree_directory == rhs.workspace_worktree_directory &&
+		       lhs.imported_read_only == rhs.imported_read_only;
 	}
 
 	bool ChatProviderFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.approval_mode != rhs.approval_mode || lhs.auto_approve_commands != rhs.auto_approve_commands || lhs.command_safety_tier != rhs.command_safety_tier || lhs.model_id != rhs.model_id || lhs.small_model_mode != rhs.small_model_mode)
+		if (lhs.approval_mode != rhs.approval_mode || lhs.uam_agent_id != rhs.uam_agent_id ||
+		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
+		    lhs.computer_use_backend != rhs.computer_use_backend ||
+		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
+		    lhs.goal_iteration_goal_id != rhs.goal_iteration_goal_id ||
+		    lhs.goal_iteration_turn_kind != rhs.goal_iteration_turn_kind ||
+		    lhs.goal_iteration_repair_attempts != rhs.goal_iteration_repair_attempts ||
+		    lhs.model_id != rhs.model_id || lhs.reviewer_model_id != rhs.reviewer_model_id || lhs.small_model_mode != rhs.small_model_mode)
 		{
 			return false;
 		}
-		if (lhs.reasoning_effort != rhs.reasoning_effort || lhs.service_tier != rhs.service_tier)
+		if (lhs.reasoning_effort != rhs.reasoning_effort || lhs.service_tier != rhs.service_tier || lhs.service_tier_explicit != rhs.service_tier_explicit)
 		{
 			return false;
 		}
@@ -754,8 +798,12 @@ namespace
 			return {std::nullopt, "contains an unsafe chat id"};
 		}
 
+		chat.execution_host_id = uam::strings::NonEmptyOrFallback(
+		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		chat.remote_turn_reconnect_pending = JsonBoolOrDefault(
+		    root.Find(kChatRemoteTurnReconnectPendingField), false);
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
@@ -774,13 +822,23 @@ namespace
 		chat.workspace_base_ref = JsonStringOrEmpty(root.Find(kChatWorkspaceBaseRefField));
 		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
+		chat.imported_read_only = JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
-		chat.auto_approve_commands = JsonBoolOrDefault(root.Find(kChatAutoApproveCommandsField), false);
-		chat.command_safety_tier = uam::command_safety::NormalizeTier(JsonStringOrEmpty(root.Find(kChatCommandSafetyTierField)));
+		chat.uam_agent_id = uam::strings::NonEmptyOrFallback(JsonStringOrEmpty(root.Find(kChatUamAgentIdField)), "build");
+		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
+		chat.goal_owner_chat_id = JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField));
+		chat.goal_iteration_goal_id = JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField));
+		chat.goal_iteration_turn_kind = JsonStringOrEmpty(root.Find(kChatGoalIterationTurnKindField));
+		chat.goal_iteration_repair_attempts = IntFieldAtLeastOrDefault(root.Find(kChatGoalIterationRepairAttemptsField), 0, 0);
+		const bool legacy_auto_approve_commands = JsonBoolOrDefault(root.Find(kChatAutoApproveCommandsField), false);
+		const std::string persisted_command_safety_tier = JsonStringOrEmpty(root.Find(kChatCommandSafetyTierField));
+		chat.command_safety_tier = uam::command_safety::NormalizeTier(
+		    persisted_command_safety_tier.empty() && legacy_auto_approve_commands ? "yolo" : persisted_command_safety_tier);
+		chat.computer_use_backend = uam::computer_use::BackendPreference(
+		    JsonStringOrEmpty(root.Find(kChatComputerUseBackendField)));
 		if (chat.approval_mode == uam::approval_modes::kLegacyYoloApprovalMode)
 		{
 			chat.approval_mode = uam::approval_modes::kDefaultApprovalMode;
-			chat.auto_approve_commands = true;
 			chat.command_safety_tier = "yolo";
 		}
 		else if (chat.approval_mode == uam::approval_modes::kAcceptEditsApprovalMode)
@@ -789,8 +847,10 @@ namespace
 			chat.command_safety_tier = uam::approval_modes::kAcceptEditsApprovalMode;
 		}
 		chat.model_id = JsonStringOrEmpty(root.Find(kChatModelIdField));
+		chat.reviewer_model_id = JsonStringOrEmpty(root.Find(kChatReviewerModelIdField));
 		chat.reasoning_effort = JsonStringOrEmpty(root.Find(kChatReasoningEffortField));
 		chat.service_tier = JsonStringOrEmpty(root.Find(kChatServiceTierField));
+		chat.service_tier_explicit = JsonBoolOrDefault(root.Find(kChatServiceTierExplicitField), !chat.service_tier.empty());
 		chat.extra_flags = JsonStringOrEmpty(root.Find(kChatExtraFlagsField));
 		chat.memory_enabled = JsonBoolOrDefault(root.Find(kChatMemoryEnabledField), true);
 		chat.memory_level = uam::memory_levels::Normalize(JsonStringOrEmpty(root.Find(kChatMemoryLevelField)), chat.memory_enabled);
@@ -798,6 +858,7 @@ namespace
 		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
 		chat.small_model_mode = JsonBoolOrDefault(root.Find(kChatSmallModelModeField), false);
+		chat.uam_control_enabled = JsonBoolOrDefault(root.Find("uamControlEnabled"), false);
 
 		// Load goals array
 		if (const JsonValue* goals_arr = uam::json::ArrayOrNull(root.Find("goals")); goals_arr != nullptr)
@@ -811,14 +872,20 @@ namespace
 				goal.id = JsonStringOrEmpty(goal_obj.Find("id"));
 				goal.objective = JsonStringOrEmpty(goal_obj.Find("objective"));
 				goal.status = GoalStatusFromString(JsonStringOrEmpty(goal_obj.Find("status")));
-				goal.token_budget = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokenBudget")));
-				goal.tokens_used = static_cast<int64_t>(NonNegativeIntFieldOrZero(goal_obj.Find("tokensUsed")));
+				goal.token_budget = NonNegativeInt64FieldOrZero(goal_obj.Find("tokenBudget"));
+				goal.tokens_used = NonNegativeInt64FieldOrZero(goal_obj.Find("tokensUsed"));
 				goal.blocked_turn_count = NonNegativeIntFieldOrZero(goal_obj.Find("blockedTurnCount"));
 				goal.last_blocker = JsonStringOrEmpty(goal_obj.Find("lastBlocker"));
+				goal.last_blocker_kind = JsonStringOrEmpty(goal_obj.Find("lastBlockerKind"));
 				goal.last_diagnostic = JsonStringOrEmpty(goal_obj.Find("lastDiagnostic"));
 				goal.completed_items = JsonStringArrayOrEmpty(goal_obj.Find("completedItems"));
 				goal.remaining_items = JsonStringArrayOrEmpty(goal_obj.Find("remainingItems"));
 				goal.current_step = JsonStringOrEmpty(goal_obj.Find("currentStep"));
+				if (goal.status == GoalStatus::Complete)
+				{
+					goal.remaining_items.clear();
+					goal.current_step.clear();
+				}
 				goal.last_verification = JsonStringOrEmpty(goal_obj.Find("lastVerification"));
 				goal.last_next_prompt = JsonStringOrEmpty(goal_obj.Find("lastNextPrompt"));
 				goal.same_next_prompt_count = NonNegativeIntFieldOrZero(goal_obj.Find("sameNextPromptCount"));
@@ -829,7 +896,33 @@ namespace
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
 				goal.execution_owner = JsonStringOrEmpty(goal_obj.Find("executionOwner")) == "provider" ? "provider" : "uam";
 				goal.provider_command = goal.execution_owner == "provider" ? JsonStringOrEmpty(goal_obj.Find("providerCommand")) : "";
+				goal.worker_model_id = JsonStringOrEmpty(goal_obj.Find("workerModelId"));
+				goal.reviewer_model_id = JsonStringOrEmpty(goal_obj.Find("reviewerModelId"));
+				goal.creator = JsonStringOrEmpty(goal_obj.Find("creator")) == "model" ? "model" : "user";
+				goal.creator_provider_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorProviderId")) : "";
+				goal.creator_agent_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorAgentId")) : "";
+				goal.creator_run_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorRunId")) : "";
+				goal.creator_request_key_hash = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorRequestKeyHash")) : "";
 				chat.goals.push_back(std::move(goal));
+			}
+		}
+		if (const JsonValue* audit = uam::json::ArrayOrNull(root.Find("uamControlAudit")); audit != nullptr)
+		{
+			const std::size_t start = audit->array_value.size() > 64 ? audit->array_value.size() - 64 : 0;
+			for (std::size_t index = start; index < audit->array_value.size(); ++index)
+			{
+				const JsonValue& value = audit->array_value[index];
+				if (value.type != JsonValue::Type::Object) continue;
+				chat.uam_control_audit.push_back({
+				    .request_id = JsonStringOrEmpty(value.Find("requestId")),
+				    .method = JsonStringOrEmpty(value.Find("method")),
+				    .result = JsonStringOrEmpty(value.Find("result")),
+				    .reason = JsonStringOrEmpty(value.Find("reason")),
+				    .provider_id = JsonStringOrEmpty(value.Find("providerId")),
+				    .agent_id = JsonStringOrEmpty(value.Find("agentId")),
+				    .run_id = JsonStringOrEmpty(value.Find("runId")),
+				    .created_at = JsonStringOrEmpty(value.Find("createdAt")),
+				});
 			}
 		}
 
@@ -843,7 +936,12 @@ namespace
 			chat.branch_root_chat_id = chat.id;
 		}
 
-		const JsonValue* msgs = uam::json::ArrayOrNull(root.Find(kChatMessagesField));
+		const JsonValue* messages_value = root.Find(kChatMessagesField);
+		if (messages_value != nullptr && messages_value->type != JsonValue::Type::Array)
+		{
+			return {std::nullopt, "contains a non-array messages field"};
+		}
+		const JsonValue* msgs = uam::json::ArrayOrNull(messages_value);
 		if (msgs != nullptr)
 		{
 			chat.persisted_message_count = msgs->array_value.size();
@@ -885,6 +983,60 @@ namespace
 		}
 
 		return {std::move(chat), ""};
+	}
+
+	enum class UnloadedTranscriptSource
+	{
+		None,
+		Primary,
+		Backup,
+		Unrecoverable,
+	};
+
+	struct UnloadedTranscriptSelection
+	{
+		UnloadedTranscriptSource source = UnloadedTranscriptSource::None;
+		std::optional<ChatSession> chat;
+	};
+
+	bool HasTranscriptForUnloadedSave(const ChatSession& chat, std::size_t expected_message_count)
+	{
+		return expected_message_count == 0 || !chat.messages.empty();
+	}
+
+	UnloadedTranscriptSelection SelectTranscriptForUnloadedSave(
+	    const fs::path& primary_path,
+	    std::string_view expected_chat_id,
+	    std::size_t expected_message_count)
+	{
+		const bool primary_exists = uam::paths::PathExistsNoThrow(primary_path);
+		if (primary_exists)
+		{
+			LoadChatResult primary = ParseLocalChatFile(primary_path, true);
+			if (primary.chat && primary.chat->id == expected_chat_id &&
+			    HasTranscriptForUnloadedSave(*primary.chat, expected_message_count))
+			{
+				return {UnloadedTranscriptSource::Primary, std::move(primary.chat)};
+			}
+		}
+
+		const fs::path backup_path = uam::io::MakeBackupPath(primary_path);
+		const bool backup_exists = uam::paths::PathExistsNoThrow(backup_path);
+		if (backup_exists)
+		{
+			LoadChatResult backup = ParseLocalChatFile(backup_path, true);
+			if (backup.chat && backup.chat->id == expected_chat_id &&
+			    HasTranscriptForUnloadedSave(*backup.chat, expected_message_count))
+			{
+				return {UnloadedTranscriptSource::Backup, std::move(backup.chat)};
+			}
+		}
+
+		if (primary_exists || backup_exists || expected_message_count > 0)
+		{
+			return {UnloadedTranscriptSource::Unrecoverable, std::nullopt};
+		}
+		return {};
 	}
 
 	void AssignStringView(std::string& target, std::string_view value)
@@ -964,7 +1116,7 @@ namespace
 
 } // namespace
 
-bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat)
+bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists)
 {
 	static std::mutex save_mutex;
 	std::lock_guard<std::mutex> lock(save_mutex);
@@ -975,6 +1127,12 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	}
 
 	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
+	if (fail_if_exists &&
+	    (uam::paths::PathExistsNoThrow(file_path) ||
+	     uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(file_path))))
+	{
+		return false;
+	}
 
 	std::error_code ec;
 	if (!uam::paths::CreateDirectoriesNoThrow(file_path.parent_path(), &ec))
@@ -984,8 +1142,12 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 
 	JsonValue root = uam::json::Object();
 	uam::json::SetString(root, kChatIdField, chat.id);
+	uam::json::SetString(root, kChatExecutionHostIdField,
+	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	uam::json::SetBool(root, kChatRemoteTurnReconnectPendingField,
+	                   chat.remote_turn_reconnect_pending);
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
@@ -1007,12 +1169,22 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetString(root, kChatWorkspaceBaseRefField, chat.workspace_base_ref);
 	uam::json::SetString(root, kChatWorkspaceBranchNameField, chat.workspace_branch_name);
 	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
+	uam::json::SetBool(root, kChatImportedReadOnlyField, chat.imported_read_only);
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
-	uam::json::SetBool(root, kChatAutoApproveCommandsField, chat.auto_approve_commands);
+	uam::json::SetString(root, kChatUamAgentIdField, uam::strings::NonEmptyOrFallback(chat.uam_agent_id, "build"));
+	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
+	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
+	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
+	uam::json::SetString(root, kChatGoalIterationTurnKindField, chat.goal_iteration_turn_kind);
+	uam::json::SetNumber(root, kChatGoalIterationRepairAttemptsField, static_cast<double>(chat.goal_iteration_repair_attempts));
 	uam::json::SetString(root, kChatCommandSafetyTierField, uam::command_safety::NormalizeTier(chat.command_safety_tier));
+	uam::json::SetString(root, kChatComputerUseBackendField,
+	    uam::computer_use::BackendPreference(chat.computer_use_backend));
 	uam::json::SetString(root, kChatModelIdField, chat.model_id);
+	uam::json::SetString(root, kChatReviewerModelIdField, chat.reviewer_model_id);
 	uam::json::SetString(root, kChatReasoningEffortField, chat.reasoning_effort);
 	uam::json::SetString(root, kChatServiceTierField, chat.service_tier);
+	uam::json::SetBool(root, kChatServiceTierExplicitField, chat.service_tier_explicit);
 	uam::json::SetString(root, kChatExtraFlagsField, chat.extra_flags);
 	const std::string memory_level = uam::memory_levels::Normalize(chat.memory_level, chat.memory_enabled);
 	uam::json::SetString(root, kChatMemoryLevelField, memory_level);
@@ -1020,7 +1192,11 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	uam::json::SetNumber(root, kChatMemoryLastProcessedMessageCountField, static_cast<double>(chat.memory_last_processed_message_count));
 	uam::json::SetString(root, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 	uam::json::SetBool(root, kChatSmallModelModeField, chat.small_model_mode);
+	uam::json::SetBool(root, "uamControlEnabled", chat.uam_control_enabled);
 
+	std::size_t persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	std::string persisted_messages_digest = chat.persisted_messages_digest;
+	bool preserve_existing_primary_as_backup = true;
 	if (chat.messages_loaded && !chat.messages.empty())
 	{
 		JsonValue msgs = uam::json::Array();
@@ -1032,14 +1208,23 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	}
 	else if (!chat.messages_loaded)
 	{
-		const std::string existing_text = uam::io::ReadTextFile(file_path);
-		const auto existing_root = existing_text.empty() ? std::optional<JsonValue>{} : ParseJson(existing_text);
-		if (existing_root && existing_root->type == JsonValue::Type::Object)
+		UnloadedTranscriptSelection transcript =
+		    SelectTranscriptForUnloadedSave(file_path, chat.id, chat.persisted_message_count);
+		if (transcript.source == UnloadedTranscriptSource::Unrecoverable)
 		{
-			if (const JsonValue* existing_messages = existing_root->Find(kChatMessagesField); existing_messages != nullptr && existing_messages->type == JsonValue::Type::Array)
+			return false;
+		}
+		if (transcript.chat)
+		{
+			JsonValue msgs = uam::json::Array();
+			for (const Message& message : transcript.chat->messages)
 			{
-				uam::json::SetValue(root, kChatMessagesField, *existing_messages);
+				uam::json::PushValue(msgs, MessageToJson(message));
 			}
+			uam::json::SetValue(root, kChatMessagesField, std::move(msgs));
+			persisted_message_count = transcript.chat->messages.size();
+			persisted_messages_digest = SummaryDigest(chat, persisted_message_count);
+			preserve_existing_primary_as_backup = transcript.source != UnloadedTranscriptSource::Backup;
 		}
 	}
 
@@ -1057,6 +1242,7 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetNumber(goal_obj, "tokensUsed", static_cast<double>(goal.tokens_used));
 			uam::json::SetNumber(goal_obj, "blockedTurnCount", static_cast<double>(goal.blocked_turn_count));
 			uam::json::SetString(goal_obj, "lastBlocker", goal.last_blocker);
+			uam::json::SetString(goal_obj, "lastBlockerKind", goal.last_blocker_kind);
 			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
@@ -1071,9 +1257,36 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
 			uam::json::SetString(goal_obj, "executionOwner", goal.execution_owner == "provider" ? "provider" : "uam");
 			uam::json::SetString(goal_obj, "providerCommand", goal.execution_owner == "provider" ? goal.provider_command : "");
+			uam::json::SetString(goal_obj, "workerModelId", goal.worker_model_id);
+			uam::json::SetString(goal_obj, "reviewerModelId", goal.reviewer_model_id);
+			uam::json::SetString(goal_obj, "creator", goal.creator == "model" ? "model" : "user");
+			uam::json::SetString(goal_obj, "creatorProviderId", goal.creator == "model" ? goal.creator_provider_id : "");
+			uam::json::SetString(goal_obj, "creatorAgentId", goal.creator == "model" ? goal.creator_agent_id : "");
+			uam::json::SetString(goal_obj, "creatorRunId", goal.creator == "model" ? goal.creator_run_id : "");
+			uam::json::SetString(goal_obj, "creatorRequestKeyHash", goal.creator == "model" ? goal.creator_request_key_hash : "");
 			uam::json::PushValue(goals_arr, std::move(goal_obj));
 		}
 		uam::json::SetValue(root, "goals", std::move(goals_arr));
+	}
+	if (!chat.uam_control_audit.empty())
+	{
+		JsonValue audit = uam::json::Array();
+		const std::size_t start = chat.uam_control_audit.size() > 64 ? chat.uam_control_audit.size() - 64 : 0;
+		for (std::size_t index = start; index < chat.uam_control_audit.size(); ++index)
+		{
+			const UamControlAuditRecord& record = chat.uam_control_audit[index];
+			JsonValue value = uam::json::Object();
+			uam::json::SetString(value, "requestId", record.request_id);
+			uam::json::SetString(value, "method", record.method);
+			uam::json::SetString(value, "result", record.result);
+			uam::json::SetString(value, "reason", record.reason);
+			uam::json::SetString(value, "providerId", record.provider_id);
+			uam::json::SetString(value, "agentId", record.agent_id);
+			uam::json::SetString(value, "runId", record.run_id);
+			uam::json::SetString(value, "createdAt", record.created_at);
+			uam::json::PushValue(audit, std::move(value));
+		}
+		uam::json::SetValue(root, "uamControlAudit", std::move(audit));
 	}
 
 	// Serialize active_goal_id
@@ -1083,19 +1296,31 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	}
 
 	const std::string json = SerializeJson(root);
-	if (!uam::io::WriteTextFile(file_path, json))
+	const bool chat_saved = preserve_existing_primary_as_backup
+	    ? uam::io::WriteTextFileWithBackup(file_path, json)
+	    : uam::io::WriteTextFile(file_path, json);
+	if (!chat_saved)
 	{
 		return false;
 	}
 
 	root.object_value.erase(std::string(kChatMessagesField));
-	const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
-	uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(message_count));
+	uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(persisted_message_count));
 	uam::json::SetString(root, kChatPersistedMessagesDigestField,
-	                     chat.persisted_messages_digest.empty() ? SummaryDigest(chat, message_count) : chat.persisted_messages_digest);
+	                     persisted_messages_digest.empty() ? SummaryDigest(chat, persisted_message_count) : persisted_messages_digest);
 	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
 	(void)uam::io::WriteTextFile(AppPaths::UamChatSummaryFilePath(data_root, chat.id), SerializeJson(root));
 	return true;
+}
+
+bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat)
+{
+	return SaveChatImpl(data_root, chat, false);
+}
+
+bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat)
+{
+	return SaveChatImpl(data_root, chat, true);
 }
 
 ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id)
@@ -1107,13 +1332,15 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 		return result;
 	}
 
-	uam::paths::RemoveAllNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
+	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
 	const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
 	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
 	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
+	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
+	    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
 	return result;
 }
 
@@ -1245,6 +1472,7 @@ namespace
 
 	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
 	{
+		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
 		hydrated.pinned = summary.pinned;
@@ -1254,12 +1482,30 @@ namespace
 		hydrated.workspace_base_ref = summary.workspace_base_ref;
 		hydrated.workspace_branch_name = summary.workspace_branch_name;
 		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
+		hydrated.imported_read_only = summary.imported_read_only;
 		hydrated.approval_mode = summary.approval_mode;
-		hydrated.auto_approve_commands = summary.auto_approve_commands;
+		hydrated.uam_agent_id = summary.uam_agent_id;
+		hydrated.agent_run_id = summary.agent_run_id;
+		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
+		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
+		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
+		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;
+		hydrated.remote_turn_reconnect_pending = summary.remote_turn_reconnect_pending;
+		hydrated.active_goal_id = summary.active_goal_id;
+		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;
+		hydrated.computer_use_enabled = summary.computer_use_enabled;
+		hydrated.computer_use_backend = summary.computer_use_backend;
+		hydrated.computer_use_target_kind = summary.computer_use_target_kind;
+		hydrated.computer_use_target_id = summary.computer_use_target_id;
+		hydrated.computer_use_target_process_id = summary.computer_use_target_process_id;
+		hydrated.computer_use_target_title = summary.computer_use_target_title;
+		hydrated.computer_use_target_input_mode = summary.computer_use_target_input_mode;
 		hydrated.model_id = summary.model_id;
+		hydrated.reviewer_model_id = summary.reviewer_model_id;
 		hydrated.reasoning_effort = summary.reasoning_effort;
 		hydrated.service_tier = summary.service_tier;
+		hydrated.service_tier_explicit = summary.service_tier_explicit;
 		hydrated.extra_flags = summary.extra_flags;
 		hydrated.memory_level = summary.memory_level;
 		hydrated.memory_enabled = summary.memory_enabled;
@@ -1391,16 +1637,6 @@ namespace
 				if (ChatIdWasMigrated(migrated_chat_ids, primary.id))
 				{
 					continue;
-				}
-
-				const fs::path backup_path = uam::io::MakeBackupPath(entry.path());
-				if (uam::paths::PathExistsNoThrow(backup_path))
-				{
-					const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
-					if (backup_chat.chat && !ChatsEquivalentForRecovery(primary, *backup_chat.chat))
-					{
-						AppendWarning(warning_out, "Recovered chat file " + entry.path().string() + " differs from backup " + backup_path.string() + ".");
-					}
 				}
 
 				chats.push_back(primary);

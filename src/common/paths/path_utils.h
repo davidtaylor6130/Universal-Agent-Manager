@@ -6,6 +6,10 @@
 #include <string>
 #include <system_error>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace uam::paths
 {
 	inline void StoreError(std::error_code* error_out, const std::error_code& error)
@@ -78,6 +82,47 @@ namespace uam::paths
 	{
 		std::error_code error;
 		std::filesystem::remove_all(path, error);
+		StoreError(error_out, error);
+		return !error;
+	}
+
+	inline bool IsLinkOrReparsePointNoThrow(const std::filesystem::path& path)
+	{
+		std::error_code error;
+		if (std::filesystem::is_symlink(std::filesystem::symlink_status(path, error))) return true;
+#if defined(_WIN32)
+		const DWORD attributes = GetFileAttributesW(path.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+		return false;
+#endif
+	}
+
+	inline bool RemoveTreeWithoutFollowingLinksNoThrow(const std::filesystem::path& path, std::error_code* error_out = nullptr, int depth = 0)
+	{
+		std::error_code error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+		if (error == std::errc::no_such_file_or_directory)
+		{
+			StoreError(error_out, {});
+			return true;
+		}
+		if (error || depth > 128)
+		{
+			StoreError(error_out, error ? error : std::make_error_code(std::errc::too_many_symbolic_link_levels));
+			return false;
+		}
+		if (IsLinkOrReparsePointNoThrow(path) || !std::filesystem::is_directory(status))
+		{
+			std::filesystem::remove(path, error);
+			StoreError(error_out, error);
+			return !error;
+		}
+		for (std::filesystem::directory_iterator it(path, error), end; !error && it != end; it.increment(error))
+		{
+			if (!RemoveTreeWithoutFollowingLinksNoThrow(it->path(), &error, depth + 1)) break;
+		}
+		if (!error) std::filesystem::remove(path, error);
 		StoreError(error_out, error);
 		return !error;
 	}

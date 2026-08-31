@@ -86,24 +86,46 @@ std::string NormalizeGoalNextPrompt(const std::string& prompt)
 
 bool GoalBlockerStopsImmediately(const std::string& blocker_kind)
 {
-	return blocker_kind == "needs_user" || blocker_kind == "needs_external_state" || blocker_kind == "invalid_review";
+	return blocker_kind != "transient";
+}
+
+bool PreservesGoalPlan(const Goal& goal, const GoalService::ReviewDecision& decision)
+{
+	std::vector<std::string> existing = goal.completed_items;
+	existing.insert(existing.end(), goal.remaining_items.begin(), goal.remaining_items.end());
+	if (existing.empty()) return true;
+
+	std::vector<std::string> updated = decision.completed_items;
+	updated.insert(updated.end(), decision.remaining_items.begin(), decision.remaining_items.end());
+	if (existing != updated) return false;
+
+	return std::ranges::all_of(goal.completed_items, [&](const std::string& item)
+	{
+		return std::ranges::find(decision.completed_items, item) != decision.completed_items.end();
+	});
 }
 
 void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& decision)
 {
-	if (!decision.completed_items.empty())
+	if (decision.has_progress_update && PreservesGoalPlan(goal, decision))
 	{
 		goal.completed_items = decision.completed_items;
-	}
-	if (!decision.remaining_items.empty())
-	{
 		goal.remaining_items = decision.remaining_items;
-	}
-	if (!decision.current_step.empty())
-	{
 		goal.current_step = decision.current_step;
+		if (goal.remaining_items.empty())
+		{
+			goal.current_step.clear();
+		}
+		else if (std::ranges::find(goal.remaining_items, decision.current_step) != goal.remaining_items.end())
+		{
+			goal.current_step = decision.current_step;
+		}
+		else
+		{
+			goal.current_step = goal.remaining_items.front();
+		}
 	}
-	if (!decision.last_verification.empty())
+	if (decision.has_progress_update)
 	{
 		goal.last_verification = decision.last_verification;
 	}

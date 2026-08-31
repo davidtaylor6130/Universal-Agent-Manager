@@ -52,7 +52,9 @@ import type {
   EditorFileAssociation,
   MemoryActivity,
   MemoryWorkerBinding,
+  McpServerConfiguration,
   ProviderChatDefaults,
+  ProviderModelCatalog,
   ShellAction,
 } from './cpp/types'
 
@@ -115,13 +117,17 @@ function deserializeState(
     cliTranscriptBySessionId: Record<string, CliTranscript>
     cliBindingBySessionId: Record<string, CliBinding>
     acpBindingBySessionId: Record<string, AcpBinding>
+    providerModelCatalogs: ProviderModelCatalog[]
     cliDebugState: CppCliDebugState | null
     memoryEnabledDefault: boolean
     memoryLevelDefault: MemoryLevel
     memoryIdleDelaySeconds: number
     memoryRecallBudgetBytes: number
     goalMaxLoopIterations: number
+    acpSetupInactivityTimeoutSeconds: number
+    acpTurnOutputLimitMiB: number
     appVersion: string
+    runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
     updateChecksEnabled: boolean
@@ -129,21 +135,23 @@ function deserializeState(
     dismissedUpdateVersions: Record<string, string>
     memoryLastStatus: string
     memoryWorkerBindings: Record<string, MemoryWorkerBinding>
+    permissionReviewerProviderId: string
+    permissionReviewerModelId: string
     memoryActivity: MemoryActivity
     cliVersionManager: CliVersionManager
     markdownStoreDirectory: string
-    voiceInputMode: AppState['voiceInputMode']
-    voiceInputServerBaseUrl: string
-    voiceInputServerEndpoint: string
-    voiceInputServerModel: string
-    voiceInputApiKeyEnv: string
-    voiceInputCapabilities: AppState['voiceInputCapabilities']
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
+    mcpServers: McpServerConfiguration[]
+    executionHosts: AppState['executionHosts']
+    favoriteUamAgentIds: string[]
+    uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
+    uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
     shellActionNotification: string
+    statusLine: string
   }
 ) {
   // Build lookup maps for reference-identity preservation
@@ -262,6 +270,7 @@ function deserializeState(
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+				lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -274,6 +283,8 @@ function deserializeState(
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
 		executionOwner: cppGoal.executionOwner ?? 'uam',
 		providerCommand: cppGoal.providerCommand ?? '',
+		workerModelId: cppGoal.workerModelId ?? '',
+		reviewerModelId: cppGoal.reviewerModelId ?? '',
       }))
       goalsByChatId[chat.id] = goalObjects
     }
@@ -292,6 +303,7 @@ function deserializeState(
     theme: cpp.settings.theme,
     cliBindingBySessionId,
     acpBindingBySessionId,
+    providerModelCatalogs: cpp.providerModelCatalogs ?? existing.providerModelCatalogs,
     cliTranscriptBySessionId,
     cliDebugState,
     memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
@@ -299,7 +311,10 @@ function deserializeState(
     memoryIdleDelaySeconds: cpp.settings.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: cpp.settings.memoryRecallBudgetBytes,
     goalMaxLoopIterations: cpp.settings.goalMaxLoopIterations,
+    acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
+    acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
     appVersion: cpp.appVersion || existing.appVersion,
+    runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -307,21 +322,23 @@ function deserializeState(
     dismissedUpdateVersions: cpp.settings.dismissedUpdateVersions,
     memoryLastStatus: cpp.settings.memoryLastStatus,
     memoryWorkerBindings: cpp.settings.memoryWorkerBindings,
+    permissionReviewerProviderId: cpp.settings.permissionReviewerProviderId ?? '',
+    permissionReviewerModelId: cpp.settings.permissionReviewerModelId ?? '',
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
-    voiceInputMode: cpp.settings.voiceInputMode ?? 'system',
-    voiceInputServerBaseUrl: cpp.settings.voiceInputServerBaseUrl ?? '',
-    voiceInputServerEndpoint: cpp.settings.voiceInputServerEndpoint ?? '/v1/audio/transcriptions',
-    voiceInputServerModel: cpp.settings.voiceInputServerModel ?? 'whisper-1',
-    voiceInputApiKeyEnv: cpp.settings.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY',
-    voiceInputCapabilities: cpp.settings.voiceInputCapabilities ?? existing.voiceInputCapabilities,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
+    mcpServers: cpp.settings.mcpServers ?? [],
+    executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
+    favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
+    uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
+    uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
+    statusLine: cpp.statusLine ?? existing.statusLine,
   }
 }
 
@@ -420,6 +437,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
+				lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -432,6 +450,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
         executionOwner: cppGoal.executionOwner ?? 'uam',
         providerCommand: cppGoal.providerCommand ?? '',
+        workerModelId: cppGoal.workerModelId ?? '',
+        reviewerModelId: cppGoal.reviewerModelId ?? '',
       }))
     }
   }
@@ -457,6 +477,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
     providers,
+    providerModelCatalogs: patch.providerModelCatalogs ?? current.providerModelCatalogs,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
     theme: patch.settings?.theme ?? current.theme,
@@ -468,6 +489,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     memoryIdleDelaySeconds: patch.settings?.memoryIdleDelaySeconds ?? current.memoryIdleDelaySeconds,
     memoryRecallBudgetBytes: patch.settings?.memoryRecallBudgetBytes ?? current.memoryRecallBudgetBytes,
     goalMaxLoopIterations: patch.settings?.goalMaxLoopIterations ?? current.goalMaxLoopIterations,
+    acpSetupInactivityTimeoutSeconds: patch.settings?.acpSetupInactivityTimeoutSeconds ?? current.acpSetupInactivityTimeoutSeconds,
+    acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -475,21 +498,23 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     dismissedUpdateVersions: patch.settings?.dismissedUpdateVersions ?? current.dismissedUpdateVersions,
     memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
     memoryWorkerBindings: patch.settings?.memoryWorkerBindings ?? current.memoryWorkerBindings,
+    permissionReviewerProviderId: patch.settings?.permissionReviewerProviderId ?? current.permissionReviewerProviderId,
+    permissionReviewerModelId: patch.settings?.permissionReviewerModelId ?? current.permissionReviewerModelId,
     memoryActivity: patch.memoryActivity ?? current.memoryActivity,
     cliVersionManager: patch.cliVersionManager ?? current.cliVersionManager,
     markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
-    voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
-    voiceInputServerBaseUrl: patch.settings?.voiceInputServerBaseUrl ?? current.voiceInputServerBaseUrl,
-    voiceInputServerEndpoint: patch.settings?.voiceInputServerEndpoint ?? current.voiceInputServerEndpoint,
-    voiceInputServerModel: patch.settings?.voiceInputServerModel ?? current.voiceInputServerModel,
-    voiceInputApiKeyEnv: patch.settings?.voiceInputApiKeyEnv ?? current.voiceInputApiKeyEnv,
-    voiceInputCapabilities: patch.settings?.voiceInputCapabilities ?? current.voiceInputCapabilities,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
+    mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
+    executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
+    favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
+    uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
+    uamAgentsBySessionId: current.uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
+    statusLine: patch.statusLine ?? current.statusLine,
   }
 }
 
@@ -620,13 +645,17 @@ export const useAppStore = create<AppState>((set, get) => {
             cliTranscriptBySessionId: current.cliTranscriptBySessionId,
             cliBindingBySessionId: current.cliBindingBySessionId,
             acpBindingBySessionId: current.acpBindingBySessionId,
+            providerModelCatalogs: current.providerModelCatalogs,
             cliDebugState: current.cliDebugState,
             memoryEnabledDefault: current.memoryEnabledDefault,
             memoryLevelDefault: current.memoryLevelDefault,
             memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
             memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
             goalMaxLoopIterations: current.goalMaxLoopIterations,
+            acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+            acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
             appVersion: current.appVersion,
+            runnerProtocolVersion: current.runnerProtocolVersion,
             showProviderIconsInSidebar: current.showProviderIconsInSidebar,
             showWorktreePathInSidebar: current.showWorktreePathInSidebar,
             updateChecksEnabled: current.updateChecksEnabled,
@@ -634,21 +663,23 @@ export const useAppStore = create<AppState>((set, get) => {
             dismissedUpdateVersions: current.dismissedUpdateVersions,
             memoryLastStatus: current.memoryLastStatus,
             memoryWorkerBindings: current.memoryWorkerBindings,
+            permissionReviewerProviderId: current.permissionReviewerProviderId,
+            permissionReviewerModelId: current.permissionReviewerModelId,
             memoryActivity: current.memoryActivity,
             cliVersionManager: current.cliVersionManager,
             markdownStoreDirectory: current.markdownStoreDirectory,
-            voiceInputMode: current.voiceInputMode,
-            voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
-            voiceInputServerEndpoint: current.voiceInputServerEndpoint,
-            voiceInputServerModel: current.voiceInputServerModel,
-            voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
-            voiceInputCapabilities: current.voiceInputCapabilities,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
             defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
+            mcpServers: current.mcpServers,
+            executionHosts: current.executionHosts,
+            favoriteUamAgentIds: current.favoriteUamAgentIds,
+            uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+            uamAgentsBySessionId: current.uamAgentsBySessionId,
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
+            statusLine: current.statusLine,
           })
           set(deserialized)
           // Sync theme to DOM
@@ -856,13 +887,17 @@ export const useAppStore = create<AppState>((set, get) => {
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
         cliBindingBySessionId: current.cliBindingBySessionId,
         acpBindingBySessionId: current.acpBindingBySessionId,
+        providerModelCatalogs: current.providerModelCatalogs,
         cliDebugState: current.cliDebugState,
         memoryEnabledDefault: current.memoryEnabledDefault,
         memoryLevelDefault: current.memoryLevelDefault,
         memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
         memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
         goalMaxLoopIterations: current.goalMaxLoopIterations,
+        acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+        acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
         appVersion: current.appVersion,
+        runnerProtocolVersion: current.runnerProtocolVersion,
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         updateChecksEnabled: current.updateChecksEnabled,
@@ -870,21 +905,23 @@ export const useAppStore = create<AppState>((set, get) => {
         dismissedUpdateVersions: current.dismissedUpdateVersions,
         memoryLastStatus: current.memoryLastStatus,
         memoryWorkerBindings: current.memoryWorkerBindings,
+        permissionReviewerProviderId: current.permissionReviewerProviderId,
+        permissionReviewerModelId: current.permissionReviewerModelId,
         memoryActivity: current.memoryActivity,
         cliVersionManager: current.cliVersionManager,
         markdownStoreDirectory: current.markdownStoreDirectory,
-        voiceInputMode: current.voiceInputMode,
-        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
-        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
-        voiceInputServerModel: current.voiceInputServerModel,
-        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
-        voiceInputCapabilities: current.voiceInputCapabilities,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
+        mcpServers: current.mcpServers,
+        executionHosts: current.executionHosts,
+        favoriteUamAgentIds: current.favoriteUamAgentIds,
+        uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+        uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,
+        statusLine: current.statusLine,
       })
       set(deserialized)
       if (deserialized.theme) {

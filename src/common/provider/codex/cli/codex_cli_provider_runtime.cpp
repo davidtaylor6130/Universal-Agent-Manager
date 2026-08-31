@@ -1,5 +1,6 @@
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
 
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -14,11 +15,9 @@
 
 namespace
 {
-	constexpr const char* kCodexFullAutoFlag = "--full-auto";
-
 	std::vector<std::string> CodexFlagsFromSettings(const AppSettings& settings)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings, kCodexFullAutoFlag);
+		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
 	}
 } // namespace
 
@@ -52,7 +51,7 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(chat.reasoning_effort);
 	const std::string service_tier = uam::codex::NormalizeServiceTier(chat.service_tier);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", reasoning_effort.empty() ? "" : "model_reasoning_effort=\"" + reasoning_effort + "\"");
-	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", service_tier.empty() ? "" : "service_tier=\"" + service_tier + "\"");
+	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", !chat.service_tier_explicit ? "" : service_tier.empty() ? "service_tier=null" : "service_tier=\"" + service_tier + "\"");
 
 	uam::provider_runtime_internal::AppendArgs(argv, CodexFlagsFromSettings(provider_settings));
 	return argv;
@@ -98,9 +97,12 @@ std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const Provider
 	return argv;
 }
 
-std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession&) const
+std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
-	return {"codex", "app-server", "--listen", "stdio://"};
+	std::vector<std::string> argv = {"codex"};
+	uam::computer_use::AppendCodexMcpLaunchArguments(argv, chat);
+	uam::provider_runtime_internal::AppendLiteralArgs(argv, {"app-server", "--listen", "stdio://"});
+	return argv;
 }
 
 nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const

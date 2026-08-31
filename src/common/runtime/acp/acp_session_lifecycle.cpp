@@ -1,27 +1,165 @@
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
+#include "app/agent_definition_service.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
+#include "app/git_worktree_service.h"
+#include "app/uam_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/string_utils.h"
+#include "remote/runner_proxy.h"
 
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace uam::acp_detail
 {
+
+namespace
+{
+	bool AddWorkspaceMcpServers(AppState& app, AcpSessionState& session,
+	                            std::string_view method, const std::string& cwd,
+	                            nlohmann::json& request)
+	{
+		if (session.model_discovery_only) return true;
+		const bool accepts = method == uam::acp_methods::kSessionNew ||
+		                     method == uam::acp_methods::kSessionLoad ||
+		                     method == uam::acp_methods::kSessionResume;
+		if (!accepts)
+		{
+			return true;
+		}
+		const ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
+		if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+		{
+			const ExecutionHost* execution_host = uam::execution_hosts::Find(
+			    app.settings.execution_hosts, chat->execution_host_id);
+			if (execution_host == nullptr || execution_host->runner_status != "ready")
+			{
+				session.last_error = "The selected remote runner is not ready.";
+				return false;
+			}
+			if (!chat->uam_control_enabled) return true;
+			nlohmann::json local_request = {
+			    {"params", {{"mcpServers", nlohmann::json::array()}}}};
+			std::string error;
+			if (!UamControlService::AppendSessionMcpServer(
+			        app, session, *chat, method, local_request, &error))
+			{
+				session.last_error = std::move(error);
+				return false;
+			}
+			const nlohmann::json& local_server = local_request["params"]["mcpServers"].back();
+			std::vector<std::string> local_argv = {local_server.value("command", "")};
+			for (const nlohmann::json& argument : local_server.value("args", nlohmann::json::array()))
+				if (argument.is_string()) local_argv.push_back(argument.get<std::string>());
+			std::vector<std::pair<std::string, std::string>> local_environment;
+			for (const nlohmann::json& entry : local_server.value("env", nlohmann::json::array()))
+				if (entry.is_object() && entry.contains("name") && entry["name"].is_string() &&
+				    entry.contains("value") && entry["value"].is_string())
+					local_environment.emplace_back(entry["name"].get<std::string>(),
+					                               entry["value"].get<std::string>());
+			const std::string channel_id = "control-" + session.uam_control_capability_id;
+			const std::string control_line = uam::remote::BuildRemoteMcpControlLine(
+			    channel_id, std::filesystem::path(local_argv.front()).parent_path(),
+			    local_argv, local_environment);
+			std::string write_error;
+			if (control_line.empty() ||
+			    !PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+			        session, control_line.data(), control_line.size(), &write_error))
+			{
+				UamControlService::RevokeForSession(app, session);
+				session.last_error = write_error.empty()
+				    ? "Remote UAM control relay could not be configured."
+				    : std::move(write_error);
+				return false;
+			}
+			nlohmann::json& request_servers = request["params"]["mcpServers"];
+			if (!request_servers.is_array()) request_servers = nlohmann::json::array();
+			if (execution_host->platform == "windows" || execution_host->platform == "Windows")
+			{
+				const std::string runner_root = uam::execution_hosts::RunnerDirectory(
+				    execution_host->platform, execution_host->runner_directory);
+				request_servers.push_back({
+				    {"name", "uam-control"}, {"command", "powershell.exe"},
+				    {"args", nlohmann::json::array({
+				        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+				        "-Command", "& (Join-Path $HOME '" + runner_root + "/" +
+				            execution_host->runner_version +
+				            "/uam-runner.exe') mcp --channel '" + channel_id + "'"})},
+				    {"env", nlohmann::json::array()},
+				});
+			}
+			else
+			{
+				const std::string runner_root = uam::execution_hosts::RunnerDirectory(
+				    execution_host->platform, execution_host->runner_directory);
+				request_servers.push_back({
+				    {"name", "uam-control"}, {"command", "/bin/sh"},
+				    {"args", nlohmann::json::array({
+				        "-c", "exec \"$HOME/" + runner_root + "/" +
+				            execution_host->runner_version +
+				            "/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/" + runner_root +
+				            "/uam.sock\"",
+				        "uam-control", channel_id})},
+				    {"env", nlohmann::json::array()},
+				});
+			}
+			return true;
+		}
+
+		std::string error;
+		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(
+		    app.settings.mcp_servers, cwd, session.mcp_http_supported,
+		    session.mcp_sse_supported, &error);
+		if (servers.is_null())
+		{
+			session.last_error = std::move(error);
+			return false;
+		}
+		if (chat != nullptr && uam::paths::HasGitWorktreeSource(*chat) &&
+		    uam::mcp_server_config::WorkspaceKey(chat->workspace_source_directory) != uam::mcp_server_config::WorkspaceKey(cwd))
+		{
+			nlohmann::json source_servers = uam::mcp_server_config::ResolveForWorkspace(
+			    app.settings.mcp_servers, chat->workspace_source_directory,
+			    session.mcp_http_supported, session.mcp_sse_supported, &error);
+			if (source_servers.is_null())
+			{
+				session.last_error = std::move(error);
+				return false;
+			}
+			for (nlohmann::json& server : source_servers) servers.push_back(std::move(server));
+		}
+		nlohmann::json& request_servers = request["params"]["mcpServers"];
+		if (!request_servers.is_array()) request_servers = nlohmann::json::array();
+		for (nlohmann::json& server : servers) request_servers.push_back(std::move(server));
+		if (chat != nullptr && !UamControlService::AppendSessionMcpServer(
+		                         app, session, *chat, method, request, &error))
+		{
+			session.last_error = std::move(error);
+			return false;
+		}
+		return true;
+	}
+} // namespace
 
 bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds)
 {
@@ -90,14 +228,22 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;
+	session.resume_session_supported = false;
+	session.mcp_http_supported = false;
+	session.mcp_sse_supported = false;
 	session.processing = false;
+	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
-	session.next_request_id = 1;
+	session.inactivity_timeout_pending = false;
+	session.turn_checkpoint_eligible = false;
+	session.turn_checkpoint_preflight_pending = false;
+	session.turn_checkpoint_commit_pending = false;
 	session.initialize_request_id = 0;
 	session.session_setup_request_id = 0;
 	ClearAcpStartupModelRequest(session);
 	ClearAcpReasoningChangeRequest(session);
+	ClearAcpConfigOptionChangeRequest(session);
 	ClearAcpModeChangeRequest(session);
 	ClearAcpModelChangeRequest(session);
 	session.awaiting_model_config_options = false;
@@ -109,6 +255,8 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.turn_serial = 0;
 	session.queued_prompt.clear();
 	session.goal_turn_kind.clear();
+	session.goal_turn_model_id.clear();
+	session.goal_internal_session = false;
 	session.goal_review_turn = false;
 	session.goal_review_scheduled = false;
 	session.goal_review_goal_id.clear();
@@ -120,6 +268,8 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.acp_resume_fallback_attempted = false;
 	session.stdout_buffer.clear();
 	session.stderr_buffer.clear();
+	session.stdout_poll_pending = false;
+	session.stderr_poll_pending = false;
 	session.recent_stderr.clear();
 	session.last_runtime_activity_time_s = 0.0;
 	session.last_error.clear();
@@ -132,10 +282,38 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.agent_title.clear();
 	session.agent_version.clear();
 	session.available_commands.clear();
+	session.available_config_options.clear();
 	session.pending_request_methods.clear();
 	ResetAcpTurnStreamState(session);
 	session.codex_turn_id.clear();
 	ResetAcpPendingInteractionState(session);
+}
+
+bool StopAcpProcessForRestart(AcpSessionState& session, const ChatSession& chat)
+{
+	if (!session.running) return true;
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
+	bool exited = false;
+	int exit_code = -1;
+	if (remote)
+	{
+		std::string ignored_error;
+		if (process_service.WriteToStdioProcess(
+		        session, uam::remote::kRemoteStopControlLine.data(),
+		        uam::remote::kRemoteStopControlLine.size(), &ignored_error))
+		{
+			for (int attempt = 0; attempt < 100 && !exited; ++attempt)
+			{
+				exited = process_service.PollStdioProcessExited(session, &exit_code);
+				if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	}
+	if (exited) process_service.CloseStdioProcessHandles(session);
+	else process_service.StopStdioProcess(session, true);
+	session.running = false;
+	return !remote || (exited && exit_code == 0);
 }
 
 AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
@@ -145,6 +323,7 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	{
 		existing->provider_id = provider.id;
 		existing->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
+		existing->managed_agent_run_id = chat.agent_run_id;
 		return *existing;
 	}
 
@@ -152,12 +331,14 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	session->chat_id = chat.id;
 	session->provider_id = provider.id;
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
+	session->managed_agent_run_id = chat.agent_run_id;
 	app.acp_sessions.push_back(std::move(session));
 	return *app.acp_sessions.back();
 }
 
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message)
 {
+	UamControlService::RevokeForSession(app, session);
 	session.session_setup_request_id = 0;
 	FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, fallback_message));
 	MarkAcpChatUnseenIfBackground(app, chat);
@@ -170,11 +351,33 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	{
 		return true;
 	}
+	if (!session.managed_agent_run_id.empty() && session.managed_launch_attempted)
+	{
+		if (error_out != nullptr) *error_out = "Managed agent runs are never relaunched automatically.";
+		return false;
+	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
+	const ExecutionHost* execution_host =
+	    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	const bool remote = execution_host != nullptr && execution_host->id != uam::execution_hosts::kLocalHostId;
+	if (execution_host == nullptr ||
+	    (remote && execution_host->runner_status != "ready" &&
+	     !session.recovering_remote_turn))
+	{
+		const std::string startup_error = remote ? "The selected remote runner is not ready. Recheck it in Settings."
+		                                         : "The selected execution host no longer exists.";
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out != nullptr) *error_out = startup_error;
+		return false;
+	}
+	const bool copilot = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli);
+	const bool opencode = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli);
+	if (!remote && (copilot || opencode))
 	{
 		ProviderCliCompatibilityService().Poll(app);
-		if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
+		const std::string compatibility_error = copilot ? CopilotLaunchBlockReason(app) : OpenCodeLaunchBlockReason(app);
+		if (!compatibility_error.empty())
 		{
 			session.provider_id = provider.id;
 			session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
@@ -190,10 +393,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	}
 
 	const bool retrying_undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
+	const bool recovering_remote_turn = session.recovering_remote_turn;
 	const std::string pending_prompt = session.queued_prompt;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int turn_serial = session.turn_serial;
 	const std::string goal_turn_kind = session.goal_turn_kind;
+	const std::string goal_turn_model_id = session.goal_turn_model_id;
+	const bool goal_internal_session = session.goal_internal_session;
 	const bool goal_review_turn = session.goal_review_turn;
 	const bool goal_review_scheduled = session.goal_review_scheduled;
 	const std::string goal_review_goal_id = session.goal_review_goal_id;
@@ -202,13 +408,16 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	ResetAcpRuntimeState(session);
-	if (retrying_undelivered_prompt)
+	if (retrying_undelivered_prompt || recovering_remote_turn)
 	{
-		session.queued_prompt = pending_prompt;
+		if (retrying_undelivered_prompt) session.queued_prompt = pending_prompt;
 		session.processing = true;
+		session.recovering_remote_turn = recovering_remote_turn;
 		session.turn_user_message_index = turn_user_message_index;
 		session.turn_serial = turn_serial;
 		session.goal_turn_kind = goal_turn_kind;
+		session.goal_turn_model_id = goal_turn_model_id;
+		session.goal_internal_session = goal_internal_session;
 		session.goal_review_turn = goal_review_turn;
 		session.goal_review_scheduled = goal_review_scheduled;
 		session.goal_review_goal_id = goal_review_goal_id;
@@ -219,18 +428,83 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 	session.provider_id = provider.id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-	const std::string codex_resume_id = std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? ValidCodexResumeId(chat) : std::string{};
-	const std::string acp_resume_id = codex_resume_id.empty() ? ResolvedAcpResumeIdForChat(app, chat) : std::string{};
+	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? ValidCodexResumeId(chat) : std::string{};
+	const std::string acp_resume_id = !session.goal_internal_session && codex_resume_id.empty() ? ResolvedAcpResumeIdForChat(app, chat) : std::string{};
 	session.session_id = codex_resume_id.empty() ? acp_resume_id : codex_resume_id;
 	session.codex_thread_id = codex_resume_id;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
-	const std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, chat);
-	const std::string launch_detail = BuildAcpLaunchDetail(app, workspace_root, chat);
+	ChatSession launch_chat = chat;
+	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
+	std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, launch_chat);
+	std::vector<std::pair<std::string, std::string>> launch_environment =
+	    uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
+	const std::vector<std::pair<std::string, std::string>> runtime_environment =
+	    runtime.BuildStructuredLaunchEnvironment(provider, launch_chat);
+	launch_environment.insert(launch_environment.end(), runtime_environment.begin(), runtime_environment.end());
+	session.active_uam_agent_adapter_directory.clear();
+	if (!session.model_discovery_only && !session.active_uam_agent_instructions.empty())
+	{
+		if (remote)
+		{
+			session.active_uam_agent_execution_capability = "uam-prompt-injected";
+		}
+		else
+		{
+			ProviderAgentRuntimeAdapter adapter;
+			if (!AgentDefinitionService::PrepareRuntimeAdapter(
+			        app.data_root, chat.id, provider.id, session.active_uam_agent_id,
+			        session.active_uam_agent_instructions, &adapter, &startup_error))
+			{
+				session.lifecycle_state = kAcpLifecycleError;
+				session.last_error = startup_error;
+				if (error_out != nullptr) *error_out = startup_error;
+				return false;
+			}
+			session.active_uam_agent_execution_capability = adapter.execution_capability;
+			session.active_uam_agent_adapter_directory = adapter.directory;
+			launch_argv.insert(launch_argv.end(), adapter.launch_arguments.begin(), adapter.launch_arguments.end());
+			launch_environment.insert(launch_environment.end(), adapter.launch_environment.begin(),
+			                          adapter.launch_environment.end());
+		}
+	}
+	const std::string launch_detail = "host=" + execution_host->id +
+	                                  ", cwd=" + AcpWorkingDirectoryString(workspace_root) +
+	                                  ", argv=" + JoinAcpArgvForDiagnostics(launch_argv) +
+	                                  ", nativeSessionId=" + session.session_id;
 	AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
-	if (!PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, workspace_root, launch_argv, &startup_error))
+	if (!session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
+	std::filesystem::path process_working_directory = workspace_root;
+	std::vector<std::string> process_argv = launch_argv;
+	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
+	if (remote)
+	{
+		const std::filesystem::path runner = uam::remote::PackagedRunnerPath();
+		std::error_code runner_error;
+		if (!std::filesystem::is_regular_file(runner, runner_error) || runner_error)
+		{
+			startup_error = "The packaged UAM remote runner is missing.";
+		}
+		else
+		{
+			process_working_directory = runner.parent_path();
+			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias,
+			                "--platform", execution_host->platform,
+			                "--version", execution_host->runner_version,
+			                "--directory", uam::execution_hosts::RunnerDirectory(
+			                    execution_host->platform, execution_host->runner_directory)};
+			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment,
+			                        uam::remote::BuildProcessProxySpec(
+			                            "acp-" + chat.id, workspace_root, launch_argv,
+			                            launch_environment, session.recovering_remote_turn)}};
+		}
+	}
+	if (!startup_error.empty() ||
+	    !PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	        session, process_working_directory, process_argv, &startup_error,
+	        process_environment))
 	{
 		session.lifecycle_state = kAcpLifecycleError;
 		session.last_error = startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
@@ -244,15 +518,22 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatS
 
 	session.running = true;
 	session.reconnect_pending = false;
-	session.reconnect_attempts = 0;
 	session.reconnect_not_before_time_s = 0.0;
 	session.last_process_id = AcpProcessHandleLabel(session);
 	session.last_runtime_activity_time_s = GetAppTimeSeconds();
 	AppendAcpDiagnostic(session, "process_launch", "started", "", "", false, 0, "", launch_detail);
+	if (session.recovering_remote_turn)
+	{
+		// The remote provider never stopped. Resume its existing byte stream without
+		// sending a second initialize or replaying the in-flight prompt.
+		session.initialized = true;
+		session.session_ready = true;
+		session.lifecycle_state = kAcpLifecycleProcessing;
+		return true;
+	}
 	if (!SendInitialize(session, error_out))
 	{
-		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
-		session.running = false;
+		(void)StopAcpProcessForRestart(session, chat);
 		return false;
 	}
 
@@ -273,10 +554,10 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
-	const std::string resolved_resume_id = ResolvedAcpResumeIdForChat(app, chat);
+	const std::string resolved_resume_id = session.goal_internal_session ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 
-	const std::string raw_resume_id = uam::strings::Trim(chat.native_session_id);
-	const std::string resume_id = runtime.OnAcpValidateResumeId(chat);
+	const std::string raw_resume_id = session.goal_internal_session ? std::string{} : uam::strings::Trim(chat.native_session_id);
+	const std::string resume_id = session.goal_internal_session ? std::string{} : runtime.OnAcpValidateResumeId(chat);
 	if (!raw_resume_id.empty() && resume_id.empty())
 	{
 		AppendInvalidResumeDiagnostic(session, raw_resume_id);
@@ -286,10 +567,24 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 
 	ChatSession resume_chat = chat;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
+	if (!session.goal_turn_model_id.empty()) resume_chat.model_id = session.goal_turn_model_id;
 
 	const int id = session.next_request_id++;
 	std::string method;
-	nlohmann::json msg = runtime.OnAcpBuildSetupRequest(id, resume_chat, cwd, session.load_session_supported, method);
+	nlohmann::json msg;
+	if (session.resume_session_supported && !uam::strings::IsBlank(resume_chat.native_session_id))
+	{
+		method = uam::acp_methods::kSessionResume;
+		msg = BuildResumeSessionRequest(id, resume_chat.native_session_id, cwd, &resume_chat);
+	}
+	else
+	{
+		msg = runtime.OnAcpBuildSetupRequest(id, resume_chat, cwd, session.load_session_supported, method);
+	}
+	if (!AddWorkspaceMcpServers(app, session, method, cwd, msg))
+	{
+		return FailAcpSessionSetupWrite(app, session, chat, "Failed to configure MCP servers.");
+	}
 
 	if (msg.is_null() || msg.empty())
 	{
@@ -343,7 +638,18 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	session.ignore_session_updates_until_ready = false;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
-	if (!WriteAcpMessage(session, BuildNewSessionRequest(retry_id, cwd)))
+	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &chat);
+	if (!AddWorkspaceMcpServers(app, session, uam::acp_methods::kSessionNew, cwd,
+	                            retry_request))
+	{
+		session.pending_request_methods.erase(retry_id);
+		session.session_setup_request_id = 0;
+		FailAcpTurnOrSession(session, session.last_error);
+		SaveChatQuietly(app, chat);
+		MarkAcpChatUnseenIfBackground(app, chat);
+		return true;
+	}
+	if (!WriteAcpMessage(session, retry_request))
 	{
 		session.pending_request_methods.erase(retry_id);
 		session.session_setup_request_id = 0;
@@ -357,6 +663,10 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
+	if (session.active_uam_agent_execution_capability == "opencode-native-agent-config")
+	{
+		return false;
+	}
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const char* protocol = runtime.AcpProtocolKind();
 	if (!session.running || !session.session_ready || session.mode_change_request_id != 0 || session.session_id.empty() || std::strcmp(protocol, "codex-app-server") == 0 || std::strcmp(protocol, "claude-code-stream-json") == 0)
@@ -364,7 +674,9 @@ bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 		return false;
 	}
 
-	const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
+	const std::string desired_mode = session.goal_review_turn
+	                                   ? std::string(uam::approval_modes::kPlanApprovalMode)
+	                                   : uam::approval_modes::EffectiveProviderMode(chat.approval_mode, chat.command_safety_tier);
 	const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 	if ((uam::strings::IsBlank(chat.approval_mode) && !must_leave_hidden_autopilot) || session.current_mode_id == desired_mode)
 	{
@@ -390,12 +702,13 @@ bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
-	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.session_id.empty())
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.config_option_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.session_id.empty())
 	{
 		return false;
 	}
 
-	const std::string model_id = uam::strings::Trim(chat.model_id);
+	const std::string model_id = uam::strings::Trim(
+	    uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, chat.model_id));
 	if (model_id.empty() || session.current_model_id == model_id)
 	{
 		ClearAcpStartupModelRequest(session);
@@ -409,7 +722,8 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	session.model_change_previous_id = session.current_model_id;
 	session.model_change_previous_chat_id = session.current_model_id;
 	session.model_change_requested_id = model_id;
-	session.awaiting_model_config_options = uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli);
+	session.awaiting_model_config_options =
+	    uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli);
 	if (!WriteAcpMessage(session, BuildSetModelRequest(id, session.session_id, model_id)))
 	{
 		session.pending_request_methods.erase(id);
@@ -424,9 +738,13 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	return true;
 }
 
-bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
+bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
-	if (session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options)
+	if (session.turn_checkpoint_preflight_pending)
+	{
+		return false;
+	}
+	if (session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.config_option_change_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options)
 	{
 		return false;
 	}
@@ -449,7 +767,9 @@ bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const int id = session.next_request_id++;
 	std::string method;
-	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, prompt, chat, method);
+	ChatSession prompt_chat = chat;
+	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
+	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, prompt, prompt_chat, method);
 
 	if (msg.is_null() || msg.empty())
 	{
@@ -471,13 +791,31 @@ bool SendQueuedPromptIfReady(AcpSessionState& session, const ChatSession& chat)
 		return true;
 	}
 
+	chat.remote_turn_reconnect_pending =
+	    chat.execution_host_id != uam::execution_hosts::kLocalHostId;
 	session.queued_prompt.clear();
+	if (!SaveChatQuietly(app, chat))
+	{
+		session.last_error = "Prompt was delivered, but restart recovery could not be saved. Keep UAM open until this turn finishes.";
+		app.status_line = session.last_error;
+		AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed", "", "",
+		                    false, 0, session.last_error);
+		ScheduleChatSave(app, chat, 0.0);
+	}
 	return true;
 }
 
-void SaveChatQuietly(AppState& app, const ChatSession& chat)
+bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 {
-	(void)ChatRepository::SaveChat(app.data_root, chat);
+	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr && persisted->remote_turn_reconnect_pending)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		if (session == nullptr ||
+		    (!uam::AcpSessionHasActiveTurn(*session) && !session->reconnect_pending))
+			persisted->remote_turn_reconnect_pending = false;
+	}
+	return ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
 }
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
@@ -544,10 +882,18 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	if (session.processing && session.turn_serial > 0)
+	{
+		session.last_settled_turn_serial = session.turn_serial;
+		session.last_turn_outcome = lifecycle_state == kAcpLifecycleReady ? "completed" : "failed";
+		session.last_turn_error = lifecycle_state == kAcpLifecycleReady ? std::string{} : session.last_error;
+	}
 	session.prompt_request_id = 0;
 	session.processing = false;
+	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
+	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
 	session.current_assistant_message_index = -1;
 	session.codex_turn_id.clear();
@@ -557,14 +903,23 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.lifecycle_state.assign(lifecycle_state);
 }
 
-bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const std::string& prompt, bool review_turn)
+bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
+                             const std::string& prompt, bool review_turn,
+                             const std::string& model_id, bool fresh_session)
 {
-	if (prompt.empty() || !CanQueueGoalInternalPrompt(session))
+	const bool fresh_context_busy = session.processing || session.waiting_for_permission ||
+	                                session.waiting_for_user_input || session.cancel_requested ||
+	                                session.prompt_request_id != 0 || session.cancel_request_id != 0 ||
+	                                !session.queued_prompt.empty() || !session.queued_user_prompts.empty();
+	if (prompt.empty() || (fresh_session ? fresh_context_busy : !CanQueueGoalInternalPrompt(session)))
 	{
 		return false;
 	}
+	if (fresh_session && !StopAcpSession(app, chat.id)) return false;
 	session.queued_prompt = prompt;
 	session.goal_turn_kind = review_turn ? std::string(kGoalTurnKindReview) : std::string(kGoalTurnKindWorkerContinuation);
+	session.goal_turn_model_id = uam::strings::Trim(model_id);
+	session.goal_internal_session = fresh_session;
 	session.goal_review_turn = review_turn;
 	if (!review_turn)
 	{
@@ -572,8 +927,10 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	}
 	AppendGoalLoopDiagnostic(session, review_turn ? "queue_review" : "queue_worker_continuation", session.goal_review_goal_id, prompt);
 	session.processing = true;
+	session.turn_checkpoint_eligible = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
+	session.inactivity_timeout_pending = false;
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
@@ -584,9 +941,18 @@ bool QueueGoalInternalPrompt(AcpSessionState& session, ChatSession& chat, const 
 	session.last_runtime_activity_time_s = session.turn_started_time_s;
 	session.last_error.clear();
 	session.lifecycle_state = kAcpLifecycleProcessing;
+	if (fresh_session && !StartAcpProcessForChat(app, session, chat))
+	{
+		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, "Failed to start the private goal context."));
+		SaveChatQuietly(app, chat);
+		return false;
+	}
+	(void)ScheduleTurnCheckpointPreflight(app, session, chat);
+	SaveChatQuietly(app, chat);
 	// Queued is success; if the session cannot send yet, the poll loop
 	// delivers the prompt once the session is ready.
-	(void)SendQueuedPromptIfReady(session, chat);
+	(void)SendQueuedPromptIfReady(app, session, chat);
+	SaveChatQuietly(app, chat);
 	return true;
 }
 

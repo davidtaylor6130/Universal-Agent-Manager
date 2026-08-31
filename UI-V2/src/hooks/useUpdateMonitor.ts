@@ -4,6 +4,7 @@ import { createRequestId, isCefContext, sendToCEF } from '../ipc/cefBridge'
 import {
   UPDATE_CHECK_INTERVAL_MS,
   availableUpdates,
+  availableRemoteHelperUpdates,
   fetchLatestUpdateCatalog,
   readCachedUpdateCatalog,
   type LatestUpdateCatalog,
@@ -11,17 +12,21 @@ import {
 
 export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
+  const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
   const providers = useAppStore((state) => state.providers)
   const versionManager = useAppStore((state) => state.cliVersionManager)
+  const executionHosts = useAppStore((state) => state.executionHosts)
   const enabled = useAppStore((state) => state.updateChecksEnabled)
   const lastCheckedAt = useAppStore((state) => state.updateLastCheckedAt)
   const dismissedVersions = useAppStore((state) => state.dismissedUpdateVersions)
+  const cefStateHydrated = useAppStore((state) => state.lastAppliedStateRevision >= 0)
   const setUpdateSettings = useAppStore((state) => state.setUpdateSettings)
   const refreshCliProviderVersion = useAppStore((state) => state.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((state) => state.applyCliProviderVersion)
   const [catalog, setCatalog] = useState<LatestUpdateCatalog | null>(() => readCachedUpdateCatalog())
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
+  const [remoteHelperUpdatingId, setRemoteHelperUpdatingId] = useState('')
   const autoCheckAttemptedRef = useRef(false)
   const checkingRef = useRef(false)
 
@@ -34,14 +39,17 @@ export function useUpdateMonitor() {
       const nextCatalog = await fetchLatestUpdateCatalog()
       setCatalog(nextCatalog)
       if (isCefContext()) {
-        await sendToCEF({
+        const response = await sendToCEF({
           action: 'refreshAllCliProviderVersions',
           requestId: createRequestId('refreshAllCliProviderVersions'),
         })
+        if (!response.ok) throw new Error(response.error || 'Provider version refresh failed.')
       } else {
         await Promise.all(versionManager.providers.map((provider) => refreshCliProviderVersion(provider.providerId)))
       }
-      await setUpdateSettings({ updateLastCheckedAt: nextCatalog.checkedAt })
+      if (!await setUpdateSettings({ updateLastCheckedAt: nextCatalog.checkedAt })) {
+        throw new Error('The update check completed, but its status could not be saved.')
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Update check failed.')
     } finally {
@@ -51,6 +59,7 @@ export function useUpdateMonitor() {
   }, [refreshCliProviderVersion, setUpdateSettings, versionManager.providers])
 
   useEffect(() => {
+    if (isCefContext() && !cefStateHydrated) return
     if (!enabled) {
       autoCheckAttemptedRef.current = false
       return
@@ -72,15 +81,26 @@ export function useUpdateMonitor() {
       autoCheckAttemptedRef.current = true
       void checkNow()
     }
-  }, [checkNow, checking, enabled, lastCheckedAt])
+  }, [cefStateHydrated, checkNow, checking, enabled, lastCheckedAt])
 
-  const updates = useMemo(() => availableUpdates(
-    catalog,
-    appVersion,
-    versionManager,
-    providers,
-    dismissedVersions,
-  ), [appVersion, catalog, dismissedVersions, providers, versionManager])
+  const updates = useMemo(() => [
+    ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions),
+    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
+  ], [appVersion, catalog, dismissedVersions, executionHosts, providers, runnerProtocolVersion, versionManager])
+
+  const applyRemoteHelperUpdate = useCallback(async (hostId: string) => {
+    const host = executionHosts.find((candidate) => candidate.id === hostId)
+    if (!host || host.transport !== 'ssh' || remoteHelperUpdatingId) return false
+    setRemoteHelperUpdatingId(hostId)
+    try {
+      const response = await sendToCEF({ action: 'installRemoteHost', payload: host })
+      return response.ok
+    } catch {
+      return false
+    } finally {
+      setRemoteHelperUpdatingId('')
+    }
+  }, [executionHosts, remoteHelperUpdatingId])
 
   const dismiss = useCallback((id: string, version: string) => {
     void setUpdateSettings({ dismissedUpdateVersions: { ...dismissedVersions, [id]: version } })
@@ -110,6 +130,7 @@ export function useUpdateMonitor() {
 
   return {
     updates,
+    hasCatalog: catalog !== null,
     checking,
     error,
     lastCheckedAt,
@@ -117,6 +138,8 @@ export function useUpdateMonitor() {
     dismiss,
     dismissAll,
     applyCliProviderVersion,
+    applyRemoteHelperUpdate,
+    remoteHelperUpdatingId,
     providerStates: versionManager.providers,
     providerTaskRunning: versionManager.providers.some((provider) => provider.running),
     providerUpdateResults,
