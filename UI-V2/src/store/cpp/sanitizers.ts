@@ -381,33 +381,33 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
     providerId: isString(value.providerId) ? value.providerId : undefined,
     thoughts: isString(value.thoughts) ? value.thoughts : undefined,
     planSummary: isString(value.planSummary) ? value.planSummary : undefined,
-    planEntries: Array.isArray(value.planEntries)
+    planEntries: Array.isArray(value.planEntries) && value.planEntries.length > 0
       ? value.planEntries.flatMap((entry) => {
           const sanitized = sanitizePlanEntry(entry)
           return sanitized ? [sanitized] : []
         })
-      : [],
-    toolCalls: Array.isArray(value.toolCalls)
+      : undefined,
+    toolCalls: Array.isArray(value.toolCalls) && value.toolCalls.length > 0
       ? value.toolCalls.flatMap((toolCall) => {
           const sanitized = sanitizeToolCall(toolCall)
           return sanitized ? [sanitized] : []
         })
-      : [],
-    blocks: Array.isArray(value.blocks)
+      : undefined,
+    blocks: Array.isArray(value.blocks) && value.blocks.length > 0
       ? value.blocks.flatMap((block) => {
           const sanitized = sanitizeTurnEvent(block)
           return sanitized ? [sanitized as MessageBlock] : []
         })
-      : [],
-    markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
+      : undefined,
+    markdownStoreFiles: Array.isArray(value.markdownStoreFiles) && value.markdownStoreFiles.length > 0
       ? value.markdownStoreFiles.filter(isString)
-      : [],
-    attachments: Array.isArray(value.attachments)
+      : undefined,
+    attachments: Array.isArray(value.attachments) && value.attachments.length > 0
       ? value.attachments.flatMap((attachment) => {
           const sanitized = sanitizeAttachment(attachment)
           return sanitized ? [sanitized] : []
       })
-      : [],
+      : undefined,
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
 		interrupted: booleanOr(value.interrupted),
 		prioritySteer: booleanOr(value.prioritySteer),
