@@ -30,13 +30,21 @@ const layoutEvent = 'uam-chat-grid-layout'
 export const MAX_CHAT_PANES = 9
 export const chatPaneColors = ['#f97316', '#ec4899', '#22c55e', '#a855f7', '#06b6d4', '#eab308', '#3b82f6', '#ef4444', '#84cc16'] as const
 
+let cachedViewModesRaw: string | null | undefined
+let cachedViewModes: Record<string, 'chat' | 'cli'> = {}
+
 function readChatViewModes(): Record<string, 'chat' | 'cli'> {
+  let raw: string | null | undefined
   try {
-    const value = JSON.parse(localStorage.getItem(viewModeStorageKey) ?? '{}') as Record<string, unknown>
-    return Object.fromEntries(Object.entries(value).filter(([, mode]) => mode === 'chat' || mode === 'cli')) as Record<string, 'chat' | 'cli'>
+    raw = localStorage.getItem(viewModeStorageKey)
+    if (raw === cachedViewModesRaw) return cachedViewModes
+    const value = JSON.parse(raw ?? '{}') as Record<string, unknown>
+    cachedViewModes = Object.fromEntries(Object.entries(value).filter(([, mode]) => mode === 'chat' || mode === 'cli')) as Record<string, 'chat' | 'cli'>
   } catch {
-    return {}
+    cachedViewModes = {}
   }
+  cachedViewModesRaw = raw
+  return cachedViewModes
 }
 
 export function readChatViewMode(sessionId: string): 'chat' | 'cli' | null {
