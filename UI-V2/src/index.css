@@ -1678,7 +1678,7 @@ summary,
 .uam-status-dot--error   { background: var(--error); }
 .uam-status-dot--info    { background: var(--info); }
 .uam-status-dot--accent  { background: var(--accent); }
-.uam-status-dot.is-pulse { animation: uam-dot-pulse 1.6s var(--ease) infinite; }
+.uam-status-dot.is-pulse { animation: uam-dot-pulse 1.6s var(--ease); }
 @keyframes uam-dot-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50%      { box-shadow: 0 0 0 3px transparent; opacity: 0.75; }
