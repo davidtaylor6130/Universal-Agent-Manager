@@ -15001,9 +15001,12 @@ int main(int argc, char** argv)
 	}
 #endif
 	int failures = 0;
+	const std::string test_filter =
+	    uam::env::GetNonEmptyString("UAM_TEST_FILTER").value_or("");
 	for (const TestCase& test : Registry())
 	{
-		bool selected = argc <= 1;
+		bool selected = argc <= 1 &&
+		                (test_filter.empty() || test.name.find(test_filter) != std::string::npos);
 		for (int index = 1; !selected && index < argc; ++index) selected = test.name == argv[index];
 		if (!selected)
 		{

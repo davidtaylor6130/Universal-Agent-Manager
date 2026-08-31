@@ -916,7 +916,7 @@ UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDupl
 	const fs::path starts = temp.root / "starts";
 	const std::vector<std::string> command = {
 	    "/bin/sh", "-c",
-	    "printf x >> '" + starts.string() + "'; sleep 0.2; printf recovered"};
+	    "printf x >> '" + starts.string() + "'; cat >/dev/null; printf recovered"};
 	uam::remote::RunnerClient client(
 	    process_service, {runner.string(), "bridge", "--socket", socket.string()},
 	    configured_version);

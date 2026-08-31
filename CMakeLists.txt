@@ -1227,6 +1227,7 @@ if(UAM_BUILD_TESTS)
     UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
   )
   if(MSVC)
+    target_compile_options(uam_core_tests PRIVATE /bigobj)
     set_property(TARGET uam_core_tests PROPERTY
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )

@@ -12,6 +12,7 @@ on:
       - 'src/common/provider/**'
       - 'src/common/runtime/acp/**'
       - 'tests/core_tests.cpp'
+      - 'tests/computer_use_tests.cpp'
 
 permissions:
   contents: read

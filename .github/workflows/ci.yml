@@ -28,6 +28,20 @@ jobs:
           path: UAM-frontend.cdx.json
           if-no-files-found: error
 
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+      - run: npm --prefix UI-V2 ci
+      - run: npm --prefix UI-V2 run test
+      - run: npm --prefix UI-V2 run build
+
   remote-runner:
     name: Remote runner ${{ matrix.platform }} ${{ matrix.arch }}
     strategy:
@@ -130,8 +144,6 @@ jobs:
             ${{ runner.os }}-${{ matrix.arch }}-uam-deps-
 
       - run: npm --prefix UI-V2 ci
-      - run: npm --prefix UI-V2 run test
-      - run: npm --prefix UI-V2 run build
       - name: Configure native Release tests (macOS)
         if: runner.os == 'macOS'
         run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
