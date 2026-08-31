@@ -706,10 +706,16 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 		UAM_ASSERT_EQ(exit_code, 0);
 	};
 	run_runner("stop");
+	uam::platform::StdioProcessPlatformFields runner_service;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(runner_service, fs::temp_directory_path(),
+	                                     {runner.string(), "serve"}, &error));
+	service.CloseStdioProcessInput(runner_service);
 	run_runner("start");
 	struct StopGuard
 	{
 		const fs::path& runner;
+		uam::platform::StdioProcessPlatformFields& runner_service;
 		~StopGuard()
 		{
 			uam::platform::StdioProcessPlatformFields process;
@@ -725,12 +731,12 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				service.CloseStdioProcessHandles(process);
 			}
+			service.CloseStdioProcessHandles(runner_service);
 		}
-	} stop_guard{runner};
+	} stop_guard{runner, runner_service};
 
 	uam::remote::RunnerClient first(service, {runner.string(), "bridge"});
 	uam::remote::RunnerClient second(service, {runner.string(), "bridge"});
-	std::string error;
 	UAM_ASSERT(first.Connect(&error));
 	UAM_ASSERT(second.Connect(&error));
 	const std::vector<std::string> waiting_command = {
