@@ -829,7 +829,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-working-summary__spinner {
   color: var(--blue);
-  animation: uam-spin 0.9s linear infinite;
+  opacity: 0.85;
 }
 
 .uam-working-summary[data-active="true"] {
@@ -935,7 +935,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-message-frame.is-streaming {
-  animation: uam-streaming-message 1.8s var(--ease) infinite;
+  box-shadow: -2px 0 0 var(--blue);
 }
 
 .uam-message-frame__actions {
@@ -969,16 +969,11 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-thinking-block[data-active="true"] > summary span:nth-child(2) {
-  animation: uam-pulse 1.6s var(--ease) infinite;
+  color: var(--blue);
 }
 
 .uam-attention-card {
   animation: uam-attention-in 180ms var(--ease);
-}
-
-@keyframes uam-streaming-message {
-  0%, 100% { box-shadow: -4px 0 12px color-mix(in srgb, var(--blue) 0%, transparent); }
-  50% { box-shadow: -4px 0 12px color-mix(in srgb, var(--blue) 18%, transparent); }
 }
 
 @keyframes uam-attention-in {
@@ -995,8 +990,6 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .uam-message-frame.is-streaming,
-  .uam-thinking-block[data-active="true"] > summary span:nth-child(2),
   .uam-attention-card {
     animation: none;
   }
@@ -1135,17 +1128,6 @@ summary,
 }
 
 /* ── Streaming cursor ─────────────────────────────────────── */
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
-}
-@keyframes sessionStatusSpin {
-  to { transform: rotate(360deg); }
-}
-@keyframes memoryActivityPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.72); }
-}
 .memory-activity-dot {
   position: absolute;
   right: 4px;
@@ -1155,7 +1137,6 @@ summary,
   border-radius: 999px;
   background: var(--accent);
   box-shadow: 0 0 0 1px var(--sidebar-bg);
-  animation: memoryActivityPulse 1.15s ease-in-out infinite;
 }
 .cursor-blink {
   display: inline-block;
@@ -1164,7 +1145,7 @@ summary,
   background: var(--accent);
   margin-left: 1px;
   vertical-align: text-bottom;
-  animation: blink 1.1s step-end infinite;
+  opacity: 0.8;
 }
 
 /* ── Message bubble markdown ──────────────────────────────── */
@@ -1259,10 +1240,7 @@ summary,
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  border: 1.5px solid color-mix(in srgb, var(--text-3) 45%, transparent);
-  border-top-color: var(--text);
-  animation: sessionStatusSpin 0.8s linear infinite;
-  will-change: transform;
+  border: 1.5px solid var(--blue);
 }
 
 .session-status--idle > span {
@@ -1412,11 +1390,6 @@ summary,
   }
 }
 
-@keyframes uam-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.85); }
-}
-
 .uam-dictation-button {
   border: 1px solid var(--border);
   background: var(--surface-up);
@@ -1443,11 +1416,7 @@ summary,
 }
 
 .uam-dictation-listening-indicator {
-  animation: uam-pulse 1.15s var(--ease) infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .uam-dictation-listening-indicator { animation: none; }
+  color: var(--red);
 }
 
 .uam-subagent-panel:hover {
@@ -1522,8 +1491,7 @@ summary,
 }
 .uam-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
-.uam-btn__spinner { animation: uam-spin 0.7s linear infinite; }
-@keyframes uam-spin { to { transform: rotate(360deg); } }
+.uam-btn__spinner { opacity: 0.85; }
 
 /* ── IconButton ─────────────────────────────────────────────── */
 .uam-iconbtn {
@@ -1564,16 +1532,13 @@ summary,
 .uam-computer-use-switch input:checked + .uam-switch__track { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 56%, var(--purple))); border-color: color-mix(in srgb, white 24%, var(--accent)); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent); }
 
 .uam-dictation-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
-.uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; animation: uam-dictation-bar .72s ease-in-out infinite alternate; }
-.uam-dictation-wave i:nth-child(2) { animation-delay: .18s; }
-.uam-dictation-wave i:nth-child(3) { animation-delay: .36s; }
+.uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; }
+.uam-dictation-wave i:nth-child(2n) { height: 10px; }
+.uam-dictation-wave i:nth-child(3n) { height: 8px; }
 .uam-dictation-wave--wide { gap: 3px; height: 18px; }
 .uam-dictation-wave--wide i { height: 6px; }
-.uam-dictation-wave--wide i:nth-child(4) { animation-delay: .12s; }
-.uam-dictation-wave--wide i:nth-child(5) { animation-delay: .3s; }
-.uam-dictation-wave--wide i:nth-child(6) { animation-delay: .06s; }
-.uam-dictation-wave--wide i:nth-child(7) { animation-delay: .24s; }
-@keyframes uam-dictation-bar { to { height: 13px; } }
+.uam-dictation-wave--wide i:nth-child(2n) { height: 13px; }
+.uam-dictation-wave--wide i:nth-child(3n) { height: 9px; }
 
 /* ── MenuSelect ─────────────────────────────────────────────── */
 .uam-menu-select__trigger {
