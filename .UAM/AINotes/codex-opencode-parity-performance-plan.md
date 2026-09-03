@@ -2,26 +2,28 @@
 
 ## Summary
 
-UAM can reach Codex-like responsiveness without replacing CEF. The separate Alpha-3 performance
-work already measured 8.9 ms input-to-paint p95 under streaming, 23.0 MiB renderer heap, and
-368.2 MiB process-tree RSS. The shortest route is to land that work, then close four product gaps:
+UAM can reach Codex-like responsiveness without replacing CEF. The earlier Alpha-3 performance
+measurement reached 8.9 ms input-to-paint p95 under streaming, 23.0 MiB renderer heap, and
+368.2 MiB process-tree RSS. That work has continued into the current Alpha-5 source. The shortest
+route is to checkpoint it, then close four product gaps:
 native Codex steering, provider-aware review, side chat, and dependable browser control.
 
 OpenCode cannot currently match Codex's native in-turn steering. UAM should expose Queue and
 Interrupt & send for OpenCode, not label interrupt plus restart as steering.
+
+Current implementation hold: no new features. Only the bug-fix and measured performance sections are active.
 
 ## Baseline and version correction
 
 | Item | Finding |
 | --- | --- |
 | Daily-driver build | Installed `4.9.0-alpha-2` |
-| Newest evidenced local candidate | Signed performance build `4.9.0-alpha-3` |
+| Current local candidate | Built and tested performance source `4.9.0-alpha-5` |
 | Current dirty source labels | `4.8.0-alpha-6` in several files |
 | Alpha-9 | Not found locally or in git history |
 
-Before feature work, make one root version value drive the native binary, React metadata, About UI,
-packaging, runner compatibility, and CI assertions. Do not guess Alpha-9. If Alpha-3 is the last real
-local build, the next local build is Alpha-4.
+Before further release builds, make one root version value drive the native binary, React metadata,
+About UI, packaging, runner compatibility, and CI assertions. Do not guess Alpha-9.
 
 ## Performance comparison
 
@@ -47,8 +49,15 @@ The measured performance worktree already contains the changes worth keeping:
 - `8c200c7a` and `3e114516`: omit empty collections. Message heap improved 37.15% and sanitizer peak heap improved 50.76%.
 - `84f02234`: spare-renderer experiment. Do not land it. `bb102fd4` reverted it as unstable.
 
-Review and cherry-pick only the proven commits after the performance worktree owner finishes. Preserve
-their small commit boundaries and do not copy uncommitted files from that worktree.
+The proven commits are already on the Alpha-5 performance branch. Preserve their small boundaries and
+checkpoint the remaining Alpha-5 working state before cross-branch integration.
+
+Work started on Alpha-5 on 2026-09-03:
+
+- `d4af0d1b`: keep the parsed pane-mode cache consistent when persistence fails.
+- `9f7ed071`: remove all continuously running CSS repaint loops while keeping static state indicators.
+- Verification: 637 frontend tests, 6 native test targets, production build, and strict code-sign check pass.
+- Safe idle sample: median CPU was 0.1% across 20 samples; the final five samples used about 425 to 434 MiB RSS.
 
 ## Required changes
 
@@ -66,9 +75,9 @@ growth above 10% in the soak.
 
 ### P0: Complete the existing performance integration
 
-Land the measured Alpha-3 commits first. Also review the owner worktree's still-uncommitted draft
-debounce and turn-identity work after it is finished. Measure each logical commit. Remove or revert a
-change that misses its gate.
+Retain the measured commits already in Alpha-5. Checkpoint its still-uncommitted draft debounce,
+turn-identity, runtime, and bug-fix work before broader integration. Measure each new logical commit.
+Remove or revert a change that misses its gate.
 
 Do not add process pooling. If provider processes remain material after the UI fix, retire only idle,
 invisible sessions after a small fixed timeout and resume them through the existing session ID.
