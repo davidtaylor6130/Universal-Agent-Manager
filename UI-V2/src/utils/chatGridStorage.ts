@@ -53,18 +53,27 @@ export function readChatViewMode(sessionId: string): 'chat' | 'cli' | null {
 
 export function writeChatViewMode(sessionId: string, viewMode: 'chat' | 'cli'): void {
   try {
-    localStorage.setItem(viewModeStorageKey, JSON.stringify({ ...readChatViewModes(), [sessionId]: viewMode }))
+    const modes = { ...readChatViewModes(), [sessionId]: viewMode }
+    const raw = JSON.stringify(modes)
+    localStorage.setItem(viewModeStorageKey, raw)
+    cachedViewModesRaw = raw
+    cachedViewModes = modes
   } catch {
     // The current pane still changes when storage is unavailable.
   }
 }
 
 function removeChatViewModes(sessionIds: Set<string>): void {
-  const modes = readChatViewModes()
+  const modes = { ...readChatViewModes() }
   let changed = false
   for (const sessionId of sessionIds) changed = delete modes[sessionId] || changed
   if (changed) {
-    try { localStorage.setItem(viewModeStorageKey, JSON.stringify(modes)) } catch { /* Best effort. */ }
+    try {
+      const raw = JSON.stringify(modes)
+      localStorage.setItem(viewModeStorageKey, raw)
+      cachedViewModesRaw = raw
+      cachedViewModes = modes
+    } catch { /* Best effort. */ }
   }
 }
 

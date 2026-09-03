@@ -51,6 +51,28 @@ describe('chat grid storage', () => {
     expect(readChatViewMode('chat-1')).toBeNull()
   })
 
+  it('reuses parsed view modes until storage changes', () => {
+    localStorage.setItem('uam-chat-view-modes-v1', JSON.stringify({ cached: 'cli' }))
+    const parse = vi.spyOn(JSON, 'parse')
+
+    expect(readChatViewMode('cached')).toBe('cli')
+    expect(readChatViewMode('cached')).toBe('cli')
+    expect(parse).toHaveBeenCalledTimes(1)
+
+    localStorage.setItem('uam-chat-view-modes-v1', JSON.stringify({ cached: 'chat' }))
+    expect(readChatViewMode('cached')).toBe('chat')
+    expect(parse).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps cached view modes when deleting them cannot be persisted', () => {
+    writeChatViewMode('chat-1', 'cli')
+    vi.spyOn(localStorage, 'setItem').mockImplementationOnce(() => { throw new Error('denied') })
+
+    removeChatsFromGrid(['chat-1'])
+
+    expect(readChatViewMode('chat-1')).toBe('cli')
+  })
+
   it('swaps an existing chat into a leaf and notifies subscribers', () => {
     let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
     const [first, second] = chatGridLeaves(layout.root)
