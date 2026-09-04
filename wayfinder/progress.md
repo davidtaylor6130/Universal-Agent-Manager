@@ -1793,3 +1793,376 @@ SSH-bridged architecture, with remote Computer Use disabled fail-closed.
   operations were provider-owned read/list APIs through the already approved Windows helper.
 - Status: `COMPLETE` — remote OpenCode and Codex old chats can be refreshed, opened, persisted, and
   restored through the Windows workspace UI.
+
+## 2026-08-29 — Remote release gates reopened for edge-case and responsiveness review
+
+- Destination: the SSH feature is release-ready only when concurrent remote work does not make the
+  controller UI perceptibly less responsive, every advertised remote capability is reachable from
+  the product UI, and the remaining physical-host journeys have explicit pass/fail evidence.
+- Fixed constraints for this review: documentation and read-only investigation only; do not edit
+  production code, build or replace the application, change chat/settings state, stop or restart the
+  currently running UAM instance, or mutate either remote host.
+- New user-reported gate `Q-SSH-001` — determine why interaction becomes less snappy while multiple
+  remote chats and background tasks are active. Measure and separate React rerender pressure, full
+  state-push/reconciliation cost, native polling cadence, SSH/helper polling, transcript size, and
+  notification/update work before choosing a fix. Acceptance must cover several simultaneous remote
+  chats with long transcripts and background activity, not an idle single-chat benchmark.
+- Reopened gate `Q-SSH-002` — make UAM Control reachable from the normal React workflow. The store
+  action and native handler exist, but the current UI has no production caller; ordinary new chats
+  default the authority off. A real Windows-helper MCP `initialize`, tool discovery, harmless tool
+  call, returned result, and clean teardown remain required after a user-visible authority workflow
+  exists.
+- Compatibility gate `Q-SSH-003` — decide and state the supported UAM Control matrix. Current code
+  supports Gemini/OpenCode/Copilot structured protocols, excludes Codex/Claude and terminal
+  fallback, publishes only UAM Control rather than arbitrary configured MCP servers remotely, and
+  implements the controller-side process proxy only on macOS. These must be either deliberately
+  documented product boundaries or closed parity gaps before release claims are broadened.
+- Physical-evidence gate `Q-SSH-004` — complete bounded disposable-host acceptance for remote VCS
+  status/diff/commit and the complete GUI-to-provider attachment path. Typed helper transport,
+  limits, rollback, and cleanup have automated evidence, but physical end-to-end evidence remains
+  incomplete under the present no-mutation constraint.
+- Security follow-up `Q-SSH-005` — record the Windows SSH server's non-post-quantum key-exchange
+  warning as environment hardening rather than a UAM transport defect, and determine whether UAM
+  should surface that diagnostic without blocking otherwise valid connections.
+- Navigation request `Q-UX-001` — Active Chats and Pinned Chats need independent visibility control.
+  Investigate collapsible section headers as the smallest default, persisted collapse state if it
+  materially improves repeated use, and a Settings toggle only if hiding the section entirely is a
+  distinct user need. Preserve attention-required visibility and keyboard/accessibility behavior.
+- Workspace-density request `Q-UX-002` — investigate replacing or augmenting the workspace
+  computer/server badge with its chat count. The design must retain machine identity where it
+  prevents local/remote ambiguity; prefer a compact count badge or combined machine/count treatment
+  over removing safety-relevant host information without evidence.
+- Current frontier: `Q-SSH-001`, `Q-SSH-002`, `Q-SSH-003`, `Q-SSH-004`, `Q-SSH-005`, `Q-UX-001`,
+  and `Q-UX-002`. Begin with a generic read-only SSH feature review covering UI/state flow, runtime
+  concurrency/recovery, and capability boundaries; accept only evidence-backed finding cards.
+- Status: `IN_PROGRESS` — gates recorded; no implementation is authorized.
+
+## 2026-08-29 — Read-only SSH edge-case and responsiveness review
+
+- Review boundary held: no production code, test, build, application instance, chat, setting,
+  remote helper, remote file, remote process, or GitHub state was changed. The running UAM instance
+  was not focused, stopped, restarted, profiled, or otherwise touched. Findings below come from
+  static end-to-end tracing and existing test/acceptance evidence; live causality remains a later
+  isolated acceptance gate.
+- Triage rule: `P1` means release-blocking safety, correctness, or responsiveness risk; `P2` means a
+  material defect that should follow before broad release confidence. Feature requests and explicit
+  product limits remain separate from defects.
+
+### Accepted finding cards
+
+#### `SSH-EDGE-001` — remote stop can leave the provider running
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: if `process.poll` has accepted a request but withholds its response, stopping
+  the chat waits about one second for the local proxy and then kills that proxy. The helper may never
+  receive `process.stop` or `process.remove`, so the remote provider can continue after UAM reports
+  the chat stopped.
+- Evidence/root cause: `src/common/runtime/acp/acp_session_runtime.cpp:1464-1484` uses the proxy's
+  stdin control and a bounded local-process wait; `src/remote/runner_proxy.cpp:372-465` only consumes
+  that control between synchronous polls; `src/remote/runner_client.cpp:181-230` can block for 15
+  seconds; helper processes persist until explicit cleanup in `src/remote/runner_state.cpp:585-692`.
+  Stop authority shares the same potentially blocked data path, and killing the controller is
+  incorrectly treated as cleanup of the controlled process.
+- Two-hop blast radius: UI cancel/timeout -> local ACP stop -> blocked proxy poll -> local proxy kill
+  -> helper-owned provider and spool remain live -> remote tool or code execution may continue.
+- Required regression/smallest shared fix: stall polling on one connection, stop through a separate
+  control path, and require acknowledged helper-side stop/remove plus a dead remote PID before local
+  lifecycle becomes stopped. Make stop out-of-band or cancellably multiplexed; do not equate proxy
+  termination with remote cleanup.
+
+#### `SSH-EDGE-002` — helper update can terminate active work without warning
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: selecting **Update helper** while any chat, terminal, MCP relay, or VCS worker
+  is active restarts the shared helper, terminates all helper-managed processes, and removes their
+  spools. The UI and backend have no active-work guard or destructive confirmation.
+- Evidence/root cause: `UI-V2/src/components/layout/UpdatesPanel.tsx:152-168` gates only on another
+  update; `UI-V2/src/hooks/useUpdateMonitor.ts:91-103` forwards directly to installation;
+  `src/cef/remote_host_handlers.cpp:100-165` has no host-activity preflight; bootstrap stops the
+  service in `src/remote/runner_bootstrap.cpp:263-307`; `RunnerState` teardown terminates all
+  processes and removes spools in `src/remote/runner_state.cpp:310-331`. A destructive shared-service
+  restart is exposed as an ordinary update.
+- Two-hop blast radius: Updates -> helper stop -> every same-host process/spool -> active turns,
+  terminal work, MCP, and VCS lose execution or output -> local sessions surface unrelated failures.
+- Required regression/smallest shared fix: with active work on host H, installation must return a
+  specific conflict and issue no service shutdown; once idle, it must proceed. Put the authoritative
+  preflight in the native install boundary and mirror the reason in the button state. Add a force
+  route only if a separately confirmed need exists.
+
+#### `SSH-EDGE-003` — failed helper update is not transactional
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: begin with a ready helper, force activation or protocol verification to fail,
+  and the known-good host record is replaced by an `error` record with observed version/platform/
+  protocol data cleared; the previous helper may already have been stopped and is not restored.
+- Evidence/root cause: `RemoteHostFromPayload` resets observed metadata in
+  `src/cef/remote_host_handlers.cpp:26-34`; the live record is overwritten before setup at lines
+  119-132 and failure only changes status at 147-160. Bootstrap stops the old helper before replacing
+  and verifying the new one in `src/remote/runner_bootstrap.cpp:263-307`, with no rollback. Persisted
+  configuration and helper activation are not one transaction.
+- Two-hop blast radius: update request -> eager host overwrite and helper stop -> verification failure
+  -> host remains non-ready -> directory browsing, history, VCS, attachments, and new remote chats all
+  reject the host.
+- Required regression/smallest shared fix: seed a working old helper, fail verification after
+  activation, and require either restored old helper plus metadata or a verified new helper. Preserve
+  the prior record/version and roll back activation before publishing failure state.
+
+#### `SSH-EDGE-004` — one slow helper request blocks every chat on that host
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: block client A in a slow `file.copy`, directory iteration, upload, or process
+  write; client B's unrelated process or MCP poll cannot enter the dispatcher and may hit its 15
+  second response timeout.
+- Evidence/root cause: POSIX and Windows share one `RunnerState` across client threads
+  (`src/remote/runner_service_posix.cpp:274-320`, `runner_service_windows.cpp:185-222`).
+  `RunnerState::HandleProcessRequest` takes the global state mutex at
+  `src/remote/runner_state.cpp:334-337` and holds it across filesystem and process I/O through the
+  request paths at lines 338-726. `RunnerClient` times out at 15 seconds. A container mutex is also
+  being used as a global I/O mutex.
+- Two-hop blast radius: one attachment/VCS/directory/process request -> shared helper lock -> all
+  other chat/MCP polls stall -> unrelated clients time out/disconnect -> reconnect and remote-stop
+  failure paths become more likely.
+- Required regression/smallest shared fix: block one injected I/O operation and require another
+  session's poll to complete within a tight latency bound. Hold the global lock only for map
+  ownership changes, retain safe process lifetime, and perform I/O under the existing per-process
+  lock where applicable.
+
+#### `SSH-EDGE-005` — helper health and version become stale after installation
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: take an installed `ready` helper offline, then browse directories, refresh
+  history, stage an attachment, or use VCS without an active runtime. The caller gets an inline error,
+  but the host remains `ready`, New Chat stays enabled, Updates trusts old metadata, and Notifications
+  receives no disconnect or later recovery.
+- Evidence/root cause: production host status is assigned only during installation in
+  `src/cef/remote_host_handlers.cpp:120-160`; ordinary failed requests such as directory listing at
+  lines 208-255 do not record health. UI gating trusts that state, while Notifications only recognizes
+  `offline`/`error` or selected session transport errors in
+  `UI-V2/src/components/layout/AppShell.tsx:73-87`. Install status is incorrectly treated as live
+  health; no shared handshake-result boundary feeds host state.
+- Two-hop blast radius: helper outage -> operation-local failure -> no host mutation/state push ->
+  workspace/new-chat/update/notification decisions continue from stale readiness.
+- Required regression/smallest shared fix: fail a non-session handshake and assert one transition to
+  offline/one disconnect notification; then succeed and assert refreshed metadata plus one recovery
+  notification. Centralize debounced handshake results and update only on transitions or coarse
+  heartbeat, never on each 10 ms poll.
+
+#### `SSH-EDGE-006` — a new remote Git repository cannot make its first commit
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: run `git init` in a remote workspace, add an untracked file, and commit it
+  through UAM before Git has created `.git/index`; the VCS operation fails before staging.
+- Evidence/root cause: remote commit unconditionally copies the index at
+  `src/app/vcs_commit_service.cpp:1370-1419`; runner `file.copy` rejects a missing source at
+  `src/remote/runner_state.cpp:403-424`. The local implementation already records whether the index
+  existed. Remote index preservation assumes a file that a valid new repository does not yet have.
+- Two-hop blast radius: VCS panel -> remote commit service -> runner copy -> `not_found` -> no `git
+  add` or commit -> user cannot commit initial remote work in UAM.
+- Required regression/smallest shared fix: runner-backed temporary `git init` plus one untracked file
+  must commit and restore the no-prior-index state. Give remote capture/restore the same optional-index
+  semantics as the existing local snapshot.
+
+#### `SSH-EDGE-007` — remote transcript hydration failure looks like an empty chat
+
+- Severity: `P2`; confidence: high.
+- Symptom/reproduction: import a remote OpenCode or Codex chat, disconnect the helper, and open the
+  unhydrated chat. Native returns a clear 409/502 failure, but the renderer discards it and the chat
+  can appear genuinely empty with no retry.
+- Evidence/root cause: native errors are returned in `src/cef/chat_handlers.cpp:178-213`; the frontend
+  early-returns on non-OK responses without storing an error in
+  `UI-V2/src/store/slices/sessionsSlice.ts:205`; `MainPanel` only triggers the load. The lazy-loading
+  error contract has no frontend state or view.
+- Two-hop blast radius: chat selection -> remote history loader -> CEF failure -> discarded response
+  -> unchanged empty transcript -> user cannot distinguish no history from failed retrieval.
+- Required regression/smallest shared fix: mock a failed message load and require a visible per-chat
+  error with retry while retaining any existing messages. Track only the minimal load status/error
+  needed by the chat view.
+
+#### `SSH-EDGE-008` — partial remote history success is reported as total failure
+
+- Severity: `P2`; confidence: high.
+- Symptom/reproduction: on a remote host with OpenCode available and Codex unavailable, rescan a
+  workspace containing an OpenCode chat. The chat imports, but the UI says **Could not rescan**.
+- Evidence/root cause: native deliberately returns successful imports with `partial:true` and
+  `success:false` in `src/cef/folder_handlers.cpp:378-410`; the store collapses every `success:false`
+  to boolean false in `UI-V2/src/store/slices/foldersSlice.ts:160`; `FolderTree` renders the generic
+  failure at line 531. Structured partial success is discarded.
+- Two-hop blast radius: Rescan -> dual-provider discovery -> one provider imports chats and one fails
+  -> chats appear in state while response becomes false -> UI contradicts the actual result.
+- Required regression/smallest shared fix: preserve the existing structured result and render success,
+  partial success, and failure distinctly; do not invent a second rescan protocol.
+
+#### `SSH-PERF-001` — UI-thread state-push cost scales with every chat
+
+- Severity: `P1`; confidence: high for the scaling defect, pending live attribution for the user's
+  exact lag.
+- Symptom/reproduction: compare one active chat with 10 versus 100 representative saved chats. A
+  changed tick reconstructs and stringifies every visible chat before sending an incremental patch,
+  on the CEF UI thread and as often as every 16 ms for a selected running chat.
+- Evidence/root cause: `src/app/application.cpp:231-245,316-388` schedules and runs the full poll on
+  `TID_UI`; `src/cef/cef_push.cpp:191-255,436` builds the complete fingerprint and dumps every chat;
+  `src/cef/state_serializer.cpp:1003-1048,1365-1394` walks full ACP summaries/goals for every chat.
+  Incremental delivery is preceded by full-state reconstruction and comparison.
+- Two-hop blast radius: provider/helper activity -> UI-thread poll -> all-chat fingerprint/diff -> CEF
+  renderer delivery is delayed -> pointer, keyboard, navigation, and paint responsiveness degrade.
+- Required regression/smallest shared fix: benchmark a one-chat runtime mutation across increasing
+  chat counts and enforce a bounded UI-thread serialization budget. Retain the existing patch
+  protocol but cache per-chat/top-level fingerprints and rebuild only dirty slices.
+
+#### `SSH-PERF-002` — remote polling and empty spool work scale at about 100 Hz per chat
+
+- Severity: `P2`; confidence: high.
+- Symptom/reproduction: connect idle remote structured chats to an immediate-response helper and
+  count frames/disk operations for one second. Each process proxy polls every 10 ms; UAM Control can
+  add a similar channel cadence; helper drainers also wake every 10 ms and perform empty spool work.
+- Evidence/root cause: fixed waits appear in `src/remote/runner_proxy.cpp:96-149,372-465,470-610`;
+  process polls open/read/check both spools in `src/remote/runner_state.cpp:695-726`; drainers and
+  `AppendSpool` run at lines 194-294 and do not short-circuit empty output. Fixed polling is the idle
+  strategy at several layers.
+- Two-hop blast radius: each idle chat -> SSH/helper poll plus spool metadata work -> shared dispatcher
+  contention/CPU/network/disk load -> concurrent chat latency and controller snappiness worsen
+  linearly.
+- Required regression/smallest shared fix: assert a bounded idle request count, no append/flush for
+  empty output, and prompt wake-up after injecting data. First skip empty writes, then use capped
+  adaptive idle backoff reset immediately by input/output; introduce long-polling only if measurement
+  shows the simpler route cannot meet latency.
+
+#### `SSH-PERF-003` — root React subscriptions turn background chat changes into shell renders
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: run several structured chats, update only an unrelated background chat's
+  tool/turn state, and observe that the application shell rerenders even with Notifications and
+  Updates closed.
+- Evidence/root cause: state patches replace changed ACP binding records in
+  `UI-V2/src/store/useAppStore.ts:392-482`; `AppShell` subscribes to entire session and binding maps at
+  `UI-V2/src/components/layout/AppShell.tsx:429-443` to derive connection issues; major child
+  boundaries are not memoized. High-churn runtime state is consumed at the application root.
+- Two-hop blast radius: one ACP/helper event -> full binding-map replacement -> AppShell render ->
+  Sidebar, MainPanel, rails, and navigation reconcile -> interaction response competes with background
+  work.
+- Required regression/smallest shared fix: profile an unrelated-chat update and require the shell/
+  navigation boundary not to commit while the relevant chat pane still updates. Move the connection
+  issue subscription into a memoized notification boundary and consume a compact error signature.
+
+#### `SSH-PERF-004` — sidebar does all-chat work and mounts promoted duplicates
+
+- Severity: `P2`; confidence: high.
+- Symptom/reproduction: with many chats and several active/pinned, stream one chat and inspect
+  selector/grouping calls and mounted rows. Runtime projection maps and JSON-stringifies every chat;
+  promoted Active/Pinned entries are mounted in addition to their normal workspace rows.
+- Evidence/root cause: `UI-V2/src/components/sidebar/FolderTree.tsx:65-79` performs all-chat work in a
+  Zustand selector; `chatSearch.ts:191` rebuilds/sorts the collection; Active/Pinned duplicate rows at
+  `FolderTree.tsx:585-614`; each `SessionItem` has its own store selectors. The duplication is tested
+  and intentional, but its cost is not bounded.
+- Two-hop blast radius: any store evaluation -> all-session status projection; runtime change -> full
+  grouping/sort -> duplicate row subscriptions/rendering -> sidebar input and scrolling slow down.
+- Required regression/smallest shared fix: with 100 chats, a message-only change must not recompute
+  status grouping. Move all-chat work out of the selector and derive only on relevant status changes;
+  collapsing Active/Pinned should unmount their promoted duplicates.
+
+#### `UI-PERF-005` — long transcripts rebuild every visible message row while streaming
+
+- Severity: `P2`; confidence: high.
+- Symptom/reproduction: open a 200-message transcript and stream a response; unchanged historical
+  rows are reconstructed on every 48 ms buffered update.
+- Evidence/root cause: `UI-V2/src/store/push/pushBuffers.ts:11` flushes tokens at 48 ms;
+  `UI-V2/src/components/views/ChatView.tsx:666,2022` keeps and maps up to 200 messages;
+  `MessageFrame` and persisted content lack stable memoized row boundaries. The transcript has a count
+  cap, but not a stable row boundary.
+- Two-hop blast radius: token buffer -> messages array replacement -> ChatView render -> all visible
+  message rows reconcile/layout -> composer and navigation response degrades.
+- Required regression/smallest shared fix: assert that an unchanged historical row renders once while
+  only the final streaming row updates. Add one memoized persisted-message row with stable callbacks;
+  do not add virtualization unless profiling later proves it necessary.
+
+### Resolved product decisions and acceptance gaps
+
+- `Q-UX-001`: Active Chats and Pinned Chats are currently static headings, while the existing
+  Unsorted section already provides the native accessible collapse pattern. Independent collapsible
+  headers are the smallest next implementation; a Settings switch remains unnecessary unless
+  permanent hiding proves distinct. A collapsed Active section must keep counts/attention visible and
+  must not conceal a permission or user-input request without an obvious recovery action.
+- `Q-UX-002`: workspace rows already show both a safety-relevant local/remote machine icon and a
+  numeric chat count (`FolderTree.tsx:1599-1623`). This is a density request, not a missing feature.
+  Preserve host identity and combine machine plus count into one compact badge rather than replacing
+  the machine indicator outright.
+- Remote Computer Use remains deliberately fail-closed and is not a defect. Configured workspace MCP
+  servers are explicitly local-only; remote sessions currently receive the portable UAM Control
+  relay, not arbitrary custom MCP parity. Remote directory attachments are rejected with clear file-
+  only guidance; remote file attachments are bounded, verified, and cleaned after partial failure.
+- Remote history discovery/hydration currently covers OpenCode and Codex only. Gemini, Claude, and
+  Copilot remote history are unimplemented acceptance gaps, not regressions in the current advertised
+  path. Static routing exists for all five provider launches, but installation, authentication, and
+  platform-specific runtime behavior remain unverified in this read-only pass.
+- `Q-SSH-002` remains open: UAM Control has a backend/store route but no normal production UI caller,
+  so the physical MCP acceptance journey cannot begin from an ordinary user-visible authority flow.
+  `Q-SSH-004` also remains open for physical VCS and complete GUI-to-provider attachment acceptance.
+
+### Next actionable route — no implementation authorized yet
+
+1. Close `SSH-EDGE-001` through `SSH-EDGE-004` first: remote stop authority, active-work update guard,
+   transactional update rollback, and helper lock scope are the safety/concurrency foundation.
+2. Close `SSH-EDGE-005` and `SSH-PERF-002` together at the runner-client health/cadence boundary, then
+   prove disconnect/reconnect notifications without adding another high-frequency poll.
+3. Close `SSH-PERF-001`, `SSH-PERF-003`, `SSH-PERF-004`, and `UI-PERF-005` with isolated profiler and
+   benchmark evidence. Preserve the current patch protocol and existing UI patterns; do not add a new
+   state framework, virtualization, or helper protocol until the smallest measured fixes fail.
+4. Close `SSH-EDGE-006` through `SSH-EDGE-008`, then complete the disposable physical VCS,
+   attachment, and UAM Control acceptance journeys under fresh exact approvals.
+5. Implement the independent Active/Pinned collapse controls and compact machine/count badge only
+   after the release-blocking runtime route is stable.
+- Status: `ROUTE_CLEAR_FOR_LATER_IMPLEMENTATION` — the generic read-only review is complete; the
+  running instance remains untouched and the current task authorizes documentation only.
+
+## 2026-08-29 — Goal reporting and mid-turn steering follow-up
+
+### `GOAL-REPORT-001` — a goal can remain visibly stuck at Planning after work starts
+
+- Severity: `P1`; confidence: high.
+- Symptom/reproduction: start a UAM-managed goal whose reviewer returns `continue` without a
+  `progressUpdate`. The worker can continue, but the banner has no plan items and remains labelled
+  **Planning**, so real progress is not reported back.
+- Evidence/root cause: `src/app/goal_service.cpp:747-765` treats `progressUpdate` as optional;
+  `src/common/runtime/acp/acp_goal_helpers.cpp:108-130` only applies progress when it is present; the
+  repair prompt in `src/common/runtime/acp/acp_goal_loop.cpp:313-318` does not restate that required
+  structure. `UI-V2/src/components/chat/GoalBanner.tsx:153-157` correctly renders an active goal with
+  zero items as Planning. The parser/reviewer contract permits a state the UI can only describe as
+  pre-work planning.
+- Required regression/smallest shared fix: reject or repair the first `continue` review unless it
+  includes a non-empty `progressUpdate` defining the actionable plan, and include that requirement in
+  the repair prompt. Keep the existing banner and persistence path; do not invent a second progress
+  channel.
+
+### `CHAT-UX-STEER-001` — steering is rendered as a completed turn boundary
+
+- Severity: `P2`; confidence: high; scope: overall UAM transcript UX, not SSH-specific.
+- Symptom/reproduction: while an assistant is working, use **Steer with this prompt now**. UAM
+  interrupts the provider, closes the current Working collapsible, renders the steering text as a
+  normal top-level user message, and starts another Working section. The timeline therefore implies
+  that one conversation turn ended normally and another began, even though the user intervened in
+  the same piece of work.
+- Evidence/root cause: `src/common/runtime/acp/acp_session_runtime.cpp:985-1024` deliberately
+  implements provider-neutral steering as interrupt plus a priority prompt. When that prompt starts,
+  `StartAcpUserPromptBatch` at lines 553-676 resets the turn stream and `AppendQueuedUserMessages` at
+  lines 528-550 persists it as an ordinary user `Message`. `priority_steer` exists only on the
+  transient queue entry in `src/common/state/app_state.h:294`; the persisted `Message` model at
+  `src/common/models/app_models.h:69-91` retains no steering provenance. The regression at
+  `tests/acp_session_tests.cpp:5076-5155` explicitly requires the steering prompt to become the next
+  ordinary user message. `MessageBlocks` can only group events belonging to one assistant message,
+  so the frontend has no reliable basis for rendering the intervention as one continuous activity.
+- Product verdict: valid and worthwhile. The provider transport should remain interrupt plus next
+  prompt for universal compatibility; the defect is that transcript storage and visual hierarchy
+  discard the causal meaning of that prompt. A steer is user-authored input during active work, not
+  assistant output and not a normal completed-turn boundary.
+- Smallest future implementation: persist one durable interaction marker on the existing user
+  message (for example `interaction_kind: "steer"`). Derive a composite activity group in the
+  renderer for `[interrupted assistant, steering user message, continuation assistant]`, displaying
+  the steer as an inline, clearly user-authored entry inside the same Working collapsible. Preserve
+  the underlying ordered messages and provider turns. Do not move or duplicate the prompt into an
+  assistant block, and do not attempt provider-specific live prompt injection.
+- Required regression: cover one and multiple consecutive steers, compact and verbose Working modes,
+  attachments and selected skills, restart/save/load, import/export, branch/retry/rollback indices,
+  cancelled tool states, screen-reader labelling, and queued prompts that were never promoted to a
+  steer. Normal queued prompts must continue to create normal user/assistant turn boundaries.
+- Status: `ROUTE_CLEAR_FOR_LATER_IMPLEMENTATION` — investigation and documentation only; no runtime,
+  UI, build, test, remote-host, or running-instance changes were made.
