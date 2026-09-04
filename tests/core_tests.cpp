@@ -1012,6 +1012,208 @@ UAM_TEST(AgentRunSchedulerRejectsCyclesDepthFanoutAndCancelsDescendants)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 }
 
+UAM_TEST(AgentRunCancellationPreservesAnUnconfirmedRemoteManagedTurn)
+{
+	TempDir temp("uam-agent-cancel-unconfirmed-remote-stop");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	transcript.execution_host_id = "ssh-test";
+	transcript.remote_turn_reconnect_pending = true;
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review the remote turn.";
+	run.effective_workspace_access = "read";
+	run.status = "running";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = transcript.id;
+	session->managed_agent_run_id = run.id;
+	session->managed_launch_attempted = true;
+	session->running = true;
+	session->processing = true;
+	session->prompt_request_id = 7;
+	std::string process_error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 70"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &process_error));
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "stopping"));
+	UAM_ASSERT(app.acp_sessions.front()->remote_stop_pending);
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.acp_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.back().remote_turn_reconnect_pending);
+	UAM_ASSERT(app.acp_sessions.front()->processing);
+	UAM_ASSERT(app.acp_sessions.front()->recovering_remote_turn);
+	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+	const auto saved = uam::AgentRunLedger::LoadAll(app.data_root).runs;
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().status, std::string("running"));
+}
+
+UAM_TEST(AgentRunCancellationRetriesWithoutPublishingAPhantomTerminalState)
+{
+	TempDir temp("uam-agent-cancel-transactional");
+	uam::AppState app;
+	const fs::path data_root = temp.root / "data";
+	app.data_root = data_root;
+
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review the turn.";
+	run.effective_workspace_access = "read";
+	run.status = "running";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	app.data_root = blocked_root;
+	std::string error;
+	UAM_ASSERT(!uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT(app.agent_runs.front().finished_at.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+
+	app.data_root = data_root;
+	UAM_ASSERT(uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	const auto saved = uam::AgentRunLedger::LoadAll(app.data_root).runs;
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().status, std::string("cancelled"));
+}
+
+UAM_TEST(AgentRunCancellationWaitsForAConfirmedRemoteStopMarkerSave)
+{
+	TempDir temp("uam-agent-cancel-stop-save-retry");
+	uam::AppState app;
+	const fs::path data_root = temp.root / "data";
+	app.data_root = data_root;
+
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	transcript.execution_host_id = "ssh-test";
+	transcript.remote_turn_reconnect_pending = true;
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review the remote turn.";
+	run.effective_workspace_access = "read";
+	run.status = "running";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.back()));
+	app.agent_runs.push_back(run);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = transcript.id;
+	session->managed_agent_run_id = run.id;
+	session->managed_launch_attempted = true;
+	session->running = true;
+	session->processing = true;
+	session->prompt_request_id = 7;
+	std::string process_error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &process_error));
+	app.acp_sessions.push_back(std::move(session));
+
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	app.data_root = blocked_root;
+	std::string error;
+	UAM_ASSERT(!uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT(app.acp_sessions.front()->managed_cancellation_pending);
+	UAM_ASSERT(!app.acp_sessions.front()->remote_stop_pending);
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(transcript.id));
+	UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(app, 1000));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+
+	app.data_root = data_root;
+	uam::FlushPendingChatSaves(app, true);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	(void)uam::AgentRunScheduler::PollAtForTests(app, 1001);
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(uam::AgentRunScheduler::PollAtForTests(app, 1002));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.acp_sessions.empty());
+}
+
 UAM_TEST(AgentRunSchedulerKeepsMixedProviderChildrenInsideTheParentAccessCeiling)
 {
 	TempDir temp("uam-agent-mixed-provider-matrix");
@@ -1808,6 +2010,51 @@ UAM_TEST(ChatProviderSwitchRejectsActiveAcpTurnAndWait)
 	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, app.provider_profiles[1].id), uam::ChatProviderSwitchResult::ActiveRuntime);
 	UAM_ASSERT_EQ(app.chats.front().provider_id, app.provider_profiles[0].id);
 	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("keep-native"));
+}
+
+UAM_TEST(ChatProviderSwitchWaitsAcrossRepeatedRemoteStopRetries)
+{
+	TempDir temp("uam-provider-switch-remote-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(app.provider_profiles.size() >= 2);
+	ChatSession chat;
+	chat.id = "chat-switch-remote";
+	chat.provider_id = app.provider_profiles[0].id;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	const std::string target_provider_id = app.provider_profiles[1].id;
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, target_provider_id),
+	              uam::ChatProviderSwitchResult::RuntimeStopping);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, target_provider_id),
+	              uam::ChatProviderSwitchResult::RuntimeStopping);
+	UAM_ASSERT_EQ(app.chats.front().provider_id, chat.provider_id);
+	UAM_ASSERT_EQ(app.acp_sessions.size(), static_cast<std::size_t>(1));
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, target_provider_id),
+	              uam::ChatProviderSwitchResult::Changed);
 }
 
 UAM_TEST(ChatProviderSwitchSaveFailureRollsBackAndLeavesIdleRuntime)
@@ -2999,6 +3246,22 @@ UAM_TEST(ApplicationLifecycleGuardsSettingsAndCefTeardown)
 	UAM_ASSERT(cef_app.find("FailStartup(\"Failed to create the application browser view.\")") != std::string::npos);
 }
 
+UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string source = ReadFile(source_root / "src/cef/remote_host_handlers.cpp");
+	const std::size_t guard = source.find("bool HostHasActiveRuntimeWork");
+	const std::size_t handler = source.find("void UamQueryHandler::HandlePreviewRemoteHost", guard);
+	UAM_ASSERT(guard != std::string::npos);
+	UAM_ASSERT(handler != std::string::npos);
+	const std::string body = source.substr(guard, handler - guard);
+	UAM_ASSERT(body.find("chat.remote_stop_cleanup_pending") != std::string::npos);
+	UAM_ASSERT(body.find("session->remote_stop_pending") != std::string::npos);
+	UAM_ASSERT(body.find("session->remote_stop_unconfirmed") != std::string::npos);
+	UAM_ASSERT(body.find("session->reconnect_pending") != std::string::npos);
+	UAM_ASSERT(body.find("app.pending_acp_remote_stops") != std::string::npos);
+}
+
 UAM_TEST(AcpPollingDrainsBufferedCompletionBeforeCancelTimeout)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
@@ -3083,6 +3346,29 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 	                "const AppSettings previous = m_app.settings;", "m_app.settings.default_editor_preset_id =", "m_app.settings = previous;");
 	assert_rollback(markdown, "void UamQueryHandler::HandleSetMarkdownStoreDirectory", "void UamQueryHandler::HandleListMarkdownStoreEntries",
 	                "const std::string previous_directory = m_app.settings.markdown_store_directory;", "m_app.settings.markdown_store_directory =", "m_app.settings.markdown_store_directory = previous_directory;");
+}
+
+UAM_TEST(GoalHandlersDoNotRestoreStateAfterIrreversibleCancellation)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string source = ReadFile(source_root / "src/cef/goal_handlers.cpp");
+	const auto handler = [&](std::string_view start_text, std::string_view end_text)
+	{
+		const std::size_t start = source.find(start_text);
+		const std::size_t end = end_text.empty() ? source.size() : source.find(end_text, start);
+		UAM_ASSERT(start != std::string::npos);
+		UAM_ASSERT(end != std::string::npos);
+		return source.substr(start, end - start);
+	};
+
+	const std::string status = handler("void UamQueryHandler::HandleUpdateGoalStatus",
+	                                   "void UamQueryHandler::HandleUpdateGoalObjective");
+	const std::string remove = handler("void UamQueryHandler::HandleRemoveGoal", "");
+	UAM_ASSERT(status.find("previous_chat, cb, !work_changed") != std::string::npos);
+	UAM_ASSERT(source.find("uam::acp_detail::ScheduleChatSave(app, *chat, 0.0)") != std::string::npos);
+	UAM_ASSERT(remove.find("const bool restore_on_failure = !work_changed") != std::string::npos);
+	UAM_ASSERT(remove.find("previous_chat, cb, restore_on_failure") != std::string::npos);
+	UAM_ASSERT(remove.find("if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);") != std::string::npos);
 }
 
 UAM_TEST(CopilotEffortChangingModelSwitchRejectsBusyAndStopsIdleRuntime)
@@ -4522,6 +4808,7 @@ UAM_TEST(ChatRepositoryPersistsRemoteTurnReconnectMarker)
 	UAM_ASSERT(uam::io::WriteTextFile(chat_file, R"({
   "id": "remote-chat",
   "provider_id": "codex-cli",
+  "execution_host_id": "ssh-test",
   "title": "Remote",
   "created_at": "2026-01-01 00:00:00",
   "updated_at": "2026-01-01 00:00:01",
@@ -4533,10 +4820,78 @@ UAM_TEST(ChatRepositoryPersistsRemoteTurnReconnectMarker)
 	UAM_ASSERT(!loaded->remote_turn_reconnect_pending);
 
 	loaded->remote_turn_reconnect_pending = true;
+	loaded->remote_process_exists = true;
+	loaded->remote_stop_cleanup_pending = true;
+	loaded->remote_restart_pending = true;
+	loaded->remote_process_control_token = "persisted-control-token";
+	loaded->remote_delivered_stdout_cursor = 123;
+	loaded->remote_delivered_stderr_cursor = 45;
+	loaded->remote_source_exit_pending = true;
+	loaded->remote_source_exit_code = 70;
+	loaded->remote_uam_control_channel_id = "stable-control-channel";
+	loaded->remote_interaction_responses.push_back(
+	    {"request-7", R"({"jsonrpc":"2.0","id":7,"result":{}})"});
+	loaded->remote_prompt_delivery_session_id = "acp-remote-chat";
+	loaded->remote_prompt_delivery_id = "delivery-7";
+	loaded->remote_prompt_delivery_payload = "{\"id\":7}\n";
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "persist this steer";
+	queued.priority_steer = true;
+	queued.goal_mode = true;
+	queued.goal_id = "goal-1";
+	loaded->acp_queued_prompts.push_back(queued);
+	loaded->acp_dispatched_queued_prompt_count = 1;
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *loaded));
 	loaded = ChatRepository::LoadLocalChat(temp.root, "remote-chat");
 	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT(loaded->remote_turn_reconnect_pending);
+	UAM_ASSERT(loaded->remote_process_exists);
+	UAM_ASSERT(loaded->remote_stop_cleanup_pending);
+	UAM_ASSERT(loaded->remote_restart_pending);
+	UAM_ASSERT_EQ(loaded->remote_process_control_token,
+	              std::string("persisted-control-token"));
+	UAM_ASSERT_EQ(loaded->remote_delivered_stdout_cursor, static_cast<std::uintmax_t>(123));
+	UAM_ASSERT_EQ(loaded->remote_delivered_stderr_cursor, static_cast<std::uintmax_t>(45));
+	UAM_ASSERT(loaded->remote_source_exit_pending);
+	UAM_ASSERT_EQ(loaded->remote_source_exit_code, 70);
+	UAM_ASSERT_EQ(loaded->remote_uam_control_channel_id,
+	              std::string("stable-control-channel"));
+	UAM_ASSERT_EQ(loaded->remote_interaction_responses.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded->remote_interaction_responses.front().request_id_json,
+	              std::string("request-7"));
+	UAM_ASSERT_EQ(loaded->remote_prompt_delivery_session_id,
+	              std::string("acp-remote-chat"));
+	UAM_ASSERT_EQ(loaded->remote_prompt_delivery_id, std::string("delivery-7"));
+	UAM_ASSERT_EQ(loaded->remote_prompt_delivery_payload, std::string("{\"id\":7}\n"));
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().text,
+	              std::string("persist this steer"));
+	UAM_ASSERT(loaded->acp_queued_prompts.front().priority_steer);
+	UAM_ASSERT_EQ(loaded->acp_dispatched_queued_prompt_count,
+	              static_cast<std::size_t>(1));
+
+	loaded->execution_host_id = "local";
+	loaded->imported_read_only = true;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *loaded));
+	loaded = ChatRepository::LoadLocalChat(temp.root, "remote-chat");
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(!loaded->remote_turn_reconnect_pending);
+	UAM_ASSERT(!loaded->remote_process_exists);
+	UAM_ASSERT(!loaded->remote_stop_cleanup_pending);
+	UAM_ASSERT(!loaded->remote_restart_pending);
+	UAM_ASSERT(loaded->remote_process_control_token.empty());
+	UAM_ASSERT_EQ(loaded->remote_delivered_stdout_cursor, static_cast<std::uintmax_t>(0));
+	UAM_ASSERT_EQ(loaded->remote_delivered_stderr_cursor, static_cast<std::uintmax_t>(0));
+	UAM_ASSERT(!loaded->remote_source_exit_pending);
+	UAM_ASSERT_EQ(loaded->remote_source_exit_code, -1);
+	UAM_ASSERT(loaded->remote_uam_control_channel_id.empty());
+	UAM_ASSERT(loaded->remote_interaction_responses.empty());
+	UAM_ASSERT(loaded->remote_prompt_delivery_session_id.empty());
+	UAM_ASSERT(loaded->remote_prompt_delivery_id.empty());
+	UAM_ASSERT(loaded->remote_prompt_delivery_payload.empty());
+	UAM_ASSERT(loaded->acp_queued_prompts.empty());
+	UAM_ASSERT_EQ(loaded->acp_dispatched_queued_prompt_count,
+	              static_cast<std::size_t>(0));
 }
 
 UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToCommandSafetyTier)
@@ -5266,6 +5621,10 @@ UAM_TEST(LocalChatBundleImportStripsLocalExecutionAuthority)
 	exported.provider_id = "codex-cli";
 	exported.native_session_id = "provider-session";
 	exported.execution_host_id = "ssh-remote";
+	exported.remote_turn_reconnect_pending = true;
+	exported.remote_restart_pending = true;
+	exported.remote_delivered_stdout_cursor = 123;
+	exported.remote_delivered_stderr_cursor = 45;
 	exported.folder_id = "local-folder";
 	exported.workspace_directory = "/private/tmp/sensitive";
 	exported.workspace_isolation_kind = "gitWorktree";
@@ -5298,6 +5657,10 @@ UAM_TEST(LocalChatBundleImportStripsLocalExecutionAuthority)
 	UAM_ASSERT(imported.has_value());
 	UAM_ASSERT(imported->native_session_id.empty());
 	UAM_ASSERT_EQ(imported->execution_host_id, std::string("local"));
+	UAM_ASSERT(!imported->remote_turn_reconnect_pending);
+	UAM_ASSERT(!imported->remote_restart_pending);
+	UAM_ASSERT_EQ(imported->remote_delivered_stdout_cursor, static_cast<std::uintmax_t>(0));
+	UAM_ASSERT_EQ(imported->remote_delivered_stderr_cursor, static_cast<std::uintmax_t>(0));
 	UAM_ASSERT(imported->folder_id.empty());
 	UAM_ASSERT(imported->workspace_directory.empty());
 	UAM_ASSERT(imported->workspace_isolation_kind.empty());
@@ -8034,25 +8397,77 @@ UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)
 	UAM_ASSERT(before != after);
 }
 
-UAM_TEST(PersistedToolOutputIsDeferredFromStatePayloads)
+UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 {
 	ChatSession chat;
 	chat.id = "chat-deferred-tool-output";
 	Message assistant{MessageRole::Assistant, "Done"};
-	ToolCall tool;
-	tool.id = "tool-large";
-	tool.name = "Read file";
-	tool.args_json = R"({"path":"/tmp/large.txt"})";
-	tool.result_text = "large result";
-	tool.status = "completed";
-	assistant.tool_calls.push_back(tool);
+	ToolCall small_tool;
+	small_tool.id = "tool-small";
+	small_tool.name = "Read file";
+	small_tool.result_text = "small result";
+	small_tool.status = "completed";
+	assistant.tool_calls.push_back(small_tool);
+	ToolCall large_tool = small_tool;
+	large_tool.id = "tool-large";
+	large_tool.result_text.assign((64 * 1024) + 1, 'x');
+	assistant.tool_calls.push_back(large_tool);
 	chat.messages.push_back(std::move(assistant));
 
 	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
-	const nlohmann::json& serialized_tool = serialized["messages"][0]["toolCalls"][0];
-	UAM_ASSERT(serialized_tool.value("contentDeferred", false));
-	UAM_ASSERT(!serialized_tool.contains("content"));
-	UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentForFrontend(tool), std::string("Arguments:\n") + tool.args_json + "\n\nResult:\n" + tool.result_text);
+	const nlohmann::json& serialized_small = serialized["messages"][0]["toolCalls"][0];
+	const nlohmann::json& serialized_large = serialized["messages"][0]["toolCalls"][1];
+	UAM_ASSERT(!serialized_small.value("contentDeferred", true));
+	UAM_ASSERT_EQ(serialized_small.value("content", ""), std::string("small result"));
+	UAM_ASSERT(serialized_large.value("contentDeferred", false));
+	UAM_ASSERT(!serialized_large.contains("content"));
+
+	uam::AppState app;
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	auto live_session = std::make_unique<uam::AcpSessionState>();
+	live_session->chat_id = chat.id;
+	uam::AcpToolCallState live_tool;
+	live_tool.id = "tool-live-large";
+	live_tool.content.assign((64 * 1024) + 1, 'y');
+	live_session->tool_calls.push_back(std::move(live_tool));
+	app.acp_sessions.push_back(std::move(live_session));
+	const nlohmann::json live_serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json& serialized_live =
+	    live_serialized["chats"][0]["acpSession"]["toolCalls"][0];
+	UAM_ASSERT(serialized_live.value("contentDeferred", false));
+	UAM_ASSERT(!serialized_live.contains("content"));
+}
+
+UAM_TEST(ToolOutputPagesAreBoundedNavigableAndUtf8Safe)
+{
+	constexpr std::size_t page_bytes = 128 * 1024;
+	std::string content(page_bytes - 1, 'a');
+	content += "\xE2\x82\xAC";
+	content.append(page_bytes, 'b');
+
+	const nlohmann::json first =
+	    uam::StateSerializer::ToolCallContentPageForFrontend(content, 0);
+	UAM_ASSERT_EQ(first.value("offset", 1), 0);
+	UAM_ASSERT_EQ(first.value("nextOffset", 0), page_bytes - 1);
+	UAM_ASSERT(first.value("hasMore", false));
+	UAM_ASSERT(!first.value("hasPrevious", true));
+	UAM_ASSERT(first.value("content", "").size() <= page_bytes);
+
+	const nlohmann::json second = uam::StateSerializer::ToolCallContentPageForFrontend(
+	    content, first.value("nextOffset", 0));
+	UAM_ASSERT_EQ(second.value("offset", 0), page_bytes - 1);
+	UAM_ASSERT(second.value("hasPrevious", false));
+	UAM_ASSERT_EQ(second.value("previousOffset", 1), 0);
+	UAM_ASSERT(second.value("content", "").starts_with("\xE2\x82\xAC"));
+	UAM_ASSERT(second.value("content", "").size() <= page_bytes);
+
+	const nlohmann::json latest = uam::StateSerializer::ToolCallContentPageForFrontend(
+	    content, std::numeric_limits<std::size_t>::max());
+	UAM_ASSERT_EQ(latest.value("offset", 0), latest.value("lastOffset", 1));
+	UAM_ASSERT(!latest.value("hasMore", true));
+	UAM_ASSERT_EQ(latest.value("nextOffset", 0), content.size());
+	UAM_ASSERT_EQ(latest.value("totalBytes", 0), content.size());
 }
 
 UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
@@ -8475,8 +8890,8 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	UAM_ASSERT_EQ(tool_json.value("id", ""), std::string("tool-1"));
 	UAM_ASSERT_EQ(tool_json.value("title", ""), std::string("Read file"));
 	UAM_ASSERT_EQ(tool_json.value("status", ""), std::string("completed"));
-	UAM_ASSERT(tool_json.value("contentDeferred", false));
-	UAM_ASSERT(!tool_json.contains("content"));
+	UAM_ASSERT(!tool_json.value("contentDeferred", true));
+	UAM_ASSERT(tool_json.contains("content"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("planSummary", ""), std::string("Implement the focused fix."));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["planEntries"][0].value("content", ""), std::string("Update Codex app-server handling"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["planEntries"][0].value("status", ""), std::string("completed"));
@@ -10395,7 +10810,9 @@ UAM_TEST(RemoteCodexTranscriptMapsMessagesAndRejectsMalformedOrOversizedHistory)
 	                                {{"type", "text"},
 	                                 {"text", "<environment_context>synthetic</environment_context>"}},
 	                            })}},
-	                          {{"type", "agentMessage"}, {"text", "Review complete"}},
+		                          {{"type", "agentMessage"}, {"text", "Review complete"}},
+		                          {{"id", "tool-1"}, {"type", "commandExecution"}, {"command", "rg TODO"}, {"status", "completed"}, {"aggregatedOutput", "match"}},
+		                          {{"type", "agentMessage"}, {"text", "Done."}},
 	                      })}},
 	                 })}}},
 	};
@@ -10409,9 +10826,14 @@ UAM_TEST(RemoteCodexTranscriptMapsMessagesAndRejectsMalformedOrOversizedHistory)
 	UAM_ASSERT_EQ(parsed.messages[0].content, std::string("Review the service"));
 	UAM_ASSERT_EQ(parsed.messages[0].provider, std::string(uam::provider_ids::kCodexCli));
 	UAM_ASSERT_EQ(parsed.messages[1].role, MessageRole::Assistant);
-	UAM_ASSERT_EQ(parsed.messages[1].content, std::string("Review complete"));
-	UAM_ASSERT_EQ(parsed.messages[1].blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(parsed.messages[1].content, std::string("Review complete\nDone."));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(parsed.messages[1].blocks[0].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[1].type, std::string("tool_call"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[1].tool_call_id, std::string("tool-1"));
+	UAM_ASSERT_EQ(parsed.messages[1].blocks[2].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(parsed.messages[1].tool_calls[0].result_text, std::string("match"));
 
 	UAM_ASSERT(!ChatHistorySyncService::ParseRemoteCodexTranscript(
 	    nlohmann::json{{"thread", nullptr}}).success);
@@ -11821,6 +12243,85 @@ UAM_TEST(MixedMachineWorkspaceMigrationSplitsChatsWithoutChangingTheirAuthority)
 	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(3));
 }
 
+UAM_TEST(ChatDeletionWaitsForRemoteStopConfirmation)
+{
+	TempDir temp("uam-delete-waits-for-remote-stop");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-idle-stop";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!RemoveChatById(app, chat.id));
+	UAM_ASSERT(app.acp_sessions.front()->remote_stop_pending);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) != nullptr);
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+}
+
+UAM_TEST(UnconfirmedIdleRemoteStopKeepsChatUndeletable)
+{
+	TempDir temp("uam-delete-unconfirmed-remote-stop");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-idle-stop-failed";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 70"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(app.acp_sessions.front()->remote_stop_unconfirmed);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id)->remote_stop_cleanup_pending);
+	UAM_ASSERT(uam::AcpStopInProgress(app, chat.id));
+	UAM_ASSERT(!RemoveChatById(app, chat.id));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) != nullptr);
+	UAM_ASSERT(!uam::EnsureAcpStopProgress(app, chat.id));
+	UAM_ASSERT(app.acp_sessions.front()->recovering_remote_turn);
+	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+}
+
 UAM_TEST(RemoveChatByIdTrimsRequestedChatId)
 {
 	TempDir temp("uam-remove-chat-trimmed-id");
@@ -11854,7 +12355,7 @@ UAM_TEST(RemoveChatByIdTrimsRequestedChatId)
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, chat.id)));
 }
 
-UAM_TEST(RemoveChatByIdRollbackPreservesUnloadedMessages)
+UAM_TEST(RemoveChatByIdDefersCommittedDeletionWithoutLosingUnloadedMessages)
 {
 	TempDir temp("uam-remove-chat-summary-rollback");
 	uam::AppState app;
@@ -11876,7 +12377,8 @@ UAM_TEST(RemoveChatByIdRollbackPreservesUnloadedMessages)
 	app.chats.push_back(unsavable);
 	app.selected_chat_index = 0;
 
-	UAM_ASSERT(!RemoveChatById(app, target.id));
+	UAM_ASSERT(RemoveChatById(app, target.id));
+	UAM_ASSERT(std::ranges::none_of(app.chats, [&](const ChatSession& chat) { return chat.id == target.id; }));
 	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(temp.root, target.id);
 	UAM_ASSERT(restored.has_value());
 	UAM_ASSERT_EQ(restored->messages.size(), static_cast<std::size_t>(1));
@@ -12006,8 +12508,124 @@ UAM_TEST(RemoveChatsByIdsBlocksPendingAcpControlRequests)
 	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, chat.id)));
 }
 
+UAM_TEST(RemoveGoalOwnerPreflightsAndDeletesHiddenIterationChats)
+{
+	TempDir temp("uam-remove-goal-owner-cascade");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession owner;
+	owner.id = "goal-owner";
+	ChatSession iteration;
+	iteration.id = "goal-iteration";
+	iteration.goal_owner_chat_id = owner.id;
+	iteration.goal_iteration_goal_id = "goal-1";
+	app.chats = {owner, iteration};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, iteration));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = iteration.id;
+	session->running = true;
+	session->processing = true;
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(!RemoveChatById(app, owner.id));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(2));
+
+	app.acp_sessions.front()->running = false;
+	app.acp_sessions.front()->processing = false;
+	app.chats[1].execution_host_id = "ssh-test";
+	app.chats[1].remote_turn_reconnect_pending = true;
+	app.acp_sessions.front()->reconnect_pending = true;
+	UAM_ASSERT(!RemoveChatById(app, owner.id));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	app.chats[1].remote_turn_reconnect_pending = false;
+	app.acp_sessions.front()->reconnect_pending = false;
+	UAM_ASSERT(RemoveChatById(app, owner.id));
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(ChatRepository::LoadLocalChats(temp.root).empty());
+}
+
+UAM_TEST(RemoveOwnerPreflightsAndDeletesManagedAgentTranscripts)
+{
+	TempDir temp("uam-remove-managed-agent-owner-cascade");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession owner;
+	owner.id = "managed-owner";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	transcript.agent_run_id = "managed-run";
+	ChatSession unrelated;
+	unrelated.id = "unrelated-history";
+	app.chats = {owner, transcript, unrelated};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, transcript));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, unrelated));
+	AgentRun run;
+	run.id = transcript.agent_run_id;
+	run.root_chat_id = owner.id;
+	run.transcript_chat_id = transcript.id;
+	run.status = "running";
+	app.agent_runs.push_back(run);
+	AgentRun stale_run;
+	stale_run.id = "stale-run";
+	stale_run.root_chat_id = owner.id;
+	stale_run.transcript_chat_id = unrelated.id;
+	stale_run.status = "completed";
+	app.agent_runs.push_back(stale_run);
+
+	UAM_ASSERT(!RemoveChatById(app, owner.id));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(3));
+
+	app.agent_runs.front().status = "completed";
+	UAM_ASSERT(RemoveChatById(app, owner.id));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, unrelated.id);
+	const std::vector<ChatSession> remaining = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(remaining.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(remaining.front().id, unrelated.id);
+}
+
+UAM_TEST(DeleteFolderPreflightsAndDeletesHiddenGoalIterationChats)
+{
+	TempDir temp("uam-delete-folder-goal-owner-cascade");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatFolder folder;
+	folder.id = "goal-folder";
+	app.folders.push_back(folder);
+	ChatSession owner;
+	owner.id = "folder-goal-owner";
+	owner.folder_id = folder.id;
+	ChatSession iteration;
+	iteration.id = "folder-goal-iteration";
+	iteration.goal_owner_chat_id = owner.id;
+	app.chats = {owner, iteration};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, iteration));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = iteration.id;
+	session->running = true;
+	session->processing = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!DeleteFolderById(app, folder.id));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	app.acp_sessions.front()->running = false;
+	app.acp_sessions.front()->processing = false;
+	app.chats[1].execution_host_id = "ssh-test";
+	app.chats[1].remote_turn_reconnect_pending = true;
+	UAM_ASSERT(!DeleteFolderById(app, folder.id));
+	app.chats[1].remote_turn_reconnect_pending = false;
+	UAM_ASSERT(DeleteFolderById(app, folder.id));
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(app.folders.empty());
+}
+
 #if !defined(_WIN32)
-UAM_TEST(RemoveChatByIdKeepsChatWhenMetadataCannotBeDeleted)
+UAM_TEST(RemoveChatByIdTombstonesCommittedDeletionWhenMetadataCleanupIsDeferred)
 {
 	TempDir temp("uam-remove-chat-delete-failure");
 	uam::AppState app;
@@ -12027,10 +12645,10 @@ UAM_TEST(RemoveChatByIdKeepsChatWhenMetadataCannotBeDeleted)
 	const bool removed = RemoveChatById(app, chat.id);
 
 	fs::permissions(chats_directory, fs::perms::owner_all, fs::perm_options::replace);
-	UAM_ASSERT(!removed);
-	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(app.chats.front().id, chat.id);
+	UAM_ASSERT(removed);
+	UAM_ASSERT(app.chats.empty());
 	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, chat.id)));
+	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
 }
 #endif
 
@@ -12320,7 +12938,7 @@ UAM_TEST(DeleteFolderRefreshesRememberedSelectionToFallbackChat)
 }
 
 #if !defined(_WIN32)
-UAM_TEST(DeleteFolderKeepsFolderAndChatsWhenMetadataCannotBeDeleted)
+UAM_TEST(DeleteFolderTombstonesCommittedDeletionWhenMetadataCleanupIsDeferred)
 {
 	TempDir temp("uam-folder-delete-failure");
 	uam::AppState app;
@@ -12344,10 +12962,11 @@ UAM_TEST(DeleteFolderKeepsFolderAndChatsWhenMetadataCannotBeDeleted)
 	const bool removed = DeleteFolderById(app, folder_id);
 
 	fs::permissions(chats_directory, fs::perms::owner_all, fs::perm_options::replace);
-	UAM_ASSERT(!removed);
-	UAM_ASSERT(ChatDomainService().FindFolderById(app, folder_id) != nullptr);
-	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) != nullptr);
+	UAM_ASSERT(removed);
+	UAM_ASSERT(ChatDomainService().FindFolderById(app, folder_id) == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) == nullptr);
 	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, chat.id)));
+	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
 }
 #endif
 

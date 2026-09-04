@@ -315,8 +315,8 @@ namespace
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory),
-		    host.runner_version);
+		                               host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
 		std::vector<std::filesystem::path> committed;
 		std::size_t index = 0;
 		for (const nlohmann::json& item : items)
@@ -893,7 +893,20 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	uam::StopAcpSession(m_app, chat_id);
+	if (!uam::StopAcpSession(m_app, chat_id))
+	{
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+		if (session != nullptr && session->remote_stop_pending)
+		{
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(R"({"pending":true})");
+			return;
+		}
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(
+		    m_app.status_line, "Failed to stop the structured runtime."));
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

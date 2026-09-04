@@ -10,6 +10,7 @@ import {
   pendingCliTranscriptChunksBySessionId,
   pendingStreamTokensByChatId,
   pushFlushTimers,
+  discardPendingPushesForChats,
 } from './push/pushBuffers'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -77,7 +78,7 @@ import {
   sessionFromCppChat,
 } from './cpp/reconcile'
 
-import { pendingProviderChatDefaults } from './slices/sessionsSlice'
+import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
 import { persistTheme } from './slices/uiSlice'
@@ -104,6 +105,18 @@ const initialProviders: Provider[] = [
 ]
 
 let lastPushStatusUpdateAtMs = 0
+
+function mergeAssistantText(durable: string, streamed: string): string {
+  if (!streamed || durable.endsWith(streamed)) return durable
+  if (!durable || streamed.startsWith(durable)) return streamed
+
+  for (let overlap = Math.min(durable.length, streamed.length); overlap > 0; overlap -= 1) {
+    if (durable.endsWith(streamed.slice(0, overlap))) {
+      return durable + streamed.slice(overlap)
+    }
+  }
+  return durable + streamed
+}
 
 function deserializeState(
   cpp: CppAppState,
@@ -178,16 +191,16 @@ function deserializeState(
     : newSessions
 
   const nextMessages: Record<string, Message[]> = {}
-  for (const chat of cpp.chats) {
-    const existingMessages = existing.messages[chat.id]
-    if (!Array.isArray(chat.messages) || (chat.messages.length === 0 && existingMessages?.length)) {
+	for (const chat of cpp.chats) {
+		const existingMessages = existing.messages[chat.id]
+		if (!Array.isArray(chat.messages)) {
       if (existingMessages?.length) {
         nextMessages[chat.id] = existingMessages
       }
       continue
     }
 
-    nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages)
+		nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
@@ -387,7 +400,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     delete messages[chatId]
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
-    messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages)
+    messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages, true)
   }
 
   const cliBindingBySessionId = { ...current.cliBindingBySessionId }
@@ -427,8 +440,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    if (Array.isArray(chat.goals)) {
-      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => ({
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
         id: cppGoal.id,
         chatId: chat.id,
         objective: cppGoal.objective,
@@ -452,8 +464,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         providerCommand: cppGoal.providerCommand ?? '',
         workerModelId: cppGoal.workerModelId ?? '',
         reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-    }
+    }))
   }
 
   const activeSessionId =
@@ -468,6 +479,11 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
           : sessions[0]?.id ?? null
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
+  const goalModeByChatId = withoutDeletedKeys(current.goalModeByChatId, removedChatIds)
+  const defaultGoalTokenBudgetByChatId = withoutDeletedKeys(current.defaultGoalTokenBudgetByChatId, removedChatIds)
+  const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
+  const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
+  const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
 
   return {
     folders,
@@ -476,6 +492,10 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
+    goalModeByChatId: sameRecordEntries(current.goalModeByChatId, goalModeByChatId) ? current.goalModeByChatId : goalModeByChatId,
+    defaultGoalTokenBudgetByChatId: sameRecordEntries(current.defaultGoalTokenBudgetByChatId, defaultGoalTokenBudgetByChatId) ? current.defaultGoalTokenBudgetByChatId : defaultGoalTokenBudgetByChatId,
+    markdownStoreAttachedBySessionId: sameRecordEntries(current.markdownStoreAttachedBySessionId, markdownStoreAttachedBySessionId) ? current.markdownStoreAttachedBySessionId : markdownStoreAttachedBySessionId,
+    repositoryReviewBySessionId: sameRecordEntries(current.repositoryReviewBySessionId, repositoryReviewBySessionId) ? current.repositoryReviewBySessionId : repositoryReviewBySessionId,
     providers,
     providerModelCatalogs: patch.providerModelCatalogs ?? current.providerModelCatalogs,
     activeSessionId,
@@ -511,7 +531,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
-    uamAgentsBySessionId: current.uamAgentsBySessionId,
+    uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
@@ -532,8 +552,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     set((state) => {
       let nextTranscripts = state.cliTranscriptBySessionId
+      const liveSessionIds = new Set(state.sessions.map((session) => session.id))
 
       for (const [sessionId, pending] of entries) {
+        if (!liveSessionIds.has(sessionId)) continue
         const chunk = pending.chunks.join('')
         if (!chunk) continue
         const activeTerminalId = state.cliBindingBySessionId[sessionId]?.terminalId ?? ''
@@ -572,8 +594,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     set((state) => {
       let nextMessages = state.messages
+      const liveSessionIds = new Set(state.sessions.map((session) => session.id))
 
       for (const [chatId, token] of entries) {
+        if (!liveSessionIds.has(chatId)) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const currentAssistantIndex = state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
@@ -727,13 +751,20 @@ export const useAppStore = create<AppState>((set, get) => {
 
       switch (msg.type) {
         case 'stateUpdate':
-          // Drop buffered deltas: the full state already contains the streamed
-          // text, so applying them afterwards would duplicate content.
-          pendingStreamTokensByChatId.clear()
+          if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
+          // Full state only hydrates the selected transcript. Keep buffered
+          // background deltas unless this update contains that chat's messages.
+          for (const chatId of pendingStreamTokensByChatId.keys()) {
+            const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
+			if (!chat || Array.isArray(chat.messages)) {
+              pendingStreamTokensByChatId.delete(chatId)
+            }
+          }
           store.loadFromCef(msg.data)
           break
         case 'statePatch':
           {
+            if (!isNewerStateRevision(cppPatchRevision(msg.data), store.lastAppliedStateRevision)) break
             // A patch that replaces a chat's messages carries the streamed text
             // authoritatively; buffered deltas for those chats must not be
             // re-applied on top.
@@ -742,6 +773,7 @@ export const useAppStore = create<AppState>((set, get) => {
                 pendingStreamTokensByChatId.delete(chatId)
               }
             }
+            discardPendingPushesForChats(msg.data.removedChatIds ?? [])
             const current = get()
             const activeChatId = current.activeSessionId
             const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
@@ -839,10 +871,31 @@ export const useAppStore = create<AppState>((set, get) => {
             const lastMessage = existingMessages[existingMessages.length - 1]
 
             if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
-              const updatedMessages = [...existingMessages]
-              updatedMessages[updatedMessages.length - 1] = {
-                ...lastMessage,
-                isStreaming: false,
+              const binding = get().acpBindingBySessionId[chatId]
+              const currentAssistantIndex = binding?.turnAssistantMessageIndex ?? -1
+              const currentAssistant = existingMessages[currentAssistantIndex]
+              const turnAssistantText = (binding?.turnEvents ?? []).reduce(
+                (text, event) => event.type === 'assistant_text' ? text + event.text : text,
+                ''
+              )
+              const duplicatePlaceholder = currentAssistantIndex === existingMessages.length - 2 &&
+                currentAssistant?.role === 'assistant' &&
+                (currentAssistant.content === lastMessage.content || turnAssistantText.length > 0)
+              const updatedMessages = duplicatePlaceholder ? existingMessages.slice(0, -1) : [...existingMessages]
+              if (duplicatePlaceholder) {
+                updatedMessages[currentAssistantIndex] = {
+                  ...currentAssistant,
+                  content: mergeAssistantText(
+                    currentAssistant.content,
+                    turnAssistantText || lastMessage.content
+                  ),
+                  isStreaming: false,
+                }
+              } else {
+                updatedMessages[updatedMessages.length - 1] = {
+                  ...lastMessage,
+                  isStreaming: false,
+                }
               }
               set((state) => ({
                 messages: {

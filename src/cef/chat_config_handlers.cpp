@@ -292,6 +292,19 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
+	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	{
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		return;
+	}
+	if (!defer_live_update && session != nullptr && session->running &&
+	    (model_id.empty() || copilot_effort_changed) &&
+	    !uam::StopAcpSession(m_app, chat->id))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		return;
+	}
 
 	const std::string previous_model_id = chat->model_id;
 	const std::string previous_reasoning_effort = chat->reasoning_effort;
@@ -407,6 +420,18 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
+	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	{
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		return;
+	}
+	if (is_copilot && session != nullptr && session->running &&
+	    !uam::StopAcpSession(m_app, chat->id))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		return;
+	}
 
 	const std::string previous_reasoning_effort = chat->reasoning_effort;
 	const std::string previous_service_tier = chat->service_tier;
@@ -426,11 +451,6 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
 		return;
 	}
-	if (is_copilot && session != nullptr && session->running)
-	{
-		(void)uam::StopAcpSession(m_app, chat->id);
-	}
-
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 }
@@ -450,6 +470,9 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		return;
 	case uam::ChatProviderSwitchResult::ActiveRuntime:
 		cb->Failure(409, "Cannot change provider while a runtime turn or input request is active.");
+		return;
+	case uam::ChatProviderSwitchResult::RuntimeStopping:
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The previous runtime is stopping; retry shortly."));
 		return;
 	case uam::ChatProviderSwitchResult::SaveFailed:
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
@@ -871,9 +894,20 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
+	{
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		return;
+	}
 	if (enabled && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
 	{
 		cb->Failure(409, "Activate provider computer use after the current structured turn finishes.");
+		return;
+	}
+	if (session != nullptr && session->running && !uam::StopAcpSession(m_app, chat_id))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
 		return;
 	}
 
@@ -881,7 +915,6 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	{
 		// Turning computer use off is a safety boundary: terminate the provider first,
 		// even if the cooperative control file cannot be updated.
-		(void)uam::StopAcpSession(m_app, chat_id);
 		chat->computer_use_enabled = false;
 		if (uses_uam_backend)
 			(void)uam::ComputerUseService::SetControlState(m_app, chat_id, "stopped");
@@ -891,7 +924,6 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	}
 
 	chat->computer_use_enabled = true;
-	(void)uam::StopAcpSession(m_app, chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -924,9 +956,20 @@ void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> brow
 	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
+	{
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		return;
+	}
 	if (session != nullptr && uam::AcpSessionHasActiveTurn(*session))
 	{
 		cb->Failure(409, "Change the computer-use backend after the current turn finishes.");
+		return;
+	}
+	if (session != nullptr && session->running && !uam::StopAcpSession(m_app, chat_id))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
 		return;
 	}
 
@@ -947,7 +990,6 @@ void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> brow
 		return;
 	}
 
-	(void)uam::StopAcpSession(m_app, chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

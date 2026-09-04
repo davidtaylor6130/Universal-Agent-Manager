@@ -37,7 +37,7 @@ describe('working transcript', () => {
     content: 'No matches',
   }]
 
-  const renderTimeline = (workingMode: 'compact' | 'verbose', active = false) => {
+  const renderTimeline = (workingMode: 'compact' | 'verbose', active = false, prioritySteerText?: string) => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -60,6 +60,7 @@ describe('working transcript', () => {
         workingMode={workingMode}
         workedSeconds={83}
         active={active}
+		prioritySteerText={prioritySteerText}
       />
     ))
     return { host, root }
@@ -164,14 +165,15 @@ describe('working transcript', () => {
   })
 
   it('keeps compact work expanded while active', () => {
-    const { host, root } = renderTimeline('compact', true)
+    const { host, root } = renderTimeline('compact', true, 'Change direction now.')
     const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
 
-    expect(summary).toBeNull()
-    expect(host.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
-    expect(host.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
-    expect(host.textContent).toContain('I will inspect the workspace first.')
-    expect(host.textContent).toContain('The workspace is clean.')
+	expect(summary?.open).toBe(true)
+	expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
+	expect(summary?.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
+	expect(summary?.querySelector('[data-testid="priority-steer"]')?.textContent).toContain('Change direction now.')
+	act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+	expect(summary?.open).toBe(false)
 
     act(() => root.unmount())
     host.remove()
@@ -256,9 +258,12 @@ describe('working transcript', () => {
     window.cefQuery = ({ request, onSuccess }) => {
       expect(JSON.parse(request)).toMatchObject({
         action: 'getToolCallContent',
-        payload: { chatId: 'chat-1', toolCallId: 'tool-1' },
+        payload: { chatId: 'chat-1', toolCallId: 'tool-1', offset: 0 },
       })
-      onSuccess(JSON.stringify({ content: 'Loaded on demand' }))
+      onSuccess(JSON.stringify({
+        content: 'Loaded on demand', offset: 0, nextOffset: 16, previousOffset: 0,
+        lastOffset: 0, totalBytes: 16, hasPrevious: false, hasMore: false,
+      }))
     }
 
     const host = document.createElement('div')
@@ -276,6 +281,96 @@ describe('working transcript', () => {
     })
 
     expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('Loaded on demand')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
+  })
+
+  it('keeps loaded deferred chunks in one continuous output', async () => {
+    const previousCefQuery = window.cefQuery
+    const offsets: number[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const offset = JSON.parse(request).payload.offset as number
+      offsets.push(offset)
+      if (offset === 0) {
+        onSuccess(JSON.stringify({ content: 'FIRST_CHUNK', offset: 0, nextOffset: 131072, previousOffset: 0, lastOffset: 262144, totalBytes: 393216, hasPrevious: false, hasMore: true }))
+      } else if (offset === 131072) {
+        onSuccess(JSON.stringify({ content: 'SECOND_CHUNK', offset: 131072, nextOffset: 262144, previousOffset: 0, lastOffset: 262144, totalBytes: 393216, hasPrevious: true, hasMore: true }))
+      } else {
+        onSuccess(JSON.stringify({ content: 'LATEST_CHUNK', offset: 262144, nextOffset: 393216, previousOffset: 131072, lastOffset: 262144, totalBytes: 393216, hasPrevious: true, hasMore: false }))
+      }
+    }
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<ToolCallModal tool={{ ...tools[0], content: '', contentDeferred: true }} chatId="chat-1" onClose={vi.fn()} />)
+      await Promise.resolve()
+    })
+
+    const button = (label: string) => Array.from(document.body.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('FIRST_CHUNK')
+    await act(async () => { button('Load later').click(); await Promise.resolve() })
+    const output = document.body.querySelector('.uam-tool-modal__output')?.textContent ?? ''
+    expect(output.indexOf('FIRST_CHUNK')).toBeLessThan(output.indexOf('SECOND_CHUNK'))
+    await act(async () => { button('Load latest').click(); await Promise.resolve() })
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('LATEST_CHUNK')
+    expect(document.body.querySelectorAll('.uam-tool-modal__output')).toHaveLength(1)
+    expect(document.body.textContent).toContain('Bytes 262145–393216 of 393216')
+    expect(offsets).toEqual([0, 131072, Number.MAX_SAFE_INTEGER])
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
+  })
+
+  it('opens live deferred output at the latest chunk', async () => {
+    const previousCefQuery = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => {
+      expect(JSON.parse(request).payload.offset).toBe(Number.MAX_SAFE_INTEGER)
+      onSuccess(JSON.stringify({ content: 'LIVE_TAIL', offset: 262144, nextOffset: 393216, previousOffset: 131072, lastOffset: 262144, totalBytes: 393216, hasPrevious: true, hasMore: false }))
+    }
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<ToolCallModal tool={{ ...tools[0], status: 'running', content: '', contentDeferred: true }} chatId="chat-1" onClose={vi.fn()} />)
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('LIVE_TAIL')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
+  })
+
+  it('retries a failed deferred chunk request', async () => {
+    const previousCefQuery = window.cefQuery
+    let requests = 0
+    window.cefQuery = ({ onSuccess, onFailure }) => {
+      ++requests
+      if (requests === 1) {
+        onFailure(500, 'Chunk unavailable.')
+        return
+      }
+      onSuccess(JSON.stringify({ content: 'RECOVERED_CHUNK', offset: 0, nextOffset: 15, previousOffset: 0, lastOffset: 0, totalBytes: 15, hasPrevious: false, hasMore: false }))
+    }
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(<ToolCallModal tool={{ ...tools[0], content: '', contentDeferred: true }} chatId="chat-1" onClose={vi.fn()} />)
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Chunk unavailable.')
+    const retry = Array.from(document.body.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Retry') as HTMLButtonElement
+    await act(async () => { retry.click(); await Promise.resolve() })
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('RECOVERED_CHUNK')
 
     act(() => root.unmount())
     host.remove()

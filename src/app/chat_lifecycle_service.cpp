@@ -53,12 +53,43 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id)
 	{
+		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat != nullptr &&
+		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
+		     chat->remote_restart_pending) &&
+		    chat->execution_host_id != uam::execution_hosts::kLocalHostId &&
+		    !chat->imported_read_only)
+		{
+			return true;
+		}
 		if (uam::ChatHasRunningRuntime(app, chat_id))
 		{
 			return true;
 		}
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
-		return session != nullptr && session->running && uam::AcpSessionHasBlockingRuntimeWork(*session);
+		return session != nullptr &&
+		       (session->remote_stop_pending ||
+		        session->remote_stop_unconfirmed ||
+		        (session->running &&
+		         ((chat != nullptr &&
+		           chat->execution_host_id != uam::execution_hosts::kLocalHostId) ||
+		          uam::AcpSessionHasBlockingRuntimeWork(*session))) ||
+		        session->reconnect_pending || session->recovering_remote_turn);
+	}
+
+	bool BeginIdleRemoteStopForDeletion(uam::AppState& app, const std::string& chat_id)
+	{
+		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
+		if (chat == nullptr || session == nullptr ||
+		    !session->running || session->remote_stop_unconfirmed ||
+		    chat->execution_host_id == uam::execution_hosts::kLocalHostId ||
+		    uam::AcpSessionHasBlockingRuntimeWork(*session))
+		{
+			return false;
+		}
+		(void)uam::StopAcpSession(app, chat_id);
+		return true;
 	}
 
 	bool FolderHasRunningChat(const uam::AppState& app, const std::string& folder_id)
@@ -97,21 +128,70 @@ namespace
 		return true;
 	}
 
-	DeletedChatsSelection CollectChatsInFolder(const std::vector<ChatSession>& chats, const std::string& folder_id)
+	bool IsTerminalAgentRun(const AgentRun& run)
+	{
+		return run.status == "completed" || run.status == "failed" ||
+		       run.status == "cancelled" || run.status == "interrupted";
+	}
+
+	void ExpandDependentChatIds(const uam::AppState& app,
+	                            std::vector<std::string>& target_chat_ids,
+	                            std::unordered_set<std::string>& deleted_chat_ids)
+	{
+		for (std::size_t owner_index = 0; owner_index < target_chat_ids.size(); ++owner_index)
+		{
+			const std::string owner_id = target_chat_ids[owner_index];
+			for (const ChatSession& chat : app.chats)
+			{
+				if (uam::strings::TrimmedEquals(chat.goal_owner_chat_id, owner_id) &&
+				    deleted_chat_ids.insert(chat.id).second)
+				{
+					target_chat_ids.push_back(chat.id);
+				}
+			}
+			for (const AgentRun& run : app.agent_runs)
+			{
+				if (uam::strings::TrimmedEquals(run.root_chat_id, owner_id) &&
+				    !uam::strings::IsBlank(run.transcript_chat_id) &&
+				    std::ranges::any_of(app.chats, [&](const ChatSession& chat)
+				    {
+					    return uam::strings::TrimmedEquals(chat.id, run.transcript_chat_id) &&
+					           uam::strings::TrimmedEquals(chat.agent_run_id, run.id);
+				    }) &&
+				    deleted_chat_ids.insert(run.transcript_chat_id).second)
+				{
+					target_chat_ids.push_back(run.transcript_chat_id);
+				}
+			}
+		}
+	}
+
+	bool HasActiveDependentAgentRun(const uam::AppState& app,
+	                                const std::unordered_set<std::string>& chat_ids)
+	{
+		return std::ranges::any_of(app.agent_runs, [&](const AgentRun& run)
+		{
+			return !IsTerminalAgentRun(run) &&
+			       (chat_ids.contains(run.root_chat_id) ||
+			        chat_ids.contains(run.transcript_chat_id));
+		});
+	}
+
+	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
+	                                           const std::string& folder_id)
 	{
 		DeletedChatsSelection selection;
-		selection.chats.reserve(chats.size());
-		selection.ids.reserve(chats.size());
-		for (const ChatSession& chat : chats)
+		selection.ids.reserve(app.chats.size());
+		std::vector<std::string> target_chat_ids;
+		for (const ChatSession& chat : app.chats)
 		{
-			if (!ChatBelongsToFolder(chat, folder_id))
-			{
-				continue;
-			}
-
-			selection.chats.push_back(chat);
-			selection.ids.insert(chat.id);
+			if (ChatBelongsToFolder(chat, folder_id) && selection.ids.insert(chat.id).second)
+				target_chat_ids.push_back(chat.id);
 		}
+		ExpandDependentChatIds(app, target_chat_ids, selection.ids);
+		selection.chats.reserve(selection.ids.size());
+		for (const ChatSession& chat : app.chats)
+			if (selection.ids.contains(chat.id)) selection.chats.push_back(chat);
 		return selection;
 	}
 
@@ -330,23 +410,26 @@ namespace
 	                                 bool& native_cleanup_failed)
 	{
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
-		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
-		std::vector<std::string> added_tombstones;
-		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones)) return false;
-
 		next_chats = app.chats;
 		for (const std::string& id : intent.chat_ids) ChatBranching::ReparentChildrenAfterDelete(next_chats, id);
 		std::erase_if(next_chats, [&](const ChatSession& chat) { return deleted_ids.contains(chat.id); });
 		ChatBranching::Normalize(next_chats);
+		next_folders = app.folders;
+		if (!intent.folder_id.empty())
+		{
+			std::erase_if(next_folders, [&](const ChatFolder& folder) { return uam::strings::TrimmedEquals(folder.id, intent.folder_id); });
+		}
+		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
+		std::vector<std::string> added_tombstones;
+		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones)) return false;
+
 		for (const ChatSession& chat : next_chats)
 		{
 			if (!ChatRepository::SaveChat(app.data_root, chat)) return false;
 		}
 
-		next_folders = app.folders;
 		if (!intent.folder_id.empty())
 		{
-			std::erase_if(next_folders, [&](const ChatFolder& folder) { return uam::strings::TrimmedEquals(folder.id, intent.folder_id); });
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
 		}
 
@@ -873,13 +956,24 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	{
 		return ChatProviderSwitchResult::Unchanged;
 	}
-	if (const AcpSessionState* session = FindAcpSessionForChat(app, chat->id); session != nullptr && AcpSessionHasActiveTurn(*session))
+	AcpSessionState* session = FindAcpSessionForChat(app, chat->id);
+	if (!EnsureAcpStopProgress(app, chat->id))
+	{
+		return ChatProviderSwitchResult::RuntimeStopping;
+	}
+	if (session != nullptr && AcpSessionHasActiveTurn(*session))
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
 	if (ChatHasBusyCliTerminal(app, chat->id))
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
+	}
+	const bool remote_session = chat->execution_host_id != uam::execution_hosts::kLocalHostId;
+	if (session != nullptr && session->running && remote_session &&
+	    !StopAcpSession(app, chat->id))
+	{
+		return ChatProviderSwitchResult::RuntimeStopping;
 	}
 	std::string hydration_warning;
 	if (!ChatRepository::HydrateChatMessages(app.data_root, *chat, &hydration_warning))
@@ -947,7 +1041,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	}
 
 	(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
-	(void)StopAcpSession(app, chat->id);
+	if (session != nullptr && session->running) (void)StopAcpSession(app, chat->id);
 	std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat->id; });
 	StopAndEraseCliTerminalForChat(app, chat->id, false);
 	return ChatProviderSwitchResult::Changed;
@@ -1037,9 +1131,15 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 			target_chat_ids.push_back(id);
 		}
 	}
+	ExpandDependentChatIds(app, target_chat_ids, deleted_chat_ids);
 	if (target_chat_ids.empty())
 	{
 		app.status_line = "Chat id is required.";
+		return false;
+	}
+	if (HasActiveDependentAgentRun(app, deleted_chat_ids))
+	{
+		app.status_line = "Wait for the selected managed agent run to finish or cancel it first.";
 		return false;
 	}
 
@@ -1053,6 +1153,18 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 		if (app.worktree_operation_chat_ids.contains(id))
 		{
 			app.status_line = "Wait for the chat worktree operation to finish.";
+			return false;
+		}
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, id);
+		if (session != nullptr && session->remote_stop_unconfirmed)
+		{
+			app.status_line = uam::strings::NonEmptyOrFallback(
+			    session->last_error, "Remote stop could not be confirmed.");
+			return false;
+		}
+		if (BeginIdleRemoteStopForDeletion(app, id))
+		{
+			app.status_line = "The remote runtime is stopping. Retry deletion after it finishes.";
 			return false;
 		}
 		if (ChatHasDeletionBlockingRuntime(app, id))
@@ -1093,8 +1205,12 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 	bool native_cleanup_failed = false;
 	if (!CompleteDeletionTransaction(app, intent, next_chats, next_folders, deleted_chats, native_cleanup_failed))
 	{
-		app.status_line = "Chat deletion was recorded durably but could not finish. It will be completed safely on restart.";
-		return false;
+		app.chats = std::move(next_chats);
+		ApplyDeletedChatsToUiState(app, deleted_chat_ids, selected_chat_id,
+		                          previous_selected_chat_index, true);
+		(void)PersistenceCoordinator().SaveSettings(app);
+		app.status_line = "Chat deletion is committed and hidden. Disk cleanup will finish safely on restart.";
+		return true;
 	}
 
 	app.chats = std::move(next_chats);
@@ -1172,13 +1288,36 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 		return false;
 	}
 
-	if (FolderHasRunningChat(app, target_folder_id))
+	DeletedChatsSelection deleted = CollectChatsInFolder(app, target_folder_id);
+	if (HasActiveDependentAgentRun(app, deleted.ids))
+	{
+		app.status_line = "Wait for managed agent runs in this folder to finish or cancel them first.";
+		return false;
+	}
+	for (const std::string& chat_id : deleted.ids)
+	{
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
+		if (session != nullptr && session->remote_stop_unconfirmed)
+		{
+			app.status_line = uam::strings::NonEmptyOrFallback(
+			    session->last_error, "Remote stop could not be confirmed.");
+			return false;
+		}
+	}
+	bool remote_stop_started = false;
+	for (const std::string& chat_id : deleted.ids)
+		remote_stop_started = BeginIdleRemoteStopForDeletion(app, chat_id) || remote_stop_started;
+	if (remote_stop_started)
+	{
+		app.status_line = "Remote runtimes in this folder are stopping. Retry deletion after they finish.";
+		return false;
+	}
+	if (std::ranges::any_of(deleted.ids, [&app](const std::string& chat_id)
+	    { return ChatHasDeletionBlockingRuntime(app, chat_id); }))
 	{
 		app.status_line = "Cannot delete a folder while one of its chats has a running runtime.";
 		return false;
 	}
-
-	DeletedChatsSelection deleted = CollectChatsInFolder(app.chats, target_folder_id);
 	if (!HydrateDeletedChatsForRollback(app.data_root, deleted.chats, deleted.ids))
 	{
 		app.status_line = "Failed to prepare folder chat history for safe deletion.";
@@ -1190,6 +1329,8 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 		return false;
 	}
 	StopChatRuntimes(app, deleted.chats);
+	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
+	const int previous_selected_chat_index = app.selected_chat_index;
 	DeletionIntent intent;
 	intent.folder_id = target_folder_id;
 	intent.chat_ids.assign(deleted.ids.begin(), deleted.ids.end());
@@ -1200,12 +1341,16 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	bool native_cleanup_failed = false;
 	if (!CompleteDeletionTransaction(app, intent, next_chats, next_folders, deleted_chats, native_cleanup_failed))
 	{
-		app.status_line = "Folder deletion was recorded durably but could not finish. It will be completed safely on restart.";
-		return false;
+		app.chats = std::move(next_chats);
+		ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id,
+		                          previous_selected_chat_index, !deleted.chats.empty());
+		if (uam::strings::TrimmedEquals(app.new_chat_folder_id, target_folder_id))
+			app.new_chat_folder_id.clear();
+		app.folders = std::move(next_folders);
+		(void)PersistenceCoordinator().SaveSettings(app);
+		app.status_line = "Folder deletion is committed and hidden. Disk cleanup will finish safely on restart.";
+		return true;
 	}
-
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
-	const int previous_selected_chat_index = app.selected_chat_index;
 
 	app.chats = std::move(next_chats);
 	ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id, previous_selected_chat_index, !deleted.chats.empty());

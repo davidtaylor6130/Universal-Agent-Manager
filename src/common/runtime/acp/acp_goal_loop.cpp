@@ -227,9 +227,19 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "Goal not found.";
 		return false;
 	}
+	if (chat->imported_read_only)
+	{
+		if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to continue.";
+		return false;
+	}
 	if (goal->status == GoalStatus::Complete)
 	{
 		if (error_out != nullptr) *error_out = "Completed goals cannot be resumed.";
+		return false;
+	}
+	if (!chat->active_goal_id.empty() && chat->active_goal_id != goal_id)
+	{
+		if (error_out != nullptr) *error_out = "Another goal is already active in this chat.";
 		return false;
 	}
 	if (session == nullptr && !GoalService::IsProviderManaged(*goal))
@@ -248,6 +258,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	{
 		prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
 	}
+	const ChatSession previous_chat = *chat;
 	if (!GoalService::IsProviderManaged(*goal))
 	{
 		const ProviderChatDefaults defaults =
@@ -264,9 +275,24 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	const std::string model_id = GoalService::IsProviderManaged(*goal)
 	                                 ? chat->model_id
 	                                 : GoalService::WorkerModelId(*chat, *goal);
+	if (!GoalService::SetActiveGoal(app, chat_id, goal_id))
+	{
+		*chat = previous_chat;
+		if (error_out != nullptr) *error_out = "Failed to activate the goal.";
+		return false;
+	}
+	if (!ChatRepository::SaveChat(app.data_root, *chat))
+	{
+		*chat = previous_chat;
+		if (error_out != nullptr) *error_out = "Failed to persist the active goal.";
+		return false;
+	}
 	if (!QueueGoalInternalPrompt(app, *session, *chat, prompt, false, model_id,
 	                             !GoalService::IsProviderManaged(*goal)))
 	{
+		chat->goals = previous_chat.goals;
+		chat->active_goal_id = previous_chat.active_goal_id;
+		if (!ChatRepository::SaveChat(app.data_root, *chat)) ScheduleChatSave(app, *chat, 0.0);
 		if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(session->last_error, "Failed to queue the goal continuation.");
 		return false;
 	}
@@ -274,7 +300,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	session->goal_auto_resume_attempts = 0;
 	session->crash_restart_attempts = 0;
 	session->goal_resume_suppressed = false;
-	return GoalService::SetActiveGoal(app, chat_id, goal_id);
+	return true;
 }
 
 bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)

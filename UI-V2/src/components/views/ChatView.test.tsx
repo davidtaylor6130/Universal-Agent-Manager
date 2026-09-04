@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
+import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -27,6 +28,7 @@ describe('ChatView', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+    removeComposerDrafts(['chat-1', 'chat-2'])
     useAppStore.setState({
       workingDisplayMode: 'verbose',
       folders: [
@@ -53,6 +55,7 @@ describe('ChatView', () => {
       activeSessionId: 'chat-1',
       goalsByChatId: {},
       activeGoalIdByChatId: {},
+      defaultGoalTokenBudgetByChatId: {},
       favoriteUamAgentIds: [],
       providerChatDefaults: {},
       uamAgentCycleShortcut: 'shift+tab',
@@ -204,6 +207,31 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('does not submit Enter while an IME composition is active', () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '未確定')
+    act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+
+    const composingEnter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => textarea.dispatchEvent(composingEnter))
+
+    expect(composingEnter.defaultPrevented).toBe(false)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('confirms provider handoff before changing anything', async () => {
     const originalSetSessionProvider = useAppStore.getState().setSessionProvider
     const setSessionProvider = vi.fn(() => Promise.resolve(true))
@@ -340,6 +368,61 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('debounces composer draft storage while typing', () => {
+    vi.useFakeTimers()
+    const setItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem,
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+
+    for (const value of ['a', 'ab', 'abc']) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+    }
+
+    expect(setItem).not.toHaveBeenCalled()
+    act(() => window.dispatchEvent(new Event('pagehide')))
+    expect(setItem).toHaveBeenCalledTimes(1)
+    setItem.mockClear()
+    act(() => vi.advanceTimersByTime(250))
+    expect(setItem).toHaveBeenCalledTimes(1)
+
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('does not rewrite a composer draft after its chat is deleted', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'discard me')
+    act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+
+    await act(async () => { await useAppStore.getState().deleteSession('chat-1') })
+    act(() => root.unmount())
+
+    expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+    host.remove()
+  })
+
   it('recomputes exact isolated-chat changes after renderer state is lost and reports diff failures', async () => {
     const comparisonRef = 'b'.repeat(40)
     const rangeStatus = {
@@ -428,7 +511,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('offers a jump to the latest message only while scrolled away from the bottom', () => {
+  it('offers a jump to the latest message only while scrolled away from the bottom', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -447,7 +530,10 @@ describe('ChatView', () => {
       scrollTop: { configurable: true, writable: true, value: 100 },
     })
 
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     const jumpButton = host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null
     expect(jumpButton).not.toBeNull()
     expect(transcript.classList.contains('relative')).toBe(true)
@@ -455,11 +541,17 @@ describe('ChatView', () => {
     expect(jumpButton?.parentElement?.classList.contains('z-10')).toBe(true)
 
     transcript.scrollTop = 800
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
 
     transcript.scrollTop = 100
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
@@ -1397,17 +1489,19 @@ describe('ChatView', () => {
 
 	it('keeps a steer visibly tied to the response it interrupted', () => {
 		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
 			messages: {
 				...state.messages,
 				'chat-1': [
 					{
 						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
-						content: 'I was changing the remote helper.', interrupted: true,
+						content: 'I was changing the remote helper.', thoughts: 'Checking the helper.', interrupted: true,
 						createdAt: new Date('2026-01-01T00:00:01.000Z'),
 					},
 					{
 						id: 'steer', sessionId: 'chat-1', role: 'user',
 						content: 'Keep the work local.', prioritySteer: true,
+						attachments: [{ id: 'steer-file', name: 'scope.txt', type: 'file', size: 5, path: '/tmp/scope.txt' }],
 						createdAt: new Date('2026-01-01T00:00:02.000Z'),
 					},
 				],
@@ -1420,11 +1514,111 @@ describe('ChatView', () => {
 		const root = createRoot(host)
 		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
+		expect(host.textContent).toContain('Response interrupted')
+		const workingSummary = host.querySelector('[data-testid="working-summary"]')
+		expect(workingSummary).toBeTruthy()
+		expect(workingSummary?.textContent).toContain('Steered')
+		act(() => workingSummary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+		const steer = host.querySelector('[data-testid="priority-steer"]')
+		expect(steer).toBeTruthy()
+		expect(workingSummary?.contains(steer)).toBe(true)
+		expect(steer?.textContent).toContain('/tmp/scope.txt')
+		expect(host.querySelector('[role="separator"][aria-label="Steered during this response"]')).toBeNull()
 		const text = host.textContent ?? ''
-		expect(text).toContain('Response interrupted')
-		expect(host.querySelector('[role="separator"][aria-label="Steered during this response"]')).toBeTruthy()
 		expect(text.indexOf('Response interrupted')).toBeLessThan(text.indexOf('Steered during this response'))
-		expect(text.indexOf('Steered during this response')).toBeLessThan(text.indexOf('Keep the work local.'))
+		expect(steer?.textContent?.indexOf('Steered during this response')).toBeLessThan(steer?.textContent?.indexOf('Keep the work local.') ?? -1)
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
+	it('keeps a live tool-first response visible when its steer is embedded', () => {
+		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
+						content: 'Earlier response.', thoughts: 'Earlier work.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Keep it local.', prioritySteer: true,
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+					{
+						id: 'live-answer', sessionId: 'chat-1', role: 'assistant', content: '', isStreaming: true,
+						createdAt: new Date('2026-01-01T00:00:03.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {
+				...state.acpBindingBySessionId,
+				'chat-1': {
+					...state.acpBindingBySessionId['chat-1'],
+					processing: true,
+					pendingPermission: null,
+					turnEvents: [{ type: 'thought', text: 'Current live reasoning.' }],
+					turnUserMessageIndex: 1,
+					turnAssistantMessageIndex: 2,
+					turnSerial: 2,
+				},
+			},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+		expect(Array.from(host.querySelectorAll('article')).filter((article) =>
+			article.textContent?.includes('Current live reasoning.')
+		)).toHaveLength(1)
+		expect(host.textContent?.match(/Keep it local\./g)).toHaveLength(1)
+		const workingSummary = host.querySelector('[data-testid="working-summary"]')
+		act(() => workingSummary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+		const steer = host.querySelector('[data-testid="priority-steer"]')
+		expect(steer).toBeTruthy()
+		expect(workingSummary?.contains(steer)).toBe(true)
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
+	it('embeds an attachment-only steer in compact working history', () => {
+		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'attachment-host', sessionId: 'chat-1', role: 'assistant',
+						content: 'Interrupted response.', thoughts: 'Earlier work.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'attachment-steer', sessionId: 'chat-1', role: 'user', content: '',
+						prioritySteer: true,
+						attachments: [{ id: 'scope', name: 'scope.txt', type: 'file', size: 1, path: '/tmp/scope.txt' }],
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+		const summary = host.querySelector('[data-testid="working-summary"]')
+		act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+		const steer = host.querySelector('[data-testid="priority-steer"]')
+		expect(steer).toBeTruthy()
+		expect(summary?.contains(steer)).toBe(true)
+		expect(steer?.textContent).toContain('/tmp/scope.txt')
+		expect(host.querySelectorAll('[data-testid="priority-steer"]')).toHaveLength(1)
 
 		act(() => root.unmount())
 		host.remove()
@@ -1749,6 +1943,8 @@ describe('ChatView', () => {
     expect(submenu.textContent).not.toContain('/create-pr')
     expect(submenu.textContent).not.toContain('3aa611dd')
     expect(submenu.textContent).not.toContain('eb8349e5')
+    expect(textarea.getAttribute('aria-controls')?.split(' ')).toContain(submenu.id)
+    expect(submenu.contains(document.getElementById(textarea.getAttribute('aria-activedescendant') ?? ''))).toBe(true)
     act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'one' }))
     act(() => root.unmount())
@@ -1779,8 +1975,11 @@ describe('ChatView', () => {
     expect(releaseMenu.textContent).toContain('/notes')
     expect(releaseMenu.textContent).toContain('/github')
     const github = releaseMenu.querySelector('[aria-haspopup="menu"]') as HTMLElement
-    act(() => github.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(document.body.querySelector('[aria-label="Release/GitHub skills"]')?.textContent).toContain('/release')
+    act(() => github.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    const githubMenu = document.body.querySelector('[aria-label="Release/GitHub skills"]') as HTMLElement
+    expect(githubMenu.textContent).toContain('/release')
+    expect(githubMenu.contains(document.getElementById(textarea.getAttribute('aria-activedescendant') ?? ''))).toBe(true)
+    expect(githubMenu.querySelector('.is-selected')).toBe(githubMenu.querySelector('[role="menuitem"]'))
     act(() => root.unmount())
     host.remove()
   })
@@ -3190,6 +3389,82 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('refreshes the /goal action when an active goal arrives after mount', async () => {
+    const updateGoalStatus = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState({ updateGoalStatus })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => useAppStore.setState((state) => ({
+      goalsByChatId: {
+        ...state.goalsByChatId,
+        'chat-1': [{
+          id: 'late-goal', chatId: 'chat-1', objective: 'Late goal', status: 'active' as const,
+          tokenBudget: 0, tokensUsed: 0, blockedTurnCount: 0, completedItems: [], remainingItems: [],
+          currentStep: '', createdAt: new Date(), updatedAt: new Date(),
+        }],
+      },
+      activeGoalIdByChatId: { ...state.activeGoalIdByChatId, 'chat-1': 'late-goal' },
+    })))
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/goal')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(updateGoalStatus).toHaveBeenCalledWith('chat-1', 'late-goal', 'paused')
+    expect(host.textContent).not.toContain('Goal: next message')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks banner mutations while a new goal is being created', () => {
+    const setGoal = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>(() => {}))
+    const removeGoal = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState((state) => ({
+      setGoal,
+      removeGoal,
+      goalsByChatId: {
+        'chat-1': [{
+          id: 'goal-existing', chatId: 'chat-1', objective: 'Existing goal', status: 'active' as const,
+          tokenBudget: 0, tokensUsed: 0, blockedTurnCount: 0, completedItems: [], remainingItems: [],
+          currentStep: '', createdAt: new Date(), updatedAt: new Date(),
+        }],
+      },
+      activeGoalIdByChatId: { 'chat-1': 'goal-existing' },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const textarea = host.querySelector('textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/goal Replacement goal')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(setGoal).toHaveBeenCalledTimes(1)
+
+    act(() => (host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement).click())
+    const deleteGoal = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Delete goal') as HTMLButtonElement
+    expect(deleteGoal.disabled).toBe(true)
+    act(() => deleteGoal.click())
+    expect(removeGoal).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
 	it('delegates a configured provider goal command exactly once', async () => {
 	  let finishGoal: (result: { ok: boolean; goalId: string }) => void = () => {}
 	  const setGoal = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>((resolve) => { finishGoal = resolve }))
@@ -3231,6 +3506,37 @@ describe('ChatView', () => {
 	  host.remove()
 	})
 
+	it('keeps provider goal input usable when creation rejects', async () => {
+	  const setGoal = vi.fn(() => Promise.reject(new Error('bridge closed')))
+	  useAppStore.setState((state) => ({
+		setGoal,
+		providerChatDefaults: { ...state.providerChatDefaults, 'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
+		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
+	  }))
+
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+	  const textarea = host.querySelector('textarea')!
+	  act(() => {
+		Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/ralph Keep this draft')
+		textarea.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  await act(async () => {
+		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+		await Promise.resolve()
+	  })
+
+	  expect(setGoal).toHaveBeenCalledTimes(1)
+	  expect(host.textContent).toContain('Failed to create goal.')
+	  expect(textarea.value).toBe('/ralph Keep this draft')
+	  expect(textarea.disabled).toBe(false)
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
 	it('submits a multi-line /goal command', async () => {
 	  const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
 	  const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
@@ -3259,7 +3565,8 @@ describe('ChatView', () => {
 
   it('renders active goal pause/delete controls and paused goal resume control', async () => {
     const updateGoalStatus = vi.fn(() => Promise.resolve({ ok: true }))
-    const removeGoal = vi.fn(() => Promise.resolve({ ok: true }))
+    let finishRemove: ((result: { ok: boolean; error?: string }) => void) | undefined
+    const removeGoal = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finishRemove = resolve }))
     let finishResume: ((result: { ok: boolean; error?: string }) => void) | undefined
     const resumeGoal = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finishResume = resolve }))
     const goal = {
@@ -3317,6 +3624,7 @@ describe('ChatView', () => {
       pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(updateGoalStatus).toHaveBeenCalledWith('chat-1', 'goal-1', 'paused')
+    await act(async () => { await Promise.resolve() })
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -3345,6 +3653,16 @@ describe('ChatView', () => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(removeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
+    openGoalMenu()
+    act(() => {
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(removeGoal).toHaveBeenCalledTimes(1)
+    openGoalMenu()
+    await act(async () => {
+      finishRemove?.({ ok: true })
+      await Promise.resolve()
+    })
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -3363,7 +3681,12 @@ describe('ChatView', () => {
     })
     openGoalMenu()
     expect(menuItem('Resume goal')).toBeUndefined()
-    expect(menuItem('Delete goal')).toBeUndefined()
+    expect(menuItem('Delete goal')).toBeTruthy()
+
+    act(() => {
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(removeGoal).toHaveBeenLastCalledWith('chat-1', 'goal-1')
 
     openComposerOptions(host)
     const newGoalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
@@ -3644,6 +3967,43 @@ describe('ChatView', () => {
       root.unmount()
     })
     host.remove()
+  })
+
+  it('loads deferred output for an active tool with its chat id', async () => {
+    const previousCefQuery = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => {
+      expect(JSON.parse(request)).toMatchObject({
+        action: 'getToolCallContent',
+        payload: { chatId: 'chat-1', toolCallId: 'tool-1', offset: Number.MAX_SAFE_INTEGER },
+      })
+      onSuccess(JSON.stringify({ content: 'Active output page', offset: 0, nextOffset: 18, previousOffset: 0, lastOffset: 0, totalBytes: 18, hasPrevious: false, hasMore: false }))
+    }
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          toolCalls: state.acpBindingBySessionId['chat-1'].toolCalls.map((tool) =>
+            tool.id === 'tool-1' ? { ...tool, content: '', contentDeferred: true } : tool
+          ),
+        },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const toolButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Search symbols'))
+    await act(async () => {
+      toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('Active output page')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
   })
 
   it('renders persisted ordered message blocks instead of regrouping assistant fields', () => {
@@ -4274,6 +4634,55 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('keeps tool events and initial text in one assistant message when a stream placeholder trails the durable turn', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          state.messages['chat-1'][0],
+          { ...state.messages['chat-1'][1], content: 'Initial text.' },
+          {
+            id: 'stream-chat-1',
+            sessionId: 'chat-1',
+            role: 'assistant' as const,
+            content: 'Initial text.',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+            isStreaming: true,
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [
+            { type: 'assistant_text', text: 'Initial text.' },
+            { type: 'tool_call', toolCallId: 'tool-1' },
+          ],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 2,
+          pendingPermission: null,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const assistantFrames = host.querySelectorAll('[data-message-kind="assistant"]')
+    expect(assistantFrames).toHaveLength(1)
+    expect(assistantFrames[0].textContent).toContain('Initial text.')
+    expect(assistantFrames[0].textContent).toContain('Search symbols')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('falls back without hiding persisted bubbles when turn indexes no longer match their roles', () => {
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
@@ -4389,6 +4798,30 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Show earlier messages')
     expect(host.textContent).toContain('Visible fallback answer.')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not hide a steer whose compact host is outside the rendered history window', () => {
+    useAppStore.setState((state) => ({
+      workingDisplayMode: 'compact',
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { id: 'host', sessionId: 'chat-1', role: 'assistant', content: 'Hidden host', thoughts: 'Old work', createdAt: new Date(0) },
+          { id: 'boundary-steer', sessionId: 'chat-1', role: 'user', content: 'Visible steer', prioritySteer: true, attachments: [{ id: 'scope', name: 'scope.txt', type: 'file', size: 1, path: '/tmp/scope.txt' }], createdAt: new Date(1) },
+          ...Array.from({ length: 199 }, (_, index) => ({ id: `system-${index}`, sessionId: 'chat-1', role: 'system' as const, content: `Event ${index}`, createdAt: new Date(index + 2) })),
+        ],
+      },
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Visible steer')
+    expect(host.textContent).toContain('/tmp/scope.txt')
+    expect(host.textContent).toContain('Steered during this response')
     act(() => root.unmount())
     host.remove()
   })
@@ -5080,6 +5513,95 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('keeps restored ready attachments after the initial draft save', async () => {
+    writeChatComposerDraft('chat-1', {
+      text: '',
+      attachments: [{ id: 'restored', name: 'restored.png', type: 'image', size: 4, path: '/tmp/restored.png' }],
+    })
+    vi.useFakeTimers()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    await act(async () => { vi.advanceTimersByTime(300); await Promise.resolve() })
+    expect(host.textContent).toContain('restored.png')
+    expect(readChatComposerDraft('chat-1').attachments).toEqual([expect.objectContaining({ id: 'restored' })])
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('keeps an attachment that finishes staging after switching chats', async () => {
+    let finishStaging: ((attachments: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void) | undefined
+    const stageChatAttachments = vi.fn((_sessionId, items) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => {
+      finishStaging = resolve
+    }))
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({
+      sessions: [first, second],
+      stageChatAttachments,
+      messages: { ...state.messages, 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ChatView key={first.id} session={first} />))
+
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['data'], 'late.png', { type: 'image/png' })
+    Object.defineProperty(file, 'path', { value: '/tmp/late.png', configurable: true })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    const attachmentId = stageChatAttachments.mock.calls[0][1][0].id
+
+    await act(async () => root.render(<ChatView key={second.id} session={second} />))
+    await act(async () => finishStaging?.([{
+      id: attachmentId,
+      name: 'late.png',
+      type: 'image',
+      size: 4,
+      path: '.UAM/attachments/chat-1/late.png',
+    }]))
+
+    expect(readChatComposerDraft(first.id).attachments).toEqual([
+      expect.objectContaining({ id: attachmentId, name: 'late.png' }),
+    ])
+
+    act(() => root.unmount())
+    host.remove()
+    removeComposerDrafts([first.id, second.id])
+  })
+
+  it('does not restore a removed attachment after staging finishes in another chat', async () => {
+    let finishStaging: ((attachments: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void) | undefined
+    const stageChatAttachments = vi.fn((_sessionId, items) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => { finishStaging = resolve }))
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({ sessions: [first, second], stageChatAttachments, messages: { ...state.messages, 'chat-2': [] } }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ChatView key={first.id} session={first} />))
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['data'], 'removed.png', { type: 'image/png' })
+    Object.defineProperty(file, 'path', { value: '/tmp/removed.png', configurable: true })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    const attachmentId = stageChatAttachments.mock.calls[0][1][0].id
+    act(() => (host.querySelector('button[aria-label="Remove removed.png attachment"]') as HTMLButtonElement).click())
+    await act(async () => root.render(<ChatView key={second.id} session={second} />))
+    await act(async () => finishStaging?.([{ id: attachmentId, name: 'removed.png', type: 'image', size: 4, path: '/tmp/removed.png' }]))
+    expect(readChatComposerDraft(first.id).attachments).toEqual([])
+    act(() => root.unmount())
     host.remove()
   })
 

@@ -261,43 +261,33 @@ namespace uam::remote
 			const std::string temporary = directory + "/uam-runner.tmp-" + plan.nonce;
 			const std::string installed = directory + "/uam-runner";
 			const std::string backup = directory + "/uam-runner.rollback-" + plan.nonce;
-			const bool can_restore_previous = plan.previous_platform == result.platform &&
-			    IsToken(plan.previous_version, 64) &&
-			    uam::execution_hosts::IsSafeRunnerDirectory(plan.previous_runner_directory) &&
-			    plan.previous_protocol_version > 0;
-			const std::string previous_root = can_restore_previous
-			    ? uam::execution_hosts::RunnerDirectory(result.platform,
-			                                              plan.previous_runner_directory)
-			    : std::string();
-			const std::string previous = can_restore_previous
-			    ? "~/" + previous_root + "/" + plan.previous_version + "/uam-runner"
-			    : std::string();
-			const std::string stop_previous = can_restore_previous
-			    ? "\"" + previous + "\" stop --socket ~/" + previous_root + "/uam.sock || true; "
-			    : "\"$file\" stop --socket ~/" + root + "/uam.sock || true; ";
-			const std::string restore_previous = can_restore_previous
-			    ? "\"" + previous + "\" start --socket ~/" + previous_root +
-			          "/uam.sock && test \"$(\"" + previous + "\" --version)\" = " +
-			          plan.previous_version + " && test \"$(\"" + previous +
-			          "\" --protocol-version)\" = " +
-			          std::to_string(plan.previous_protocol_version) + "; "
-			    : std::string();
+			const std::string socket = "~/" + root + "/" +
+			                           RunnerEndpointName(plan.version) + ".sock";
+			const std::string socket_relative = root + "/" +
+			                                    RunnerEndpointName(plan.version) + ".sock";
+			const std::string validate_socket =
+			    "set -eu; LC_ALL=C; export LC_ALL; socket=\"$HOME/" + socket_relative +
+			    "\"; if test \"${#socket}\" -ge " +
+			    std::to_string(uam::execution_hosts::kLinuxRunnerSocketPathCapacity) + "; then "
+			    "printf '%s\\n' 'The configured helper folder makes the runner socket path too long.' >&2; "
+			    "exit 2; fi";
 			const std::string verify =
 			    "set -eu; file=" + temporary + "; installed=" + installed +
 			    "; backup=" + backup + "; trap 'rm -f \"$file\"' EXIT; "
 			    "printf '%s  %s\\n' " + artifact->sha256 +
 			    " \"$file\" | sha256sum -c -; chmod 700 \"$file\"; "
 			    "had_backup=0; if test -f \"$installed\"; then cp -p \"$installed\" \"$backup\"; had_backup=1; fi; "
-			    + stop_previous +
-			    "if mv -f \"$file\" \"$installed\" && \"$installed\" start --socket ~/" + root +
-			    "/uam.sock && test \"$(\"$installed\" --version)\" = " + plan.version +
+			    "\"$file\" stop --socket " + socket + "; "
+			    "if mv -f \"$file\" \"$installed\" && \"$installed\" start --socket " + socket +
+			    " && test \"$(\"$installed\" --version)\" = " + plan.version +
 			    " && test \"$(\"$installed\" --protocol-version)\" = " +
 			    std::to_string(kRunnerProtocolVersion) +
-			    "; then :; else status=$?; \"$installed\" stop --socket ~/" + root +
-			    "/uam.sock || true; if test \"$had_backup\" = 1; then "
+			    "; then :; else status=$?; \"$installed\" stop --socket " + socket +
+			    " || true; if test \"$had_backup\" = 1; then "
 			    "mv -f \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi; " +
-			    restore_previous + "exit \"$status\"; fi";
+			    "exit \"$status\"; fi";
 			install_steps = {
+			    {"Validate runner endpoint", SshCommand(plan.ssh_alias, validate_socket), ""},
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
 			        "umask 077; mkdir -p " + directory), ""},
 			    {"Copy runner", {"scp", "-q", "-o", "BatchMode=yes", "-o",
@@ -319,37 +309,15 @@ namespace uam::remote
 			const std::string temporary = relative + "/uam-runner.tmp-" + plan.nonce + ".exe";
 			const std::string installed = relative + "/uam-runner.exe";
 			const std::string backup = relative + "/uam-runner.rollback-" + plan.nonce + ".exe";
-			const bool can_restore_previous = plan.previous_platform == result.platform &&
-			    IsToken(plan.previous_version, 64) &&
-			    uam::execution_hosts::IsSafeRunnerDirectory(plan.previous_runner_directory) &&
-			    plan.previous_protocol_version > 0;
-			const std::string previous_relative = can_restore_previous
-			    ? uam::execution_hosts::RunnerDirectory(result.platform,
-			                                              plan.previous_runner_directory) +
-			          "/" + plan.previous_version + "/uam-runner.exe"
-			    : std::string();
-			const std::string previous_setup = can_restore_previous
-			    ? "$previous=Join-Path $HOME '" + previous_relative + "'; "
-			    : std::string();
-			const std::string stop_previous = can_restore_previous
-			    ? "& $previous stop | Out-Null; "
-			    : "& $file stop | Out-Null; ";
-			const std::string restore_previous = can_restore_previous
-			    ? "& $previous start | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Previous runner service could not restart.' }; "
-			      "if ((& $previous --version) -ne '" + plan.previous_version +
-			          "') { throw 'Previous runner version verification failed.' }; "
-			      "if ((& $previous --protocol-version) -ne '" +
-			          std::to_string(plan.previous_protocol_version) +
-			          "') { throw 'Previous runner protocol verification failed.' }; "
-			    : std::string();
 			const std::string verify = PowerShellCommand(
 			    "$file=Join-Path $HOME '" + temporary + "'; "
 			    "$installed=Join-Path $HOME '" + installed + "'; $backup=Join-Path $HOME '" + backup + "'; " +
-			    previous_setup + "$hadBackup=$false; "
+			    "$hadBackup=$false; "
 			    "try { if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne '" +
 			    artifact->sha256 + "') { throw 'Runner checksum mismatch.' }; "
 			    "if (Test-Path -LiteralPath $installed) { Copy-Item -LiteralPath $installed -Destination $backup -Force; $hadBackup=$true }; "
-			    + stop_previous + "$moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
+			    "& $file stop | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy with active chats.' }; "
+			    "$moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
 			    "try { Move-Item -LiteralPath $file -Destination $installed -Force -ErrorAction Stop; $moved=$true } "
 			    "catch { Start-Sleep -Milliseconds 100 } }; if (-not $moved) { throw 'Runner service did not release its executable.' }; "
 			    "& $installed start; if ($LASTEXITCODE -ne 0) { throw 'Runner service could not start.' }; "
@@ -357,8 +325,8 @@ namespace uam::remote
 			    "if ((& $installed --protocol-version) -ne '" + std::to_string(kRunnerProtocolVersion) + "') { throw 'Runner protocol verification failed.' }; "
 			    "} catch { $failed=$_; try { & $installed stop | Out-Null } catch {}; "
 			    "if ($hadBackup -and (Test-Path -LiteralPath $backup)) { Move-Item -LiteralPath $backup -Destination $installed -Force } "
-			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force }; " +
-			    restore_previous + "throw $failed } "
+			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force }; "
+			    "throw $failed } "
 			    "finally { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }");
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
@@ -416,10 +384,6 @@ namespace uam::remote
 		const std::string root = uam::execution_hosts::RunnerDirectory(
 		    result.platform, plan.runner_directory);
 		const std::string relative = root + "/" + plan.version;
-		const bool can_restore_previous = plan.previous_platform == result.platform &&
-		    IsToken(plan.previous_version, 64) &&
-		    uam::execution_hosts::IsSafeRunnerDirectory(plan.previous_runner_directory) &&
-		    plan.previous_protocol_version > 0;
 		std::string command;
 		if (result.platform == "linux")
 		{
@@ -430,20 +394,9 @@ namespace uam::remote
 			else
 			{
 				command = "set -eu; installed=" + installed + "; backup=" + backup +
-				    "; \"$installed\" stop --socket ~/" + root +
-				    "/uam.sock || true; if test -f \"$backup\"; then mv -f \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi; ";
-				if (can_restore_previous)
-				{
-					const std::string previous_root = uam::execution_hosts::RunnerDirectory(
-					    result.platform, plan.previous_runner_directory);
-					const std::string previous = "~/" + previous_root + "/" +
-					    plan.previous_version + "/uam-runner";
-					command += "\"" + previous + "\" start --socket ~/" + previous_root +
-					    "/uam.sock; test \"$(\"" + previous + "\" --version)\" = " +
-					    plan.previous_version + "; test \"$(\"" + previous +
-					    "\" --protocol-version)\" = " +
-					    std::to_string(plan.previous_protocol_version);
-				}
+				    "; \"$installed\" stop --socket ~/" + root + "/" +
+				    RunnerEndpointName(plan.version) +
+				    ".sock || true; if test -f \"$backup\"; then mv -f \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi";
 			}
 		}
 		else
@@ -460,19 +413,6 @@ namespace uam::remote
 				    "'; try { & $installed stop | Out-Null } catch {}; "
 				    "if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $installed -Force } "
 				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force }; ";
-				if (can_restore_previous)
-				{
-					const std::string previous = uam::execution_hosts::RunnerDirectory(
-					    result.platform, plan.previous_runner_directory) + "/" +
-					    plan.previous_version + "/uam-runner.exe";
-					script += "$previous=Join-Path $HOME '" + previous +
-					    "'; & $previous start | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Previous runner service could not restart.' }; "
-					    "if ((& $previous --version) -ne '" + plan.previous_version +
-					    "') { throw 'Previous runner version verification failed.' }; "
-					    "if ((& $previous --protocol-version) -ne '" +
-					    std::to_string(plan.previous_protocol_version) +
-					    "') { throw 'Previous runner protocol verification failed.' }";
-				}
 				command = PowerShellCommand(script);
 			}
 		}

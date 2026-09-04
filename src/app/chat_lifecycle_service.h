@@ -49,6 +49,7 @@ namespace uam
 		UnsupportedProvider,
 		ChatNotFound,
 		ActiveRuntime,
+		RuntimeStopping,
 		SaveFailed,
 	};
 

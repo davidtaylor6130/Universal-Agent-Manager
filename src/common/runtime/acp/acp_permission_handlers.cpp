@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
 #include "common/platform/platform_services.h"
 #include "app/chat_domain_service.h"
@@ -394,20 +395,26 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	return approved;
 }
 
-void QueueAcpPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending)
+void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending)
 {
 	if (!session.pending_permission.request_id_json.empty())
 	{
 		if (session.queued_permissions.size() >= kMaxQueuedPermissions)
 		{
-			const std::string message = "The provider exceeded UAM's 64-request permission queue limit.";
+			const std::string message = session.queued_user_prompts.empty()
+			    ? "The provider exceeded UAM's 64-request permission queue limit."
+			    : "The provider exceeded UAM's 64-request permission queue limit. Queued follow-up prompts were not sent; resend them.";
 			AppendAcpDiagnostic(session, "permission", "queue_limit_exceeded",
 			                    pending.provider_request_method, pending.request_id_json,
 			                    false, 0, message);
-			PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+			QueueAcpProcessStop(app, session);
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 			session.running = false;
-			FailAcpTurnOrSession(session, message);
+			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+			(void)PersistQueuedAcpUserPromptsAsInterrupted(session, chat);
+			FailAcpTurnOrSession(session, &chat, message);
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
 			return;
 		}
 		session.queued_permissions.push_back(std::move(pending));

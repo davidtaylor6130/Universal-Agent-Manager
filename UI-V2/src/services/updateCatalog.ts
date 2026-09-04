@@ -54,8 +54,8 @@ export function compareVersions(left: string, right: string): number {
     if (difference !== 0) return difference
   }
   if (!aPre || !bPre) return aPre ? -1 : bPre ? 1 : 0
-  const aParts = aPre.split('.')
-  const bParts = bPre.split('.')
+  const aParts = aPre.split(/[.-]/)
+  const bParts = bPre.split(/[.-]/)
   for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
     if (aParts[index] === undefined) return -1
     if (bParts[index] === undefined) return 1

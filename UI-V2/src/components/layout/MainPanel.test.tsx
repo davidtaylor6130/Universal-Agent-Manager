@@ -514,6 +514,10 @@ describe('MainPanel', () => {
         name: `Chat ${number}`,
       })),
       messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false },
+      },
     }))
     writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
     const host = document.createElement('div')
@@ -530,6 +534,72 @@ describe('MainPanel', () => {
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent?.includes('Drag a chat here or select one'))).toBe(true)
     expect(host.querySelector('[data-testid="chat-pane-chat-1"]')).toBeNull()
     expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeTruthy()
+    expect(useAppStore.getState().messages['chat-1']).toBeUndefined()
+    expect(useAppStore.getState().messages['chat-2']).toEqual([])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes an unfocused chat with one click without reopening it', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [] },
+      activeSessionId: 'chat-1',
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    const close = host.querySelector('button[aria-label="Close Chat 2"]') as HTMLButtonElement
+    act(() => {
+      close.focus()
+      close.click()
+    })
+
+    expect(useAppStore.getState().activeSessionId).toBeNull()
+    expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-1', ''])
+    expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('evicts a closed processing transcript when the turn becomes idle', () => {
+    useAppStore.setState((state) => ({
+      sessions: [1, 2].map((number) => ({
+        ...state.sessions[0],
+        id: `chat-${number}`,
+        name: `Chat ${number}`,
+      })),
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true },
+      },
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => (host.querySelector('button[aria-label="Close Chat 1"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().messages['chat-1']).toEqual([])
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false },
+      },
+    })))
+    expect(useAppStore.getState().messages['chat-1']).toBeUndefined()
 
     act(() => root.unmount())
     host.remove()

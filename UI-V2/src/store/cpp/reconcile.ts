@@ -698,11 +698,11 @@ export function sameArrayEntries<T>(existing: T[], next: T[]) {
 
 function cppMessageCreatedAtMillis(message: CppMessage) {
   if (!message.createdAt) {
-    return Date.now()
+    return 0
   }
 
   const timestamp = Date.parse(message.createdAt)
-  return Number.isFinite(timestamp) ? timestamp : Date.now()
+  return Number.isFinite(timestamp) ? timestamp : 0
 }
 
 function cppMessagesEquivalent(existing: Message, next: CppMessage) {

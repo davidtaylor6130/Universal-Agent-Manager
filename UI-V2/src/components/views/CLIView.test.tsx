@@ -624,6 +624,45 @@ describe('CLIView', () => {
     host.remove()
   })
 
+  it('does not submit terminal steering while an IME composition is being confirmed', async () => {
+    const requests: Array<{ action: string }> = []
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'startCliTerminal') {
+        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy' }))
+      } else {
+        onSuccess(JSON.stringify({ pendingSteer: false, lastError: '' }))
+      }
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+
+    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '変換中')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))
+      const legacyCompositionEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      Object.defineProperty(legacyCompositionEnter, 'keyCode', { value: 229 })
+      input.dispatchEvent(legacyCompositionEnter)
+    })
+
+    expect(requests.filter((request) => request.action === 'steerCliTerminal')).toHaveLength(0)
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(requests.filter((request) => request.action === 'steerCliTerminal')).toHaveLength(1)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not let a steer finishing in another chat clear the current draft', async () => {
     let finishSteer: ((response: string) => void) | null = null
     ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {

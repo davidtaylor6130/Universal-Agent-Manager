@@ -3,6 +3,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
 #include "common/memory/memory_levels.h"
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
@@ -87,6 +88,29 @@ namespace
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
 	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
+	constexpr std::string_view kChatRemoteProcessExistsField = "remote_process_exists";
+	constexpr std::string_view kChatRemoteStopCleanupPendingField = "remote_stop_cleanup_pending";
+	constexpr std::string_view kChatRemoteRestartPendingField = "remote_restart_pending";
+	constexpr std::string_view kChatRemoteProcessControlTokenField = "remote_process_control_token";
+	constexpr std::string_view kChatRemoteDeliveredStdoutCursorField = "remote_delivered_stdout_cursor";
+	constexpr std::string_view kChatRemoteDeliveredStderrCursorField = "remote_delivered_stderr_cursor";
+	constexpr std::string_view kChatRemoteSourceExitPendingField = "remote_source_exit_pending";
+	constexpr std::string_view kChatRemoteSourceExitCodeField = "remote_source_exit_code";
+	constexpr std::string_view kChatRemoteUamControlChannelIdField = "remote_uam_control_channel_id";
+	constexpr std::string_view kChatRemoteInteractionResponseRequestIdField = "remote_interaction_response_request_id";
+	constexpr std::string_view kChatRemoteInteractionResponseJsonField = "remote_interaction_response_json";
+	constexpr std::string_view kChatRemoteInteractionResponsesField = "remote_interaction_responses";
+	constexpr std::string_view kChatRemotePromptDeliverySessionIdField = "remote_prompt_delivery_session_id";
+	constexpr std::string_view kChatRemotePromptDeliveryIdField = "remote_prompt_delivery_id";
+	constexpr std::string_view kChatRemotePromptDeliveryPayloadField = "remote_prompt_delivery_payload";
+	constexpr std::string_view kChatAcpQueuedPromptsField = "acp_queued_prompts";
+	constexpr std::string_view kChatAcpDispatchedQueuedPromptCountField = "acp_dispatched_queued_prompt_count";
+	constexpr std::size_t kMaxPersistedAcpQueuedPrompts = 32;
+	constexpr std::size_t kMaxPersistedAcpQueuedPromptBytes = 2U * 1024U * 1024U;
+	constexpr std::size_t kMaxPersistedRemoteInteractionResponseBytes = 1024U * 1024U;
+	constexpr std::size_t kMaxPersistedRemoteInteractionResponses = 64;
+	constexpr std::size_t kMaxPersistedRemoteInteractionResponsesBytes = 2U * 1024U * 1024U;
+	constexpr std::size_t kMaxPersistedRemotePromptDeliveryBytes = 2U * 1024U * 1024U;
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
 	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
 	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
@@ -247,6 +271,117 @@ namespace
 		uam::json::SetNumber(obj, attachment_persisted_fields::kSizeBytesField, static_cast<double>(attachment.size_bytes));
 		uam::json::SetBool(obj, attachment_fields::kCopiedField, attachment.copied);
 		return obj;
+	}
+
+	JsonValue AcpQueuedPromptToJson(const uam::AcpQueuedUserPromptState& prompt)
+	{
+		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, "text", prompt.text);
+		uam::json::SetString(obj, "uam_agent_id", prompt.uam_agent_id);
+		uam::json::SetString(obj, "uam_agent_definition_hash", prompt.uam_agent_definition_hash);
+		uam::json::SetString(obj, "uam_agent_definition_snapshot", prompt.uam_agent_definition_snapshot);
+		uam::json::SetString(obj, "uam_agent_instructions", prompt.uam_agent_instructions);
+		uam::json::SetValue(obj, "uam_agent_skills", StringArrayToJson(prompt.uam_agent_skills));
+		uam::json::SetValue(obj, "uam_agent_delegates", StringArrayToJson(prompt.uam_agent_delegates));
+		uam::json::SetString(obj, "uam_agent_workspace_access", prompt.uam_agent_workspace_access);
+		uam::json::SetString(obj, "uam_agent_execution_capability", prompt.uam_agent_execution_capability);
+		uam::json::SetValue(obj, "markdown_store_files", StringArrayToJson(prompt.markdown_store_files));
+		JsonValue prompt_blocks = uam::json::Array();
+		for (const std::string& block : prompt.markdown_store_prompt_blocks)
+			uam::json::PushValue(prompt_blocks, uam::json::String(block));
+		uam::json::SetValue(obj, "markdown_store_prompt_blocks", std::move(prompt_blocks));
+		JsonValue attachments = uam::json::Array();
+		for (const MessageAttachment& attachment : prompt.attachments)
+			uam::json::PushValue(attachments, AttachmentToJson(attachment));
+		uam::json::SetValue(obj, "attachments", std::move(attachments));
+		uam::json::SetBool(obj, "append_user_message", prompt.append_user_message);
+		uam::json::SetBool(obj, "goal_mode", prompt.goal_mode);
+		uam::json::SetString(obj, "goal_id", prompt.goal_id);
+		uam::json::SetBool(obj, "computer_use_mode", prompt.computer_use_mode);
+		uam::json::SetBool(obj, "priority_steer", prompt.priority_steer);
+		return obj;
+	}
+
+	JsonValue AcpRemoteInteractionResponseToJson(
+	    const uam::AcpRemoteInteractionResponseState& response)
+	{
+		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, "request_id_json", response.request_id_json);
+		uam::json::SetString(obj, "response_json", response.response_json);
+		return obj;
+	}
+
+	std::optional<uam::AcpRemoteInteractionResponseState>
+	AcpRemoteInteractionResponseFromJson(const JsonValue& obj,
+	                                     std::size_t& total_response_bytes)
+	{
+		if (obj.type != JsonValue::Type::Object) return std::nullopt;
+		uam::AcpRemoteInteractionResponseState response;
+		response.request_id_json = JsonStringOrEmpty(obj.Find("request_id_json"));
+		response.response_json = JsonStringOrEmpty(obj.Find("response_json"));
+		if (response.request_id_json.empty() || response.request_id_json.size() > 1024 ||
+		    response.response_json.empty() ||
+		    response.response_json.size() > kMaxPersistedRemoteInteractionResponseBytes ||
+		    response.response_json.size() > kMaxPersistedRemoteInteractionResponsesBytes -
+		        std::min(total_response_bytes,
+		                 kMaxPersistedRemoteInteractionResponsesBytes) ||
+		    !ParseJson(response.response_json).has_value())
+			return std::nullopt;
+		total_response_bytes += response.response_json.size();
+		return response;
+	}
+
+	std::optional<uam::AcpQueuedUserPromptState> AcpQueuedPromptFromJson(
+	    const JsonValue& obj, std::size_t& total_text_bytes)
+	{
+		if (obj.type != JsonValue::Type::Object) return std::nullopt;
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.text = JsonStringOrEmpty(obj.Find("text"));
+		if (prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		    std::min(total_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) return std::nullopt;
+		total_text_bytes += prompt.text.size();
+		prompt.uam_agent_id = uam::strings::NonEmptyOrFallback(
+		    JsonStringOrEmpty(obj.Find("uam_agent_id")), "build");
+		prompt.uam_agent_definition_hash = JsonStringOrEmpty(obj.Find("uam_agent_definition_hash"));
+		prompt.uam_agent_definition_snapshot = JsonStringOrEmpty(obj.Find("uam_agent_definition_snapshot"));
+		prompt.uam_agent_instructions = JsonStringOrEmpty(obj.Find("uam_agent_instructions"));
+		prompt.uam_agent_skills = JsonStringArrayOrEmpty(obj.Find("uam_agent_skills"));
+		prompt.uam_agent_delegates = JsonStringArrayOrEmpty(obj.Find("uam_agent_delegates"));
+		prompt.uam_agent_workspace_access = uam::strings::NonEmptyOrFallback(
+		    JsonStringOrEmpty(obj.Find("uam_agent_workspace_access")), "write");
+		prompt.uam_agent_execution_capability = uam::strings::NonEmptyOrFallback(
+		    JsonStringOrEmpty(obj.Find("uam_agent_execution_capability")), "uam-prompt-injected");
+		prompt.markdown_store_files = JsonStringArrayOrEmpty(obj.Find("markdown_store_files"));
+		if (const JsonValue* blocks = uam::json::ArrayOrNull(obj.Find("markdown_store_prompt_blocks"));
+		    blocks != nullptr)
+		{
+			for (const JsonValue& block : blocks->array_value)
+				if (block.type == JsonValue::Type::String)
+					prompt.markdown_store_prompt_blocks.push_back(block.string_value);
+		}
+		if (const JsonValue* attachments = uam::json::ArrayOrNull(obj.Find("attachments"));
+		    attachments != nullptr)
+		{
+			for (const JsonValue& item : attachments->array_value)
+			{
+				if (item.type != JsonValue::Type::Object || prompt.attachments.size() >= 64) break;
+				MessageAttachment attachment;
+				attachment.id = JsonStringOrEmpty(item.Find(attachment_fields::kIdField));
+				attachment.name = JsonStringOrEmpty(item.Find(attachment_fields::kNameField));
+				attachment.kind = JsonStringOrEmpty(item.Find(attachment_fields::kKindField));
+				attachment.mime_type = JsonStringOrEmpty(item.Find(attachment_persisted_fields::kMimeTypeField));
+				attachment.path = JsonStringOrEmpty(item.Find(attachment_fields::kPathField));
+				attachment.size_bytes = NonNegativeUintmaxFieldOrZero(item.Find(attachment_persisted_fields::kSizeBytesField));
+				attachment.copied = JsonBoolOrDefault(item.Find(attachment_fields::kCopiedField), false);
+				if (!attachment.path.empty()) prompt.attachments.push_back(std::move(attachment));
+			}
+		}
+		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
+		prompt.goal_mode = JsonBoolOrDefault(obj.Find("goal_mode"), false);
+		prompt.goal_id = JsonStringOrEmpty(obj.Find("goal_id"));
+		prompt.computer_use_mode = JsonBoolOrDefault(obj.Find("computer_use_mode"), false);
+		prompt.priority_steer = JsonBoolOrDefault(obj.Find("priority_steer"), false);
+		return prompt;
 	}
 
 	JsonValue MessageToJson(const Message& msg)
@@ -643,6 +778,47 @@ namespace
 		return EquivalentVectors(lhs, rhs, MessageEquivalentForRecovery);
 	}
 
+	bool AcpQueuedPromptEquivalentForRecovery(
+	    const uam::AcpQueuedUserPromptState& lhs,
+	    const uam::AcpQueuedUserPromptState& rhs)
+	{
+		return lhs.text == rhs.text && lhs.uam_agent_id == rhs.uam_agent_id &&
+		       lhs.uam_agent_definition_hash == rhs.uam_agent_definition_hash &&
+		       lhs.uam_agent_definition_snapshot == rhs.uam_agent_definition_snapshot &&
+		       lhs.uam_agent_instructions == rhs.uam_agent_instructions &&
+		       lhs.uam_agent_skills == rhs.uam_agent_skills &&
+		       lhs.uam_agent_delegates == rhs.uam_agent_delegates &&
+		       lhs.uam_agent_workspace_access == rhs.uam_agent_workspace_access &&
+		       lhs.uam_agent_execution_capability == rhs.uam_agent_execution_capability &&
+		       lhs.markdown_store_files == rhs.markdown_store_files &&
+		       lhs.markdown_store_prompt_blocks == rhs.markdown_store_prompt_blocks &&
+		       MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments) &&
+		       lhs.append_user_message == rhs.append_user_message &&
+		       lhs.goal_mode == rhs.goal_mode && lhs.goal_id == rhs.goal_id &&
+		       lhs.computer_use_mode == rhs.computer_use_mode &&
+		       lhs.priority_steer == rhs.priority_steer;
+	}
+
+	bool AcpQueuedPromptsEquivalentForRecovery(
+	    const std::vector<uam::AcpQueuedUserPromptState>& lhs,
+	    const std::vector<uam::AcpQueuedUserPromptState>& rhs)
+	{
+		return EquivalentVectors(lhs, rhs, AcpQueuedPromptEquivalentForRecovery);
+	}
+
+	bool AcpRemoteInteractionResponsesEquivalentForRecovery(
+	    const std::vector<uam::AcpRemoteInteractionResponseState>& lhs,
+	    const std::vector<uam::AcpRemoteInteractionResponseState>& rhs)
+	{
+		return EquivalentVectors(lhs, rhs,
+		    [](const uam::AcpRemoteInteractionResponseState& left,
+	       const uam::AcpRemoteInteractionResponseState& right)
+		    {
+			    return left.request_id_json == right.request_id_json &&
+			           left.response_json == right.response_json;
+		    });
+	}
+
 	bool ChatIdentityFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
 		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
@@ -707,7 +883,24 @@ namespace
 			return false;
 		}
 
-		return lhs.extra_flags == rhs.extra_flags;
+		return lhs.extra_flags == rhs.extra_flags &&
+		       lhs.remote_turn_reconnect_pending == rhs.remote_turn_reconnect_pending &&
+		       lhs.remote_process_exists == rhs.remote_process_exists &&
+		       lhs.remote_stop_cleanup_pending == rhs.remote_stop_cleanup_pending &&
+		       lhs.remote_restart_pending == rhs.remote_restart_pending &&
+		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
+		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
+		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
+		       lhs.remote_source_exit_pending == rhs.remote_source_exit_pending &&
+		       lhs.remote_source_exit_code == rhs.remote_source_exit_code &&
+		       lhs.remote_uam_control_channel_id == rhs.remote_uam_control_channel_id &&
+		       AcpRemoteInteractionResponsesEquivalentForRecovery(
+		           lhs.remote_interaction_responses, rhs.remote_interaction_responses) &&
+		       lhs.remote_prompt_delivery_session_id == rhs.remote_prompt_delivery_session_id &&
+		       lhs.remote_prompt_delivery_id == rhs.remote_prompt_delivery_id &&
+		       lhs.remote_prompt_delivery_payload == rhs.remote_prompt_delivery_payload &&
+		       lhs.acp_dispatched_queued_prompt_count == rhs.acp_dispatched_queued_prompt_count &&
+		       AcpQueuedPromptsEquivalentForRecovery(lhs.acp_queued_prompts, rhs.acp_queued_prompts);
 	}
 
 	bool ChatMemoryFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -804,6 +997,91 @@ namespace
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
 		chat.remote_turn_reconnect_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteTurnReconnectPendingField), false);
+		chat.remote_process_exists = JsonBoolOrDefault(
+		    root.Find(kChatRemoteProcessExistsField),
+		    chat.remote_turn_reconnect_pending);
+		chat.remote_stop_cleanup_pending = JsonBoolOrDefault(
+		    root.Find(kChatRemoteStopCleanupPendingField), false);
+		chat.remote_restart_pending = JsonBoolOrDefault(
+		    root.Find(kChatRemoteRestartPendingField), false);
+		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
+			chat.remote_process_exists = chat.remote_turn_reconnect_pending ||
+			    chat.remote_stop_cleanup_pending || chat.remote_restart_pending;
+		chat.remote_process_control_token = JsonStringOrEmpty(
+		    root.Find(kChatRemoteProcessControlTokenField));
+		if (chat.remote_process_control_token.size() > 256)
+			chat.remote_process_control_token.clear();
+		chat.remote_delivered_stdout_cursor = NonNegativeUintmaxFieldOrZero(
+		    root.Find(kChatRemoteDeliveredStdoutCursorField));
+		chat.remote_delivered_stderr_cursor = NonNegativeUintmaxFieldOrZero(
+		    root.Find(kChatRemoteDeliveredStderrCursorField));
+		chat.remote_source_exit_pending = JsonBoolOrDefault(
+		    root.Find(kChatRemoteSourceExitPendingField), false);
+		chat.remote_source_exit_code = chat.remote_source_exit_pending
+		                                   ? IntFieldAtLeastOrDefault(
+		                                         root.Find(kChatRemoteSourceExitCodeField), -1, -1)
+		                                   : -1;
+		chat.remote_uam_control_channel_id = JsonStringOrEmpty(
+		    root.Find(kChatRemoteUamControlChannelIdField));
+		if (chat.remote_uam_control_channel_id.size() > 256)
+			chat.remote_uam_control_channel_id.clear();
+		if (const JsonValue* responses = uam::json::ArrayOrNull(
+		        root.Find(kChatRemoteInteractionResponsesField)); responses != nullptr)
+		{
+			std::size_t total_response_bytes = 0;
+			for (const JsonValue& item : responses->array_value)
+			{
+				if (chat.remote_interaction_responses.size() >=
+				    kMaxPersistedRemoteInteractionResponses) break;
+				std::optional<uam::AcpRemoteInteractionResponseState> response =
+				    AcpRemoteInteractionResponseFromJson(item, total_response_bytes);
+				if (response.has_value())
+					chat.remote_interaction_responses.push_back(std::move(*response));
+			}
+		}
+		else
+		{
+			const std::string legacy_request_id = JsonStringOrEmpty(
+			    root.Find(kChatRemoteInteractionResponseRequestIdField));
+			const std::string legacy_response = JsonStringOrEmpty(
+			    root.Find(kChatRemoteInteractionResponseJsonField));
+			if (!legacy_request_id.empty() && legacy_request_id.size() <= 1024 &&
+			    !legacy_response.empty() &&
+			    legacy_response.size() <= kMaxPersistedRemoteInteractionResponseBytes &&
+			    ParseJson(legacy_response).has_value())
+				chat.remote_interaction_responses.push_back(
+				    {legacy_request_id, legacy_response});
+		}
+		chat.remote_prompt_delivery_id = JsonStringOrEmpty(
+		    root.Find(kChatRemotePromptDeliveryIdField));
+		chat.remote_prompt_delivery_payload = JsonStringOrEmpty(
+		    root.Find(kChatRemotePromptDeliveryPayloadField));
+		chat.remote_prompt_delivery_session_id = JsonStringOrEmpty(
+		    root.Find(kChatRemotePromptDeliverySessionIdField));
+		if (chat.remote_prompt_delivery_session_id.size() > 256 ||
+		    chat.remote_prompt_delivery_id.size() > 256 ||
+		    chat.remote_prompt_delivery_payload.size() >
+		        kMaxPersistedRemotePromptDeliveryBytes)
+		{
+			chat.remote_prompt_delivery_session_id.clear();
+			chat.remote_prompt_delivery_id.clear();
+			chat.remote_prompt_delivery_payload.clear();
+		}
+		if (const JsonValue* queued_prompts = uam::json::ArrayOrNull(
+		        root.Find(kChatAcpQueuedPromptsField)); queued_prompts != nullptr)
+		{
+			std::size_t total_text_bytes = 0;
+			for (const JsonValue& item : queued_prompts->array_value)
+			{
+				if (chat.acp_queued_prompts.size() >= kMaxPersistedAcpQueuedPrompts) break;
+				std::optional<uam::AcpQueuedUserPromptState> prompt =
+				    AcpQueuedPromptFromJson(item, total_text_bytes);
+				if (prompt.has_value()) chat.acp_queued_prompts.push_back(std::move(*prompt));
+			}
+		}
+		chat.acp_dispatched_queued_prompt_count = std::min<std::uintmax_t>(
+		    NonNegativeUintmaxFieldOrZero(root.Find(kChatAcpDispatchedQueuedPromptCountField)),
+		    chat.acp_queued_prompts.size());
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
@@ -823,11 +1101,33 @@ namespace
 		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
 		chat.imported_read_only = JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
+		if (chat.imported_read_only ||
+		    chat.execution_host_id == uam::execution_hosts::kLocalHostId)
+		{
+			chat.remote_turn_reconnect_pending = false;
+			chat.remote_process_exists = false;
+			chat.remote_stop_cleanup_pending = false;
+			chat.remote_restart_pending = false;
+			chat.remote_process_control_token.clear();
+			chat.remote_delivered_stdout_cursor = 0;
+			chat.remote_delivered_stderr_cursor = 0;
+			chat.remote_source_exit_pending = false;
+			chat.remote_source_exit_code = -1;
+			chat.remote_uam_control_channel_id.clear();
+			chat.remote_interaction_responses.clear();
+			chat.remote_prompt_delivery_session_id.clear();
+			chat.remote_prompt_delivery_id.clear();
+			chat.remote_prompt_delivery_payload.clear();
+			if (chat.imported_read_only) chat.acp_queued_prompts.clear();
+			if (chat.imported_read_only) chat.acp_dispatched_queued_prompt_count = 0;
+		}
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
 		chat.uam_agent_id = uam::strings::NonEmptyOrFallback(JsonStringOrEmpty(root.Find(kChatUamAgentIdField)), "build");
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
-		chat.goal_owner_chat_id = JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField));
-		chat.goal_iteration_goal_id = JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField));
+		chat.goal_owner_chat_id = uam::strings::Trim(
+		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
+		chat.goal_iteration_goal_id = uam::strings::Trim(
+		    JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField)));
 		chat.goal_iteration_turn_kind = JsonStringOrEmpty(root.Find(kChatGoalIterationTurnKindField));
 		chat.goal_iteration_repair_attempts = IntFieldAtLeastOrDefault(root.Find(kChatGoalIterationRepairAttemptsField), 0, 0);
 		const bool legacy_auto_approve_commands = JsonBoolOrDefault(root.Find(kChatAutoApproveCommandsField), false);
@@ -1148,6 +1448,65 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
 	uam::json::SetBool(root, kChatRemoteTurnReconnectPendingField,
 	                   chat.remote_turn_reconnect_pending);
+	uam::json::SetBool(root, kChatRemoteProcessExistsField,
+	                   chat.remote_process_exists);
+	uam::json::SetBool(root, kChatRemoteStopCleanupPendingField,
+	                   chat.remote_stop_cleanup_pending);
+	uam::json::SetBool(root, kChatRemoteRestartPendingField,
+	                   chat.remote_restart_pending);
+	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
+	                   chat.remote_process_control_token);
+	uam::json::SetNumber(root, kChatRemoteDeliveredStdoutCursorField,
+	                     static_cast<double>(chat.remote_delivered_stdout_cursor));
+	uam::json::SetNumber(root, kChatRemoteDeliveredStderrCursorField,
+	                     static_cast<double>(chat.remote_delivered_stderr_cursor));
+	uam::json::SetBool(root, kChatRemoteSourceExitPendingField,
+	                   chat.remote_source_exit_pending);
+	uam::json::SetNumber(root, kChatRemoteSourceExitCodeField,
+	                     static_cast<double>(chat.remote_source_exit_code));
+	uam::json::SetString(root, kChatRemoteUamControlChannelIdField,
+	                     chat.remote_uam_control_channel_id);
+	JsonValue interaction_responses = uam::json::Array();
+	std::size_t interaction_response_bytes = 0;
+	for (const uam::AcpRemoteInteractionResponseState& response :
+	     chat.remote_interaction_responses)
+	{
+		if (interaction_responses.array_value.size() >=
+		        kMaxPersistedRemoteInteractionResponses ||
+		    response.request_id_json.empty() ||
+		    response.request_id_json.size() > 1024 || response.response_json.empty() ||
+		    response.response_json.size() > kMaxPersistedRemoteInteractionResponseBytes ||
+		    response.response_json.size() > kMaxPersistedRemoteInteractionResponsesBytes -
+		        std::min(interaction_response_bytes,
+		                 kMaxPersistedRemoteInteractionResponsesBytes))
+			break;
+		interaction_response_bytes += response.response_json.size();
+		uam::json::PushValue(interaction_responses,
+		                     AcpRemoteInteractionResponseToJson(response));
+	}
+	uam::json::SetValue(root, kChatRemoteInteractionResponsesField,
+	                    std::move(interaction_responses));
+	uam::json::SetString(root, kChatRemotePromptDeliveryIdField,
+	                     chat.remote_prompt_delivery_id);
+	uam::json::SetString(root, kChatRemotePromptDeliveryPayloadField,
+	                     chat.remote_prompt_delivery_payload);
+	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
+	                     chat.remote_prompt_delivery_session_id);
+	JsonValue queued_prompts = uam::json::Array();
+	std::size_t queued_prompt_text_bytes = 0;
+	for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
+	{
+		if (queued_prompts.array_value.size() >= kMaxPersistedAcpQueuedPrompts ||
+		    prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		    std::min(queued_prompt_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) break;
+		queued_prompt_text_bytes += prompt.text.size();
+		uam::json::PushValue(queued_prompts, AcpQueuedPromptToJson(prompt));
+	}
+	uam::json::SetValue(root, kChatAcpQueuedPromptsField, std::move(queued_prompts));
+	uam::json::SetNumber(root, kChatAcpDispatchedQueuedPromptCountField,
+	                     static_cast<double>(std::min(
+	                         chat.acp_dispatched_queued_prompt_count,
+	                         chat.acp_queued_prompts.size())));
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
@@ -1491,6 +1850,22 @@ namespace
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
 		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;
 		hydrated.remote_turn_reconnect_pending = summary.remote_turn_reconnect_pending;
+		hydrated.remote_process_exists = summary.remote_process_exists;
+		hydrated.remote_stop_cleanup_pending = summary.remote_stop_cleanup_pending;
+		hydrated.remote_restart_pending = summary.remote_restart_pending;
+		hydrated.remote_process_control_token = summary.remote_process_control_token;
+		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
+		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
+		hydrated.remote_source_exit_pending = summary.remote_source_exit_pending;
+		hydrated.remote_source_exit_code = summary.remote_source_exit_code;
+		hydrated.remote_uam_control_channel_id = summary.remote_uam_control_channel_id;
+		hydrated.remote_interaction_responses = summary.remote_interaction_responses;
+		hydrated.remote_prompt_delivery_session_id = summary.remote_prompt_delivery_session_id;
+		hydrated.remote_prompt_delivery_id = summary.remote_prompt_delivery_id;
+		hydrated.remote_prompt_delivery_payload = summary.remote_prompt_delivery_payload;
+		hydrated.acp_queued_prompts = summary.acp_queued_prompts;
+		hydrated.acp_dispatched_queued_prompt_count =
+		    summary.acp_dispatched_queued_prompt_count;
 		hydrated.active_goal_id = summary.active_goal_id;
 		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;

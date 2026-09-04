@@ -221,6 +221,7 @@ export function MainPanel() {
   const lastAppliedStateRevision = useAppStore((s) => s.lastAppliedStateRevision)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const unloadSessionMessages = useAppStore((s) => s.unloadSessionMessages)
   const [layout, setLayout] = useState<ChatGridLayout>(readChatGridLayout)
   const [dropTargetPane, setDropTargetPane] = useState<string | null>(null)
   const leaves = chatGridLeaves(layout.root)
@@ -230,9 +231,18 @@ export function MainPanel() {
     return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
   })))
   const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
+  const previousVisibleIds = useRef(new Set(visibleIds.filter(Boolean)))
+  const pendingEvictionIds = useRef(new Set<string>())
 
   useEffect(() => writeChatGridLayout(layout), [layout])
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
+  useEffect(() => useAppStore.subscribe((state) => {
+    for (const id of pendingEvictionIds.current) {
+      if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) continue
+      pendingEvictionIds.current.delete(id)
+      state.unloadSessionMessages(id)
+    }
+  }), [])
 
   useEffect(() => {
     if (isCefContext() && lastAppliedStateRevision < 0) return
@@ -278,6 +288,21 @@ export function MainPanel() {
   }, [loadSessionMessages, visibleIds.join('|')])
 
   useEffect(() => {
+    const current = new Set(visibleIds.filter(Boolean))
+    for (const id of previousVisibleIds.current) {
+      if (current.has(id)) continue
+      const state = useAppStore.getState()
+      if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) {
+        pendingEvictionIds.current.add(id)
+      } else {
+        unloadSessionMessages(id)
+      }
+    }
+    for (const id of current) pendingEvictionIds.current.delete(id)
+    previousVisibleIds.current = current
+  }, [unloadSessionMessages, visibleIds.join('|')])
+
+  useEffect(() => {
     const previous = previousVisibleAcp.current
     const current = new Map<string, { processing: boolean; turnSerial: number }>()
     for (const id of visibleIds) {
@@ -313,8 +338,8 @@ export function MainPanel() {
 
   const clearChat = useCallback((leafId: string, sessionId: string) => {
     setLayout((current) => clearChatLeaf(current, leafId))
-    if (activeSessionId === sessionId) setActiveSession(null)
-  }, [activeSessionId, setActiveSession])
+    if (useAppStore.getState().activeSessionId === sessionId) setActiveSession(null)
+  }, [setActiveSession])
 
   const closePane = useCallback((leafId: string) => {
     setLayout((current) => {

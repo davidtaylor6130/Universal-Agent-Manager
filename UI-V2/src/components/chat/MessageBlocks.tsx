@@ -167,6 +167,22 @@ function lastNonEmptyLine(text: string) {
   return text.split('\n').reverse().find((line) => line.trim())?.trim() ?? ''
 }
 
+export function hasCompactWorkingSummary(message?: Message) {
+  if (message?.role !== 'assistant') return false
+  const blocks = message.blocks ?? []
+  if (blocks.length > 0) {
+    const lastText = blocks.reduce(
+      (latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest,
+      -1
+    )
+    return blocks.some((block, index) =>
+      block.type === 'thought' || block.type === 'tool_call' ||
+      (block.type === 'assistant_text' && index !== lastText)
+    )
+  }
+  return Boolean(message.thoughts?.trim() || message.toolCalls?.length)
+}
+
 function CompactWorkingSummary({
   events,
   tools,
@@ -174,6 +190,8 @@ function CompactWorkingSummary({
   workedSeconds,
   onSelectTool,
   renderSubAgentHistory,
+  prioritySteerText,
+  prioritySteerAttachments,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -181,15 +199,23 @@ function CompactWorkingSummary({
   workedSeconds?: number
   onSelectTool: (toolId: string) => void
   renderSubAgentHistory?: (tool: AcpToolCall) => ReactNode
+  prioritySteerText?: string
+  prioritySteerAttachments?: Attachment[]
 }) {
   const [open, setOpen] = useState(active)
+	const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
+	const hasPrioritySteer = Boolean(prioritySteerText?.trim() || prioritySteerAttachments?.length)
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const lastToolEvent = events.slice().reverse().find((event) => event.type === 'tool_call')
   const lastTool = lastToolEvent?.type === 'tool_call' ? toolById.get(lastToolEvent.toolCallId) : undefined
   const lastTextUpdate = events.slice().reverse().find(
     (event) => (event.type === 'thought' || event.type === 'assistant_text') && event.text.trim()
   )
-  const lastUpdate = lastTool
+	const lastUpdate = hasPrioritySteer
+		? prioritySteerText?.trim()
+			? `Steered · ${lastNonEmptyLine(prioritySteerText)}`
+			: 'Steered'
+    : lastTool
     ? `${lastTool.title || lastTool.id} · ${lastTool.status || 'pending'}`
     : lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
     ? lastNonEmptyLine(lastTextUpdate.text) || 'Reasoning completed'
@@ -197,7 +223,13 @@ function CompactWorkingSummary({
       ? `${active ? 'Using' : 'Used'} a tool`
       : 'Reasoning completed'
 
-  useEffect(() => setOpen(active), [active])
+  useEffect(() => {
+	if (active && !manuallyCollapsed) setOpen(true)
+	if (!active) {
+	  setOpen(false)
+	  setManuallyCollapsed(false)
+	}
+	}, [active, manuallyCollapsed])
 
   return (
     <details
@@ -210,7 +242,8 @@ function CompactWorkingSummary({
         className="uam-working-summary__header"
         onClick={(event) => {
           event.preventDefault()
-          setOpen(active || !open)
+		  setManuallyCollapsed(active && open)
+		  setOpen(!open)
         }}
       >
         {active
@@ -244,6 +277,13 @@ function CompactWorkingSummary({
             }
             return null
           })}
+		  {hasPrioritySteer && (
+			<div data-testid="priority-steer" className="space-y-1 border-t pt-3" style={{ borderColor: 'var(--border-bright)' }}>
+			  <div className="text-xs font-semibold" style={{ color: 'var(--accent)' }}>Steered during this response</div>
+			  {prioritySteerText?.trim() && <MarkdownContent content={prioritySteerText} />}
+              <AttachmentList attachments={prioritySteerAttachments ?? []} />
+            </div>
+          )}
         </div>
       )}
     </details>
@@ -495,6 +535,8 @@ export function PersistedMessageBlocksContent({
   sourceChatId,
   workingMode = 'verbose',
   workedSeconds,
+  prioritySteerText,
+  prioritySteerAttachments,
 }: {
   message: Message
   blocks: MessageBlock[]
@@ -502,6 +544,8 @@ export function PersistedMessageBlocksContent({
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
+  prioritySteerText?: string
+  prioritySteerAttachments?: Attachment[]
   planActions?: {
     show: boolean
     disabled: boolean
@@ -535,6 +579,8 @@ export function PersistedMessageBlocksContent({
           tools={message.toolCalls ?? []}
           active={false}
           workedSeconds={workedSeconds}
+          prioritySteerText={prioritySteerText}
+          prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
@@ -598,11 +644,15 @@ export function PersistedMessageContent({
   planActions,
   sourceChatId,
   workingMode = 'verbose',
+  prioritySteerText,
+  prioritySteerAttachments,
 }: {
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
+  prioritySteerText?: string
+  prioritySteerAttachments?: Attachment[]
   planActions?: {
     show: boolean
     disabled: boolean
@@ -631,6 +681,8 @@ export function PersistedMessageContent({
           sourceChatId={sourceChatId}
           workingMode={workingMode}
           workedSeconds={workedSeconds}
+          prioritySteerText={prioritySteerText}
+          prioritySteerAttachments={prioritySteerAttachments}
         />
         <AttachmentList attachments={attachments} />
       </div>
@@ -657,6 +709,8 @@ export function PersistedMessageContent({
           tools={toolCalls}
           active={false}
           workedSeconds={workedSeconds}
+          prioritySteerText={prioritySteerText}
+          prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
@@ -761,6 +815,8 @@ export function TurnTimelineContent({
   active = false,
   workingMode = 'verbose',
   workedSeconds,
+	prioritySteerText,
+	prioritySteerAttachments,
 }: {
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
@@ -787,6 +843,8 @@ export function TurnTimelineContent({
   active?: boolean
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
+	prioritySteerText?: string
+	prioritySteerAttachments?: Attachment[]
 }) {
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
@@ -804,10 +862,11 @@ export function TurnTimelineContent({
       pendingUserInput.itemId &&
       events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingUserInput.itemId)
   )
-  const compactWorkingEvents = workingMode === 'compact' && !active
+  const compactWorkingEvents = workingMode === 'compact'
     ? events.filter((event, index) => {
         if (event.type === 'thought' || event.type === 'tool_call') return true
         if (event.type !== 'assistant_text') return false
+		if (active) return true
         return events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
       })
     : []
@@ -820,6 +879,8 @@ export function TurnTimelineContent({
           tools={tools}
           active={active}
           workedSeconds={workedSeconds}
+		  prioritySteerText={prioritySteerText}
+		  prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={onSelectTool}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
@@ -828,14 +889,13 @@ export function TurnTimelineContent({
         if (event.type === 'assistant_text') {
           if (
             workingMode === 'compact' &&
-            !active &&
             events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
           ) return null
           return <MarkdownContent key={`text-${index}`} content={event.text} />
         }
 
         if (event.type === 'thought') {
-          if (workingMode === 'compact' && !active) return null
+		  if (workingMode === 'compact') return null
           return <ThinkingBlock key={`thought-${index}`} text={event.text} active={active && index === events.length - 1} />
         }
 
@@ -871,7 +931,7 @@ export function TurnTimelineContent({
             !hasPendingUserInputEvent &&
             pendingUserInput.itemId === event.toolCallId
 
-          if (workingMode === 'compact' && !active) {
+		  if (workingMode === 'compact') {
             if (!shouldRenderPendingPermission && !shouldRenderPendingUserInput) return null
             return (
               <div key={`tool-attention-${event.toolCallId}-${index}`} className="space-y-2">

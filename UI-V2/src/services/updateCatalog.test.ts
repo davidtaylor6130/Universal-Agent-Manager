@@ -14,6 +14,7 @@ describe('update catalog', () => {
     expect(compareVersions('4.5.7-alpha2', '4.5.7')).toBeLessThan(0)
     expect(compareVersions('4.5.7-alpha.10', '4.5.7-alpha.2')).toBeGreaterThan(0)
     expect(compareVersions('4.8.0-alpha-2', '4.8.0-alpha')).toBeGreaterThan(0)
+	expect(compareVersions('4.9.0-alpha-10', '4.9.0-alpha-9')).toBeGreaterThan(0)
   })
 
   it('reports an older SSH helper independently of the online catalog', () => {
@@ -26,6 +27,12 @@ describe('update catalog', () => {
       currentVersion: '4.8.0-alpha',
       latestVersion: '4.8.0-alpha-2 · helper protocol 2',
     })])
+  })
+
+  it('reports an older hyphenated alpha SSH helper', () => {
+    expect(availableRemoteHelperUpdates('4.9.0-alpha-11', 3, [
+      { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '4.9.0-alpha-10', runnerProtocolVersion: 3, platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+    ], {})).toHaveLength(1)
   })
 
   it('reports a same-version or undetected helper with an obsolete protocol', () => {

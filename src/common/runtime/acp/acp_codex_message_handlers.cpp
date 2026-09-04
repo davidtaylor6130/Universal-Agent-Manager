@@ -752,6 +752,9 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	const bool permission_request = method == uam::acp_methods::kItemCommandExecutionRequestApproval ||
 	                                method == uam::acp_methods::kItemFileChangeRequestApproval ||
 	                                method == uam::acp_methods::kItemPermissionsRequestApproval;
+	if ((permission_request || method == uam::acp_methods::kItemToolRequestUserInput) &&
+	    ReplayPersistedInteractionResponseIfMatched(app, session, chat, message))
+		return;
 	if (!permission_request && !uam::AcpSessionHasActiveTurn(session) && (method.rfind("item/", 0) == 0 || method.rfind("turn/", 0) == 0 || method == uam::acp_methods::kError))
 	{
 		return;
@@ -805,12 +808,13 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			const std::string error_message = CodexTurnErrorMessage(normalized_error);
 			const std::string detail = CodexTurnErrorDetails(session, error_params, normalized_error);
 			AppendAcpDiagnostic(session, "notification", "codex_turn_completed_error", method, "", false, 0, error_message, detail);
-			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 			AcpFailureDetails failure;
 			failure.method = method;
 			failure.message = error_message;
 			failure.has_detail = !detail.empty();
-			FailAcpTurnOrSession(session, FormatAcpFailureMessage(session, failure));
+			FailAcpTurnOrSession(session, &chat,
+			                     FormatAcpFailureMessage(session, failure));
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			return;
@@ -946,7 +950,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			tool_call.content += JsonDiagnosticStringValue(params, "delta");
 			AppendToolTurnEventIfNeeded(session, item_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
-			SaveChatQuietly(app, chat);
+			ScheduleChatSave(app, chat, 0.5);
 		}
 		return;
 	}
@@ -985,12 +989,13 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			session.lifecycle_state = kAcpLifecycleProcessing;
 			return;
 		}
-		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 		AcpFailureDetails failure;
 		failure.method = "turn";
 		failure.message = error_message;
 		failure.has_detail = !detail.empty();
-		FailAcpTurnOrSession(session, FormatAcpFailureMessage(session, failure));
+		FailAcpTurnOrSession(session, &chat,
+		                     FormatAcpFailureMessage(session, failure));
 		SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 		return;

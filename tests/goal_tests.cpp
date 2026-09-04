@@ -281,6 +281,22 @@ UAM_TEST(GoalServiceStatusBlockerAndTokenUpdatesMarkParentAndClearActive)
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 }
 
+UAM_TEST(GoalServicePersistsBlockerKind)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-goal-blocker-kind";
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Reconnect safely.", 0, &goal_id));
+
+	uam::GoalService::RecordBlocker(app, chat.id, goal_id,
+	                                "The remote turn no longer exists.",
+	                                "remote_connection");
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind,
+	              std::string("remote_connection"));
+}
+
 UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 {
 	uam::AppState app;
@@ -294,6 +310,12 @@ UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 	UAM_ASSERT(uam::GoalService::ClearActiveGoal(app, chat.id));
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(
+	    app, chat.id, goal_id, GoalStatus::Paused));
+	UAM_ASSERT(!uam::GoalService::UpdateGoalStatus(
+	    app, chat.id, goal_id, GoalStatus::Active));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
 
 	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
 	Goal& goal = app.chats.front().goals.front();
@@ -308,7 +330,7 @@ UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 	UAM_ASSERT(goal.current_step.empty());
 }
 
-UAM_TEST(GoalServiceKeepsCompletedGoalsInHistory)
+UAM_TEST(GoalServiceAllowsCompletedGoalRemoval)
 {
 	uam::AppState app;
 	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
@@ -318,8 +340,8 @@ UAM_TEST(GoalServiceKeepsCompletedGoalsInHistory)
 	std::string completed_goal_id;
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Keep the completed goal.", 0, &completed_goal_id));
 	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, completed_goal_id, GoalStatus::Complete));
-	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, completed_goal_id));
-	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, completed_goal_id) != nullptr);
+	UAM_ASSERT(uam::GoalService::RemoveGoal(app, chat.id, completed_goal_id));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, completed_goal_id) == nullptr);
 }
 
 UAM_TEST(GoalServiceSetActiveGoalReactivatesBlockedGoal)
@@ -436,6 +458,7 @@ UAM_TEST(GoalServiceRestartPausesActiveGoalsWithoutDiscardingProgress)
 	chat.goals.push_back(goal);
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
 	uam::AppState app;
+	app.data_root = temp.root;
 	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
 
 	UAM_ASSERT_EQ(uam::GoalService::PauseActiveGoalsAfterRestart(app), static_cast<std::size_t>(1));
@@ -444,6 +467,330 @@ UAM_TEST(GoalServiceRestartPausesActiveGoalsWithoutDiscardingProgress)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().completed_items.front(), std::string("kept"));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_next_prompt, std::string("Continue safely."));
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(reloaded.front().active_goal_id, std::string{});
+	UAM_ASSERT_EQ(reloaded.front().goals.front().status, GoalStatus::Paused);
+}
+
+UAM_TEST(GoalServiceRestartDoesNotPublishAnUnpersistedPause)
+{
+	TempDir temp("uam-restart-pause-save-failure");
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	uam::AppState app;
+	app.data_root = blocked_root;
+	ChatSession chat;
+	chat.id = "chat-unpersisted-pause";
+	chat.active_goal_id = "goal-unpersisted-pause";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.status = GoalStatus::Active;
+	chat.goals.push_back(goal);
+	app.chats.push_back(chat);
+
+	std::size_t failed = 0;
+	UAM_ASSERT_EQ(uam::GoalService::PauseActiveGoalsAfterRestart(app, &failed), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(failed, static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal.id);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(app.status_line, std::string("Failed to persist paused goal after restart."));
+}
+
+UAM_TEST(GoalServiceRestartClearsStaleActiveGoalIds)
+{
+	TempDir temp("uam-restart-clears-stale-active-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-stale-active-goal";
+	chat.active_goal_id = "goal-complete";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.status = GoalStatus::Complete;
+	chat.goals.push_back(goal);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+
+	UAM_ASSERT_EQ(uam::GoalService::PauseActiveGoalsAfterRestart(app), static_cast<std::size_t>(0));
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT(saved->active_goal_id.empty());
+}
+
+UAM_TEST(GoalServiceRestartKeepsOwnerActiveWhileRemoteIterationReconnects)
+{
+	uam::AppState app;
+	ChatSession owner;
+	owner.id = "remote-goal-owner";
+	owner.active_goal_id = "goal-remote";
+	Goal goal;
+	goal.id = owner.active_goal_id;
+	goal.status = GoalStatus::Active;
+	owner.goals.push_back(goal);
+	ChatSession iteration;
+	iteration.id = "remote-goal-iteration";
+	iteration.execution_host_id = "ssh-test";
+	iteration.remote_turn_reconnect_pending = true;
+	iteration.goal_owner_chat_id = " " + owner.id + " ";
+	iteration.goal_iteration_goal_id = " " + goal.id + " ";
+	app.chats = {owner, iteration};
+
+	UAM_ASSERT_EQ(uam::GoalService::PauseActiveGoalsAfterRestart(app), static_cast<std::size_t>(0));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal.id);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+}
+
+UAM_TEST(AcpGoalPromptWaitsForConfirmedRemoteFreshSessionStop)
+{
+	TempDir temp("uam-remote-goal-fresh-session-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-goal-fresh-session";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->session_ready = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(
+	    app, *raw_session, app.chats.front(), "Review the completed work.", true,
+	    "reviewer-model", true));
+	UAM_ASSERT(raw_session->remote_stop_pending);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Review the completed work."));
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Review the completed work."));
+}
+
+UAM_TEST(AcpGoalPromptRecoversAnUnconfirmedRemoteFreshSessionStop)
+{
+	TempDir temp("uam-remote-goal-unconfirmed-fresh-session-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-goal-unconfirmed-fresh-session";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->session_ready = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 70"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(
+	    app, *raw_session, app.chats.front(), "Review after cleanup.", true,
+	    "reviewer-model", true));
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+	UAM_ASSERT(raw_session->recovering_remote_turn);
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Review after cleanup."));
+}
+
+UAM_TEST(ClearingGoalReviewStateClearsItsRepairAttempt)
+{
+	uam::AcpSessionState session;
+	session.goal_review_turn = true;
+	session.goal_review_scheduled = true;
+	session.goal_review_repair_attempts = 1;
+	uam::acp_detail::ClearGoalReviewState(session);
+	UAM_ASSERT_EQ(session.goal_review_repair_attempts, 0);
+}
+
+UAM_TEST(GoalRemovalReportsRemoteStopUntilItCanFinish)
+{
+	TempDir temp("uam-remote-goal-removal-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-goal-removal";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Delete safely.", 0, &goal_id,
+	                                        "provider", "/goal"));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->provider_id = uam::provider_ids::kClaudeCli;
+	session->session_id = "claude-session";
+	session->running = true;
+	session->processing = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	bool work_changed = false;
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, goal_id, &error, &work_changed));
+	UAM_ASSERT(work_changed);
+	UAM_ASSERT(uam::strings::Contains(error, "remote turn is stopping"));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) != nullptr);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, goal_id);
+	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(uam::GoalService::RemoveGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) == nullptr);
+}
+
+UAM_TEST(GoalRemovalWaitsForPendingAndUnconfirmedLegacyRemoteChildStops)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "remote-goal-pending-removal";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Delete safely.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+	ChatSession child;
+	child.id = "legacy-remote-goal-child";
+	child.execution_host_id = "ssh-test";
+	child.goal_owner_chat_id = chat.id;
+	app.chats.push_back(child);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = child.id;
+	session->remote_stop_pending = true;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "stopping"));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) != nullptr);
+
+	app.acp_sessions.front()->remote_stop_pending = false;
+	app.acp_sessions.front()->remote_stop_unconfirmed = true;
+	error.clear();
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(uam::strings::Contains(error, "could not be confirmed"));
+	UAM_ASSERT(app.acp_sessions.front()->recovering_remote_turn);
+	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, chat.id, goal_id) != nullptr);
+}
+
+UAM_TEST(RemoteAttachDoesNotReactivateAnUnrelatedHistoricalGoal)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "remote-normal-turn";
+	Goal old_goal;
+	old_goal.id = "old-goal";
+	old_goal.status = GoalStatus::Blocked;
+	old_goal.last_blocker = "Codex process exited during an active turn.";
+	chat.goals.push_back(old_goal);
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->recovering_remote_turn = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(
+	    app, *raw_session, app.chats.front(),
+	    R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})"));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+}
+
+UAM_TEST(RemoteRestartRestoresRootGoalReviewIdentity)
+{
+	TempDir temp("uam-remote-root-goal-review-restore");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-root-review";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = "missing-remote-host";
+	chat.remote_turn_reconnect_pending = true;
+	chat.goal_iteration_goal_id = "goal-review";
+	chat.goal_iteration_turn_kind = "review";
+	chat.goal_iteration_repair_attempts = 1;
+	chat.messages_loaded = true;
+	chat.messages.push_back(Message{MessageRole::User, "Review privately."});
+	chat.messages.push_back(Message{MessageRole::Assistant, "{\"decision\":\"complete\"}"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+
+	(void)uam::RestoreRemoteAcpSessionsAfterRestart(app);
+	uam::AcpSessionState* session = FindTestAcpSession(app, chat.id);
+	UAM_ASSERT(session != nullptr);
+	UAM_ASSERT_EQ(session->goal_turn_kind, std::string("review"));
+	UAM_ASSERT(session->goal_review_turn);
+	UAM_ASSERT(session->goal_review_scheduled);
+	UAM_ASSERT_EQ(session->goal_review_goal_id, std::string("goal-review"));
+	UAM_ASSERT_EQ(session->goal_review_repair_attempts, 1);
+}
+
+UAM_TEST(GoalServiceCancellationMatchesPaddedLegacyIterationIds)
+{
+	uam::AppState app;
+	ChatSession owner;
+	owner.id = "padded-goal-owner";
+	Goal goal;
+	goal.id = "padded-goal";
+	goal.status = GoalStatus::Paused;
+	owner.goals.push_back(goal);
+	ChatSession iteration;
+	iteration.id = "padded-goal-iteration";
+	iteration.goal_owner_chat_id = " " + owner.id + " ";
+	iteration.goal_iteration_goal_id = " " + goal.id + " ";
+	app.chats = {owner, iteration};
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = iteration.id;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(uam::GoalService::RemoveGoal(app, owner.id, goal.id, &error));
+	UAM_ASSERT(!raw_session->processing);
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, owner.id, goal.id) == nullptr);
 }
 
 UAM_TEST(GoalServiceUserCancellationStopsAttributedAgentRunsOnly)
@@ -539,7 +886,57 @@ UAM_TEST(GoalServiceUserCancellationStopsAttributedAgentRunsOnly)
 	UAM_ASSERT(!root_session_ptr->goal_resume_suppressed);
 }
 
-UAM_TEST(AcpResumeGoalQueuesWorkBeforePublishingActiveState)
+UAM_TEST(GoalRemovalWaitsForManagedCancellationPersistence)
+{
+	TempDir temp("goal-removal-waits-for-managed-cancel");
+	uam::AppState app;
+	const fs::path data_root = temp.root;
+	app.data_root = data_root;
+	ChatSession root;
+	root.id = "goal-root";
+	ChatSession transcript;
+	transcript.id = "goal-managed-transcript";
+	app.chats = {root, transcript};
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, root.id, "Cancel safely.", 0, &goal_id));
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.goal_id = goal_id;
+	run.agent_id = "build";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Cancel safely.";
+	run.task = "Cancel the managed goal run.";
+	run.effective_workspace_access = "write";
+	run.status = "running";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = transcript.id;
+	session->managed_agent_run_id = run.id;
+	app.acp_sessions.push_back(std::move(session));
+
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	app.data_root = blocked_root;
+	std::string error;
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, root.id, goal_id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, root.id, goal_id) != nullptr);
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+
+	app.data_root = data_root;
+	UAM_ASSERT(uam::GoalService::RemoveGoal(app, root.id, goal_id, &error));
+	UAM_ASSERT(uam::GoalService::FindGoalById(app, root.id, goal_id) == nullptr);
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+}
+
+UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 {
 	TempDir temp("uam-resume-goal-fresh-chat");
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
@@ -584,7 +981,108 @@ UAM_TEST(AcpResumeGoalQueuesWorkBeforePublishingActiveState)
 	UAM_ASSERT_EQ(raw_session->goal_auto_resume_attempts, 0);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.chats.front().messages.empty());
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->active_goal_id, goal_id);
 	(void)uam::StopAcpSession(app, chat.id);
+}
+
+UAM_TEST(AcpResumeGoalDoesNotQueueWorkWhenActivationCannotBePersisted)
+{
+	TempDir temp("uam-resume-goal-save-failure");
+	uam::AppState app;
+	app.data_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-resume-save-failure";
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Remain paused.", 0, &goal_id));
+	app.chats.front().goals.front().status = GoalStatus::Paused;
+	app.chats.front().goals.front().last_next_prompt = "Do not queue this.";
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(error.find("persist") != std::string::npos);
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT(!raw_session->processing);
+}
+
+UAM_TEST(AcpResumeGoalRestoresBlockedEvidenceWhenQueueingFails)
+{
+	TempDir temp("uam-resume-blocked-goal-queue-failure");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-resume-blocked-queue-failure";
+	chat.workspace_directory = (temp.root / "not-a-directory").string();
+	UAM_ASSERT(uam::io::WriteTextFile(chat.workspace_directory, "blocked"));
+	app.chats.push_back(chat);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Keep blocker evidence.", 0, &goal_id));
+	Goal& goal = app.chats.front().goals.front();
+	goal.status = GoalStatus::Blocked;
+	goal.blocked_turn_count = 2;
+	goal.last_blocker = "Waiting for user approval.";
+	goal.last_blocker_kind = "user_permission_approval";
+	goal.last_next_prompt = "Continue after approval.";
+	Goal stale_sibling;
+	stale_sibling.id = "stale-active-sibling";
+	stale_sibling.objective = "Preserve stale sibling state.";
+	stale_sibling.status = GoalStatus::Active;
+	app.chats.front().goals.push_back(stale_sibling);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 2);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker,
+	              std::string("Waiting for user approval."));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind,
+	              std::string("user_permission_approval"));
+	UAM_ASSERT_EQ(app.chats.front().goals.back().status, GoalStatus::Active);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(persisted->goals.front().last_blocker,
+	              std::string("Waiting for user approval."));
+	UAM_ASSERT_EQ(persisted->goals.back().status, GoalStatus::Active);
+}
+
+UAM_TEST(AcpResumeGoalDoesNotCancelAnotherActiveGoal)
+{
+	uam::AppState app;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.id = "chat-stale-resume";
+	app.chats.push_back(chat);
+	std::string paused_goal_id;
+	std::string active_goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Paused goal.", 0, &paused_goal_id));
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(app, chat.id, paused_goal_id, GoalStatus::Paused));
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Current goal.", 0, &active_goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, active_goal_id));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->processing = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, paused_goal_id, &error));
+	UAM_ASSERT_EQ(error, std::string("Another goal is already active in this chat."));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, active_goal_id);
+	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(!raw_session->cancel_requested);
 }
 
 UAM_TEST(AcpResumeGoalAdoptsTheCurrentlySelectedWorkerAndReviewerModels)
@@ -793,8 +1291,8 @@ UAM_TEST(ChatRepositoryPersistsPausedGoalProgressState)
 	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
 	chat.id = "chat-goal-progress";
 	chat.small_model_mode = true;
-	chat.goal_owner_chat_id = "chat-goal-owner";
-	chat.goal_iteration_goal_id = "goal-progress";
+	chat.goal_owner_chat_id = " chat-goal-owner ";
+	chat.goal_iteration_goal_id = " goal-progress ";
 	chat.goal_iteration_turn_kind = "review";
 	chat.goal_iteration_repair_attempts = 1;
 	Goal goal;

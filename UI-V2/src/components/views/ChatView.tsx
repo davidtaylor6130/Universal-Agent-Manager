@@ -82,6 +82,7 @@ import {
   TurnTimelineContent,
   attachmentLabel,
   goalReviewForMessage,
+  hasCompactWorkingSummary,
   type WorkingDisplayMode,
 } from '../chat/MessageBlocks'
 import {
@@ -464,6 +465,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching,
   planActions,
   workingMode,
+  prioritySteerText,
+  prioritySteerAttachments,
   onBeginEdit,
   onCancelEdit,
   onEditingTextChange,
@@ -486,6 +489,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching: boolean
   planActions?: PersistedPlanActions
   workingMode: WorkingDisplayMode
+  prioritySteerText?: string
+  prioritySteerAttachments?: Attachment[]
   onBeginEdit: (index: number, content: string) => void
   onCancelEdit: () => void
   onEditingTextChange: (content: string) => void
@@ -512,13 +517,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 
   return (
 		<>
-			{message.prioritySteer && (
-				<div role="separator" aria-label="Steered during this response" className="my-3 flex items-center gap-3 text-xs" style={{ color: 'var(--accent)' }}>
-					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
-					<span>Steered during this response</span>
-					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
-				</div>
-			)}
     <MessageFrame
       role={message.role}
       assistantLabel={assistantLabel}
@@ -535,7 +533,12 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       onEdit={isUserMessage ? () => onBeginEdit(index, message.content) : undefined}
       onRevert={isUserMessage ? () => void onCreateBranch(index) : undefined}
     >
-			{message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>Response interrupted</div>}
+			{message.prioritySteer && (
+				<div className="mb-2 text-xs font-semibold" style={{ color: 'var(--accent)' }}>
+					Steered during this response
+				</div>
+			)}
+			{message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{isUserMessage ? 'Message was not sent' : 'Response interrupted'}</div>}
 			{isEditing ? (
         <div className="space-y-2">
           <textarea
@@ -570,6 +573,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           planActions={planActions}
           sourceChatId={sessionId}
           workingMode={workingMode}
+          prioritySteerText={prioritySteerText}
+          prioritySteerAttachments={prioritySteerAttachments}
         />
       )}
 		</MessageFrame>
@@ -619,6 +624,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
   const steerTurnSerialRef = useRef(0)
   const steeringTimeoutRef = useRef<number | null>(null)
+  const goalMutationInFlightRef = useRef(false)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
     computerUseModalOpen ||
@@ -638,14 +644,29 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [])
 
   useEffect(() => setMemoryChipExplicit(false), [session.id])
+  const composerDraftRef = useRef({ text: draft, attachments: [] as Attachment[] })
+  composerDraftRef.current = {
+    text: draft,
+    attachments: composerAttachments
+      .filter((attachment) => attachment.status === 'ready')
+      .map(({ status: _status, error: _error, ...attachment }) => attachment),
+  }
   useEffect(() => {
-    writeChatComposerDraft(session.id, {
-      text: draft,
-      attachments: composerAttachments
-        .filter((attachment) => attachment.status === 'ready')
-        .map(({ status: _status, error: _error, ...attachment }) => attachment),
-    })
+    const timer = window.setTimeout(() => writeChatComposerDraft(session.id, composerDraftRef.current), 250)
+    return () => window.clearTimeout(timer)
   }, [composerAttachments, draft, session.id])
+  useEffect(() => {
+	const flush = () => {
+	  if (useAppStore.getState().sessions.some((candidate) => candidate.id === session.id)) {
+		writeChatComposerDraft(session.id, composerDraftRef.current)
+	  }
+	}
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const folderDirectory = useAppStore((s) =>
@@ -749,6 +770,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
+  const scrollFrameRef = useRef<number | null>(null)
+  const showScrollToBottomRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
@@ -763,10 +786,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
   const currentSessionIdRef = useRef(session.id)
+  const mountedRef = useRef(true)
+  const removedAttachmentIdsRef = useRef(new Set<string>())
+
+  useEffect(() => () => {
+    mountedRef.current = false
+	if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+  }, [])
 
   useEffect(() => {
     currentSessionIdRef.current = session.id
     isNearBottomRef.current = true
+    showScrollToBottomRef.current = false
     setShowScrollToBottom(false)
     submitInFlightRef.current = false
     setSubmitting(false)
@@ -798,9 +829,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
   const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
   const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const redundantStreamingMessageIndex =
+    turnEvents.length > 0 &&
+    messages[messages.length - 1]?.isStreaming &&
+    turnAssistantMessageIndex === messages.length - 2
+      ? messages.length - 1
+      : -1
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    turnAssistantMessageIndex === messages.length - 1 &&
+    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
     messages[turnAssistantMessageIndex]?.role === 'assistant'
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
@@ -808,12 +845,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  const completedTurnAssistantText = acp?.processing
+  const turnUserMessageIsEmbeddedSteer =
+    workingDisplayMode === 'compact' &&
+    turnUserMessageIndex > earliestRenderedMessageIndex &&
+    messages[turnUserMessageIndex]?.prioritySteer &&
+    hasCompactWorkingSummary(messages[turnUserMessageIndex - 1])
+  const completedTurnAssistantText = useMemo(() => acp?.processing
     ? ''
     : turnEvents.reduce(
         (text, event) => event.type === 'assistant_text' ? text + event.text : text,
         ''
-      ).trim()
+      ).trim(), [acp?.processing, turnEvents])
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
     completedTurnAssistantText.length > 0 &&
@@ -827,6 +869,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const renderTimelineAfterUser =
     turnEvents.length > 0 &&
     turnUserMessageMatches &&
+    !turnUserMessageIsEmbeddedSteer &&
     (!turnAssistantMessageMatches || firstTurnEvent?.type !== 'assistant_text')
   const renderTimelineAtAssistant =
     turnEvents.length > 0 &&
@@ -858,15 +901,23 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   ])
 
   const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
-    isNearBottomRef.current = isNearBottom
-    setShowScrollToBottom(!isNearBottom)
+	if (scrollFrameRef.current !== null) return
+	scrollFrameRef.current = window.requestAnimationFrame(() => {
+	  scrollFrameRef.current = null
+      const el = scrollRef.current
+      if (!el) return
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
+      isNearBottomRef.current = isNearBottom
+	  const showButton = !isNearBottom
+	  if (showScrollToBottomRef.current === showButton) return
+	  showScrollToBottomRef.current = showButton
+	  setShowScrollToBottom(showButton)
+	})
   }, [])
 
   const scrollToBottom = useCallback(() => {
     isNearBottomRef.current = true
+    showScrollToBottomRef.current = false
     setShowScrollToBottom(false)
     bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
   }, [])
@@ -882,7 +933,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [turnSerial])
 
   useEffect(() => {
-    setComposerAttachments([])
     setSteering(false)
     setAttachmentError('')
     setGoalError('')
@@ -982,6 +1032,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [modelOpen, workspaceMenuOpen])
 
   const stageFiles = async (files: File[]) => {
+    const stagingSessionId = session.id
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
     if (realFiles.length === 0) return
 
@@ -1013,7 +1064,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       }
 
-      const staged = await stageChatAttachments(session.id, items)
+      const staged = await stageChatAttachments(stagingSessionId, items)
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+        const stored = readChatComposerDraft(stagingSessionId)
+        writeChatComposerDraft(stagingSessionId, {
+          ...stored,
+          attachments: [...stored.attachments, ...staged.filter((candidate) =>
+            !removedAttachmentIdsRef.current.has(candidate.id) &&
+            !stored.attachments.some((attachment) => attachment.id === candidate.id)
+          )],
+        })
+        return
+      }
       setComposerAttachments((current) =>
         current.map((attachment) => {
           const replacement = staged.find((candidate) => candidate.id === attachment.id)
@@ -1023,6 +1086,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       )
     } catch (err) {
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
       const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1035,6 +1099,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
+    const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
 
@@ -1050,12 +1115,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     setComposerAttachments((current) => [...current, ...pending])
 
     try {
-      const staged = await stageChatAttachments(session.id, pending.map((attachment) => ({
+      const staged = await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         kind: 'directory',
         path: attachment.path,
       })))
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+        const stored = readChatComposerDraft(stagingSessionId)
+        writeChatComposerDraft(stagingSessionId, {
+          ...stored,
+          attachments: [...stored.attachments, ...staged.filter((candidate) =>
+            !removedAttachmentIdsRef.current.has(candidate.id) &&
+            !stored.attachments.some((attachment) => attachment.id === candidate.id)
+          )],
+        })
+        return
+      }
       setComposerAttachments((current) =>
         current.map((attachment) => {
           const replacement = staged.find((candidate) => candidate.id === attachment.id)
@@ -1065,6 +1142,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       )
     } catch (err) {
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
       const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1108,24 +1186,31 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return true
     }
 
+	goalMutationInFlightRef.current = true
     setGoalSubmitting(true)
-	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
-	const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
-	const goalAttachments = composerAttachments
-	  .filter((attachment) => attachment.status === 'ready')
-	  .map(({ status, error, ...attachment }) => attachment)
-	const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
-    setGoalSubmitting(false)
+	try {
+	  const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+	  const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
+	  const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
+	  const goalAttachments = composerAttachments
+	    .filter((attachment) => attachment.status === 'ready')
+	    .map(({ status, error, ...attachment }) => attachment)
+	  const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
 
-	if (goalResult.ok && sent) {
-      setDraft('')
-	  setComposerAttachments([])
-	  setAttachmentError('')
-      setGoalError('')
-    } else {
-	  setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
-    }
+	  if (goalResult.ok && sent) {
+        setDraft('')
+	    setComposerAttachments([])
+	    setAttachmentError('')
+        setGoalError('')
+      } else {
+	    setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
+      }
+	} catch {
+	  setGoalError('Failed to create goal.')
+	} finally {
+	  goalMutationInFlightRef.current = false
+	  setGoalSubmitting(false)
+	}
     return true
   }
 
@@ -1163,6 +1248,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 	  }
 	  const submittedSessionId = session.id
 	  submitInFlightRef.current = true
+	  goalMutationInFlightRef.current = true
 	  setSubmitting(true)
 	  setGoalSubmitting(true)
 	  try {
@@ -1176,7 +1262,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 		setDraft('')
 		setComposerAttachments([])
 		setAttachmentError('')
+	  } catch {
+		setGoalError('Failed to create goal.')
 	  } finally {
+		goalMutationInFlightRef.current = false
 		setGoalSubmitting(false)
 		submitInFlightRef.current = false
 		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
@@ -1187,6 +1276,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (goalArmNextMessage) {
       const submittedSessionId = session.id
       submitInFlightRef.current = true
+	  goalMutationInFlightRef.current = true
       setSubmitting(true)
       setGoalSubmitting(true)
 	  try {
@@ -1208,7 +1298,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 		setDraft('')
 		setComposerAttachments([])
 		setAttachmentError('')
+	  } catch {
+		setGoalError('Failed to create goal.')
 	  } finally {
+		goalMutationInFlightRef.current = false
 		setGoalSubmitting(false)
 		submitInFlightRef.current = false
 		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
@@ -1549,9 +1642,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const currentReviewerModelId = session.reviewerModelId || defaultReviewerModelId || currentModelId
   const showUnresolvedDefaultModel = !session.modelId && !providerAcp?.currentModelId
   const currentModel = modelOptionFor(buildModelOptions(providerAcp, currentModelId, currentProvider, currentProviderId, showUnresolvedDefaultModel), currentModelId)
-  const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
+  const currentProviderCapabilities = useMemo(
+    () => providerCapabilities(currentProviderId, currentProvider),
+    [currentProvider, currentProviderId]
+  )
   const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
-  const reasoningOptions = currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
+  const reasoningOptions = useMemo(() => currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
     ? buildCodexReasoningOptions(
         providerAcp,
         currentModel.id,
@@ -1560,11 +1656,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
           : undefined
       )
-    : []
+    : [], [currentModel.id, currentProvider, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
-  const speedOptions = currentProviderCapabilities.hasServiceTier
+  const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
     ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '')
-    : []
+    : [], [currentModel.id, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
     const offered = providerAcp?.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan') ?? []
@@ -1698,12 +1794,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     const changed = await setAcpConfigOption(session.id, configId, value)
     setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
   }
-  const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
+  const latestPlanMessageIndex = useMemo(() => messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
     return hasPlan ? index : latest
-  }, -1)
-  const latestPlanHasLaterUser =
-    latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
+  }, -1), [messages])
+  const latestPlanHasLaterUser = useMemo(
+    () => latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user'),
+    [latestPlanMessageIndex, messages]
+  )
   const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan' && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
@@ -1732,10 +1830,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     mutation: () => Promise<{ ok: boolean; error?: string }>,
     fallbackError: string,
   ) => {
+    if (goalSubmitting || goalMutationInFlightRef.current) return false
+    goalMutationInFlightRef.current = true
     setGoalError('')
-    const result = await mutation()
-    if (!result.ok) setGoalError(result.error || fallbackError)
-    return result.ok
+    setGoalSubmitting(true)
+    try {
+      const result = await mutation()
+      if (!result.ok) setGoalError(result.error || fallbackError)
+      return result.ok
+    } catch {
+      setGoalError(fallbackError)
+      return false
+    } finally {
+      goalMutationInFlightRef.current = false
+      setGoalSubmitting(false)
+    }
   }
   const handleCompleteGoal = () => {
     if (displayedGoal) {
@@ -1746,12 +1855,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
   }
   const handleResumeGoal = async () => {
-    if (!displayedGoal || goalSubmitting) return
-    setGoalError('')
-    setGoalSubmitting(true)
-    const resumed = await resumeGoal(session.id, displayedGoal.id)
-    setGoalSubmitting(false)
-    if (!resumed.ok) setGoalError(resumed.error || 'Failed to resume goal.')
+    if (!displayedGoal) return
+    await runGoalMutation(
+      () => resumeGoal(session.id, displayedGoal.id),
+      'Failed to resume goal.',
+    )
   }
   const handlePauseGoal = () => {
     if (displayedGoal) {
@@ -1880,7 +1988,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, computerUseEffectiveBackend, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, computerUseEffectiveBackend, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -1940,7 +2048,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       : []
   const slashOpen = !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
   const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined
-  const activeSlashOptionId = slashOpen ? `${slashListboxId}-option-${Math.min(slashIndex, slashMatches.length - 1)}` : undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
@@ -1978,11 +2085,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     return groups
   }, []) : []
   const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
+  const activeSlashOptionId = !slashOpen
+    ? undefined
+    : activeSlashGroup?.groupEntries
+      ? `${slashListboxId}-group-${activeSlashGroups.length - 1}-option-${Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)}`
+      : `${slashListboxId}-option-${Math.min(slashIndex, slashMatches.length - 1)}`
+  const controlledSlashMenuIds = slashOpen
+    ? [slashListboxId, ...activeSlashGroups.map((_, index) => `${slashListboxId}-group-${index}`)].join(' ')
+    : undefined
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 	const nativeEvent = event.nativeEvent
+	if (nativeEvent.isComposing || nativeEvent.keyCode === 229) return
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
-		!event.repeat && !nativeEvent.isComposing && nativeEvent.keyCode !== 229 &&
+		!event.repeat &&
 		!appModalOpen && !selectedToolCallRef && !modelOpen && !workspaceMenuOpen &&
 		!slashPaletteVisible && !permissionMenuOpen && !slashGroup) {
 	  event.preventDefault()
@@ -2128,7 +2244,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       {selectedToolCall && (
         <ToolCallModal
           tool={selectedToolCall}
-          chatId={selectedToolCallRef?.messageId ? session.id : undefined}
+          chatId={session.id}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
@@ -2162,15 +2278,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               )}
               {visibleMessages.map((message, visibleIndex) => {
                 const index = earliestRenderedMessageIndex + visibleIndex
+                if (index === redundantStreamingMessageIndex) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
+                const previousMessage = messages[index - 1]
+                const nextMessage = messages[index + 1]
+                const steerIsEmbedded = workingDisplayMode === 'compact' && message.prioritySteer &&
+                  index - 1 >= earliestRenderedMessageIndex && hasCompactWorkingSummary(previousMessage)
                 const messageProviderId = message.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
                   messageProviderId
                 )
 
-                if (shouldSkipAssistantMessage) return null
+                if (shouldSkipAssistantMessage || steerIsEmbedded) return null
+
+				const nextSteerIsEmbedded = workingDisplayMode === 'compact' &&
+				  nextMessage?.prioritySteer && hasCompactWorkingSummary(message)
+				const prioritySteerText = nextSteerIsEmbedded ? nextMessage.content : undefined
+				const prioritySteerAttachments = nextSteerIsEmbedded ? nextMessage.attachments : undefined
 
                 return (
                   <div key={message.id} className="space-y-1">
@@ -2223,6 +2349,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         branching={branchingMessageIndex === index}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
+                        prioritySteerText={prioritySteerText}
+                        prioritySteerAttachments={prioritySteerAttachments}
                         onBeginEdit={beginEditingMessage}
                         onCancelEdit={cancelEditingMessage}
                         onEditingTextChange={setEditingMessageText}
@@ -2382,7 +2510,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
-            onResume={() => void handleResumeGoal()}
+			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
             resumePending={goalSubmitting}
             onRemove={handleRemoveGoal}
             onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
@@ -2671,7 +2799,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     </span>
                     <button
                       type="button"
-                      onClick={() => setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      onClick={() => {
+                        removedAttachmentIdsRef.current.add(attachment.id)
+                        setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
+                      }}
                       title="Remove attachment"
                       aria-label={`Remove ${attachment.name} attachment`}
                       className="uam-attachment-remove"
@@ -2731,15 +2862,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                   </div>
                 </ViewportMenu>
             )}
-            {activeSlashGroups.map((group) => {
+            {activeSlashGroups.map((group, groupIndex) => {
               const path = group.id.slice('md-group:'.length)
               const anchor = { current: slashGroupButtonRefs.current[path] }
               if (!group.groupEntries || !anchor.current) return null
-              return <ViewportMenu key={group.id} anchorRef={anchor} side="right" role="menu" manageFocus={false} aria-label={`${path} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
+              return <ViewportMenu key={group.id} id={`${slashListboxId}-group-${groupIndex}`} anchorRef={anchor} side="right" role="menu" manageFocus={false} aria-label={`${path} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
                 <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>{path}</div>
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
-                  return <button key={command.id} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${group === activeSlashGroup && index === slashGroupIndex ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: group === activeSlashGroup && index === slashGroupIndex ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: group === activeSlashGroup && index === slashGroupIndex ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
+                  const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
+                  return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
                 })}
               </ViewportMenu>
             })}
@@ -2780,7 +2912,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 setSlashGroup('')
                 setPermissionMenuOpen(false)
               }}
-              onSelect={(event) => setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
+              onSelect={(event) => {
+                if (draft.includes('/')) {
+                  setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
+                }
+              }}
               onKeyDown={onComposerKeyDown}
               onPaste={onComposerPaste}
               rows={1}
@@ -2789,7 +2925,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
               aria-expanded={slashOpen}
-              aria-controls={slashOpen ? slashListboxId : undefined}
+              aria-controls={controlledSlashMenuIds}
               aria-activedescendant={activeSlashOptionId}
               aria-autocomplete="list"
               className="uam-composer-textarea w-full resize-none text-sm"

@@ -92,10 +92,18 @@ namespace
 			return chat != app.chats.end() && chat->execution_host_id == host_id;
 		};
 		if (std::ranges::any_of(app.chats, [&](const ChatSession& chat)
-		    { return chat.execution_host_id == host_id && chat.remote_turn_reconnect_pending; }))
+		    { return chat.execution_host_id == host_id &&
+		             (chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending ||
+		              chat.remote_restart_pending); }))
 			return true;
 		if (std::ranges::any_of(app.acp_sessions, [&](const auto& session)
-		    { return session != nullptr && session->running && chat_uses_host(session->chat_id); }))
+		    { return session != nullptr && chat_uses_host(session->chat_id) &&
+		             (session->running || session->remote_stop_pending ||
+		              session->remote_stop_unconfirmed || session->reconnect_pending ||
+		              session->recovering_remote_turn); }))
+			return true;
+		if (std::ranges::any_of(app.pending_acp_remote_stops, [&](const auto& stop)
+		    { return stop != nullptr && chat_uses_host(stop->chat_id); }))
 			return true;
 		return std::ranges::any_of(app.cli_terminals, [&](const auto& terminal)
 		{
@@ -166,7 +174,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		plan.previous_runner_directory = previous_host->runner_directory;
 		plan.previous_protocol_version = previous_host->runner_protocol_version > 0
 		    ? previous_host->runner_protocol_version
-		    : uam::remote::kRunnerProtocolVersion;
+		    : 2;
 	}
 	host.runner_status = "installing";
 	if (auto existing = FindMutableHost(m_app.settings.execution_hosts, host.id);
@@ -204,8 +212,9 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    uam::remote::RunnerClient client(
 			        PlatformServicesFactory::Instance().process_service,
 			        uam::remote::SshBridgeArgv(plan.ssh_alias, result->platform,
-			                                   plan.version, plan.runner_directory),
-			        plan.version);
+			                                   plan.version, plan.runner_directory,
+			                                   uam::remote::kRunnerProtocolVersion),
+			        plan.version, uam::remote::kRunnerProtocolVersion);
 			    if (!client.Connect(&result->error))
 			    {
 				    std::string rollback_error;
@@ -220,8 +229,9 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        PlatformServicesFactory::Instance().process_service,
 					        uam::remote::SshBridgeArgv(
 					            plan.ssh_alias, plan.previous_platform,
-					            plan.previous_version, plan.previous_runner_directory),
-					        plan.previous_version);
+					            plan.previous_version, plan.previous_runner_directory,
+					            plan.previous_protocol_version),
+					        plan.previous_version, plan.previous_protocol_version);
 					    if (!previous_client.Connect(&rollback_error))
 						    result->error += " Previous helper verification failed: " +
 						                     rollback_error;
@@ -412,8 +422,9 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform,
-		                               host.runner_version, host.runner_directory),
-		    host.runner_version);
+		                               host.runner_version, host.runner_directory,
+		                               host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
 		if (!client.Connect(&result->error))
 			return uam::query_handler_async::AsyncFailure(
 			    502, result->error.empty() ? "The remote helper could not be reached." : result->error);

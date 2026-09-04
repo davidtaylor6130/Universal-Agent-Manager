@@ -1,7 +1,7 @@
 // Tool call inline rows, permission cards, user-input cards, tool modal, and
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
-import { ReactNode, useEffect, useRef, useState } from 'react'
+import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench } from 'lucide-react'
 import type {
@@ -610,53 +610,90 @@ export function ToolCallModal({
   onOpenSubAgent?: () => void
   accentColor?: string
 }) {
-  const [deferredContent, setDeferredContent] = useState<string | null>(null)
+  type ToolContentPage = {
+    content: string
+    offset: number
+    nextOffset: number
+    previousOffset: number
+    lastOffset: number
+    totalBytes: number
+    hasPrevious: boolean
+    hasMore: boolean
+  }
+	const isLive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const [contentPage, setContentPage] = useState<ToolContentPage | null>(null)
+	const [contentPages, setContentPages] = useState<ToolContentPage[]>([])
   const [contentError, setContentError] = useState('')
+  const [contentLoading, setContentLoading] = useState(false)
+  const [retryOffset, setRetryOffset] = useState(0)
+	const [followLive, setFollowLive] = useState(isLive)
+  const contentRequestSerial = useRef(0)
   const [managedTranscript, setManagedTranscript] = useState<{ runId: string; title: string; status: string; executionCapability: string; messages: Array<{ role: string; content: string; thoughts: string }> } | null>(null)
   const [managedTranscriptError, setManagedTranscriptError] = useState('')
   const [managedTranscriptLoading, setManagedTranscriptLoading] = useState(false)
   const [managedResumeMessage, setManagedResumeMessage] = useState('')
   const shouldLoadContent = Boolean(tool.contentDeferred && chatId && isCefContext())
+  const initialContentOffset = useRef(isLive ? Number.MAX_SAFE_INTEGER : 0).current
   const output = cleanToolOutput(
-    shouldLoadContent && deferredContent === null
-      ? contentError || 'Loading tool output…'
-      : deferredContent ?? (tool.content || 'No tool output yet.')
+	shouldLoadContent && contentPages.length === 0
+      ? contentLoading ? 'Loading tool output…' : 'Tool output is unavailable.'
+	  : contentPages.length > 0
+		? contentPages
+			.slice()
+			.sort((left, right) => left.offset - right.offset)
+			.map((page, index, pages) => index > 0 && page.offset > pages[index - 1].nextOffset
+				? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
+				: page.content)
+			.join('')
+		: tool.content || 'No tool output yet.'
   )
   const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
-  const toolCopyText = [
-    toolDisplayTitle(tool) || tool.id || 'Tool call',
-    `id: ${tool.id || 'unknown'}`,
-    `kind: ${tool.kind || 'unknown'}`,
-    `status: ${tool.status || 'unknown'}`,
-    ...(tool.isSubAgent ? [`subAgentId: ${tool.subAgentId || 'unknown'}`, `subAgentTitle: ${tool.subAgentTitle || 'unknown'}`] : []),
-    '',
-    output,
-  ].join('\n')
+  const toolCopyText = output
 
-  useEffect(() => {
-    if (!shouldLoadContent || !chatId)
-    {
-      setDeferredContent(null)
-      setContentError('')
+  const loadContent = useCallback(async (offset: number, replace = false) => {
+    if (!shouldLoadContent || !chatId) return
+    const requestSerial = ++contentRequestSerial.current
+    setRetryOffset(offset)
+    setContentLoading(true)
+    setContentError('')
+    const response = await sendToCEF<ToolContentPage>({
+      action: 'getToolCallContent',
+      payload: { chatId, toolCallId: tool.id, offset },
+    })
+    if (requestSerial !== contentRequestSerial.current) return
+    setContentLoading(false)
+    if (!response.ok || !response.data) {
+      setContentError(response.error || 'Failed to load tool output.')
       return
     }
-
-    let canceled = false
-    setDeferredContent(null)
-    setContentError('')
-    void sendToCEF<{ content?: string }>({
-      action: 'getToolCallContent',
-      payload: { chatId, toolCallId: tool.id },
-    }).then((response) => {
-      if (canceled) return
-      if (!response.ok) {
-        setContentError(response.error || 'Failed to load tool output.')
-        return
-      }
-      setDeferredContent(response.data?.content ?? '')
-    })
-    return () => { canceled = true }
+    setContentPage(response.data)
+	setContentPages((current) => {
+	  if (replace) return [response.data!]
+	  const pages = current.filter((page) => page.offset !== response.data!.offset)
+	  pages.push(response.data!)
+	  return pages
+	})
   }, [chatId, shouldLoadContent, tool.id])
+
+  useEffect(() => {
+    ++contentRequestSerial.current
+    setContentPage(null)
+	setContentPages([])
+    setContentError('')
+    setContentLoading(false)
+	setRetryOffset(initialContentOffset)
+	setFollowLive(isLive)
+	if (shouldLoadContent) void loadContent(initialContentOffset, true)
+	// The selected tool is fixed for the lifetime of this modal. A status change
+	// must not discard pages the user has already loaded.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialContentOffset, loadContent, shouldLoadContent, tool.id])
+
+	useEffect(() => {
+	  if (!shouldLoadContent || !isLive || !followLive) return
+	  const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
+	  return () => window.clearInterval(timer)
+	}, [followLive, isLive, loadContent, shouldLoadContent])
 
   useEffect(() => {
     setManagedTranscript(null)
@@ -777,7 +814,7 @@ export function ToolCallModal({
                 </button>
               </Tooltip>
             )}
-            <CopyTextButton text={toolCopyText} label="Copy" title="Copy tool output" />
+            <CopyTextButton text={toolCopyText} label="Copy output" title="Copy loaded tool output" />
           </div>
           <Tooltip label="Close tool details">
             <button
@@ -806,7 +843,27 @@ export function ToolCallModal({
             )}
           </div>
           <div className="uam-tool-modal__output-label">Output</div>
+          {shouldLoadContent && contentPage && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
+			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
+			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
+			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || (followLive && contentPage.offset === contentPage.lastOffset)} onClick={() => { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) }}>{isLive ? 'Follow live' : 'Load latest'}</button>
+              <span aria-live="polite">
+                {contentPage.totalBytes === 0
+                  ? '0 bytes'
+                  : `Bytes ${contentPage.offset + 1}–${contentPage.nextOffset} of ${contentPage.totalBytes}`}
+              </span>
+            </div>
+          )}
+          {contentError && (
+            <div role="alert" className="mb-2 flex items-center gap-2 text-[11px]" style={{ color: 'var(--error)' }}>
+              <span>{contentError}</span>
+              <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</button>
+            </div>
+          )}
           <pre
+            aria-label="Tool output chunk"
+            tabIndex={0}
             className="whitespace-pre-wrap text-xs uam-tool-modal__output"
           >
             {output}

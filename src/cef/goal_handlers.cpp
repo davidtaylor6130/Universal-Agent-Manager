@@ -7,9 +7,11 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -30,12 +32,16 @@ namespace
 
 	bool SaveGoalMutationOrRestore(uam::AppState& app, const std::string& chat_id,
 	                               const ChatSession& previous,
-	                               CefRefPtr<CefMessageRouterBrowserSide::Callback> cb)
+	                               CefRefPtr<CefMessageRouterBrowserSide::Callback> cb,
+	                               bool restore_on_failure = true)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat != nullptr && ChatRepository::SaveChat(app.data_root, *chat)) return true;
-		if (chat != nullptr) *chat = previous;
-		cb->Failure(500, "Failed to persist goal state.");
+		if (chat != nullptr && restore_on_failure) *chat = previous;
+		else if (chat != nullptr) uam::acp_detail::ScheduleChatSave(app, *chat, 0.0);
+		cb->Failure(500, restore_on_failure
+		                     ? "Failed to persist goal state."
+		                     : "Goal runtime changed, but failed to persist goal state.");
 		return false;
 	}
 }
@@ -77,15 +83,38 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 
 	// Auto-activate the new goal.
 	std::string activation_error;
-	if (!uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id, &activation_error))
+	bool work_changed = false;
+	if (!uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id, &activation_error,
+	                                    &work_changed))
 	{
-		(void)uam::GoalService::RemoveGoal(m_app, chat_id, goal_id);
+		chat = ChatDomainService().FindChatById(m_app, chat_id);
+		if (chat != nullptr && work_changed)
+		{
+			std::erase_if(chat->goals, [&](const Goal& goal) { return goal.id == goal_id; });
+			if (chat->active_goal_id == goal_id) chat->active_goal_id.clear();
+			if (!ChatRepository::SaveChat(m_app.data_root, *chat))
+				uam::acp_detail::ScheduleChatSave(m_app, *chat, 0.0);
+			uam::PushStateUpdateIfChanged(browser, m_app);
+		}
+		else if (chat != nullptr)
+		{
+			*chat = previous_chat;
+		}
 		cb->Failure(409, uam::strings::NonEmptyOrFallback(activation_error, "Failed to activate the goal."));
 		return;
 	}
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb)) return;
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, !work_changed))
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		return;
+	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (!activation_error.empty())
+	{
+		cb->Failure(500, activation_error);
+		return;
+	}
 	cb->Success(nlohmann::json{{"goalId", goal_id}, {"executionOwner", provider_managed ? "provider" : "uam"}, {"providerCommand", provider_managed ? provider.native_goal_command : ""}}.dump());
 }
 
@@ -115,7 +144,8 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	}
 	else if (status_str == "active")
 	{
-		status = GoalStatus::Active;
+		cb->Failure(400, "Use resume goal to activate a goal.");
+		return;
 	}
 	else
 	{
@@ -133,9 +163,12 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	const bool stops_work = status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused;
 	if (stops_work && !EnsureGoalChatWritable(m_app, *chat, cb)) return;
 	std::string cancel_error;
+	bool work_changed = false;
 	if (stops_work &&
-	    !uam::GoalService::CancelGoalWork(m_app, chat_id, goal_id, &cancel_error))
+	    !uam::GoalService::CancelGoalWork(m_app, chat_id, goal_id, &cancel_error,
+	                                     &work_changed))
 	{
+		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, uam::strings::NonEmptyOrFallback(cancel_error, "Failed to stop goal work."));
 		return;
 	}
@@ -144,8 +177,17 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 		cb->Failure(404, "Goal not found in this chat.");
 		return;
 	}
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb)) return;
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, !work_changed))
+	{
+		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (!cancel_error.empty())
+	{
+		cb->Failure(500, cancel_error);
+		return;
+	}
 
 	cb->Success("{}");
 }
@@ -204,33 +246,41 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	if (!EnsureGoalChatWritable(m_app, *chat, cb)) return;
 
 	bool updated = false;
+	bool work_changed = false;
+	std::string mutation_warning;
 	if (goal_id.empty())
 	{
 		const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
 		const std::string active_goal_id = chat == nullptr ? std::string{} : chat->active_goal_id;
-		std::string cancel_error;
 		updated = chat != nullptr && (active_goal_id.empty() ||
-		          uam::GoalService::CancelGoalWork(m_app, chat_id, active_goal_id, &cancel_error)) &&
+		          uam::GoalService::CancelGoalWork(m_app, chat_id, active_goal_id,
+		                                           &mutation_warning, &work_changed)) &&
 		          uam::GoalService::ClearActiveGoal(m_app, chat_id);
 	}
 	else
 	{
-		std::string activation_error;
-		updated = uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id, &activation_error);
-		if (!updated && !activation_error.empty())
-		{
-			cb->Failure(409, activation_error);
-			return;
-		}
+		updated = uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id,
+		                                         &mutation_warning, &work_changed);
 	}
 	if (!updated)
 	{
-		cb->Failure(404, "Failed to set active goal. Goal may not exist or is not in this chat.");
+		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
+		if (!mutation_warning.empty()) cb->Failure(409, mutation_warning);
+		else cb->Failure(404, "Failed to set active goal. Goal may not exist or is not in this chat.");
 		return;
 	}
 
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb)) return;
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, !work_changed))
+	{
+		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (!mutation_warning.empty())
+	{
+		cb->Failure(500, mutation_warning);
+		return;
+	}
 	cb->Success("{}");
 }
 
@@ -250,21 +300,11 @@ void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nloh
 		cb->Failure(404, "Chat not found.");
 		return;
 	}
-	const ChatSession previous_chat = *chat;
 	if (!EnsureGoalChatWritable(m_app, *chat, cb)) return;
 	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error))
 	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to resume goal."));
-		return;
-	}
-
-	chat = ChatDomainService().FindChatById(m_app, chat_id);
-	if (chat == nullptr || !ChatRepository::SaveChat(m_app.data_root, *chat))
-	{
-		(void)uam::GoalService::CancelGoalWork(m_app, chat_id, goal_id);
-		chat = ChatDomainService().FindChatById(m_app, chat_id);
-		if (chat != nullptr) *chat = previous_chat;
-		cb->Failure(500, "Failed to persist goal state.");
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -290,14 +330,26 @@ void UamQueryHandler::HandleRemoveGoal(CefRefPtr<CefBrowser> browser, const nloh
 	if (!EnsureGoalChatWritable(m_app, *chat, cb)) return;
 
 	std::string remove_error;
-	if (!uam::GoalService::RemoveGoal(m_app, chat_id, goal_id, &remove_error))
+	bool work_changed = false;
+	if (!uam::GoalService::RemoveGoal(m_app, chat_id, goal_id, &remove_error, &work_changed))
 	{
+		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(remove_error.empty() ? 404 : 409,
 		            uam::strings::NonEmptyOrFallback(remove_error, "Goal not found in this chat."));
 		return;
 	}
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb)) return;
+	const bool restore_on_failure = !work_changed;
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, restore_on_failure))
+	{
+		if (!restore_on_failure) uam::PushStateUpdateIfChanged(browser, m_app);
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (!remove_error.empty())
+	{
+		cb->Failure(500, remove_error);
+		return;
+	}
 
 	cb->Success("{}");
 }

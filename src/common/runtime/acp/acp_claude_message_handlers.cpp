@@ -181,16 +181,18 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 		}
 	}
 
-	(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 	const bool is_error = JsonBooleanValueOr(message, "is_error", false);
 	const std::string subtype = JsonDiagnosticStringValue(message, "subtype");
 	if (is_error || uam::acp_claude_stream::IsResultErrorSubtype(subtype))
 	{
 		const std::string result_text = uam::nlohmann_json::TrimmedStringValueOr(message, "result", "");
-		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
+		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+		FailAcpTurnOrSession(session, &chat,
+		                     uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
 	}
 	else
 	{
+		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 	}
 

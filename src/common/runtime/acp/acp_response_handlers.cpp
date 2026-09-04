@@ -52,7 +52,7 @@ bool SendDeferredCodexInterruptIfReady(AcpSessionState& session)
 
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
-	(void)app;
+	if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, message)) return;
 	const std::string method = JsonDiagnosticStringValue(message, "method");
 	if (method == uam::acp_methods::kSessionUpdate)
 	{
@@ -71,6 +71,43 @@ void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat
 		AppendAcpDiagnostic(session, "request", "unsupported_method", method, JsonRpcIdToStableString(request_id), true, -32601, "UAM ACP client does not implement method: " + method);
 		SendJsonRpcError(session, request_id, -32601, "UAM ACP client does not implement method: " + method);
 	}
+}
+
+bool ReplayPersistedInteractionResponseIfMatched(
+    AppState& app, AcpSessionState& session, ChatSession& chat,
+    const nlohmann::json& request)
+{
+	const std::string request_id =
+	    JsonRpcIdToStableString(JsonRpcIdOrNull(request));
+	const auto saved = std::ranges::find(
+	    chat.remote_interaction_responses, request_id,
+	    &uam::AcpRemoteInteractionResponseState::request_id_json);
+	if (saved == chat.remote_interaction_responses.end())
+		return false;
+	try
+	{
+		const nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		std::string error;
+		if (!WriteAcpMessage(session, response, &error))
+		{
+			RecoverDisconnectedRemoteAcpTransport(
+			    app, session, chat,
+			    "Failed to replay the saved remote interaction response: " +
+			        uam::strings::NonEmptyOrFallback(error, "unknown transport error"));
+		}
+		else
+		{
+			AppendAcpDiagnostic(session, "write", "interaction_response_replayed", "",
+			                    saved->request_id_json, false, 0,
+			                    "Replayed the saved response without asking the user again.");
+		}
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		chat.remote_interaction_responses.erase(saved);
+		(void)SaveChatQuietly(app, chat);
+	}
+	return true;
 }
 
 std::string PendingRequestSummary(const AcpSessionState& session)
@@ -480,10 +517,9 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			{
 				session.pending_request_methods.erase(retry_id);
 				session.session_setup_request_id = 0;
-				(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-				FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(session.last_error, formatted_error));
-				SaveChatQuietly(app, chat);
-				MarkAcpChatUnseenIfBackground(app, chat);
+				RecoverDisconnectedRemoteAcpTransport(
+				    app, session, chat,
+				    uam::strings::NonEmptyOrFallback(session.last_error, formatted_error));
 			}
 			return;
 		}
@@ -554,8 +590,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (method == uam::acp_methods::kSessionPrompt || session.processing || session.waiting_for_permission || session.waiting_for_user_input || !session.queued_prompt.empty())
 		{
-			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-			FailAcpTurnOrSession(session, formatted_error);
+			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+			FailAcpTurnOrSession(session, &chat, formatted_error);
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}

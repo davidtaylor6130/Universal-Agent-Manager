@@ -12,6 +12,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -42,8 +43,8 @@ namespace uam::platform_linux_impl
 #endif
 #elif defined(_WIN32)
 #include "common/platform/platform_services_windows_impl_internal.h"
-#include <deque>
-#include <mutex>
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 namespace uam::platform_windows_impl
 {
@@ -55,6 +56,27 @@ namespace uam::remote
 {
 	namespace
 	{
+		bool IsControlField(std::string_view value, std::size_t max_size)
+		{
+			return !value.empty() && value.size() <= max_size &&
+			       std::ranges::all_of(value, [](unsigned char character)
+			       {
+				       return std::isalnum(character) != 0 || character == '-' ||
+				              character == '_' || character == '.';
+			       });
+		}
+
+		IPlatformProcessService& ProxyProcessService()
+		{
+#if defined(__APPLE__)
+			return uam::platform_macos_impl::GetMacProcessService();
+#elif defined(_WIN32)
+			return uam::platform_windows_impl::GetWindowsProcessService();
+#else
+			return uam::platform_linux_impl::GetLinuxProcessService();
+#endif
+		}
+
 		struct DecodedProxySpec
 		{
 			std::string session_id;
@@ -62,7 +84,55 @@ namespace uam::remote
 			std::vector<std::string> argv;
 			std::vector<std::pair<std::string, std::string>> environment;
 			bool attach_only = false;
+			std::string delivery_token;
+			std::uintmax_t delivered_stdout_cursor = 0;
+			std::uintmax_t delivered_stderr_cursor = 0;
 		};
+
+#if defined(_WIN32)
+		class WindowsPipeInput
+		{
+		  public:
+			void Drain(std::string& output)
+			{
+				if (m_closed || m_failed) return;
+				HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+				DWORD available = 0;
+				if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr))
+				{
+					const DWORD error = GetLastError();
+					m_closed = error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED;
+					m_failed = !m_closed;
+					return;
+				}
+				if (available == 0) return;
+				if (output.size() + available > 1024 * 1024)
+				{
+					m_failed = true;
+					return;
+				}
+				std::array<char, 16 * 1024> buffer{};
+				const DWORD requested = std::min<DWORD>(available, static_cast<DWORD>(buffer.size()));
+				DWORD read = 0;
+				if (!ReadFile(input, buffer.data(), requested, &read, nullptr))
+				{
+					const DWORD error = GetLastError();
+					m_closed = error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED;
+					m_failed = !m_closed;
+					return;
+				}
+				if (read == 0) m_closed = true;
+				else output.append(buffer.data(), read);
+			}
+
+			bool Closed() const { return m_closed; }
+			bool Failed() const { return m_failed; }
+
+		  private:
+			bool m_closed = false;
+			bool m_failed = false;
+		};
+#endif
 
 		std::optional<DecodedProxySpec> DecodeProxySpec(std::string_view encoded)
 		{
@@ -83,6 +153,11 @@ namespace uam::remote
 				for (const auto& [name, value] : spec["environment"].items())
 					result.environment.emplace_back(name, value.get<std::string>());
 				result.attach_only = spec.value("attachOnly", false);
+				result.delivery_token = spec.value("deliveryToken", "");
+				result.delivered_stdout_cursor = spec.value(
+				    "deliveredStdoutCursor", static_cast<std::uintmax_t>(0));
+				result.delivered_stderr_cursor = spec.value(
+				    "deliveredStderrCursor", static_cast<std::uintmax_t>(0));
 			}
 			catch (...)
 			{
@@ -94,16 +169,48 @@ namespace uam::remote
 			return result;
 		}
 
-#if defined(__APPLE__)
+		bool WriteAndAcknowledgeProcessOutput(RunnerClient& client,
+		                                      const std::string& session_id,
+		                                      const ProcessPollResult& polled,
+		                                      std::string& error)
+		{
+			if (!polled.standard_output.empty())
+			{
+				std::cout.write(polled.standard_output.data(),
+				                static_cast<std::streamsize>(polled.standard_output.size()));
+				std::cout.flush();
+				if (!std::cout)
+				{
+					error = "Remote process stdout could not be delivered.";
+					return false;
+				}
+			}
+			if (!polled.standard_error.empty())
+			{
+				std::cerr.write(polled.standard_error.data(),
+				                static_cast<std::streamsize>(polled.standard_error.size()));
+				std::cerr.flush();
+				if (!std::cerr)
+				{
+					error = "Remote process stderr could not be delivered.";
+					return false;
+				}
+			}
+			return client.AcknowledgeProcessOutput(session_id, polled, &error);
+		}
+
+
+#if defined(__APPLE__) || defined(_WIN32)
 		void RunLocalMcpRelay(std::stop_token stop_token, const std::string& ssh_alias,
 		                      const std::string& platform, const std::string& version,
 		                      const std::string& runner_directory,
-		                      DecodedProxySpec spec)
+		                      int protocol_version, DecodedProxySpec spec)
 		{
-			auto& process_service = uam::platform_macos_impl::GetMacProcessService();
+			auto& process_service = ProxyProcessService();
 			RunnerClient channel(process_service, SshBridgeArgv(
-			                         ssh_alias, platform, version, runner_directory),
-			                     version);
+			                         ssh_alias, platform, version, runner_directory,
+			                         protocol_version),
+			                     version, protocol_version);
 			std::string error;
 			if (!channel.OpenChannel(spec.session_id, &error, true))
 			{
@@ -114,8 +221,7 @@ namespace uam::remote
 			if (!process_service.StartStdioProcess(process, spec.working_directory, spec.argv,
 			                                       &error, spec.environment))
 			{
-				(void)channel.CloseChannel(spec.session_id);
-				std::cerr << (error.empty() ? "UAM control MCP could not start." : error) << '\n';
+					std::cerr << (error.empty() ? "UAM control MCP could not start." : error) << '\n';
 				return;
 			}
 			std::array<char, 16 * 1024> buffer{};
@@ -137,9 +243,19 @@ namespace uam::remote
 					std::cerr.flush();
 				}
 				std::string input;
-				if (!channel.PollChannel(spec.session_id, "remoteToDesktop", input, &error)) break;
+				std::uintmax_t input_cursor = 0;
+				if (!channel.PollChannel(spec.session_id, "remoteToDesktop", input, &error,
+				                         &input_cursor))
+				{
+					channel.Disconnect();
+					if (!channel.OpenChannel(spec.session_id, &error, true)) break;
+					continue;
+				}
 				if (!input.empty() && !process_service.WriteToStdioProcess(
 				                          process, input.data(), input.size(), &error))
+					break;
+				if (!input.empty() && !channel.AcknowledgeChannel(
+				                          spec.session_id, "remoteToDesktop", input_cursor, &error))
 					break;
 				int exit_code = -1;
 				running = !process_service.PollStdioProcessExited(process, &exit_code);
@@ -148,7 +264,8 @@ namespace uam::remote
 			}
 			if (running) process_service.StopStdioProcess(process, true);
 			process_service.CloseStdioProcessHandles(process);
-			(void)channel.CloseChannel(spec.session_id);
+			// The channel belongs to the provider session, not this disposable relay.
+			// A replacement proxy can attach and resume at the acknowledged cursors.
 		}
 #endif
 	}
@@ -180,13 +297,18 @@ namespace uam::remote
 	    const std::string& session_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
-	    bool attach_only)
+	    bool attach_only, const std::string& delivery_token,
+	    std::uintmax_t delivered_stdout_cursor,
+	    std::uintmax_t delivered_stderr_cursor)
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
 		return uam::base64::Encode(nlohmann::json{
 		    {"sessionId", session_id}, {"cwd", working_directory.string()}, {"argv", argv},
 		    {"environment", std::move(environment_json)}, {"attachOnly", attach_only},
+		    {"deliveryToken", delivery_token},
+		    {"deliveredStdoutCursor", delivered_stdout_cursor},
+		    {"deliveredStderrCursor", delivered_stderr_cursor},
 		}.dump());
 	}
 
@@ -231,6 +353,17 @@ namespace uam::remote
 		if (channel_id.empty() || argv.empty() || !working_directory.is_absolute()) return {};
 		return std::string(kRemoteMcpControlPrefix) +
 		       BuildProcessProxySpec(channel_id, working_directory, argv, environment) + "\n";
+	}
+
+	std::string BuildRemoteInputDeliveryLine(
+	    std::string_view delivery_token, std::string_view delivery_id,
+	    std::string_view payload)
+	{
+		if (!IsControlField(delivery_token, 256) || !IsControlField(delivery_id, 96) ||
+		    payload.empty() || payload.size() > 2 * 1024 * 1024)
+			return {};
+		return std::string(kRemoteInputDeliveryPrefix) + std::string(delivery_token) + " " +
+		       std::string(delivery_id) + " " + uam::base64::Encode(payload) + "\n";
 	}
 
 	int RunTerminalProcess(const std::string& encoded_spec)
@@ -312,13 +445,19 @@ namespace uam::remote
 	}
 
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
-	                    const std::string& version, const std::string& runner_directory)
+	                    const std::string& version, const std::string& runner_directory,
+	                    int protocol_version)
 	{
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(_WIN32)
 		(void)ssh_alias;
 		std::cerr << "Remote process proxy is not yet available on this platform.\n";
 		return 70;
 #else
+		#if defined(_WIN32)
+		(void)_setmode(_fileno(stdin), _O_BINARY);
+		(void)_setmode(_fileno(stdout), _O_BINARY);
+		(void)_setmode(_fileno(stderr), _O_BINARY);
+		#endif
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias))
 		{
 			std::cerr << "Use one exact alias from ~/.ssh/config.\n";
@@ -329,8 +468,17 @@ namespace uam::remote
 			std::cerr << "The remote runner folder is invalid.\n";
 			return 2;
 		}
+		if (protocol_version < 2 || protocol_version > kRunnerProtocolVersion)
+		{
+			std::cerr << "The remote runner protocol is unsupported.\n";
+			return 2;
+		}
 		const auto encoded = uam::env::GetNonEmptyString(kRemoteProcessSpecEnvironment);
+#if defined(_WIN32)
+		(void)_putenv_s(kRemoteProcessSpecEnvironment, "");
+#else
 		(void)unsetenv(kRemoteProcessSpecEnvironment);
+#endif
 		const std::optional<DecodedProxySpec> spec = encoded ? DecodeProxySpec(*encoded) : std::nullopt;
 		if (!spec)
 		{
@@ -338,74 +486,64 @@ namespace uam::remote
 			return 2;
 		}
 
-		RunnerClient client(uam::platform_macos_impl::GetMacProcessService(),
-		                    SshBridgeArgv(ssh_alias, platform, version, runner_directory),
-		                    version);
+		auto& process_service = ProxyProcessService();
+		RunnerClient client(process_service,
+		                    SshBridgeArgv(ssh_alias, platform, version, runner_directory,
+		                                  protocol_version),
+		                    version, protocol_version);
 		std::string error;
 		const std::string& session_id = spec->session_id;
+		std::optional<ProcessPollResult> prefetched_poll;
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
 			return 70;
 		}
+		if (protocol_version >= 3)
+			client.SetProcessControlToken(session_id, spec->delivery_token);
 		if (spec->attach_only)
 		{
+			ProcessPollResult persisted;
+			persisted.stdout_cursor = spec->delivered_stdout_cursor;
+			persisted.stderr_cursor = spec->delivered_stderr_cursor;
+			const bool resume_persisted_output = !spec->delivery_token.empty() ||
+			    persisted.stdout_cursor != 0 || persisted.stderr_cursor != 0;
 			ProcessPollResult existing;
-			if (!client.PollProcess(session_id, existing, &error))
+			if (!client.PollProcess(session_id, existing, &error, {}, nullptr,
+			                        resume_persisted_output ? &persisted : nullptr))
 			{
 				std::cerr << (error.empty() ? "The remote process is no longer available." : error) << '\n';
 				return 70;
 			}
-			if (!existing.running)
-			{
-				if (!existing.standard_output.empty())
-				{
-					std::cout.write(existing.standard_output.data(),
-					                static_cast<std::streamsize>(existing.standard_output.size()));
-					std::cout.flush();
-				}
-				if (!existing.standard_error.empty())
-				{
-					std::cerr.write(existing.standard_error.data(),
-					                static_cast<std::streamsize>(existing.standard_error.size()));
-					std::cerr.flush();
-				}
-				(void)client.RemoveProcess(session_id);
-				return existing.exit_code < 0 ? 70 : existing.exit_code;
-			}
 			std::cout << R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})" << '\n';
 			std::cout.flush();
-			if (!existing.standard_output.empty())
-			{
-				std::cout.write(existing.standard_output.data(),
-				                static_cast<std::streamsize>(existing.standard_output.size()));
-				std::cout.flush();
-			}
-			if (!existing.standard_error.empty())
-			{
-				std::cerr.write(existing.standard_error.data(),
-				                static_cast<std::streamsize>(existing.standard_error.size()));
-				std::cerr.flush();
-			}
+			prefetched_poll = std::move(existing);
 		}
 		else if (!client.StartProcess(session_id, spec->working_directory, spec->argv,
-		                              spec->environment, &error))
+		                              spec->environment, &error, false,
+		                              spec->delivery_token))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
 			return 70;
 		}
-		RunnerClient poll_client(uam::platform_macos_impl::GetMacProcessService(),
+		RunnerClient poll_client(process_service,
 		                         SshBridgeArgv(ssh_alias, platform, version,
-		                                       runner_directory), version);
+		                                       runner_directory, protocol_version), version,
+		                         protocol_version);
+		if (protocol_version >= 3)
+			poll_client.SetProcessControlToken(session_id, spec->delivery_token);
 		if (!poll_client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
 			return 70;
 		}
 		RunnerClient* poll_channel = &poll_client;
-		std::optional<ProcessPollResult> prefetched_poll;
 		ProcessPollResult first_poll;
-		if (poll_client.PollProcess(session_id, first_poll, &error))
+		if (prefetched_poll.has_value())
+		{
+			// The attach probe already supplied the first durable batch.
+		}
+		else if (poll_client.PollProcess(session_id, first_poll, &error))
 		{
 			prefetched_poll = std::move(first_poll);
 		}
@@ -423,18 +561,74 @@ namespace uam::remote
 			return 70;
 		}
 
+		#if defined(_WIN32)
+		WindowsPipeInput windows_input;
+		#else
 		const int previous_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
 		if (previous_flags < 0 || fcntl(STDIN_FILENO, F_SETFL, previous_flags | O_NONBLOCK) < 0)
 		{
-			(void)client.StopProcess(session_id);
 			std::cerr << "Remote process proxy could not configure stdin.\n";
 			return 70;
 		}
+		#endif
 		bool input_closed = false;
 		std::string pending_input;
 		std::optional<std::jthread> mcp_relay;
 		std::array<char, 16 * 1024> input{};
 		bool stop_completed = false;
+		std::string pending_stdout;
+		std::string pending_stderr;
+		std::uintmax_t pending_stdout_base = 0;
+		bool pending_stdout_base_set = false;
+		ProcessPollResult latest_cursor;
+		bool has_latest_cursor = false;
+		std::optional<ProcessPollResult> awaiting_output_ack;
+		std::size_t awaiting_stdout_bytes = 0;
+		bool source_exited = false;
+		int source_exit_code = -1;
+		bool source_exit_announced = false;
+		bool legacy_exit_observed = false;
+		int legacy_exit_code = -1;
+		int legacy_quiet_polls = 0;
+		std::chrono::steady_clock::time_point legacy_drain_deadline{};
+		const auto expected_output_ack = [&](const ProcessPollResult& delivery)
+		{
+			return std::string(kRemoteOutputAckPrefix) + spec->delivery_token + " " +
+			       std::to_string(delivery.stdout_cursor) + " " +
+			       std::to_string(delivery.stderr_cursor) + "\n";
+		};
+		const auto queue_output_delivery = [&](std::size_t stdout_bytes,
+		                                       bool terminate_partial_line)
+		{
+			ProcessPollResult delivery = latest_cursor;
+			delivery.stdout_cursor = pending_stdout_base + stdout_bytes;
+			delivery.standard_output.assign(pending_stdout.data(), stdout_bytes);
+			if (terminate_partial_line) delivery.standard_output.push_back('\n');
+			delivery.standard_error = pending_stderr;
+			delivery.acknowledgement_required = true;
+			if (!delivery.standard_output.empty())
+			{
+				std::cout.write(delivery.standard_output.data(),
+				                static_cast<std::streamsize>(delivery.standard_output.size()));
+			}
+			if (!delivery.standard_error.empty())
+			{
+				std::cerr.write(delivery.standard_error.data(),
+				                static_cast<std::streamsize>(delivery.standard_error.size()));
+				std::cerr.flush();
+			}
+			std::cout << kRemoteOutputMarkerPrefix << spec->delivery_token << ' '
+			          << delivery.stdout_cursor << ' ' << delivery.stderr_cursor << '\n';
+			std::cout.flush();
+			if (!std::cout || !std::cerr)
+			{
+				error = "Remote process output could not be delivered.";
+				return false;
+			}
+			awaiting_stdout_bytes = stdout_bytes;
+			awaiting_output_ack = std::move(delivery);
+			return true;
+		};
 		const auto write_remote = [&](std::string_view bytes)
 		{
 			while (!bytes.empty())
@@ -445,23 +639,49 @@ namespace uam::remote
 			}
 			return true;
 		};
+		const auto write_remote_delivery = [&](std::string_view bytes,
+		                                       std::string_view delivery_id)
+		{
+			const std::size_t chunk_count =
+			    (bytes.size() + 256 * 1024 - 1) / (256 * 1024);
+			for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index)
+			{
+				const std::size_t size = std::min<std::size_t>(bytes.size(), 256 * 1024);
+				const std::string chunk_delivery_id = std::string(delivery_id) + "." +
+				    std::to_string(chunk_index) + "." + std::to_string(chunk_count);
+				if (!client.WriteProcess(session_id, bytes.substr(0, size), &error,
+				                         chunk_delivery_id))
+					return false;
+				bytes.remove_prefix(size);
+			}
+			return true;
+		};
+		const auto read_proxy_input = [&]() -> int
+		{
+		#if defined(_WIN32)
+			windows_input.Drain(pending_input);
+			if (windows_input.Failed()) return -1;
+			return windows_input.Closed() ? 0 : 1;
+		#else
+			const ssize_t count = read(STDIN_FILENO, input.data(), input.size());
+			if (count > 0) pending_input.append(input.data(), static_cast<std::size_t>(count));
+			if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -1;
+			return count == 0 ? 0 : 1;
+		#endif
+		};
 		const auto stop_while_polling = [&]
 		{
 			if (input_closed || stop_completed) return stop_completed;
-			const ssize_t count = read(STDIN_FILENO, input.data(), input.size());
-			if (count > 0)
+			(void)read_proxy_input();
+			const std::size_t stop = pending_input.find(kRemoteStopControlLine);
+			if (stop != std::string::npos &&
+			    (stop == 0 || pending_input[stop - 1] == '\n'))
 			{
-				pending_input.append(input.data(), static_cast<std::size_t>(count));
-				const std::size_t stop = pending_input.find(kRemoteStopControlLine);
-				if (stop != std::string::npos &&
-				    (stop == 0 || pending_input[stop - 1] == '\n'))
-				{
-					if (!client.StopProcess(session_id, &error) ||
-					    !client.RemoveProcess(session_id, &error))
-						return true;
-					stop_completed = true;
+				if (!client.StopProcess(session_id, &error) ||
+				    !client.RemoveProcess(session_id, &error))
 					return true;
-				}
+				stop_completed = true;
+				return true;
 			}
 			return false;
 		};
@@ -469,14 +689,8 @@ namespace uam::remote
 		{
 			if (!input_closed)
 			{
-				const ssize_t count = read(STDIN_FILENO, input.data(), input.size());
-				const int input_error = count < 0 ? errno : 0;
-				if (count > 0)
-				{
-					pending_input.append(input.data(), static_cast<std::size_t>(count));
-				}
-				else if (count < 0 && input_error != EAGAIN && input_error != EWOULDBLOCK &&
-				         input_error != EINTR)
+				const int input_state = read_proxy_input();
+				if (input_state < 0)
 				{
 					std::cerr << "Remote process proxy could not read stdin.\n";
 					return 70;
@@ -496,6 +710,72 @@ namespace uam::remote
 						}
 						return 0;
 					}
+					if (awaiting_output_ack.has_value() &&
+					    line == expected_output_ack(*awaiting_output_ack))
+					{
+						if (!poll_channel->AcknowledgeProcessOutput(
+						        session_id, *awaiting_output_ack, &error))
+						{
+							std::cerr << error << '\n';
+							return 70;
+						}
+						pending_stdout.erase(0, awaiting_stdout_bytes);
+						pending_stdout_base = awaiting_output_ack->stdout_cursor;
+						pending_stdout_base_set = true;
+						pending_stderr.clear();
+						awaiting_output_ack.reset();
+						awaiting_stdout_bytes = 0;
+						continue;
+					}
+					if (source_exit_announced &&
+					    line == std::string(kRemoteSourceExitAckPrefix) +
+					                spec->delivery_token + " " +
+					                std::to_string(source_exit_code) + "\n")
+					{
+						if (!client.RemoveProcess(session_id, &error))
+						{
+							std::cerr << error << '\n';
+							return 70;
+						}
+						return source_exit_code < 0 ? 70 : source_exit_code;
+					}
+					if (line.starts_with(kRemoteInputDeliveryPrefix))
+					{
+						if (protocol_version < 3)
+						{
+							std::cerr << "This remote helper cannot acknowledge input delivery.\n";
+							return 70;
+						}
+						std::string_view fields(
+						    line.data() + kRemoteInputDeliveryPrefix.size(),
+						    line.size() - kRemoteInputDeliveryPrefix.size() - 1);
+						const std::size_t token_end = fields.find(' ');
+						const std::size_t id_end = token_end == std::string_view::npos
+						    ? std::string_view::npos : fields.find(' ', token_end + 1);
+						if (token_end == std::string_view::npos || id_end == std::string_view::npos ||
+						    fields.substr(0, token_end) != spec->delivery_token)
+						{
+							std::cerr << "Remote input delivery authority is invalid.\n";
+							return 70;
+						}
+						const std::string delivery_id(fields.substr(
+						    token_end + 1, id_end - token_end - 1));
+						std::string payload;
+						if (!IsControlField(delivery_id, 96) ||
+						    !uam::base64::Decode(fields.substr(id_end + 1), payload) ||
+						    payload.empty() || payload.size() > 2 * 1024 * 1024 ||
+						    !write_remote_delivery(payload, delivery_id))
+						{
+							std::cerr << (error.empty()
+							    ? "Remote input delivery is invalid.\n" : error + "\n");
+							return 70;
+						}
+						std::cout << kRemoteInputReceiptPrefix << spec->delivery_token << ' '
+						          << delivery_id << '\n';
+						std::cout.flush();
+						if (!std::cout) return 70;
+						continue;
+					}
 					if (line.starts_with(kRemoteMcpControlPrefix))
 					{
 						const std::string_view encoded_mcp(line.data() + kRemoteMcpControlPrefix.size(),
@@ -508,7 +788,7 @@ namespace uam::remote
 						}
 						mcp_relay.reset();
 						mcp_relay.emplace(RunLocalMcpRelay, ssh_alias, platform, version,
-						                  runner_directory,
+						                  runner_directory, protocol_version,
 						                  std::move(*mcp_spec));
 						continue;
 					}
@@ -525,16 +805,45 @@ namespace uam::remote
 					std::cerr << error << '\n';
 					return 70;
 				}
-				if (count == 0)
+				if (input_state == 0)
 				{
-					if (!pending_input.empty() && !write_remote(std::exchange(pending_input, {})))
+					// The desktop transport disappearing is a detach, never permission to
+					// terminate helper-owned work. Only the explicit stop control line above
+					// may close or terminate the remote provider.
+					return 0;
+				}
+			}
+			if (awaiting_output_ack.has_value())
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				continue;
+			}
+			if (source_exited)
+			{
+				if (!pending_stdout.empty() || !pending_stderr.empty())
+				{
+					if (!queue_output_delivery(pending_stdout.size(), !pending_stdout.empty()))
 					{
 						std::cerr << error << '\n';
 						return 70;
 					}
-					input_closed = true;
-					(void)client.CloseProcessInput(session_id);
+					continue;
 				}
+				if (!spec->delivery_token.empty())
+				{
+					if (!source_exit_announced)
+					{
+						std::cout << kRemoteSourceExitPrefix << spec->delivery_token << ' '
+						          << source_exit_code << '\n';
+						std::cout.flush();
+						if (!std::cout) return 70;
+						source_exit_announced = true;
+					}
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					continue;
+				}
+				(void)client.RemoveProcess(session_id);
+				return source_exit_code < 0 ? 70 : source_exit_code;
 			}
 
 			ProcessPollResult polled;
@@ -545,29 +854,81 @@ namespace uam::remote
 			                                 session_id, polled, &error,
 			                                 poll_channel == &poll_client ? stop_while_polling
 			                                                              : std::function<bool()>{},
-			                                 &poll_interrupted);
+			                                 &poll_interrupted,
+			                                 has_latest_cursor ? &latest_cursor : nullptr);
 			if (!polled_ok)
 			{
 				if (poll_interrupted && stop_completed) return 0;
 				std::cerr << (error.empty() ? "Remote process polling failed." : error) << '\n';
 				return 70;
 			}
-			if (!polled.standard_output.empty())
-			{
-				std::cout.write(polled.standard_output.data(),
-				                static_cast<std::streamsize>(polled.standard_output.size()));
-				std::cout.flush();
+			const bool durable_delivery = !spec->delivery_token.empty() &&
+			    (polled.acknowledgement_required || has_latest_cursor ||
+			     !pending_stdout.empty() || !pending_stderr.empty());
+				if (!durable_delivery)
+				{
+					if (UsesDurableRemoteOutputHandshake(
+					        protocol_version, spec->delivery_token) && !polled.running)
+				{
+					source_exited = true;
+					source_exit_code = polled.exit_code;
+					continue;
+				}
+				if (!WriteAndAcknowledgeProcessOutput(*poll_channel, session_id, polled, error))
+				{
+					std::cerr << error << '\n';
+					return 70;
+				}
+				if (!polled.running)
+				{
+					if (protocol_version < 3)
+					{
+						if (!legacy_exit_observed)
+						{
+							legacy_exit_observed = true;
+							legacy_exit_code = polled.exit_code;
+							legacy_drain_deadline = std::chrono::steady_clock::now() +
+							                        std::chrono::milliseconds(250);
+						}
+						if (polled.standard_output.empty() && polled.standard_error.empty())
+							++legacy_quiet_polls;
+						else
+							legacy_quiet_polls = 0;
+						if (legacy_quiet_polls < 3 &&
+						    std::chrono::steady_clock::now() < legacy_drain_deadline)
+						{
+							std::this_thread::sleep_for(std::chrono::milliseconds(10));
+							continue;
+						}
+					}
+					(void)client.RemoveProcess(session_id);
+					const int exit_code = legacy_exit_observed ? legacy_exit_code : polled.exit_code;
+					return exit_code < 0 ? 70 : exit_code;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				continue;
 			}
-			if (!polled.standard_error.empty())
+			if (!pending_stdout_base_set)
 			{
-				std::cerr.write(polled.standard_error.data(),
-				                static_cast<std::streamsize>(polled.standard_error.size()));
-				std::cerr.flush();
+				pending_stdout_base = polled.stdout_cursor - polled.standard_output.size();
+				pending_stdout_base_set = true;
 			}
-			if (!polled.running)
+			pending_stdout += polled.standard_output;
+			pending_stderr += polled.standard_error;
+			latest_cursor = polled;
+			has_latest_cursor = true;
+			source_exited = !polled.running;
+			source_exit_code = polled.exit_code;
+			const std::size_t newline = pending_stdout.rfind('\n');
+			if (newline != std::string::npos || !pending_stderr.empty())
 			{
-				(void)client.RemoveProcess(session_id);
-				return polled.exit_code < 0 ? 70 : polled.exit_code;
+				const std::size_t stdout_bytes = newline == std::string::npos ? 0 : newline + 1;
+				if (!queue_output_delivery(stdout_bytes, false))
+				{
+					std::cerr << error << '\n';
+					return 70;
+				}
+				continue;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
@@ -612,7 +973,13 @@ namespace uam::remote
 			                     channel_id, "remoteToDesktop",
 			                     std::string_view(input.data(), static_cast<std::size_t>(count)),
 			                     &error))
-				break;
+			{
+				channel.Disconnect();
+				if (!channel.OpenChannel(channel_id, &error, true) ||
+				    !channel.WriteChannel(channel_id, "remoteToDesktop",
+				        std::string_view(input.data(), static_cast<std::size_t>(count)), &error))
+					break;
+			}
 			if (count == 0)
 			{
 				(void)channel.CloseChannel(channel_id);
@@ -620,11 +987,23 @@ namespace uam::remote
 			}
 			if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
 			std::string output;
-			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error)) break;
+			std::uintmax_t output_cursor = 0;
+			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error,
+			                         &output_cursor))
+			{
+				channel.Disconnect();
+				if (!channel.OpenChannel(channel_id, &error, true)) break;
+				continue;
+			}
 			if (!output.empty())
 			{
 				std::cout.write(output.data(), static_cast<std::streamsize>(output.size()));
 				std::cout.flush();
+				if (!std::cout)
+					break;
+				if (!channel.AcknowledgeChannel(
+				        channel_id, "desktopToRemote", output_cursor, &error))
+					break;
 			}
 			if (count < 0 && output.empty())
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -647,53 +1026,41 @@ namespace uam::remote
 		                     UAM_REMOTE_RUNNER_VERSION);
 		std::string error;
 		if (!channel.OpenChannel(channel_id, &error, true)) return 70;
-		std::mutex input_mutex;
-		std::deque<std::string> input;
-		std::atomic<bool> input_closed{false};
-		std::atomic<bool> input_failed{false};
-		std::size_t input_bytes = 0;
-		std::jthread reader([&]
-		{
-			std::array<char, 16 * 1024> bytes{};
-			for (;;)
-			{
-				DWORD read = 0;
-				if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), bytes.data(),
-				              static_cast<DWORD>(bytes.size()), &read, nullptr) || read == 0) break;
-				std::scoped_lock lock(input_mutex);
-				if (input_bytes + read > 1024 * 1024)
-				{
-					input_failed.store(true, std::memory_order_release);
-					break;
-				}
-				input.emplace_back(bytes.data(), read);
-				input_bytes += read;
-			}
-			input_closed.store(true, std::memory_order_release);
-		});
+		WindowsPipeInput input;
+		bool input_failed = false;
+		std::string pending;
 		for (;;)
 		{
-			std::string pending;
+			input.Drain(pending);
+			if (input.Failed())
 			{
-				std::scoped_lock lock(input_mutex);
-				if (!input.empty())
-				{
-					pending = std::move(input.front());
-					input_bytes -= pending.size();
-					input.pop_front();
-				}
+				input_failed = true;
+				break;
 			}
 			if (!pending.empty() && !channel.WriteChannel(
 			        channel_id, "remoteToDesktop", pending, &error))
 			{
-				input_failed.store(true, std::memory_order_release);
-				break;
+				channel.Disconnect();
+				if (!channel.OpenChannel(channel_id, &error, true) ||
+				    !channel.WriteChannel(channel_id, "remoteToDesktop", pending, &error))
+				{
+					input_failed = true;
+					break;
+				}
 			}
+			pending.clear();
 			std::string output;
-			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error))
+			std::uintmax_t output_cursor = 0;
+			if (!channel.PollChannel(channel_id, "desktopToRemote", output, &error,
+			                         &output_cursor))
 			{
-				input_failed.store(true, std::memory_order_release);
-				break;
+				channel.Disconnect();
+				if (!channel.OpenChannel(channel_id, &error, true))
+				{
+					input_failed = true;
+					break;
+				}
+				continue;
 			}
 			if (!output.empty())
 			{
@@ -705,24 +1072,24 @@ namespace uam::remote
 					               static_cast<DWORD>(output.size() - offset), &written,
 					               nullptr) || written == 0)
 					{
-						input_failed.store(true, std::memory_order_release);
+						input_failed = true;
 						break;
 					}
 					offset += written;
 				}
-				if (input_failed.load(std::memory_order_acquire)) break;
+				if (input_failed) break;
+				if (!channel.AcknowledgeChannel(
+				        channel_id, "desktopToRemote", output_cursor, &error))
+				{
+					input_failed = true;
+					break;
+				}
 			}
-			if (input_closed.load(std::memory_order_acquire) && pending.empty()) break;
+			if (input.Closed() && pending.empty()) break;
 			if (pending.empty() && output.empty()) Sleep(10);
 		}
 		(void)channel.CloseChannel(channel_id);
-		#if defined(__MINGW32__)
-			(void)CancelSynchronousIo(reinterpret_cast<HANDLE>(reader.native_handle()));
-		#else
-			(void)CancelSynchronousIo(reader.native_handle());
-		#endif
-		reader.join();
-		return !input_failed.load(std::memory_order_acquire) && error.empty() ? 0 : 70;
+		return !input_failed && error.empty() ? 0 : 70;
 #endif
 	}
 }

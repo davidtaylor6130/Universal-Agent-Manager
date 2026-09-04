@@ -222,6 +222,38 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toEqual([])
   })
 
+  it('ignores stale successful selection responses before hydrating messages', async () => {
+    const now = new Date()
+    const finishSelection = new Map<string, () => void>()
+    const hydrated: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const envelope = JSON.parse(request) as { action: string; payload?: { chatId?: string } }
+      const chatId = envelope.payload?.chatId ?? ''
+      if (envelope.action === 'selectSession') finishSelection.set(chatId, () => onSuccess('{}'))
+      else if (envelope.action === 'getChatMessages') {
+        hydrated.push(chatId)
+        onSuccess(JSON.stringify({ chatId, unchanged: true }))
+      }
+    }
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'A', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-b', name: 'B', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: null,
+    })
+
+    useAppStore.getState().setActiveSession('chat-a')
+    useAppStore.getState().setActiveSession('chat-b')
+    finishSelection.get('chat-b')?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    finishSelection.get('chat-a')?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useAppStore.getState().activeSessionId).toBe('chat-b')
+    expect(hydrated).toEqual(['chat-b'])
+  })
+
   it('preserves an explicit empty selection from native state and patches', () => {
     useAppStore.getState().loadFromCef(makeCppState(1, null))
     expect(useAppStore.getState().activeSessionId).toBeNull()
@@ -825,6 +857,15 @@ describe('useAppStore Gemini CLI slice', () => {
     await new Promise((resolve) => setTimeout(resolve, 80))
     expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['replacement'])
 
+    cefStore.setState({
+      goalModeByChatId: { 'chat-1': true },
+      defaultGoalTokenBudgetByChatId: { 'chat-1': 100 },
+      markdownStoreAttachedBySessionId: { 'chat-1': [] },
+      repositoryReviewBySessionId: { 'chat-1': {} as never },
+      uamAgentsBySessionId: { 'chat-1': [] },
+    })
+    testWindow.uamPush?.({ type: 'cliOutput', sessionId: 'chat-1', terminalId: 'term-chat-1', data: btoa('late output') })
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: 'late token' })
     testWindow.uamPush?.({
       type: 'statePatch',
       data: {
@@ -837,6 +878,14 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.sessions).toEqual([])
     expect(state.messages['chat-1']).toBeUndefined()
     expect(state.cliBindingBySessionId['chat-1']).toBeUndefined()
+    expect(state.goalModeByChatId['chat-1']).toBeUndefined()
+    expect(state.defaultGoalTokenBudgetByChatId['chat-1']).toBeUndefined()
+    expect(state.markdownStoreAttachedBySessionId['chat-1']).toBeUndefined()
+    expect(state.repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    expect(state.uamAgentsBySessionId['chat-1']).toBeUndefined()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+    expect(cefStore.getState().cliTranscriptBySessionId['chat-1']).toBeUndefined()
   })
 
   it('preserves provider-managed goal metadata across incremental patches', async () => {
@@ -888,6 +937,35 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
+  it('clears goals when an authoritative chat patch omits an empty goal list', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].goals = [{
+      id: 'goal-complete',
+      objective: 'Finished work',
+      status: 'complete',
+      tokenBudget: 0,
+      tokensUsed: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }]
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().goalsByChatId['chat-1']).toHaveLength(1)
+
+    const chatWithoutGoals = { ...initial.chats[0] }
+    delete chatWithoutGoals.goals
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: { stateRevision: 2, chats: [chatWithoutGoals] },
+    })
+
+    expect(cefStore.getState().goalsByChatId['chat-1']).toEqual([])
+  })
+
   it('continues streaming into an authoritative assistant message during an active ACP turn', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -924,6 +1002,143 @@ describe('useAppStore Gemini CLI slice', () => {
       content: 'First second',
       isStreaming: true,
     })
+  })
+
+	it('keeps buffered background tokens across a selected-chat full state update', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats.push({
+      id: 'chat-2',
+      title: 'Background chat',
+      folderId: 'default',
+      providerId: 'gemini-cli',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:01.000Z',
+      messageCount: 0,
+      messagesDigest: '',
+    })
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', token: 'Background answer' })
+    testWindow.uamPush?.({
+      type: 'stateUpdate',
+      data: { ...initial, stateRevision: 2 },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+
+		expect(cefStore.getState().messages['chat-2']?.at(-1)?.content).toBe('Background answer')
+	})
+
+	it('accepts an authoritative empty selected transcript and drops buffered tokens', async () => {
+		const testWindow = ensureTestWindow()
+		vi.resetModules()
+		testWindow.dispatchEvent = vi.fn(() => true)
+		const initial = makeCppState(1)
+		initial.chats[0].messages = [
+			{ role: 'assistant', content: 'Stale answer', createdAt: '2026-01-01T00:00:00.000Z' },
+		]
+		testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+
+		const { useAppStore: cefStore } = await import('./useAppStore')
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: ' buffered' })
+		testWindow.uamPush?.({
+			type: 'stateUpdate',
+			data: {
+				...initial,
+				stateRevision: 2,
+				chats: [{ ...initial.chats[0], messages: [] }],
+			},
+		})
+		await new Promise((resolve) => setTimeout(resolve, 80))
+
+		expect(cefStore.getState().messages['chat-1']).toEqual([])
+	})
+
+	it('keeps buffered tokens when stale state payloads are rejected', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(2)
+    initial.chats[0].messages = [
+      { role: 'assistant', content: 'First', createdAt: '2026-01-01T00:00:00.000Z' },
+    ]
+    initial.chats[0].acpSession = {
+      sessionId: 'acp-chat-1', running: true, processing: true, lifecycleState: 'processing',
+      turnSerial: 1, turnUserMessageIndex: -1, turnAssistantMessageIndex: 0,
+    }
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: ' second' })
+    testWindow.uamPush?.({ type: 'stateUpdate', data: initial })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1'][0].content).toBe('First second')
+
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: ' third' })
+    testWindow.uamPush?.({
+      type: 'statePatch',
+      data: { stateRevision: 2, messagesByChatId: { 'chat-1': initial.chats[0].messages! } },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1'][0].content).toBe('First second third')
+  })
+
+  it('removes a duplicate stream placeholder when its turn completes', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].messages = [
+      { role: 'user', content: 'Question', createdAt: '2026-01-01T00:00:00.000Z' },
+      { role: 'assistant', content: 'Initial text.', createdAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    initial.chats[0].acpSession = {
+      sessionId: 'acp-chat-1',
+      running: true,
+      processing: true,
+      lifecycleState: 'processing',
+      turnSerial: 1,
+      turnUserMessageIndex: 0,
+      turnAssistantMessageIndex: 1,
+      turnEvents: [
+        { type: 'tool_call', toolCallId: 'tool-1' },
+        { type: 'assistant_text', text: ' Final text.' },
+      ],
+    }
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cefStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          ...state.messages['chat-1'],
+          {
+            id: 'stream-chat-1',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: ' Final text.',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+            isStreaming: true,
+          },
+        ],
+      },
+    }))
+
+    testWindow.uamPush?.({ type: 'streamDone', chatId: 'chat-1' })
+
+    expect(cefStore.getState().messages['chat-1']).toHaveLength(2)
+    expect(cefStore.getState().messages['chat-1'][1]).toMatchObject({
+      content: 'Initial text. Final text.',
+    })
+    expect(cefStore.getState().messages['chat-1'][1].isStreaming).toBe(false)
   })
 
   it('keeps a new turn from streaming into the previous assistant message', async () => {
@@ -1405,6 +1620,70 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().statusLine).toBe(
       'Failed to load chat history for Gemini Session: Remote transcript could not be read.'
     )
+  })
+
+  it('ignores a chat hydration response after the transcript is unloaded', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    let finishHydration: ((payload: string) => void) | undefined
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = (JSON.parse(request) as { action: string }).action
+      if (action === 'getInitialState') onSuccess(JSON.stringify(makeCppState(1)))
+      else if (action === 'getChatMessages') finishHydration = onSuccess
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cefStore.getState().loadSessionMessages('chat-1')
+    cefStore.getState().unloadSessionMessages('chat-1')
+    finishHydration?.(JSON.stringify({ chatId: 'chat-1', messagesDigest: 'late', unchanged: false, messages: [{ role: 'user', content: 'Late', createdAt: '2026-01-01T00:00:00.000Z' }] }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+  })
+
+  it('discards buffered transcript pushes when an idle chat is unloaded', async () => {
+    vi.useFakeTimers()
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if ((JSON.parse(request) as { action: string }).action === 'getInitialState') {
+        const state = makeCppState(1)
+        state.chats[0].messages = [{ role: 'assistant', content: 'Loaded' }]
+        state.chats[0].cliTranscript = 'Loaded terminal'
+        onSuccess(JSON.stringify(state))
+      }
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await vi.runAllTimersAsync()
+    testWindow.uamPush?.({ type: 'cliOutput', sessionId: 'chat-1', terminalId: 'term-1', data: btoa('late output') })
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: 'late token' })
+    cefStore.getState().unloadSessionMessages('chat-1')
+    await vi.runAllTimersAsync()
+    expect(cefStore.getState().cliTranscriptBySessionId['chat-1']).toBeUndefined()
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+    vi.useRealTimers()
+  })
+
+  it('ignores a chat hydration response after the chat is deleted', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    let finishHydration: ((payload: string) => void) | undefined
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = (JSON.parse(request) as { action: string }).action
+      if (action === 'getInitialState') onSuccess(JSON.stringify(makeCppState(1)))
+      else if (action === 'getChatMessages') finishHydration = onSuccess
+      else if (action === 'deleteSessions') onSuccess(JSON.stringify({ selectedChatId: null }))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cefStore.getState().loadSessionMessages('chat-1')
+    await cefStore.getState().deleteSessions(['chat-1'])
+    finishHydration?.(JSON.stringify({ chatId: 'chat-1', messagesDigest: 'late', unchanged: false, messages: [{ role: 'user', content: 'Late', createdAt: '2026-01-01T00:00:00.000Z' }] }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().sessions).toEqual([])
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
   })
 
   it('applies selected chat patches with hydrated messages and chat order', async () => {
@@ -3290,6 +3569,8 @@ describe('useAppStore Gemini CLI slice', () => {
       acpBindingBySessionId: { 'chat-a': {} as never },
       cliTranscriptBySessionId: { 'chat-a': { terminalId: 'terminal-a', content: 'transcript' } },
       markdownStoreAttachedBySessionId: { 'chat-a': [] },
+      repositoryReviewBySessionId: { 'chat-a': {} as never },
+      uamAgentsBySessionId: { 'chat-a': [] },
     })
 
     useAppStore.getState().deleteSession('chat-a')
@@ -3307,6 +3588,57 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(Object.keys(state.acpBindingBySessionId)).toEqual([])
     expect(Object.keys(state.cliTranscriptBySessionId)).toEqual([])
     expect(Object.keys(state.markdownStoreAttachedBySessionId)).toEqual([])
+    expect(Object.keys(state.repositoryReviewBySessionId)).toEqual([])
+    expect(Object.keys(state.uamAgentsBySessionId)).toEqual([])
+  })
+
+  it('retries a remote chat deletion after its runtime begins stopping', async () => {
+    vi.useFakeTimers()
+    const now = new Date()
+    let attempts = 0
+    window.cefQuery = ({ onSuccess, onFailure }) => {
+      attempts += 1
+      if (attempts === 1) {
+        onFailure(409, 'The remote runtime is stopping. Retry deletion after it finishes.')
+        return
+      }
+      onSuccess('{"selectedChatId":null,"deletedChatIds":["chat-a"]}')
+    }
+    useAppStore.setState({
+      sessions: [{ id: 'chat-a', name: 'Remote chat', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now }],
+      activeSessionId: 'chat-a',
+      messages: { 'chat-a': [] },
+    })
+
+    const deletion = useAppStore.getState().deleteSession('chat-a')
+    await vi.runAllTimersAsync()
+
+    await expect(deletion).resolves.toBe(true)
+    expect(attempts).toBe(2)
+    expect(useAppStore.getState().sessions).toEqual([])
+    vi.useRealTimers()
+  })
+
+  it('removes dependent chats returned by the authoritative delete response', async () => {
+    const now = new Date()
+    window.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify({
+      selectedChatId: null,
+      deletedChatIds: ['chat-a', 'chat-dependent'],
+    }))
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'Owner', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-dependent', name: 'Managed transcript', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-keep', name: 'Keep', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-a',
+      messages: { 'chat-a': [], 'chat-dependent': [], 'chat-keep': [] },
+    })
+
+    await expect(useAppStore.getState().deleteSession('chat-a')).resolves.toBe(true)
+
+    expect(useAppStore.getState().sessions.map(({ id }) => id)).toEqual(['chat-keep'])
+    expect(Object.keys(useAppStore.getState().messages)).toEqual(['chat-keep'])
   })
 
   it('keeps a single chat and its keyed state mounted until deletion succeeds', async () => {
@@ -3374,6 +3706,84 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions.map(({ id }) => id)).toEqual(['chat-a', 'chat-b', 'chat-c'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-b')
     consoleSpy.mockRestore()
+  })
+
+  it('preserves a newer session selection when deletion succeeds', async () => {
+    const now = new Date()
+    let finishDelete: () => void = () => { throw new Error('delete request was not sent') }
+    window.cefQuery = ({ request, onSuccess }) => {
+      const action = (JSON.parse(request) as { action: string }).action
+      if (action === 'deleteSessions') {
+        finishDelete = () => onSuccess('{"selectedChatId":"chat-b"}')
+        return
+      }
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'Delete me', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-b', name: 'Backend fallback', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-c', name: 'New selection', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-a',
+    })
+
+    const deletion = useAppStore.getState().deleteSession('chat-a')
+    useAppStore.getState().setActiveSession('chat-c')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-c')
+    finishDelete()
+    await expect(deletion).resolves.toBe(true)
+
+    expect(useAppStore.getState().sessions.map(({ id }) => id)).toEqual(['chat-b', 'chat-c'])
+    expect(useAppStore.getState().activeSessionId).toBe('chat-c')
+  })
+
+  it('does not recreate deleted session state from a late ACP prompt response', async () => {
+    const now = new Date()
+    for (const outcome of ['success', 'failure'] as const) {
+      let finishPrompt: () => void = () => { throw new Error('prompt request was not sent') }
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const action = (JSON.parse(request) as { action: string }).action
+        if (action === 'sendAcpPrompt') {
+          finishPrompt = () => outcome === 'success'
+            ? onSuccess('{}')
+            : onFailure(500, 'late failure')
+        } else if (action === 'deleteSessions') {
+          onSuccess('{"selectedChatId":null}')
+        }
+      }
+      useAppStore.setState({
+        sessions: [{ id: 'chat-late', name: 'Late', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now }],
+        activeSessionId: 'chat-late',
+        messages: { 'chat-late': [] },
+        markdownStoreAttachedBySessionId: { 'chat-late': [] },
+      })
+
+      const sending = useAppStore.getState().sendAcpPrompt('chat-late', 'Do not resurrect')
+      await useAppStore.getState().deleteSession('chat-late')
+      finishPrompt()
+      await expect(sending).resolves.toBe(false)
+      expect(useAppStore.getState().messages).not.toHaveProperty('chat-late')
+      expect(useAppStore.getState().acpBindingBySessionId).not.toHaveProperty('chat-late')
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId).not.toHaveProperty('chat-late')
+      consoleSpy.mockRestore()
+    }
+  })
+
+  it('rejects a deleted backend selection after deletion succeeds', async () => {
+    const now = new Date()
+    window.cefQuery = ({ onSuccess }) => onSuccess('{"selectedChatId":"chat-a"}')
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'Delete me', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+        { id: 'chat-b', name: 'Keep me', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-a',
+    })
+
+    await expect(useAppStore.getState().deleteSession('chat-a')).resolves.toBe(true)
+    expect(useAppStore.getState().activeSessionId).toBe('chat-b')
   })
 
   it('preserves the selection after an unrelated session refresh during rejected delete', async () => {
@@ -3519,6 +3929,45 @@ describe('useAppStore Gemini CLI slice', () => {
       id: 'remote-workspace',
       executionHostId: 'homelab',
     })
+  })
+
+  it('cleans folder chat state when a removal push arrives before delete success', async () => {
+    const now = new Date()
+    const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+    const removedDraftKeys: string[] = []
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { removeItem: (key: string) => removedDraftKeys.push(key) },
+    })
+    useAppStore.setState({
+      folders: [
+        { id: 'default', name: 'General', parentId: null, directory: '/tmp/general', isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now },
+      ],
+      sessions: [
+        { id: 'chat-folder', name: 'Folder chat', viewMode: 'chat', folderId: 'project', createdAt: now, updatedAt: now },
+        { id: 'chat-keep', name: 'Keep', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now },
+      ],
+      activeSessionId: 'chat-folder',
+      messages: { 'chat-folder': [], 'chat-keep': [] },
+    })
+    window.cefQuery = ({ onSuccess }) => {
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.filter((session) => session.id !== 'chat-folder'),
+        activeSessionId: 'chat-keep',
+      }))
+      onSuccess('{}')
+    }
+
+    await expect(useAppStore.getState().deleteFolder('project')).resolves.toBe(true)
+
+    expect(Object.keys(useAppStore.getState().messages)).toEqual(['chat-keep'])
+    expect(removedDraftKeys).toEqual([
+      'uam-chat-composer-draft-v1:chat-folder',
+      'uam-terminal-steer-draft-v1:chat-folder',
+    ])
+    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
   })
 
   it('keeps folder state unchanged when CEF rejects folder delete', async () => {
@@ -4226,6 +4675,7 @@ describe('useAppStore Gemini CLI slice', () => {
   })
 
   it('loads only primary-capable UAM agents for a chat catalog', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {
       requests.push(JSON.parse(request))
@@ -4859,6 +5309,118 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0]).toMatchObject({
       action: 'updateGoalObjective',
       payload: { chatId: 'chat-1', goalId: 'goal-1', objective: 'New objective' },
+    })
+  })
+
+  it('removes a persisted goal locally before its state patch arrives', async () => {
+    const goal = {
+      id: 'goal-1', chatId: 'chat-1', objective: 'Delete me', status: 'complete' as const,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:01.000Z'),
+    }
+    useAppStore.setState({
+      goalsByChatId: { 'chat-1': [goal] },
+      activeGoalIdByChatId: { 'chat-1': null },
+    })
+    ensureTestWindow().cefQuery = ({ onSuccess }) => onSuccess('{}')
+
+    await expect(useAppStore.getState().removeGoal('chat-1', 'goal-1')).resolves.toEqual({ ok: true })
+    expect(useAppStore.getState().goalsByChatId['chat-1']).toEqual([])
+  })
+
+  it('removes a goal when an unrelated state revision arrives first', async () => {
+    const goal = {
+      id: 'goal-1', chatId: 'chat-1', objective: 'Delete me', status: 'complete' as const,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:01.000Z'),
+    }
+    let finishMutation: () => void = () => { throw new Error('goal request was not sent') }
+    ensureTestWindow().cefQuery = ({ onSuccess }) => { finishMutation = () => onSuccess('{}') }
+    useAppStore.setState({
+      lastAppliedStateRevision: 1,
+      goalsByChatId: { 'chat-1': [goal] },
+      activeGoalIdByChatId: { 'chat-1': null },
+    })
+
+    const mutation = useAppStore.getState().removeGoal('chat-1', 'goal-1')
+    useAppStore.setState({ lastAppliedStateRevision: 2 })
+    finishMutation()
+
+    await expect(mutation).resolves.toEqual({ ok: true })
+    expect(useAppStore.getState().goalsByChatId['chat-1']).toEqual([])
+  })
+
+  it('waits for a remote goal stop and deletes the goal from one action', async () => {
+    vi.useFakeTimers()
+    const goal = {
+      id: 'goal-1', chatId: 'chat-1', objective: 'Delete me', status: 'active' as const,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:01.000Z'),
+    }
+    let attempts = 0
+    ensureTestWindow().cefQuery = ({ onSuccess, onFailure }) => {
+      attempts += 1
+      if (attempts === 1) {
+        onFailure(409, 'The remote turn is stopping.')
+        return
+      }
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      goalsByChatId: { 'chat-1': [goal] },
+      activeGoalIdByChatId: { 'chat-1': 'goal-1' },
+    })
+
+    const mutation = useAppStore.getState().removeGoal('chat-1', 'goal-1')
+    await vi.runAllTimersAsync()
+
+    await expect(mutation).resolves.toEqual({ ok: true })
+    expect(attempts).toBe(2)
+    expect(useAppStore.getState().goalsByChatId['chat-1']).toEqual([])
+    vi.useRealTimers()
+  })
+
+  it('reports a remote stop timeout after bounded retries', async () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let attempts = 0
+    ensureTestWindow().cefQuery = ({ onFailure }) => {
+      attempts += 1
+      onFailure(409, 'The remote turn is stopping.')
+    }
+
+    const mutation = useAppStore.getState().removeGoal('chat-1', 'goal-1')
+    await vi.runAllTimersAsync()
+
+    await expect(mutation).resolves.toEqual({ ok: false, error: 'The remote stop timed out.' })
+    expect(attempts).toBe(120)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalledWith('[CEF] Error: The remote stop timed out.')
+    vi.useRealTimers()
+  })
+
+  it('does not overwrite a newer goal patch when an older mutation response arrives', async () => {
+    const goal = {
+      id: 'goal-1', chatId: 'chat-1', objective: 'Keep current state', status: 'active' as const,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'), updatedAt: new Date('2026-01-01T00:00:01.000Z'),
+    }
+    let finishMutation: () => void = () => { throw new Error('goal request was not sent') }
+    ensureTestWindow().cefQuery = ({ onSuccess }) => { finishMutation = () => onSuccess('{}') }
+    useAppStore.setState({
+      lastAppliedStateRevision: 1,
+      goalsByChatId: { 'chat-1': [goal] },
+      activeGoalIdByChatId: { 'chat-1': 'goal-1' },
+    })
+
+    const mutation = useAppStore.getState().updateGoalStatus('chat-1', 'goal-1', 'paused')
+    useAppStore.setState({
+      lastAppliedStateRevision: 2,
+      goalsByChatId: { 'chat-1': [{ ...goal, status: 'blocked', lastBlocker: 'Newer backend state' }] },
+      activeGoalIdByChatId: { 'chat-1': null },
+    })
+    finishMutation()
+    await expect(mutation).resolves.toEqual({ ok: true })
+
+    expect(useAppStore.getState().goalsByChatId['chat-1'][0]).toMatchObject({
+      status: 'blocked',
+      lastBlocker: 'Newer backend state',
     })
   })
 

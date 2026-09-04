@@ -906,6 +906,8 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-tool-modal__output {
   min-height: 44px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
   overflow-wrap: anywhere;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1240,7 +1242,8 @@ summary,
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  border: 1.5px solid var(--blue);
+  border: 1.5px solid color-mix(in srgb, var(--text-3) 45%, transparent);
+  border-top-color: var(--text);
 }
 
 .session-status--idle > span {

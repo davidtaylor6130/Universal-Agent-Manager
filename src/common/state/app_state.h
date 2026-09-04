@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -90,6 +91,7 @@ namespace uam
 		std::string kind;
 		std::string status;
 		std::string content;
+		std::string args_json;
 		std::string permission_review_decision;
 		std::string permission_review_reason;
 		bool is_sub_agent = false;
@@ -291,27 +293,6 @@ namespace uam
 		std::vector<AcpUserInputQuestionState> questions;
 	};
 
-	struct AcpQueuedUserPromptState
-	{
-		std::string text;
-		std::string uam_agent_id = "build";
-		std::string uam_agent_definition_hash;
-		std::string uam_agent_definition_snapshot;
-		std::string uam_agent_instructions;
-		std::vector<std::string> uam_agent_skills;
-		std::vector<std::string> uam_agent_delegates;
-		std::string uam_agent_workspace_access = "write";
-		std::string uam_agent_execution_capability = "uam-prompt-injected";
-		std::vector<std::string> markdown_store_files;
-		std::vector<std::string> markdown_store_prompt_blocks;
-		std::vector<MessageAttachment> attachments;
-		bool append_user_message = true;
-		bool goal_mode = false;
-		std::string goal_id;
-		bool computer_use_mode = false;
-		bool priority_steer = false;
-	};
-
 	struct PendingModelDiscoveryRetry
 	{
 		std::string chat_id;
@@ -357,6 +338,7 @@ namespace uam
 		bool mcp_sse_supported = false;
 		bool processing = false;
 		bool recovering_remote_turn = false;
+		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;
 		bool waiting_for_user_input = false;
 		bool cancel_requested = false;
@@ -392,6 +374,11 @@ namespace uam
 		std::string managed_agent_run_id;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
+		bool managed_cancellation_pending = false;
+		bool remote_stop_pending = false;
+		bool remote_stop_unconfirmed = false;
+		bool restart_marker_save_pending = false;
+		bool restart_after_remote_stop_cleanup = false;
 		int last_settled_turn_serial = 0;
 		std::string last_turn_outcome;
 		std::string last_turn_error;
@@ -427,12 +414,24 @@ namespace uam
 		bool acp_resume_fallback_attempted = false;
 		std::string stdout_buffer;
 		std::string stderr_buffer;
+		std::string remote_output_delivery_token;
+		int remote_runner_protocol_version = 0;
+		std::string pending_remote_input_receipt_id;
+		std::string pending_remote_output_ack_line;
+		std::uintmax_t pending_remote_stdout_cursor = 0;
+		std::uintmax_t pending_remote_stderr_cursor = 0;
+		std::uintmax_t remote_consumed_stderr_cursor = 0;
+		std::string pending_remote_source_exit_ack_line;
+		bool remote_source_exit_reported = false;
+		int remote_source_exit_code = -1;
 		bool stdout_poll_pending = false;
 		bool stderr_poll_pending = false;
 		std::string recent_stderr;
 		std::string last_error;
 		bool has_last_exit_code = false;
 		int last_exit_code = 0;
+		bool process_exit_observed = false;
+		int observed_process_exit_code = -1;
 		std::string last_process_id;
 		std::vector<std::string> assistant_replay_prefixes;
 		std::vector<AcpReplayUpdateState> load_history_replay_updates;
@@ -482,6 +481,20 @@ namespace uam
 		double last_runtime_activity_time_s = 0.0;
 		bool wait_is_stale = false;
 		std::string wait_stale_reason;
+	};
+
+	struct PendingAcpRemoteStop : public platform::StdioProcessPlatformFields
+	{
+		std::string chat_id;
+		double deadline_time_s = 0.0;
+		bool recoverable_turn = false;
+		bool restart_after_stop = false;
+	};
+
+	struct AsyncAcpProcessStopTask
+	{
+		std::shared_ptr<std::atomic<bool>> finished;
+		std::unique_ptr<std::jthread> worker;
 	};
 
 	/// <summary>
@@ -693,6 +706,8 @@ namespace uam
 		std::string status_line;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
+		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
+		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;

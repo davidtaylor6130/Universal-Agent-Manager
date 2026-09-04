@@ -21,6 +21,20 @@ export const pushFlushTimers: { cliTranscript: number | null; streamToken: numbe
   streamToken: null,
 }
 
+export function discardPendingPushesForChats(chatIds: Iterable<string>): void {
+  for (const chatId of chatIds) {
+    pendingCliTranscriptChunksBySessionId.delete(chatId)
+    pendingStreamTokensByChatId.delete(chatId)
+    pendingModelByChatId.delete(chatId)
+    pendingViewModeBySessionId.delete(chatId)
+  }
+}
+
+export function discardPendingTranscriptPushesForChat(chatId: string): void {
+  pendingCliTranscriptChunksBySessionId.delete(chatId)
+  pendingStreamTokensByChatId.delete(chatId)
+}
+
 export function resetPushBuffersForTests(): void {
   pendingRequestIdsByKey.clear()
   pendingModelByChatId.clear()

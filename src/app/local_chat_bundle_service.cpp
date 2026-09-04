@@ -512,6 +512,12 @@ namespace uam
 		{
 			chat.native_session_id.clear();
 			chat.execution_host_id = "local";
+			chat.remote_turn_reconnect_pending = false;
+			chat.remote_stop_cleanup_pending = false;
+			chat.remote_restart_pending = false;
+			chat.remote_process_control_token.clear();
+			chat.remote_delivered_stdout_cursor = 0;
+			chat.remote_delivered_stderr_cursor = 0;
 			chat.folder_id.clear();
 			chat.linked_files.clear();
 			chat.workspace_directory.clear();

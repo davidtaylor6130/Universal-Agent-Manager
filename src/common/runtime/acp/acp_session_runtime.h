@@ -25,7 +25,10 @@ bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& 
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
-bool CancelAcpTurn(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
+bool CancelAcpTurn(AppState& app, const std::string& chat_id,
+                   std::string* error_out = nullptr, bool update_goal_state = true,
+                   bool preserve_queued_prompts = false);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 bool StopAcpSession(AppState& app, const std::string& chat_id);
@@ -52,8 +55,14 @@ bool ResolveAcpUserInput(AppState& app,
                          std::string* error_out = nullptr);
 
 	bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
+	bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
+	bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
+	void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source,
+	                                platform::StdioProcessPlatformFields& destination);
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process);
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app);
-	void FlushPendingChatSaves(AppState& app);
+	void FlushPendingChatSaves(AppState& app, bool force = false);
+	void FinalizePendingAcpRemoteStopsForExit(AppState& app);
 	void FastStopAcpSessionsForExit(AppState& app);
 
 	std::vector<std::string> BuildAcpLaunchArgvForTests(const ChatSession& chat);
@@ -82,5 +91,8 @@ bool ResolveAcpUserInput(AppState& app,
 	bool ResumeStalledGoalLoopForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 	double AcpReconnectDelaySecondsForTests(int attempt);
 	void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds);
+	void RecordAcpReconnectFailureForTests(AppState& app, AcpSessionState& session,
+	                                       ChatSession& chat, double now_seconds,
+	                                       const std::string& error);
 
 } // namespace uam

@@ -131,7 +131,7 @@ struct PermissionReviewDecision
 };
 std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
-void QueueAcpPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, AcpPendingPermissionState pending);
+void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending);
 void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 bool PollPermissionReviewTasks(AppState& app);
 void StopPermissionReviewTasks(AppState& app, std::string_view chat_id = {}, std::string_view request_id_json = {});
@@ -155,6 +155,7 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session);
+bool FinalizeActiveAcpToolCallsAsFailed(ChatSession& chat, AcpSessionState& session);
 MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry);
 std::vector<MessagePlanEntry> PersistedPlanEntriesFromAcpPlanEntries(const std::vector<AcpPlanEntryState>& entries);
 bool MessagePlanEntriesEqual(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs);
@@ -177,6 +178,7 @@ bool PersistableTurnEvent(const AcpTurnEventState& event);
 bool CanMergeTurnEventWithLastBlock(const AcpTurnEventState& event, const std::vector<MessageBlock>& blocks);
 bool HasMatchingTurnBlock(const std::vector<MessageBlock>& blocks, const AcpTurnEventState& event);
 std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& session);
+void RestoreTurnEventsFromMessageBlocks(AcpSessionState& session, const Message& message);
 bool SyncMessageBlocksFromTurnEvents(Message& message, const AcpSessionState& session);
 Message* CurrentAssistantMessage(ChatSession& chat, const AcpSessionState& session);
 const Message* CurrentAssistantMessage(const ChatSession& chat, const AcpSessionState& session);
@@ -285,9 +287,9 @@ bool UpdateAcpStaleWait(AcpSessionState& session, double now_seconds);
 bool SendInitialize(AcpSessionState& session, std::string* error_out = nullptr);
 void ResetAcpRuntimeState(AcpSessionState& session);
 AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat);
-bool StopAcpProcessForRestart(AcpSessionState& session, const ChatSession& chat);
+bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
@@ -305,10 +307,13 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
                              const std::string& model_id = {}, bool fresh_session = false);
 bool ScheduleTurnCheckpointPreflight(AppState& app, AcpSessionState& session, const ChatSession& chat);
 void ClearGoalReviewState(AcpSessionState& session);
-void FailAcpTurnOrSession(AcpSessionState& session, const std::string& message);
+void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
+	                      const std::string& message);
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 void InvalidateAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat,
                            const std::string& message);
+void RecoverDisconnectedRemoteAcpTransport(AppState& app, AcpSessionState& session,
+                                           ChatSession& chat, const std::string& message);
 
 // ACP response handler helpers
 std::string PendingRequestSummary(const AcpSessionState& session);
@@ -316,6 +321,9 @@ std::string ErrorDataForDiagnostics(const nlohmann::json& error);
 void UpdateAcpModesFromJson(AcpSessionState& session, const nlohmann::json& modes);
 void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& models);
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
+bool ReplayPersistedInteractionResponseIfMatched(
+    AppState& app, AcpSessionState& session, ChatSession& chat,
+    const nlohmann::json& request);
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
 
 } // namespace uam::acp_detail

@@ -129,6 +129,7 @@ namespace
 				return false;
 			}
 			buffered += polled.standard_output;
+			if (!client.AcknowledgeProcessOutput(process_id, polled, &error)) return false;
 			if (const CodexRpcReadResult ready =
 			        TakeCodexRpcResponse(buffered, expected_id, result, error);
 			    ready != CodexRpcReadResult::Waiting)
@@ -1634,8 +1635,8 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory),
-	    host.runner_version);
+	                               host.runner_directory, host.runner_protocol_version),
+	    host.runner_version, host.runner_protocol_version);
 	if (!client.Connect(&result.error)) return result;
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
@@ -1664,6 +1665,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 		}
 		output += polled.standard_output;
 		diagnostic += polled.standard_error;
+		if (!client.AcknowledgeProcessOutput(process_id, polled, &result.error)) break;
 		if (!polled.running)
 		{
 			(void)client.RemoveProcess(process_id);
@@ -1767,8 +1769,8 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory),
-	    host.runner_version);
+	                               host.runner_directory, host.runner_protocol_version),
+	    host.runner_version, host.runner_protocol_version);
 	if (!client.Connect(&discovery.error)) return discovery;
 	for (const bool archived : {false, true})
 	{
@@ -1891,14 +1893,17 @@ ChatHistorySyncService::ParseRemoteCodexTranscript(const nlohmann::json& result)
 			transcript.messages.clear();
 			return transcript;
 		}
+		Message user_message;
+		user_message.role = MessageRole::User;
+		Message assistant_message;
+		assistant_message.role = MessageRole::Assistant;
 		for (const nlohmann::json& item : *items)
 		{
 			if (!item.is_object()) continue;
 			const std::string type = item.value("type", "");
-			Message message;
 			if (type == "userMessage")
 			{
-				message.role = MessageRole::User;
+				std::string text;
 				if (const nlohmann::json* content =
 				        uam::nlohmann_json::FindArrayField(item, "content"))
 				{
@@ -1906,23 +1911,48 @@ ChatHistorySyncService::ParseRemoteCodexTranscript(const nlohmann::json& result)
 					{
 						if (part.is_object() && part.value("type", "") == "text" &&
 						    part.contains("text") && part["text"].is_string())
-							AppendTranscriptText(message.content, part["text"].get<std::string>());
+							AppendTranscriptText(text, part["text"].get<std::string>());
 					}
 				}
-				if (IsCodexSyntheticUserMessage(message.content)) continue;
+				if (!IsCodexSyntheticUserMessage(text)) AppendTranscriptText(user_message.content, text);
 			}
 			else if (type == "agentMessage" && item.contains("text") &&
 			         item["text"].is_string())
 			{
-				message.role = MessageRole::Assistant;
-				message.content = item["text"].get<std::string>();
-				if (!message.content.empty())
-					message.blocks.push_back({"assistant_text", message.content, "", ""});
+				const std::string text = item["text"].get<std::string>();
+				if (!text.empty())
+				{
+					AppendTranscriptText(assistant_message.content, text);
+					assistant_message.blocks.push_back({"assistant_text", text, "", ""});
+				}
 			}
-			else continue;
-			if (uam::strings::IsBlank(message.content)) continue;
-			message.provider = uam::provider_ids::kCodexCli;
-			transcript.messages.push_back(std::move(message));
+			else if ((type == "commandExecution" || type == "fileChange") &&
+			         item.contains("id") && item["id"].is_string())
+			{
+				ToolCall tool;
+				tool.id = item["id"].get<std::string>();
+				tool.name = type == "commandExecution"
+				    ? item.value("command", "Command output")
+				    : "File changes";
+				tool.status = item.value("status", "completed");
+				if (item.contains("aggregatedOutput"))
+				{
+					const nlohmann::json& output = item["aggregatedOutput"];
+					tool.result_text = output.is_string() ? output.get<std::string>() : output.dump();
+				}
+				assistant_message.tool_calls.push_back(std::move(tool));
+				assistant_message.blocks.push_back({"tool_call", "", assistant_message.tool_calls.back().id, ""});
+			}
+		}
+		if (!uam::strings::IsBlank(user_message.content))
+		{
+			user_message.provider = uam::provider_ids::kCodexCli;
+			transcript.messages.push_back(std::move(user_message));
+		}
+		if (!uam::strings::IsBlank(assistant_message.content) || !assistant_message.tool_calls.empty())
+		{
+			assistant_message.provider = uam::provider_ids::kCodexCli;
+			transcript.messages.push_back(std::move(assistant_message));
 		}
 	}
 	transcript.success = true;
@@ -1945,8 +1975,8 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
 	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory),
-	    host.runner_version);
+	                               host.runner_directory, host.runner_protocol_version),
+	    host.runner_version, host.runner_protocol_version);
 	if (!client.Connect(&transcript.error)) return transcript;
 	nlohmann::json read_result;
 	if (!RunRemoteCodexRpc(client, std::filesystem::path(chat.workspace_directory),

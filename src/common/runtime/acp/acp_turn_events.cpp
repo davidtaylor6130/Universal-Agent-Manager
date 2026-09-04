@@ -102,6 +102,61 @@ std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& ses
 	return blocks;
 }
 
+void RestoreTurnEventsFromMessageBlocks(AcpSessionState& session, const Message& message)
+{
+	session.tool_calls.clear();
+	session.tool_calls.reserve(message.tool_calls.size());
+	for (const ToolCall& tool_call : message.tool_calls)
+	{
+		session.tool_calls.push_back({
+		    .id = tool_call.id,
+		    .title = tool_call.name,
+		    .kind = tool_call.name,
+		    .status = tool_call.status,
+		    .content = tool_call.result_text,
+		    .args_json = tool_call.args_json,
+		    .is_sub_agent = tool_call.is_sub_agent,
+		    .sub_agent_id = tool_call.sub_agent_id,
+		    .sub_agent_title = tool_call.sub_agent_title,
+		});
+	}
+	session.turn_events.clear();
+	session.turn_events.reserve(message.blocks.empty()
+	                                ? message.tool_calls.size() + 2
+	                                : message.blocks.size());
+	if (message.blocks.empty())
+	{
+		if (!message.thoughts.empty())
+		{
+			session.turn_events.push_back(
+			    {.type = uam::acp_stream_types::kTurnEventThought,
+			     .text = message.thoughts});
+		}
+		for (const ToolCall& tool_call : message.tool_calls)
+		{
+			session.turn_events.push_back(
+			    {.type = uam::acp_stream_types::kTurnEventToolCall,
+			     .tool_call_id = tool_call.id});
+		}
+		if (!message.content.empty())
+		{
+			session.turn_events.push_back(
+			    {.type = uam::acp_stream_types::kTurnEventAssistantText,
+			     .text = message.content});
+		}
+		return;
+	}
+	for (const MessageBlock& block : message.blocks)
+	{
+		AcpTurnEventState event;
+		event.type = block.type;
+		event.text = block.text;
+		event.tool_call_id = block.tool_call_id;
+		event.request_id_json = block.request_id_json;
+		session.turn_events.push_back(std::move(event));
+	}
+}
+
 bool SyncMessageBlocksFromTurnEvents(Message& message, const AcpSessionState& session)
 {
 	if (session.turn_events.empty())

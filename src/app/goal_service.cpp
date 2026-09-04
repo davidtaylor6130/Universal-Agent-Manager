@@ -1,6 +1,7 @@
 #include "app/goal_service.h"
 
 #include "app/agent_run_scheduler.h"
+#include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -165,47 +166,114 @@ std::string GoalService::ReviewerModelId(const ChatSession& chat, const Goal& go
 	return chat.small_model_mode ? uam::strings::NonEmptyOrFallback(goal.reviewer_model_id, chat.model_id) : chat.model_id;
 }
 
-std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app)
+std::size_t GoalService::PauseActiveGoalsAfterRestart(AppState& app, std::size_t* failed_out)
 {
+	if (failed_out != nullptr) *failed_out = 0;
 	std::size_t paused = 0;
 	for (ChatSession& chat : app.chats)
 	{
 		if (chat.active_goal_id.empty()) continue;
-		if (chat.remote_turn_reconnect_pending && chat.execution_host_id != "local") continue;
-		const auto goal = std::ranges::find_if(chat.goals, [&](const Goal& candidate)
+		const auto active_goal = std::ranges::find_if(chat.goals, [&](const Goal& candidate)
 		{
 			return candidate.id == chat.active_goal_id && candidate.status == GoalStatus::Active;
 		});
-		if (goal == chat.goals.end()) continue;
-		goal->status = GoalStatus::Paused;
-		chat.active_goal_id.clear();
+		if (active_goal == chat.goals.end())
+		{
+			ChatSession normalized_chat = chat;
+			normalized_chat.active_goal_id.clear();
+			normalized_chat.updated_at = uam::time::TimestampNow();
+			if (!ChatRepository::SaveChat(app.data_root, normalized_chat))
+			{
+				if (failed_out != nullptr) ++*failed_out;
+				app.status_line = "Failed to persist cleared stale goal after restart.";
+				continue;
+			}
+			chat = std::move(normalized_chat);
+			MarkDirty(app, chat.id);
+			continue;
+		}
+		if (chat.remote_turn_reconnect_pending && chat.execution_host_id != "local") continue;
+		const bool dependent_turn_reconnecting = std::ranges::any_of(app.chats, [&](const ChatSession& candidate)
+		{
+			return candidate.remote_turn_reconnect_pending && candidate.execution_host_id != "local" &&
+			       uam::strings::TrimmedEquals(candidate.goal_owner_chat_id, chat.id) &&
+			       (candidate.goal_iteration_goal_id.empty() ||
+			        uam::strings::TrimmedEquals(candidate.goal_iteration_goal_id,
+			                                    chat.active_goal_id));
+		});
+		if (dependent_turn_reconnecting) continue;
+		ChatSession paused_chat = chat;
+		auto paused_goal = std::ranges::find_if(paused_chat.goals, [&](const Goal& candidate)
+		{
+			return candidate.id == paused_chat.active_goal_id;
+		});
+		const std::string updated_at = uam::time::TimestampNow();
+		paused_goal->status = GoalStatus::Paused;
+		paused_goal->updated_at = updated_at;
+		paused_chat.active_goal_id.clear();
+		paused_chat.updated_at = updated_at;
+		if (!ChatRepository::SaveChat(app.data_root, paused_chat))
+		{
+			if (failed_out != nullptr) ++*failed_out;
+			app.status_line = "Failed to persist paused goal after restart.";
+			continue;
+		}
+		chat = std::move(paused_chat);
+		MarkDirty(app, chat.id);
 		++paused;
 	}
 	return paused;
 }
 
 bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
-                                 const std::string& goal_id, std::string* error_out)
+                                 const std::string& goal_id, std::string* error_out,
+                                 bool* work_changed_out)
 {
+	if (work_changed_out != nullptr) *work_changed_out = false;
 	const ChatSession* chat = FindChatConst(app, chat_id);
 	if (chat == nullptr || FindGoalById(app, chat_id, goal_id) == nullptr)
 	{
 		if (error_out != nullptr) *error_out = "Goal not found in this chat.";
 		return false;
 	}
-	std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending)
+	const std::size_t removed_pending = std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending)
 	{
 		return pending.owner_chat_id == chat_id && pending.goal_id == goal_id;
 	});
+	if (work_changed_out != nullptr && removed_pending > 0) *work_changed_out = true;
+	bool work_stopped = true;
+	std::string first_error;
+	const auto cancel_turn = [&](const std::string& target_chat_id)
+	{
+		if (work_changed_out != nullptr) *work_changed_out = true;
+		if (!EnsureAcpStopProgress(app, target_chat_id))
+		{
+			work_stopped = false;
+			const AcpSessionState* target_session = FindAcpSessionForChat(app, target_chat_id);
+			if (first_error.empty())
+				first_error = target_session != nullptr && target_session->remote_stop_unconfirmed
+				                  ? "Remote stop could not be confirmed."
+				                  : "The remote turn is stopping.";
+			return;
+		}
+		std::string error;
+		if (!CancelAcpTurn(app, target_chat_id, &error, false))
+		{
+			work_stopped = false;
+			if (first_error.empty()) first_error = std::move(error);
+		}
+	};
 	AcpSessionState* root_session = FindAcpSessionForChat(app, chat_id);
 	if (chat->active_goal_id == goal_id && root_session != nullptr &&
-	    AcpSessionHasActiveTurn(*root_session) && !CancelAcpTurn(app, chat_id, error_out)) return false;
+	    (AcpSessionHasActiveTurn(*root_session) || AcpStopInProgress(app, chat_id)))
+		cancel_turn(chat_id);
 
 	std::vector<std::string> iteration_chat_ids;
 	for (const ChatSession& candidate : app.chats)
 	{
-		if (candidate.goal_owner_chat_id == chat_id &&
-		    candidate.goal_iteration_goal_id == goal_id)
+		if (uam::strings::TrimmedEquals(candidate.goal_owner_chat_id, chat_id) &&
+		    (uam::strings::TrimmedEquals(candidate.goal_iteration_goal_id, goal_id) ||
+		     (candidate.goal_iteration_goal_id.empty() && chat->active_goal_id == goal_id)))
 		{
 			iteration_chat_ids.push_back(candidate.id);
 		}
@@ -213,8 +281,10 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 	for (const std::string& iteration_chat_id : iteration_chat_ids)
 	{
 		AcpSessionState* iteration_session = FindAcpSessionForChat(app, iteration_chat_id);
-		if (iteration_session != nullptr && AcpSessionHasActiveTurn(*iteration_session) &&
-		    !CancelAcpTurn(app, iteration_chat_id, error_out)) return false;
+		if (iteration_session != nullptr &&
+		    (AcpSessionHasActiveTurn(*iteration_session) ||
+		     AcpStopInProgress(app, iteration_chat_id)))
+			cancel_turn(iteration_chat_id);
 	}
 
 	std::vector<std::string> roots;
@@ -232,14 +302,23 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 	}
 	for (const std::string& run_id : roots)
 	{
-		if (!AgentRunScheduler::CancelTree(app, run_id, error_out)) return false;
+		if (work_changed_out != nullptr) *work_changed_out = true;
+		std::string error;
+		if (!AgentRunScheduler::CancelTree(app, run_id, &error) && first_error.empty())
+			first_error = std::move(error);
 	}
-	return true;
+	if (!first_error.empty())
+	{
+		app.status_line = first_error;
+		if (error_out != nullptr) *error_out = first_error;
+	}
+	return work_stopped && first_error.empty();
 }
 
 bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
                                    const std::string& goal_id, GoalStatus status)
 {
+	if (status == GoalStatus::Active) return false;
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr) return false;
@@ -259,6 +338,12 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	    chat->active_goal_id == goal_id)
 	{
 		ClearActiveGoal(app, chat->id);
+	}
+	if (status != GoalStatus::Active && chat->goal_iteration_goal_id == goal_id)
+	{
+		chat->goal_iteration_goal_id.clear();
+		chat->goal_iteration_turn_kind.clear();
+		chat->goal_iteration_repair_attempts = 0;
 	}
 
 	MarkDirty(app, chat->id);
@@ -295,8 +380,9 @@ bool GoalService::UpdateGoalObjective(AppState& app, const std::string& chat_id,
 }
 
 bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-                                std::string* error_out)
+                                std::string* error_out, bool* work_changed_out)
 {
+	if (work_changed_out != nullptr) *work_changed_out = false;
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr)
 	{
@@ -328,7 +414,8 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		return false;
 	}
 	if (!chat->active_goal_id.empty() && chat->active_goal_id != goal_id &&
-	    !CancelGoalWork(app, chat_id, chat->active_goal_id, error_out)) return false;
+	    !CancelGoalWork(app, chat_id, chat->active_goal_id, error_out,
+	                    work_changed_out)) return false;
 	chat = FindChatMutable(app, chat_id);
 	matched_goal = FindGoalById(app, chat_id, goal_id);
 	if (chat == nullptr || matched_goal == nullptr) return false;
@@ -487,14 +574,14 @@ std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::s
 }
 
 bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-                             std::string* error_out)
+                             std::string* error_out, bool* work_changed_out)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr) return false;
 	auto it = std::find_if(chat->goals.begin(), chat->goals.end(),
 	                       [&goal_id](const Goal& goal) { return goal.id == goal_id; });
-	if (it == chat->goals.end() || it->status == GoalStatus::Complete) return false;
-	if (!CancelGoalWork(app, chat_id, goal_id, error_out)) return false;
+	if (it == chat->goals.end()) return false;
+	if (!CancelGoalWork(app, chat_id, goal_id, error_out, work_changed_out)) return false;
 	chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr) return false;
 	it = std::find_if(chat->goals.begin(), chat->goals.end(),
@@ -504,6 +591,12 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const st
 	{
 		chat->active_goal_id.clear();
 		chat->updated_at = uam::time::TimestampNow();
+	}
+	if (chat->goal_iteration_goal_id == goal_id)
+	{
+		chat->goal_iteration_goal_id.clear();
+		chat->goal_iteration_turn_kind.clear();
+		chat->goal_iteration_repair_attempts = 0;
 	}
 	chat->goals.erase(it);
 	MarkDirty(app, chat->id);
@@ -538,7 +631,8 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 }
 
 void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
-	                            const std::string& goal_id, const std::string& blocker)
+	                            const std::string& goal_id, const std::string& blocker,
+	                            const std::string& blocker_kind)
 {
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
@@ -548,6 +642,8 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	}
 
 	const std::string normalized_blocker = NormalizeBlocker(blocker);
+	const std::string normalized_kind = uam::strings::Trim(blocker_kind);
+	if (!normalized_kind.empty()) goal->last_blocker_kind = normalized_kind;
 
 	if (goal->last_blocker == normalized_blocker)
 	{

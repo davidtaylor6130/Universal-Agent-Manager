@@ -2,22 +2,27 @@
 #include "common/runtime/acp/acp_claude_message_handlers.h"
 #include "common/runtime/acp/acp_codex_message_handlers.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_update_handler.h"
 
 #include "app/chat_domain_service.h"
 #include "app/goal_service.h"
+#include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/config/settings_normalization.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
+#include "remote/runner_proxy.h"
 
+#include <charconv>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <deque>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -35,6 +40,7 @@ namespace uam::acp_detail
 
 		void ReactivateConfirmedRemoteGoal(AppState& app, const ChatSession& chat)
 		{
+			if (chat.goal_iteration_goal_id.empty()) return;
 			const std::string owner_chat_id = uam::strings::NonEmptyOrFallback(
 			    chat.goal_owner_chat_id, chat.id);
 			ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
@@ -46,7 +52,7 @@ namespace uam::acp_detail
 				if (goal.status != GoalStatus::Blocked ||
 				    !goal.last_blocker.ends_with(" process exited during an active turn."))
 					continue;
-				if (!chat.goal_iteration_goal_id.empty() && goal.id != chat.goal_iteration_goal_id)
+				if (goal.id != chat.goal_iteration_goal_id)
 					continue;
 				if (matched != nullptr) return;
 				matched = &goal;
@@ -61,16 +67,53 @@ namespace uam::acp_detail
 		    AppState& app,
 		    AcpSessionState& session,
 		    ChatSession& chat,
-		    const std::string& message)
+		    const std::string& message,
+		    bool recover_remote_disconnect = false)
 		{
+			const bool remote_helper_owned =
+			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+			    (chat.remote_process_exists || chat.remote_turn_reconnect_pending);
+			if (recover_remote_disconnect && remote_helper_owned)
+			{
+				const bool active_turn = uam::AcpSessionHasActiveTurn(session);
+				if (session.running) QueueAcpProcessStop(app, session);
+				MarkAcpProcessExited(session, &chat, false, 0, active_turn);
+				session.processing = active_turn;
+				session.recovering_remote_turn = active_turn && chat.remote_turn_reconnect_pending;
+				session.recovering_remote_process = true;
+				session.reconnect_pending = true;
+				session.reconnect_not_before_time_s =
+				    GetAppTimeSeconds() + kFatalTransportReconnectDelaySeconds;
+				session.last_error = message;
+				session.lifecycle_state = kAcpLifecycleStarting;
+				AppendAcpDiagnostic(session, "reconnect", "remote_transport_recovery_scheduled",
+				                    "", "", false, 0, message);
+				MarkAcpChatUnseenIfBackground(app, chat);
+				SaveChatQuietly(app, chat);
+				return;
+			}
 			const bool undelivered_prompt = session.prompt_request_id == 0 && !session.queued_prompt.empty();
 			std::string queued_prompt = undelivered_prompt ? session.queued_prompt : std::string{};
 			std::deque<AcpQueuedUserPromptState> queued_prompts = std::move(session.queued_user_prompts);
-			FailAcpTurnOrSession(session, message);
+			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+			FailAcpTurnOrSession(session, &chat, message);
 			bool restart_safe = true;
 			if (session.running)
 			{
-				restart_safe = StopAcpProcessForRestart(session, chat);
+				restart_safe = StopAcpProcessForRestart(app, session, chat);
+			}
+			if (session.restart_marker_save_pending)
+			{
+				session.queued_user_prompts = std::move(queued_prompts);
+				if (undelivered_prompt)
+				{
+					session.queued_prompt = std::move(queued_prompt);
+					session.processing = true;
+				}
+				session.last_error = message;
+				session.lifecycle_state = kAcpLifecycleError;
+				MarkAcpChatUnseenIfBackground(app, chat);
+				return;
 			}
 			session.running = false;
 			ResetAcpRuntimeState(session);
@@ -91,6 +134,7 @@ namespace uam::acp_detail
 				                    "Queued prompts will resume on a fresh structured transport.");
 			}
 			MarkAcpChatUnseenIfBackground(app, chat);
+			SaveChatQuietly(app, chat);
 		}
 
 		bool StopForAcpOutputSafety(
@@ -142,6 +186,73 @@ namespace uam::acp_detail
 			std::size_t lines = 0;
 		};
 
+		struct RemoteOutputMarker
+		{
+			std::string ack_line;
+			std::uintmax_t stdout_cursor = 0;
+			std::uintmax_t stderr_cursor = 0;
+		};
+
+		std::optional<RemoteOutputMarker> ParseRemoteOutputMarker(
+		    const AcpSessionState& session, std::string_view line)
+		{
+			if (session.remote_output_delivery_token.empty()) return std::nullopt;
+			const std::string expected = std::string(uam::remote::kRemoteOutputMarkerPrefix) +
+			                             session.remote_output_delivery_token + " ";
+			if (!line.starts_with(expected)) return std::nullopt;
+			line.remove_prefix(expected.size());
+			const std::size_t separator = line.find(' ');
+			if (separator == std::string_view::npos) return std::nullopt;
+			std::uintmax_t stdout_cursor = 0;
+			std::uintmax_t stderr_cursor = 0;
+			const auto stdout_result = std::from_chars(
+			    line.data(), line.data() + separator, stdout_cursor);
+			const auto stderr_result = std::from_chars(
+			    line.data() + separator + 1, line.data() + line.size(), stderr_cursor);
+			if (stdout_result.ec != std::errc{} ||
+			    stdout_result.ptr != line.data() + separator ||
+			    stderr_result.ec != std::errc{} ||
+			    stderr_result.ptr != line.data() + line.size())
+				return std::nullopt;
+			return RemoteOutputMarker{
+			    .ack_line = std::string(uam::remote::kRemoteOutputAckPrefix) +
+			                session.remote_output_delivery_token + " " +
+			                std::to_string(stdout_cursor) + " " +
+			                std::to_string(stderr_cursor) + "\n",
+			    .stdout_cursor = stdout_cursor,
+			    .stderr_cursor = stderr_cursor,
+			};
+		}
+
+		std::optional<int> ParseRemoteSourceExit(
+		    const AcpSessionState& session, std::string_view line)
+		{
+			if (session.remote_output_delivery_token.empty()) return std::nullopt;
+			const std::string expected = std::string(uam::remote::kRemoteSourceExitPrefix) +
+			                             session.remote_output_delivery_token + " ";
+			if (!line.starts_with(expected)) return std::nullopt;
+			line.remove_prefix(expected.size());
+			int exit_code = -1;
+			const auto parsed = std::from_chars(line.data(), line.data() + line.size(), exit_code);
+			if (parsed.ec != std::errc{} || parsed.ptr != line.data() + line.size())
+				return std::nullopt;
+			return exit_code;
+		}
+
+		std::optional<std::string> ParseRemoteInputReceipt(
+		    const AcpSessionState& session, std::string_view line)
+		{
+			if (session.remote_output_delivery_token.empty()) return std::nullopt;
+			const std::string expected =
+			    std::string(uam::remote::kRemoteInputReceiptPrefix) +
+			    session.remote_output_delivery_token + " ";
+			if (!line.starts_with(expected)) return std::nullopt;
+			line.remove_prefix(expected.size());
+			if (line.empty() || line.find(' ') != std::string_view::npos || line.size() > 256)
+				return std::nullopt;
+			return std::string(line);
+		}
+
 		BufferedStdoutResult ProcessBufferedAcpStdout(
 		    AppState& app,
 		    AcpSessionState& session,
@@ -163,6 +274,34 @@ namespace uam::acp_detail
 				const std::string line = session.stdout_buffer.substr(consumed, newline_pos - consumed);
 				consumed = newline_pos + 1;
 				++result.lines;
+				if (const std::optional<RemoteOutputMarker> marker =
+				        ParseRemoteOutputMarker(session, line))
+				{
+					session.pending_remote_stdout_cursor = marker->stdout_cursor;
+					session.pending_remote_stderr_cursor = marker->stderr_cursor;
+					session.pending_remote_output_ack_line = marker->ack_line;
+					result.changed = true;
+					continue;
+				}
+				if (const std::optional<int> source_exit =
+				        ParseRemoteSourceExit(session, line))
+				{
+					session.remote_source_exit_reported = true;
+					session.remote_source_exit_code = *source_exit;
+					session.pending_remote_source_exit_ack_line =
+					    std::string(uam::remote::kRemoteSourceExitAckPrefix) +
+					    session.remote_output_delivery_token + " " +
+					    std::to_string(*source_exit) + "\n";
+					result.changed = true;
+					continue;
+				}
+				if (const std::optional<std::string> input_receipt =
+				        ParseRemoteInputReceipt(session, line))
+				{
+					session.pending_remote_input_receipt_id = *input_receipt;
+					result.changed = true;
+					continue;
+				}
 				result.changed = ProcessAcpLine(app, session, chat, line, browser) || result.changed;
 				if (!session.running)
 				{
@@ -185,6 +324,15 @@ namespace uam::acp_detail
 	    const std::string& message)
 	{
 		InvalidateAcpTransportImpl(app, session, chat, message);
+	}
+
+	void RecoverDisconnectedRemoteAcpTransport(
+	    AppState& app,
+	    AcpSessionState& session,
+	    ChatSession& chat,
+	    const std::string& message)
+	{
+		InvalidateAcpTransportImpl(app, session, chat, message, true);
 	}
 
 bool AppendAcpStdoutChunk(AcpSessionState& session, std::string_view chunk)
@@ -255,10 +403,19 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 	}
 	if (JsonDiagnosticStringValue(message, "method") == kRemoteAttachedMethod)
 	{
-		if (!session.recovering_remote_turn) return true;
+		if (!session.recovering_remote_turn && !session.recovering_remote_process) return true;
 		AppendAcpDiagnostic(session, "reconnect", "remote_attached", std::string(kRemoteAttachedMethod),
 		                    "", false, 0, "Reattached to the existing remote turn.");
+		if (session.remote_stop_unconfirmed)
+		{
+			session.recovering_remote_turn = false;
+			session.recovering_remote_process = false;
+			(void)uam::StopAcpSession(app, chat.id);
+			return true;
+		}
+		session.recovering_remote_process = false;
 		ReactivateConfirmedRemoteGoal(app, chat);
+		session.reconnect_attempts = 0;
 		return true;
 	}
 
@@ -352,6 +509,29 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		return false;
 	}
 	bool changed = false;
+	if (!session.pending_remote_input_receipt_id.empty() &&
+	    session.pending_remote_input_receipt_id == chat.remote_prompt_delivery_id)
+	{
+		const std::string old_session_id = chat.remote_prompt_delivery_session_id;
+		const std::string old_delivery_id = chat.remote_prompt_delivery_id;
+		const std::string old_payload = chat.remote_prompt_delivery_payload;
+		chat.remote_prompt_delivery_session_id.clear();
+		chat.remote_prompt_delivery_id.clear();
+		chat.remote_prompt_delivery_payload.clear();
+		if (SaveChatQuietly(app, chat))
+		{
+			session.pending_remote_input_receipt_id.clear();
+			changed = true;
+		}
+		else
+		{
+			chat.remote_prompt_delivery_session_id = old_session_id;
+			chat.remote_prompt_delivery_id = old_delivery_id;
+			chat.remote_prompt_delivery_payload = old_payload;
+			app.status_line = "Remote prompt receipt is waiting for a successful local save.";
+			return true;
+		}
+	}
 	session.stdout_poll_pending = false;
 	std::size_t bytes_read = 0;
 	std::size_t lines_processed = 0;
@@ -402,13 +582,78 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 
 		const std::string message = read_error.empty() ? ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stdout.") : ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stdout: " + read_error);
 		AppendAcpDiagnostic(session, "read", "stdout_read_failed", "", "", false, 0, message);
-		InvalidateAcpTransport(app, session, chat, message);
+		RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
 		changed = true;
 		break;
 	}
 	if (bytes_read >= kAcpStdoutBytesPerPoll || lines_processed >= kAcpStdoutLinesPerPoll || PollClock::now() >= deadline)
 	{
 		session.stdout_poll_pending = true;
+	}
+	if (!session.pending_remote_output_ack_line.empty())
+	{
+		// A permission or user-input request is actionable runtime state. Do not ACK
+		// its bytes until the wait is resolved, so a crash forces runner replay.
+		if (session.waiting_for_permission || session.waiting_for_user_input)
+			return true;
+		if (session.remote_consumed_stderr_cursor < session.pending_remote_stderr_cursor)
+		{
+			session.stderr_poll_pending = true;
+			return true;
+		}
+		const std::uintmax_t old_stdout_cursor = chat.remote_delivered_stdout_cursor;
+		const std::uintmax_t old_stderr_cursor = chat.remote_delivered_stderr_cursor;
+		const std::vector<uam::AcpRemoteInteractionResponseState> old_responses =
+		    chat.remote_interaction_responses;
+		chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
+		chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
+		chat.remote_interaction_responses.clear();
+		if (!SaveChatQuietly(app, chat))
+		{
+			chat.remote_delivered_stdout_cursor = old_stdout_cursor;
+			chat.remote_delivered_stderr_cursor = old_stderr_cursor;
+			chat.remote_interaction_responses = old_responses;
+			app.status_line = "Remote output is waiting for a successful local save.";
+			return true;
+		}
+		std::string write_error;
+		if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+		        session, session.pending_remote_output_ack_line.data(),
+		        session.pending_remote_output_ack_line.size(), &write_error))
+		{
+			const std::string message = "Failed to acknowledge persisted remote output: " +
+			    uam::strings::NonEmptyOrFallback(write_error, "unknown transport error");
+			AppendAcpDiagnostic(session, "write", "remote_output_ack_failed", "", "",
+			                    false, 0, message);
+			RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
+			return true;
+		}
+		session.pending_remote_output_ack_line.clear();
+		session.pending_remote_stdout_cursor = 0;
+		session.pending_remote_stderr_cursor = 0;
+		changed = true;
+	}
+	if (!session.pending_remote_source_exit_ack_line.empty())
+	{
+		chat.remote_source_exit_pending = true;
+		chat.remote_source_exit_code = session.remote_source_exit_code;
+		if (!SaveChatQuietly(app, chat))
+		{
+			app.status_line = "Remote completion is waiting for a successful local save.";
+			return true;
+		}
+		std::string write_error;
+		if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+		        session, session.pending_remote_source_exit_ack_line.data(),
+		        session.pending_remote_source_exit_ack_line.size(), &write_error))
+		{
+			RecoverDisconnectedRemoteAcpTransport(app, session, chat,
+			    "Failed to acknowledge persisted remote completion: " +
+			    uam::strings::NonEmptyOrFallback(write_error, "unknown transport error"));
+			return true;
+		}
+		session.pending_remote_source_exit_ack_line.clear();
+		changed = true;
 	}
 	return changed;
 }
@@ -431,6 +676,11 @@ bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 			bytes_read += static_cast<std::size_t>(read_result);
 			++chunks_read;
 			AppendRecentStderr(session, std::string(buffer.data(), static_cast<std::size_t>(read_result)));
+			const std::uintmax_t read_count = static_cast<std::uintmax_t>(read_result);
+			session.remote_consumed_stderr_cursor +=
+			    std::min(read_count,
+			             std::numeric_limits<std::uintmax_t>::max() -
+			                 session.remote_consumed_stderr_cursor);
 			changed = true;
 			continue;
 		}
@@ -443,7 +693,7 @@ bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 
 		const std::string message = read_error.empty() ? ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stderr.") : ("Failed to read " + std::string(RuntimeDisplayName(session)) + " stderr: " + read_error);
 		AppendAcpDiagnostic(session, "read", "stderr_read_failed", "", "", false, 0, message);
-		InvalidateAcpTransport(app, session, chat, message);
+		RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
 		changed = true;
 		break;
 	}
@@ -454,7 +704,9 @@ bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 	return changed;
 }
 
-void MarkAcpProcessExited(AcpSessionState& session, bool has_exit_code, int exit_code)
+void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
+	                      bool has_exit_code, int exit_code,
+	                      bool preserve_active_turn)
 {
 	if (has_exit_code)
 	{
@@ -491,26 +743,29 @@ void MarkAcpProcessExited(AcpSessionState& session, bool has_exit_code, int exit
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;
-	if (active_turn)
+	if (active_turn && !preserve_active_turn)
 	{
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " process exited during an active turn.");
-		FailAcpTurnOrSession(session, message);
+		FailAcpTurnOrSession(session, chat, message);
 	}
-	else
+	else if (!active_turn)
 	{
 		session.lifecycle_state = kAcpLifecycleStopped;
 	}
-	session.processing = false;
+	if (!preserve_active_turn) session.processing = false;
 	session.stdout_poll_pending = false;
 	session.stderr_poll_pending = false;
-	session.prompt_request_id = 0;
-	session.cancel_request_id = 0;
-	session.pending_request_methods.clear();
 	session.stdout_buffer.clear();
 	session.stderr_buffer.clear();
-	session.current_assistant_message_index = -1;
-	session.pending_assistant_thoughts.clear();
-	ResetAcpPendingInteractionState(session);
+	if (!preserve_active_turn)
+	{
+		session.prompt_request_id = 0;
+		session.cancel_request_id = 0;
+		session.pending_request_methods.clear();
+		session.current_assistant_message_index = -1;
+		session.pending_assistant_thoughts.clear();
+		ResetAcpPendingInteractionState(session);
+	}
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 }
 

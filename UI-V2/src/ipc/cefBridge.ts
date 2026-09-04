@@ -53,7 +53,8 @@ export function createRequestId(prefix = 'cef'): string {
  * In production (CEF): delegates to window.cefQuery().
  */
 export async function sendToCEF<T = unknown>(
-  request: CEFRequest
+  request: CEFRequest,
+  logFailures = true,
 ): Promise<CEFResponse<T>> {
   const requestId = request.requestId ?? createRequestId()
   const envelope: CEFRequest = { ...request, requestId }
@@ -81,7 +82,7 @@ export async function sendToCEF<T = unknown>(
           }
         },
         onFailure: (code, message) => {
-          console.error(`[CEF] Error ${code}: ${message}`)
+          if (logFailures) console.error(`[CEF] Error ${code}: ${message}`)
           resolve({ ok: false, error: message, requestId })
         },
       })
@@ -99,4 +100,21 @@ export async function sendToCEF<T = unknown>(
     console.debug('[CEF stub] Response:', mock)
   }
   return mock
+}
+
+export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest): Promise<CEFResponse<T>> {
+  const reportFailure = (failure: CEFResponse<T>) => {
+    console.error(`[CEF] Error: ${failure.error ?? 'Request failed.'}`)
+    return failure
+  }
+  let response: CEFResponse<T> = { ok: false, error: 'The remote stop timed out.' }
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    response = await sendToCEF<T>(request, false)
+    if (response.ok) return response
+    const error = response.error?.toLowerCase() ?? ''
+    if (error.includes('unconfirmed') || error.includes('could not be confirmed')) return reportFailure(response)
+    if (!error.includes('remote') || !error.includes('stopping')) return reportFailure(response)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  return reportFailure({ ...response, error: 'The remote stop timed out.' })
 }

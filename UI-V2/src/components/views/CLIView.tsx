@@ -580,7 +580,7 @@ export function CLIView({ session }: CLIViewProps) {
             aria-label="Terminal steering prompt"
             value={steerDraft}
             onChange={(event) => setSteerDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') void steerTerminal() }}
+            onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) void steerTerminal() }}
             placeholder="Interrupt and send a new instruction"
             className="min-w-0 flex-1 text-xs"
             style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', padding: '7px 9px' }}

@@ -100,8 +100,9 @@ namespace uam
 				    PlatformServicesFactory::Instance().process_service,
 				    uam::remote::SshBridgeArgv(m_host->ssh_alias, m_host->platform,
 				                               m_host->runner_version,
-				                               m_host->runner_directory),
-				    m_host->runner_version);
+				                               m_host->runner_directory,
+				                               m_host->runner_protocol_version),
+				    m_host->runner_version, m_host->runner_protocol_version);
 			}
 
 			bool Ready(std::string* error_out = nullptr)
@@ -160,6 +161,7 @@ namespace uam
 						result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
 						break;
 					}
+					if (!m_client->AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
 					if (!polled.running)
 					{
 						result.ok = true;

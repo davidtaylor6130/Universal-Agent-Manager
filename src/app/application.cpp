@@ -537,8 +537,16 @@ bool Application::InitializeState()
 		m_app.status_line = "Reconnecting " + std::to_string(reconnecting) +
 		                    " remote turn" + (reconnecting == 1 ? "" : "s") + ".";
 	}
-	if (const std::size_t paused_goals = uam::GoalService::PauseActiveGoalsAfterRestart(m_app);
-	    paused_goals > 0)
+	std::size_t failed_goal_pauses = 0;
+	const std::size_t paused_goals =
+	    uam::GoalService::PauseActiveGoalsAfterRestart(m_app, &failed_goal_pauses);
+	if (failed_goal_pauses > 0)
+	{
+		m_app.status_line = "Failed to persist " + std::to_string(failed_goal_pauses) +
+		                    " active goal" + (failed_goal_pauses == 1 ? "" : "s") +
+		                    " after the manager restarted.";
+	}
+	else if (paused_goals > 0)
 	{
 		m_app.status_line = "Paused " + std::to_string(paused_goals) +
 		                    " active goal" + (paused_goals == 1 ? "" : "s") +
@@ -662,6 +670,8 @@ void Application::Shutdown()
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
 		PersistenceCoordinator().SaveSettings(m_app);
+		uam::FinalizePendingAcpRemoteStopsForExit(m_app);
+		uam::FlushPendingChatSaves(m_app, true);
 	}
 
 	for (PendingRuntimeCall& call : m_app.pending_calls)
@@ -682,6 +692,10 @@ void Application::Shutdown()
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	(void)uam::AgentRunScheduler::InterruptForShutdown(m_app);
 	uam::FastStopAcpSessionsForExit(m_app);
+	if (m_settingsLoaded && m_dataRootLock != nullptr)
+	{
+		uam::FlushPendingChatSaves(m_app, true);
+	}
 	uam::UamControlService::Shutdown(m_app);
 	uam::FastStopCliTerminalsForExit(m_app);
 

@@ -57,6 +57,10 @@ function statusLineNotificationId(detail: string): string {
   return `status-line-${detail}`
 }
 
+function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResults'][number]): string {
+  return `provider-update-${result.providerId}-${result.installedVersion}-${result.message}`
+}
+
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
   return `missing-folder-${folder.id}-${folder.name}-${folder.directory}`
 }
@@ -202,11 +206,13 @@ function LeftActivityRail() {
 function NotificationsPanel({
   dismissedNotificationIds,
   remoteNotifications,
+  providerUpdateResults,
   onClose,
   onDismiss,
 }: {
   dismissedNotificationIds: ReadonlySet<string>
   remoteNotifications: RemoteConnectionNotification[]
+  providerUpdateResults: UpdateMonitor['providerUpdateResults']
   onClose: () => void
   onDismiss: (id: string) => void
 }) {
@@ -238,6 +244,11 @@ function NotificationsPanel({
       detail: shellActionNotification,
     }] : []),
     ...remoteNotifications,
+    ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
+      id: providerUpdateNotificationId(result),
+      title: `${result.name} update completed`,
+      detail: result.message || `Installed ${result.installedVersion}.`,
+    })),
     ...missingFolders.map((folder): Notification => ({
       id: missingFolderNotificationId(folder),
       title: `Workspace folder missing: ${folder.name}`,
@@ -482,6 +493,7 @@ export function AppShell() {
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
     ...connectionIssues.map((notification) => notification.id),
     ...connectionRecoveries.map((notification) => notification.id),
+    ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
   ]
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
@@ -521,13 +533,14 @@ export function AppShell() {
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
       ...connectionIssues.map((notification) => notification.id),
       ...connectionRecoveries.map((notification) => notification.id),
+      ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
     ])
     setDismissedNotificationIds((dismissed) => {
       const currentIds = [...dismissed]
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine])
+  }, [connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -663,6 +676,7 @@ export function AppShell() {
         <NotificationsPanel
           dismissedNotificationIds={dismissedNotificationIds}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
+          providerUpdateResults={updateMonitor.providerUpdateResults}
           onClose={() => setAlertsOpen(false)}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {

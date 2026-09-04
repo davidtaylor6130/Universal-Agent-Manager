@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -15,6 +16,7 @@
 namespace uam::execution_hosts
 {
 	inline constexpr std::string_view kLocalHostId = "local";
+	inline constexpr std::size_t kLinuxRunnerSocketPathCapacity = 108;
 
 	inline ExecutionHost LocalHost()
 	{

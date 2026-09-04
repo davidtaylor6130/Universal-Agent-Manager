@@ -1,5 +1,5 @@
 import type { Goal, GoalStatus } from '../../types/goal'
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 
 export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
@@ -13,7 +13,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 		  const trimmedObjective = objective.trim()
 		  if (!trimmedObjective) return { ok: false, error: 'Goal objective is required.' }
 	      if (isCefContext()) {
-	        const response = await sendToCEF<{ goalId: string }>({
+	        const response = await sendWhenRemoteStopSettles<{ goalId: string }>({
 	          action: 'setGoal',
 			  payload: { chatId, objective: trimmedObjective, tokenBudget, executionOwner },
 	          requestId: createRequestId('setGoal'),
@@ -60,13 +60,16 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 	    },
 
 	    updateGoalStatus: async (chatId: string, goalId: string, status: GoalStatus) => {
+	      const goalAtStart = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
 	      if (isCefContext()) {
-        const response = await sendToCEF({
+        const response = await sendWhenRemoteStopSettles({
           action: 'updateGoalStatus',
           payload: { chatId, goalId, status },
           requestId: createRequestId('updateGoalStatus'),
         })
-	        return { ok: response.ok, error: response.error }
+	        if (!response.ok) return { ok: false, error: response.error }
+	        const currentGoal = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
+	        if (currentGoal?.status !== goalAtStart?.status) return { ok: true }
       }
 
       set((state: AppState) => ({
@@ -90,13 +93,16 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 	    updateGoalObjective: async (chatId: string, goalId: string, objective: string) => {
 	      const trimmedObjective = objective.trim()
 	      if (!trimmedObjective) return { ok: false, error: 'Goal objective is required.' }
+	      const goalAtStart = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
 	      if (isCefContext()) {
 	        const response = await sendToCEF({
 	          action: 'updateGoalObjective',
 	          payload: { chatId, goalId, objective: trimmedObjective },
 	          requestId: createRequestId('updateGoalObjective'),
 	        })
-	        return { ok: response.ok, error: response.error }
+	        if (!response.ok) return { ok: false, error: response.error }
+	        const currentGoal = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
+	        if (currentGoal?.objective !== goalAtStart?.objective || currentGoal?.status !== goalAtStart?.status) return { ok: true }
 	      }
 	      const goal = (get().goalsByChatId[chatId] ?? []).find((candidate) => candidate.id === goalId)
 	      if (!goal || goal.status === 'complete' || goal.executionOwner === 'provider') {
@@ -114,14 +120,13 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 	    },
 
 	    removeGoal: async (chatId: string, goalId: string) => {
-		  if ((get().goalsByChatId[chatId] ?? []).some((goal) => goal.id === goalId && goal.status === 'complete')) return { ok: false, error: 'Completed goals cannot be deleted.' }
       if (isCefContext()) {
-        const response = await sendToCEF({
+        const response = await sendWhenRemoteStopSettles({
           action: 'removeGoal',
           payload: { chatId, goalId },
           requestId: createRequestId('removeGoal'),
         })
-	        return { ok: response.ok, error: response.error }
+	        if (!response.ok) return { ok: false, error: response.error }
       }
 
       set((state: AppState) => ({
@@ -138,13 +143,16 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 
 	    resumeGoal: async (chatId: string, goalId: string) => {
 	      if (!goalId) return { ok: false, error: 'Goal id is required.' }
+      const goalAtStart = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
       if (isCefContext()) {
-        const response = await sendToCEF({
+        const response = await sendWhenRemoteStopSettles({
           action: 'resumeGoal',
           payload: { chatId, goalId },
           requestId: createRequestId('resumeGoal'),
         })
-	        return { ok: response.ok, error: response.error }
+	        if (!response.ok) return { ok: false, error: response.error }
+	        const currentGoal = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
+	        if (currentGoal?.status !== goalAtStart?.status) return { ok: true }
       }
 
       set((state: AppState) => {
@@ -171,7 +179,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 	      if (isCefContext()) {
 	        const currentActiveGoalId = get().activeGoalIdByChatId[chatId]
 	        if (!currentActiveGoalId) return { ok: true }
-        const response = await sendToCEF({
+        const response = await sendWhenRemoteStopSettles({
           action: 'setActiveGoal',
           payload: { chatId, goalId: '' },
           requestId: createRequestId('setActiveGoal'),

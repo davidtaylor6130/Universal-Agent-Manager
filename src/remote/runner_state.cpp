@@ -52,6 +52,8 @@ namespace uam::remote
 		inline constexpr auto kInitialIdleDrainDelay = std::chrono::milliseconds(10);
 		inline constexpr auto kMaximumIdleDrainDelay = std::chrono::milliseconds(100);
 		inline constexpr std::size_t kMaxChannelBytes = 1024 * 1024;
+		inline constexpr std::size_t kMaxRememberedInputDeliveries = 64;
+		inline constexpr std::int64_t kMaxTransientLeaseMs = 60000;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
 		inline constexpr std::uintmax_t kMaxSpoolBytesPerStream = 1024ull * 1024ull * 1024ull;
@@ -67,6 +69,36 @@ namespace uam::remote
 #else
 #error "Remote process execution is implemented only on macOS, Windows, and Linux."
 #endif
+		}
+
+		std::int64_t LeaseClockMilliseconds()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(
+			           std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		void RenewLease(RunnerState::Process& process)
+		{
+			if (!process.transient_lease) return;
+			process.lease_deadline_ms.store(
+			    LeaseClockMilliseconds() + process.lease_duration_ms,
+			    std::memory_order_release);
+		}
+
+		void CleanupProcess(const std::shared_ptr<RunnerState::Process>& process)
+		{
+			process->drainer.request_stop();
+			{
+				std::scoped_lock lock(process->mutex);
+				if (!process->exited.load(std::memory_order_acquire))
+					ProcessService().TerminateStdioProcess(process->fields, true);
+				process->exited.store(true, std::memory_order_release);
+			}
+			if (process->drainer.joinable()) process->drainer.join();
+			ProcessService().CloseStdioProcessHandles(process->fields);
+			std::error_code remove_error;
+			std::filesystem::remove(process->stdout_spool, remove_error);
+			std::filesystem::remove(process->stderr_spool, remove_error);
 		}
 
 		bool IsBoundedText(std::string_view value, std::size_t maximum, bool allow_empty = false)
@@ -215,8 +247,8 @@ namespace uam::remote
 			return true;
 		}
 
-		std::string ReadSpool(const std::filesystem::path& path, std::uintmax_t& offset,
-		                      std::string& error)
+		std::string ReadSpool(const std::filesystem::path& path, std::uintmax_t offset,
+		                      std::uintmax_t& end_offset, std::string& error)
 		{
 			std::ifstream stream(path, std::ios::binary);
 			if (!stream)
@@ -228,7 +260,7 @@ namespace uam::remote
 			std::string output(kMaxReadBytesPerStream, '\0');
 			stream.read(output.data(), static_cast<std::streamsize>(output.size()));
 			output.resize(static_cast<std::size_t>(stream.gcount()));
-			offset += output.size();
+			end_offset = offset + output.size();
 			return output;
 		}
 
@@ -244,6 +276,8 @@ namespace uam::remote
 			process.drainer = std::jthread([&process](std::stop_token stop_token)
 			{
 				auto idle_delay = kInitialIdleDrainDelay;
+				bool exit_observed = false;
+				int exit_code = -1;
 				std::ofstream stdout_stream(process.stdout_spool,
 				                            std::ios::binary | std::ios::app);
 				std::ofstream stderr_stream(process.stderr_spool,
@@ -256,18 +290,29 @@ namespace uam::remote
 					process.exited.store(true, std::memory_order_release);
 					return;
 				}
-				while (!stop_token.stop_requested())
-				{
+					while (!stop_token.stop_requested())
+					{
+						if (process.transient_lease &&
+						    LeaseClockMilliseconds() >= process.lease_deadline_ms.load(
+						        std::memory_order_acquire))
+						{
+							std::scoped_lock lock(process.mutex);
+							ProcessService().TerminateStdioProcess(process.fields, true);
+							process.exit_code.store(-1, std::memory_order_release);
+							process.exited.store(true, std::memory_order_release);
+							return;
+						}
+						const bool exit_was_observed = exit_observed;
 					std::string output_error;
 					std::string stdout_bytes;
 					std::string stderr_bytes;
-					bool exited = false;
-					int exit_code = -1;
 					{
 						std::scoped_lock lock(process.mutex);
 						stdout_bytes = ReadAvailable(process, false, output_error);
 						stderr_bytes = ReadAvailable(process, true, output_error);
-						exited = ProcessService().PollStdioProcessExited(process.fields, &exit_code);
+						if (!exit_observed)
+							exit_observed =
+							    ProcessService().PollStdioProcessExited(process.fields, &exit_code);
 					}
 					bool spool_ok = output_error.empty();
 					if (spool_ok)
@@ -286,7 +331,8 @@ namespace uam::remote
 						process.exited.store(true, std::memory_order_release);
 						return;
 					}
-					if (exited)
+					if (exit_observed && exit_was_observed &&
+					    stdout_bytes.empty() && stderr_bytes.empty())
 					{
 						process.exit_code.store(exit_code, std::memory_order_release);
 						process.exited.store(true, std::memory_order_release);
@@ -342,8 +388,40 @@ namespace uam::remote
 			std::filesystem::remove_all(m_spoolDirectory, cleanup_error);
 	}
 
+	bool RunnerState::HasManagedProcesses()
+	{
+		SweepExpiredTransientProcesses();
+		std::scoped_lock lock(m_stateMutex);
+		return !m_processes.empty();
+	}
+
+	void RunnerState::SweepExpiredTransientProcesses()
+	{
+		std::vector<std::shared_ptr<Process>> expired;
+		const std::int64_t now = LeaseClockMilliseconds();
+		{
+			std::scoped_lock lock(m_stateMutex);
+			for (auto iterator = m_processes.begin(); iterator != m_processes.end();)
+			{
+				const std::shared_ptr<Process>& process = iterator->second;
+				if (process->transient_lease &&
+				    now >= process->lease_deadline_ms.load(std::memory_order_acquire))
+				{
+					expired.push_back(process);
+					iterator = m_processes.erase(iterator);
+				}
+				else
+				{
+					++iterator;
+				}
+			}
+		}
+		for (const std::shared_ptr<Process>& process : expired) CleanupProcess(process);
+	}
+
 	nlohmann::json RunnerState::HandleProcessRequest(const nlohmann::json& request)
 	{
+		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
 		if (type == "directory.list")
@@ -603,8 +681,13 @@ namespace uam::remote
 				if (attached && !request.value("attachIfExists", false))
 					return ProcessError(request, "channel_exists",
 					                    "A runner channel already uses this channelId.");
-				m_channels.try_emplace(channel_id);
-				return ProcessSuccess(request, {{"channelId", channel_id}, {"attached", attached}});
+				auto [channel, inserted] = m_channels.try_emplace(channel_id);
+				(void)inserted;
+				return ProcessSuccess(request, {{"channelId", channel_id}, {"attached", attached},
+				    {"remoteToDesktopCursor", channel->second.remote_to_desktop.base_cursor},
+				    {"desktopToRemoteCursor", channel->second.desktop_to_remote.base_cursor},
+				    {"remoteToDesktopWriteSequence", channel->second.remote_to_desktop.write_sequence},
+				    {"desktopToRemoteWriteSequence", channel->second.desktop_to_remote.write_sequence}});
 			}
 			const auto found = m_channels.find(channel_id);
 			if (found == m_channels.end())
@@ -617,7 +700,7 @@ namespace uam::remote
 			if (!request.contains("direction") || !request["direction"].is_string())
 				return ProcessError(request, "invalid_request", "A channel direction is required.");
 			const std::string direction = request["direction"].get<std::string>();
-			std::string* buffer = direction == "remoteToDesktop"
+			ChannelBuffer* buffer = direction == "remoteToDesktop"
 			                          ? &found->second.remote_to_desktop
 			                          : direction == "desktopToRemote"
 			                              ? &found->second.desktop_to_remote
@@ -631,18 +714,76 @@ namespace uam::remote
 				std::string decoded;
 				if (!uam::base64::Decode(request["dataBase64"].get_ref<const std::string&>(), decoded))
 					return ProcessError(request, "invalid_request", "dataBase64 is invalid.");
+				const bool sequenced = request.contains("writeSequence");
+				std::uint64_t write_sequence = 0;
+				std::uint64_t write_digest = uam::hashing::kFnv1a64OffsetBasis;
+				uam::hashing::UpdateFnv1a64(
+				    write_digest, reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
+				if (sequenced)
+				{
+					if (!request["writeSequence"].is_number_unsigned())
+						return ProcessError(request, "invalid_request", "The channel write sequence is invalid.");
+					write_sequence = request["writeSequence"].get<std::uint64_t>();
+					if (write_sequence == buffer->write_sequence)
+					{
+						if (decoded.size() != buffer->write_size || write_digest != buffer->write_digest)
+							return ProcessError(request, "input_conflict", "The channel write sequence was reused with different bytes.");
+						return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
+						                                {"writeSequence", write_sequence}, {"duplicate", true}});
+					}
+					if (write_sequence != buffer->write_sequence + 1)
+						return ProcessError(request, "input_sequence_gap", "The channel write sequence is not contiguous.");
+				}
 				if (decoded.size() > kMaxWriteBytes ||
-				    decoded.size() > kMaxChannelBytes - buffer->size())
+				    decoded.size() > kMaxChannelBytes - buffer->bytes.size())
 					return ProcessError(request, "channel_full", "The channel buffer limit was reached.");
-				buffer->append(decoded);
-				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
+				buffer->bytes.append(decoded);
+				if (sequenced)
+				{
+					buffer->write_sequence = write_sequence;
+					buffer->write_digest = write_digest;
+					buffer->write_size = decoded.size();
+				}
+				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
+				                                {"writeSequence", buffer->write_sequence}});
 			}
 			if (type == "channel.poll")
 			{
-				const std::size_t size = std::min(buffer->size(), kMaxReadBytesPerStream);
-				const std::string bytes = buffer->substr(0, size);
-				buffer->erase(0, size);
-				return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(bytes)}});
+				const bool acknowledged = request.value("acknowledgedOutput", false);
+				std::uintmax_t cursor = buffer->base_cursor;
+				if (acknowledged && request.contains("cursor"))
+				{
+					if (!request["cursor"].is_number_unsigned())
+						return ProcessError(request, "invalid_request", "The channel cursor is invalid.");
+					cursor = request["cursor"].get<std::uintmax_t>();
+					if (cursor < buffer->base_cursor ||
+					    cursor > buffer->base_cursor + buffer->bytes.size())
+						return ProcessError(request, "invalid_request", "The channel cursor is invalid.");
+				}
+				const std::size_t offset = static_cast<std::size_t>(cursor - buffer->base_cursor);
+				const std::size_t size = std::min(buffer->bytes.size() - offset,
+				                                  kMaxReadBytesPerStream);
+				const std::string bytes = buffer->bytes.substr(offset, size);
+				const std::uintmax_t end_cursor = cursor + size;
+				if (!acknowledged)
+				{
+					buffer->bytes.erase(0, offset + size);
+					buffer->base_cursor = end_cursor;
+				}
+				return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(bytes)},
+				                                {"cursor", end_cursor}});
+			}
+			if (type == "channel.ack")
+			{
+				if (!request.contains("cursor") || !request["cursor"].is_number_unsigned())
+					return ProcessError(request, "invalid_request", "The channel cursor is required.");
+				const std::uintmax_t cursor = request["cursor"].get<std::uintmax_t>();
+				if (cursor < buffer->base_cursor ||
+				    cursor > buffer->base_cursor + buffer->bytes.size())
+					return ProcessError(request, "invalid_request", "The channel cursor is invalid.");
+				buffer->bytes.erase(0, static_cast<std::size_t>(cursor - buffer->base_cursor));
+				buffer->base_cursor = cursor;
+				return ProcessSuccess(request, {{"cursor", cursor}});
 			}
 			return ProcessError(request, "unsupported_request", "Unknown runner channel request.");
 		}
@@ -656,8 +797,28 @@ namespace uam::remote
 			if (!ParseStart(request, session_id, working_directory, arguments, environment,
 			                error))
 				return ProcessError(request, "invalid_request", std::move(error));
+			if (!request.contains("controlToken") || !request["controlToken"].is_string() ||
+			    !IsBoundedText(request["controlToken"].get_ref<const std::string&>(), 256) ||
+			    request["controlToken"].get_ref<const std::string&>().empty())
+				return ProcessError(request, "invalid_request",
+				                    "A bounded process control token is required.");
+			const std::string control_token = request["controlToken"].get<std::string>();
+			std::int64_t transient_lease_ms = 0;
+			if (request.contains("transientLeaseMs"))
+			{
+				if (!request["transientLeaseMs"].is_number_integer())
+					return ProcessError(request, "invalid_request",
+					                    "The transient process lease is invalid.");
+				transient_lease_ms = request["transientLeaseMs"].get<std::int64_t>();
+				if (transient_lease_ms <= 0 || transient_lease_ms > kMaxTransientLeaseMs)
+					return ProcessError(request, "invalid_request",
+					                    "The transient process lease is out of range.");
+			}
 			if (const auto existing = m_processes.find(session_id); existing != m_processes.end())
 			{
+				if (existing->second->control_token != control_token)
+					return ProcessError(request, "unauthorized",
+					                    "The remote process control token is invalid.");
 				if (!request.value("attachIfExists", false))
 					return ProcessError(request, "session_exists",
 					                    "A remote process already uses this sessionId.");
@@ -669,15 +830,22 @@ namespace uam::remote
 				if (!process.ready.load(std::memory_order_acquire))
 					return ProcessError(request, "session_starting",
 					                    "The existing remote process is still starting.");
+				std::scoped_lock process_lock(process.mutex);
+				RenewLease(process);
 				const bool exited = process.exited.load(std::memory_order_acquire);
 				return ProcessSuccess(request,
 				                      {{"sessionId", session_id}, {"running", !exited},
-				                       {"attached", true}});
+				                       {"attached", true},
+				                       {"inputSequence", process.input_sequence}});
 			}
 			auto process = std::make_shared<Process>();
 			process->working_directory = working_directory;
 			process->arguments = arguments;
 			process->environment = environment;
+			process->control_token = control_token;
+			process->transient_lease = transient_lease_ms > 0;
+			process->lease_duration_ms = transient_lease_ms;
+			RenewLease(*process);
 			if (m_spoolDirectory.empty())
 				return ProcessError(request, "spool_unavailable",
 				                    "The remote process output spool is unavailable.");
@@ -711,7 +879,8 @@ namespace uam::remote
 			}
 			StartDrainer(*process);
 			process->ready.store(true, std::memory_order_release);
-			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", true}});
+			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", true},
+			                                {"inputSequence", 0}});
 		}
 
 		if (!request.contains("sessionId") || !request["sessionId"].is_string() ||
@@ -724,9 +893,14 @@ namespace uam::remote
 			return ProcessError(request, "session_not_found", "The remote process does not exist.");
 		const std::shared_ptr<Process> process_pointer = found->second;
 		Process& process = *process_pointer;
+		if (!request.contains("controlToken") || !request["controlToken"].is_string() ||
+		    request["controlToken"].get_ref<const std::string&>() != process.control_token)
+			return ProcessError(request, "unauthorized",
+			                    "The remote process control token is invalid.");
 		if (!process.ready.load(std::memory_order_acquire))
 			return ProcessError(request, "session_starting",
 			                    "The remote process is still starting.");
+		RenewLease(process);
 		if (type == "process.remove")
 		{
 			if (!process.exited.load(std::memory_order_acquire))
@@ -757,11 +931,72 @@ namespace uam::remote
 			if (!uam::base64::Decode(request["dataBase64"].get_ref<const std::string&>(), decoded) ||
 			    decoded.size() > kMaxWriteBytes)
 				return ProcessError(request, "invalid_request", "Process input is invalid or too large.");
+			const bool sequenced = request.contains("inputSequence");
+			const bool delivered = request.contains("deliveryId");
+			std::uint64_t input_sequence = 0;
+			std::uint64_t input_digest = uam::hashing::kFnv1a64OffsetBasis;
+			uam::hashing::UpdateFnv1a64(
+			    input_digest, reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
 			std::string error;
 			std::scoped_lock lock(process.mutex);
+			std::string delivery_id;
+			if (delivered)
+			{
+				if (!request["deliveryId"].is_string() ||
+				    !IsBoundedText(request["deliveryId"].get_ref<const std::string&>(), 128))
+					return ProcessError(request, "invalid_request",
+					                    "The process input delivery id is invalid.");
+				delivery_id = request["deliveryId"].get<std::string>();
+				const auto remembered = process.input_deliveries.find(delivery_id);
+				if (remembered != process.input_deliveries.end())
+				{
+					if (decoded.size() != remembered->second.size ||
+					    input_digest != remembered->second.digest)
+						return ProcessError(request, "input_conflict",
+						                    "The process input delivery id was reused with different bytes.");
+					return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
+					                                {"inputSequence", remembered->second.sequence},
+					                                {"deliveryId", delivery_id}, {"duplicate", true}});
+				}
+			}
+			if (sequenced)
+			{
+				if (!request["inputSequence"].is_number_unsigned())
+					return ProcessError(request, "invalid_request", "Process input sequence is invalid.");
+				input_sequence = request["inputSequence"].get<std::uint64_t>();
+				if (input_sequence == process.input_sequence)
+				{
+					if (decoded.size() != process.input_size || input_digest != process.input_digest)
+						return ProcessError(request, "input_conflict", "Process input sequence was reused with different bytes.");
+					return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
+					                                {"inputSequence", input_sequence}, {"duplicate", true}});
+				}
+				if (input_sequence != process.input_sequence + 1)
+					return ProcessError(request, "input_sequence_gap", "Process input sequence is not contiguous.");
+			}
 			if (!ProcessService().WriteToStdioProcess(process.fields, decoded.data(), decoded.size(), &error))
 				return ProcessError(request, "write_failed", std::move(error));
-			return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
+			if (sequenced)
+			{
+				process.input_sequence = input_sequence;
+				process.input_digest = input_digest;
+				process.input_size = decoded.size();
+			}
+			if (delivered)
+			{
+				process.input_deliveries.emplace(
+				    delivery_id, Process::InputDelivery{input_digest, decoded.size(),
+				                                        process.input_sequence});
+				process.input_delivery_order.push_back(delivery_id);
+				while (process.input_delivery_order.size() > kMaxRememberedInputDeliveries)
+				{
+					process.input_deliveries.erase(process.input_delivery_order.front());
+					process.input_delivery_order.pop_front();
+				}
+			}
+			return ProcessSuccess(request, {{"acceptedBytes", decoded.size()},
+			                                {"inputSequence", process.input_sequence},
+			                                {"deliveryId", delivery_id}});
 		}
 
 		if (type == "process.closeInput")
@@ -784,24 +1019,56 @@ namespace uam::remote
 
 		if (type == "process.poll")
 		{
+			const bool acknowledged_output = request.value("acknowledgedOutput", false);
 			std::string output_error;
 			std::string standard_output;
 			std::string standard_error;
+			std::uintmax_t stdout_cursor = 0;
+			std::uintmax_t stderr_cursor = 0;
+			std::uint64_t input_sequence = 0;
 			bool output_pending = false;
 			{
 				std::scoped_lock lock(process.mutex);
 				if (!process.spool_error.empty()) output_error = process.spool_error;
 				if (output_error.empty())
 				{
-					standard_output = ReadSpool(process.stdout_spool, process.stdout_offset,
-					                            output_error);
-					standard_error = ReadSpool(process.stderr_spool, process.stderr_offset,
-					                           output_error);
+					std::uintmax_t stdout_offset = process.stdout_offset;
+					std::uintmax_t stderr_offset = process.stderr_offset;
+					if (acknowledged_output &&
+					    (request.contains("stdoutCursor") || request.contains("stderrCursor")))
+					{
+						if (!request.contains("stdoutCursor") ||
+						    !request["stdoutCursor"].is_number_unsigned() ||
+						    !request.contains("stderrCursor") ||
+						    !request["stderrCursor"].is_number_unsigned())
+							return ProcessError(request, "invalid_request",
+							                    "Both process output cursors are required.");
+						stdout_offset = request["stdoutCursor"].get<std::uintmax_t>();
+						stderr_offset = request["stderrCursor"].get<std::uintmax_t>();
+						std::error_code stdout_size_error;
+						std::error_code stderr_size_error;
+						const std::uintmax_t stdout_size =
+						    std::filesystem::file_size(process.stdout_spool, stdout_size_error);
+						const std::uintmax_t stderr_size =
+						    std::filesystem::file_size(process.stderr_spool, stderr_size_error);
+						if (stdout_size_error || stderr_size_error || stdout_offset > stdout_size ||
+						    stderr_offset > stderr_size)
+							return ProcessError(request, "invalid_request",
+							                    "Process output resume cursor is invalid.");
+					}
+					standard_output = ReadSpool(process.stdout_spool, stdout_offset,
+					                            stdout_cursor, output_error);
+					standard_error = ReadSpool(process.stderr_spool, stderr_offset,
+					                           stderr_cursor, output_error);
+					if (!acknowledged_output)
+					{
+						process.stdout_offset = stdout_cursor;
+						process.stderr_offset = stderr_cursor;
+					}
 				}
-				output_pending = SpoolHasUnread(process.stdout_spool,
-				                                process.stdout_offset) ||
-				                 SpoolHasUnread(process.stderr_spool,
-				                                process.stderr_offset);
+				output_pending = SpoolHasUnread(process.stdout_spool, stdout_cursor) ||
+				                 SpoolHasUnread(process.stderr_spool, stderr_cursor);
+				input_sequence = process.input_sequence;
 			}
 			if (!output_error.empty())
 				return ProcessError(request, "read_failed", std::move(output_error));
@@ -811,10 +1078,34 @@ namespace uam::remote
 			                      {{"sessionId", session_id},
 			                       {"running", !exited || output_pending},
 			                       {"outputPending", output_pending},
-			                       {"exitCode", exited && !output_pending ? nlohmann::json(exit_code)
-			                                                   : nlohmann::json(nullptr)},
-			                       {"stdoutBase64", uam::base64::Encode(standard_output)},
-			                       {"stderrBase64", uam::base64::Encode(standard_error)}});
+				                       {"exitCode", exited && !output_pending ? nlohmann::json(exit_code)
+				                                                   : nlohmann::json(nullptr)},
+				                       {"stdoutCursor", stdout_cursor},
+				                       {"stderrCursor", stderr_cursor},
+					                       {"inputSequence", input_sequence},
+				                       {"stdoutBase64", uam::base64::Encode(standard_output)},
+				                       {"stderrBase64", uam::base64::Encode(standard_error)}});
+		}
+
+		if (type == "process.ack")
+		{
+			if (!request.contains("stdoutCursor") || !request["stdoutCursor"].is_number_unsigned() ||
+			    !request.contains("stderrCursor") || !request["stderrCursor"].is_number_unsigned())
+				return ProcessError(request, "invalid_request", "Process output cursors are required.");
+			const std::uintmax_t stdout_cursor = request["stdoutCursor"].get<std::uintmax_t>();
+			const std::uintmax_t stderr_cursor = request["stderrCursor"].get<std::uintmax_t>();
+			std::scoped_lock lock(process.mutex);
+			std::error_code stdout_error;
+			std::error_code stderr_error;
+			const std::uintmax_t stdout_size = std::filesystem::file_size(process.stdout_spool, stdout_error);
+			const std::uintmax_t stderr_size = std::filesystem::file_size(process.stderr_spool, stderr_error);
+			if (stdout_error || stderr_error || stdout_cursor > stdout_size ||
+			    stderr_cursor > stderr_size)
+				return ProcessError(request, "invalid_request", "Process output cursor is invalid.");
+			process.stdout_offset = std::max(process.stdout_offset, stdout_cursor);
+			process.stderr_offset = std::max(process.stderr_offset, stderr_cursor);
+			return ProcessSuccess(request, {{"stdoutCursor", stdout_cursor},
+			                                {"stderrCursor", stderr_cursor}});
 		}
 
 		return ProcessError(request, "unsupported_request", "Unknown remote process request.");

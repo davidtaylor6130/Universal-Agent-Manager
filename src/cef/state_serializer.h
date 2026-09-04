@@ -35,6 +35,10 @@ class StateSerializer
 	/// Build the full persisted tool-call detail returned on demand.
 	static std::string ToolCallContentForFrontend(const ToolCall& tool_call);
 
+	/// Return one bounded, UTF-8-safe page of tool-call output.
+	static nlohmann::json ToolCallContentPageForFrontend(std::string_view content,
+	                                                     std::size_t offset);
+
 	/// Serialise a single folder.
 	static nlohmann::json SerializeFolder(const ChatFolder& folder);
 

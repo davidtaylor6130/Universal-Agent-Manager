@@ -63,6 +63,43 @@ struct MessageAttachment
 	bool copied = false;
 };
 
+namespace uam
+{
+	/// <summary>
+	/// A bounded follow-up prompt persisted until the ACP runtime accepts it for delivery.
+	/// </summary>
+	struct AcpQueuedUserPromptState
+	{
+		std::string text;
+		std::string uam_agent_id = "build";
+		std::string uam_agent_definition_hash;
+		std::string uam_agent_definition_snapshot;
+		std::string uam_agent_instructions;
+		std::vector<std::string> uam_agent_skills;
+		std::vector<std::string> uam_agent_delegates;
+		std::string uam_agent_workspace_access = "write";
+		std::string uam_agent_execution_capability = "uam-prompt-injected";
+		std::vector<std::string> markdown_store_files;
+		std::vector<std::string> markdown_store_prompt_blocks;
+		std::vector<MessageAttachment> attachments;
+		bool append_user_message = true;
+		bool goal_mode = false;
+		std::string goal_id;
+		bool computer_use_mode = false;
+		bool priority_steer = false;
+	};
+
+	/// <summary>
+	/// A remote JSON-RPC interaction response retained until the output delivery
+	/// containing its request is durably acknowledged.
+	/// </summary>
+	struct AcpRemoteInteractionResponseState
+	{
+		std::string request_id_json;
+		std::string response_json;
+	};
+}
+
 /// <summary>
 /// One persisted chat message payload.
 /// </summary>
@@ -201,6 +238,33 @@ struct ChatSession
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
 	bool remote_turn_reconnect_pending = false;
+	// Conservatively remains true from remote proxy launch until helper process
+	// removal is confirmed. This is independent of whether a turn is active.
+	bool remote_process_exists = false;
+	// Persisted until a previously requested idle remote stop is confirmed.
+	bool remote_stop_cleanup_pending = false;
+	// Persisted from a stop-then-restart request until the replacement prompt is
+	// durably delivered or the abandoned restart is cleaned up after relaunch.
+	bool remote_restart_pending = false;
+	// Capability required to reattach to or control the helper-owned process.
+	std::string remote_process_control_token;
+	std::uintmax_t remote_delivered_stdout_cursor = 0;
+	std::uintmax_t remote_delivered_stderr_cursor = 0;
+	bool remote_source_exit_pending = false;
+	int remote_source_exit_code = -1;
+	// Stable for the lifetime of a remote provider session so a replacement GUI
+	// bridge can recreate the local side of the provider's existing MCP channel.
+	std::string remote_uam_control_channel_id;
+	// Responses are retained until the output batch containing their requests is
+	// durably acknowledged. One batch can contain multiple interaction requests.
+	std::vector<uam::AcpRemoteInteractionResponseState> remote_interaction_responses;
+	// Protocol-3 input delivery state. The transport owns the wire envelope and
+	// acknowledgement; runtime persists the exact payload and stable delivery id.
+	std::string remote_prompt_delivery_session_id;
+	std::string remote_prompt_delivery_id;
+	std::string remote_prompt_delivery_payload;
+	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;

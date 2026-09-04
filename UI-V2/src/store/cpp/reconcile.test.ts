@@ -74,6 +74,14 @@ describe('reconcileCppMessages attachments', () => {
 })
 
 describe('reconcileCppMessages deferred tool content', () => {
+	it('keeps stable identity for timestamp-less remote messages', () => {
+		const timestampLess = { ...message, createdAt: '' }
+		const first = reconcileCppMessages('chat-1', undefined, [timestampLess])
+		const second = reconcileCppMessages('chat-1', first, [timestampLess])
+		expect(second).toBe(first)
+		expect(second[0].id).toBe(first[0].id)
+	})
+
   it('replaces a tool call when only contentDeferred changes', () => {
     const toolMessage: CppMessage = {
       role: 'assistant',

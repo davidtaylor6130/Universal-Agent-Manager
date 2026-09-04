@@ -96,6 +96,27 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
+  it('updates every installable item from one button', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [
+        ...monitor().updates,
+        { id: 'remote-helper-lab', remoteHostId: 'lab', name: 'Homelab SSH helper', currentVersion: '4.9.0-alpha-10', latestVersion: '4.9.0-alpha-11', url: '', installable: true },
+      ],
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Update everything"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(state.applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0')
+    expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('lab')
+    act(() => root.unmount())
+  })
+
   it('renders accessible icon-only footer actions and their loading state', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)

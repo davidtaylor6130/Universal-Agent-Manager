@@ -25,6 +25,8 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -255,6 +257,36 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string tool_call_id = payload.value("toolCallId", "");
+	std::size_t offset = 0;
+	if (const auto found = payload.find("offset"); found != payload.end())
+	{
+		if (!found->is_number_integer())
+		{
+			cb->Failure(400, "Tool output offset must be a non-negative integer.");
+			return;
+		}
+		std::uint64_t requested = 0;
+		if (found->is_number_unsigned())
+		{
+			requested = found->get<std::uint64_t>();
+		}
+		else
+		{
+			const std::int64_t signed_offset = found->get<std::int64_t>();
+			if (signed_offset < 0)
+			{
+				cb->Failure(400, "Tool output offset must be a non-negative integer.");
+				return;
+			}
+			requested = static_cast<std::uint64_t>(signed_offset);
+		}
+		if (requested > std::numeric_limits<std::size_t>::max())
+		{
+			cb->Failure(400, "Tool output offset is too large.");
+			return;
+		}
+		offset = static_cast<std::size_t>(requested);
+	}
 	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr || tool_call_id.empty())
 	{
@@ -263,6 +295,25 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 			cb->Failure(400, "A tool call id is required.");
 		}
 		return;
+	}
+
+	if (const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id))
+	{
+		const auto active_tool = std::ranges::find_if(
+		    session->tool_calls,
+		    [&](const uam::AcpToolCallState& candidate) { return candidate.id == tool_call_id; });
+		if (active_tool != session->tool_calls.end())
+		{
+			std::string content = active_tool->content;
+			if (!active_tool->permission_review_reason.empty())
+			{
+				if (!content.empty()) content += "\n\n";
+				content += "AI Review (" + active_tool->permission_review_decision + "): " +
+				           active_tool->permission_review_reason;
+			}
+			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(content, offset).dump());
+			return;
+		}
 	}
 
 	std::string hydrate_warning;
@@ -277,7 +328,8 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		const auto tool = std::ranges::find_if(message.tool_calls, [&](const ToolCall& candidate) { return candidate.id == tool_call_id; });
 		if (tool != message.tool_calls.end())
 		{
-			cb->Success(nlohmann::json{{"content", uam::StateSerializer::ToolCallContentForFrontend(*tool)}}.dump());
+			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(
+			    uam::StateSerializer::ToolCallContentForFrontend(*tool), offset).dump());
 			return;
 		}
 	}
@@ -529,6 +581,9 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 		cb->Failure(400, validation_error);
 		return;
 	}
+	std::vector<std::string> chat_ids_before;
+	chat_ids_before.reserve(m_app.chats.size());
+	for (const ChatSession& chat : m_app.chats) chat_ids_before.push_back(chat.id);
 	if (!RemoveChatsByIds(m_app, chat_ids))
 	{
 		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to delete selected chats."));
@@ -537,5 +592,13 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-	cb->Success(nlohmann::json{{"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)}}.dump());
+	nlohmann::json deleted_chat_ids = nlohmann::json::array();
+	for (const std::string& id : chat_ids_before)
+	{
+		if (std::ranges::none_of(m_app.chats, [&id](const ChatSession& chat) { return chat.id == id; }))
+			deleted_chat_ids.push_back(id);
+	}
+	cb->Success(nlohmann::json{
+	    {"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)},
+	    {"deletedChatIds", std::move(deleted_chat_ids)}}.dump());
 }

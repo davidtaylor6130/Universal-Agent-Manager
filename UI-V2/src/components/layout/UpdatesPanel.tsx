@@ -5,6 +5,8 @@ import { Button, IconButton } from '../ui'
 
 export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onClose: () => void }) {
   const [installError, setInstallError] = useState('')
+  const [updatingAll, setUpdatingAll] = useState(false)
+	const installableUpdates = monitor.updates.filter((update) => update.remoteHostId || (update.providerId && update.installable))
   const checked = monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt) : null
   const checkedLabel = checked && !Number.isNaN(checked.getTime())
     ? `Last checked ${checked.toLocaleString()}`
@@ -25,6 +27,31 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{checkedLabel}</div>
         </div>
         <div className="flex items-center gap-1">
+          {installableUpdates.length > 0 && (
+            <Button
+              size="sm"
+              variant="primary"
+              leadingIcon={<Download size={14} aria-hidden />}
+              aria-label="Update everything"
+              loading={updatingAll}
+              disabled={updatingAll || monitor.providerTaskRunning || Boolean(monitor.remoteHelperUpdatingId)}
+              onClick={async () => {
+                setUpdatingAll(true)
+                setInstallError('')
+                const failed: string[] = []
+                for (const update of installableUpdates) {
+                  const updated = update.remoteHostId
+                    ? await monitor.applyRemoteHelperUpdate(update.remoteHostId)
+                    : await monitor.applyCliProviderVersion(update.providerId!, update.latestVersion)
+                  if (!updated) failed.push(update.name)
+                }
+                if (failed.length > 0) setInstallError(`Could not update: ${failed.join(', ')}.`)
+                setUpdatingAll(false)
+              }}
+            >
+              {updatingAll ? 'Updating…' : 'Update everything'}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -52,9 +79,9 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </div>
         )}
 
-        {monitor.providerUpdateResults.length > 0 && (
+        {monitor.providerUpdateResults.some((result) => result.status === 'failed') && (
           <div className="mb-3 grid min-w-0 max-w-full gap-2">
-            {monitor.providerUpdateResults.map((result) => (
+            {monitor.providerUpdateResults.filter((result) => result.status === 'failed').map((result) => (
               <div
                 key={result.providerId}
                 role={result.status === 'failed' ? 'alert' : 'status'}

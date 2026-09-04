@@ -44,8 +44,8 @@ namespace
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory),
-		    host.runner_version);
+		                               host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
 		if (!client.Connect(&result.error)) return result;
 		std::string session_id = "history-" +
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
@@ -78,6 +78,7 @@ namespace
 			}
 			output += polled.standard_output;
 			diagnostic += polled.standard_error;
+			if (!client.AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
 			if (!polled.running)
 			{
 				(void)client.RemoveProcess(session_id);

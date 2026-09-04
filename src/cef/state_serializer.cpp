@@ -299,15 +299,23 @@ namespace uam
 			return result;
 		}
 
-		nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
-		{
-			nlohmann::json tool_json;
-			tool_json["id"] = tool_call.id;
-			tool_json["title"] = tool_call.name;
-			tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.name, "tool");
-			tool_json["status"] = tool_call.status;
-			tool_json["contentDeferred"] = !tool_call.args_json.empty() || !tool_call.result_text.empty();
-			tool_json["isSubAgent"] = tool_call.is_sub_agent;
+	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
+	{
+		constexpr std::size_t kInlineToolContentMaxBytes = 64 * 1024;
+		nlohmann::json tool_json;
+		tool_json["id"] = tool_call.id;
+		tool_json["title"] = tool_call.name;
+		tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.name, "tool");
+		tool_json["status"] = tool_call.status;
+		const std::size_t content_size = tool_call.args_json.size() + tool_call.result_text.size() +
+		                                 (!tool_call.args_json.empty() && !tool_call.result_text.empty()
+		                                      ? std::string_view("Arguments:\n\n\nResult:\n").size()
+		                                      : 0);
+		const bool content_deferred = content_size > kInlineToolContentMaxBytes;
+		tool_json["contentDeferred"] = content_deferred;
+		if (!content_deferred)
+			tool_json["content"] = StateSerializer::ToolCallContentForFrontend(tool_call);
+		tool_json["isSubAgent"] = tool_call.is_sub_agent;
 			tool_json["subAgentId"] = tool_call.sub_agent_id;
 			tool_json["subAgentTitle"] = tool_call.sub_agent_title;
 			return tool_json;
@@ -652,19 +660,23 @@ namespace uam
 
 		nlohmann::json SerializeAcpToolCalls(const std::vector<AcpToolCallState>& tool_calls)
 		{
+			constexpr std::size_t kInlineToolContentMaxBytes = 64 * 1024;
 			nlohmann::json tool_calls_json = JsonArrayWithCapacity(tool_calls.size());
 			for (const AcpToolCallState& tool_call : tool_calls)
 			{
-				tool_calls_json.push_back({
+				nlohmann::json tool_call_json = {
 				    {"id", tool_call.id},
 				    {"title", tool_call.title},
 				    {"kind", tool_call.kind},
 				    {"status", tool_call.status},
-				    {"content", tool_call.content},
+				    {"contentDeferred", tool_call.content.size() > kInlineToolContentMaxBytes},
 				    {"isSubAgent", tool_call.is_sub_agent},
 				    {"subAgentId", tool_call.sub_agent_id},
 				    {"subAgentTitle", tool_call.sub_agent_title},
-				});
+				};
+				if (tool_call.content.size() <= kInlineToolContentMaxBytes)
+					tool_call_json["content"] = tool_call.content;
+				tool_calls_json.push_back(std::move(tool_call_json));
 			}
 			return tool_calls_json;
 		}
@@ -1525,6 +1537,52 @@ namespace uam
 			return tool_call.result_text;
 		}
 		return tool_call.args_json;
+	}
+
+	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(
+	    std::string_view content, std::size_t requested_offset)
+	{
+		constexpr std::size_t kPageMaxBytes = 128 * 1024;
+		const auto is_continuation = [&](std::size_t index)
+		{
+			return index < content.size() &&
+			       (static_cast<unsigned char>(content[index]) & 0xC0U) == 0x80U;
+		};
+		const auto boundary_at_or_after = [&](std::size_t offset)
+		{
+			offset = std::min(offset, content.size());
+			while (is_continuation(offset)) ++offset;
+			return offset;
+		};
+		const auto boundary_at_or_before = [&](std::size_t offset)
+		{
+			offset = std::min(offset, content.size());
+			while (offset > 0 && is_continuation(offset)) --offset;
+			return offset;
+		};
+
+		const std::size_t last_offset = content.size() > kPageMaxBytes
+		                                    ? boundary_at_or_after(content.size() - kPageMaxBytes)
+		                                    : 0;
+		const std::size_t offset = requested_offset > content.size()
+		                               ? last_offset
+		                               : boundary_at_or_before(requested_offset);
+		std::size_t next_offset = std::min(content.size(), offset + kPageMaxBytes);
+		while (next_offset < content.size() && is_continuation(next_offset)) --next_offset;
+		const std::size_t previous_offset = offset > kPageMaxBytes
+		                                        ? boundary_at_or_after(offset - kPageMaxBytes)
+		                                        : 0;
+
+		return {
+		    {"content", std::string(content.substr(offset, next_offset - offset))},
+		    {"offset", offset},
+		    {"nextOffset", next_offset},
+		    {"previousOffset", previous_offset},
+		    {"lastOffset", last_offset},
+		    {"totalBytes", content.size()},
+		    {"hasPrevious", offset > 0},
+		    {"hasMore", next_offset < content.size()},
+		};
 	}
 
 	nlohmann::json StateSerializer::SerializeFolder(const ChatFolder& folder)

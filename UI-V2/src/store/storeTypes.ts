@@ -131,6 +131,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean) => void
+  unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   renameSession: (id: string, name: string) => void

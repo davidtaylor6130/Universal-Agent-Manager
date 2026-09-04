@@ -1,7 +1,7 @@
 import type { Folder, RemoteDirectoryBrowseResult, RemoteDirectoryListing, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
   clearPendingRequest,
@@ -11,6 +11,10 @@ import {
 import type { CppFolder, ShellAction } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
+import { deleteSessionsFromState } from './sessionsSlice'
+import { discardPendingPushesForChats } from '../push/pushBuffers'
+import { removeChatsFromGrid } from '../../utils/chatGridStorage'
+import { removeComposerDrafts } from '../../utils/composerDraftStorage'
 
 let folderCounter = 10
 
@@ -241,43 +245,34 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         if (!deletedFolder) {
           return false
         }
+		const deletedSessionIds = new Set(get().sessions
+		  .filter((session) => session.folderId === id)
+		  .map((session) => session.id))
 
         const requestId = createRequestId('deleteFolder')
-        const response = await sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        const response = await sendWhenRemoteStopSettles({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        if (response.ok) {
+          discardPendingPushesForChats(deletedSessionIds)
+          set((state) => ({
+            ...deleteSessionsFromState(state, deletedSessionIds),
+            folders: state.folders.filter((folder) => folder.id !== id),
+          }))
+          removeChatsFromGrid(deletedSessionIds)
+          removeComposerDrafts(deletedSessionIds)
+        }
         return response.ok
       }
 
-      set((state) => {
-        const deletedSessionIds = new Set(
-          state.sessions.filter((session) => session.folderId === id).map((session) => session.id)
-        )
-        const remainingFolders = state.folders.filter((f) => f.id !== id)
-        const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
-        const messages = { ...state.messages }
-        const cliBindingBySessionId = { ...state.cliBindingBySessionId }
-        const acpBindingBySessionId = { ...state.acpBindingBySessionId }
-        const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
-
-        deletedSessionIds.forEach((sessionId) => {
-          delete messages[sessionId]
-          delete cliBindingBySessionId[sessionId]
-          delete acpBindingBySessionId[sessionId]
-          delete cliTranscriptBySessionId[sessionId]
-        })
-
-        return {
-          folders: remainingFolders,
-          sessions,
-          messages,
-          cliBindingBySessionId,
-          acpBindingBySessionId,
-          cliTranscriptBySessionId,
-          activeSessionId:
-            state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
-              ? (sessions[0]?.id ?? null)
-              : state.activeSessionId,
-        }
-      })
+      const deletedSessionIds = new Set(get().sessions
+        .filter((session) => session.folderId === id)
+        .map((session) => session.id))
+      discardPendingPushesForChats(deletedSessionIds)
+      set((state) => ({
+        ...deleteSessionsFromState(state, deletedSessionIds),
+        folders: state.folders.filter((folder) => folder.id !== id),
+      }))
+      removeChatsFromGrid(deletedSessionIds)
+      removeComposerDrafts(deletedSessionIds)
       return true
     },
 

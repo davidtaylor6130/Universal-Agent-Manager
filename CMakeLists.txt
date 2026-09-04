@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.8.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.8.0")
+project(universal_agent_manager VERSION 4.9.0 LANGUAGES C CXX)
+set(UAM_PRODUCT_VERSION "4.9.0-alpha-12")
 
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
@@ -603,10 +603,10 @@ if(APPLE)
   set(CEF_FRAMEWORK_SRC "${cef_binary_SOURCE_DIR}/Release/Chromium Embedded Framework.framework")
   if(UAM_MACOS_BUNDLE)
     add_custom_command(TARGET universal_agent_manager POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CEF_FRAMEWORK_SRC}"
-        "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Frameworks/Chromium Embedded Framework.framework"
-      COMMENT "Copying CEF framework into .app bundle"
+      COMMAND /bin/sh -c
+        "codesign --verify --strict '$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Frameworks/Chromium Embedded Framework.framework' && cmp -s '${CEF_FRAMEWORK_SRC}/Resources/Info.plist' '$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Frameworks/Chromium Embedded Framework.framework/Resources/Info.plist' || '${CMAKE_COMMAND}' -E copy_directory '${CEF_FRAMEWORK_SRC}' '$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Frameworks/Chromium Embedded Framework.framework'"
+      VERBATIM
+      COMMENT "Ensuring CEF framework is present in .app bundle"
     )
 
     # -----------------------------------------------------------------------
@@ -1034,12 +1034,13 @@ endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND codesign --force --sign -
-      "$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework"
+    COMMAND /bin/sh -c
+      "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign - '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
     COMMAND codesign --force --sign - --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
+    VERBATIM
     COMMENT "Signing and verifying final macOS app bundle"
   )
 endif()
@@ -1186,6 +1187,7 @@ if(UAM_BUILD_TESTS)
       ${cef_binary_SOURCE_DIR}
   )
   if(APPLE)
+    target_sources(uam_core_tests PRIVATE src/remote/runner_service_posix.cpp)
     target_link_libraries(uam_core_tests PRIVATE
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
@@ -1203,6 +1205,7 @@ if(UAM_BUILD_TESTS)
       "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
+    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp)
     target_link_libraries(uam_core_tests PRIVATE
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper

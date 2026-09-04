@@ -61,13 +61,19 @@ namespace uam
 			return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted";
 		}
 
-		void RemoveRuntimeChat(AppState& app, std::string_view chat_id)
+		void EraseRuntimeChat(AppState& app, std::string_view chat_id)
 		{
-			(void)StopAcpSession(app, std::string(chat_id));
 			std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat_id; });
 			std::erase_if(app.chats, [&](const ChatSession& chat) { return chat.id == chat_id; });
 			app.chats_with_unseen_updates.erase(std::string(chat_id));
 			app.resolved_native_sessions_by_chat_id.erase(std::string(chat_id));
+		}
+
+		bool RemoveRuntimeChat(AppState& app, std::string_view chat_id)
+		{
+			if (!StopAcpSession(app, std::string(chat_id))) return false;
+			EraseRuntimeChat(app, chat_id);
+			return true;
 		}
 
 		std::string ResultExcerpt(const ChatSession& chat)
@@ -91,16 +97,19 @@ namespace uam
 		                   std::string diagnostic_code = {}, std::string diagnostic = {})
 		{
 			const std::string now = uam::time::TimestampNow();
-			run.status = std::move(status);
-			run.updated_at = now;
-			if (IsTerminal(run.status))
+			AgentRun updated = run;
+			updated.status = std::move(status);
+			updated.updated_at = now;
+			if (IsTerminal(updated.status))
 			{
-				run.finished_at = now;
-				if (run.result_delivery_id.empty()) run.result_delivery_id = run.id;
+				updated.finished_at = now;
+				if (updated.result_delivery_id.empty()) updated.result_delivery_id = updated.id;
 			}
-			run.diagnostic_code = std::move(diagnostic_code);
-			run.diagnostic = std::move(diagnostic);
-			return AgentRunLedger::Save(app.data_root, run);
+			updated.diagnostic_code = std::move(diagnostic_code);
+			updated.diagnostic = std::move(diagnostic);
+			if (!AgentRunLedger::Save(app.data_root, updated)) return false;
+			run = std::move(updated);
+			return true;
 		}
 
 		bool DeliverRootResult(AppState& app, AgentRun& run)
@@ -171,10 +180,8 @@ namespace uam
 			}
 			if (!PersistStatus(app, run, std::move(status), std::move(diagnostic_code), std::move(diagnostic)))
 			{
-				run.status = "failed";
-				run.diagnostic_code = "persistence_failed";
-				run.diagnostic = "The final agent-run state could not be persisted.";
-				(void)AgentRunLedger::Save(app.data_root, run);
+				app.status_line = "The final agent-run state could not be persisted; UAM will retry.";
+				return;
 			}
 			(void)DeliverRootResult(app, run);
 			app.agent_run_deadline_steady_ms.erase(run.id);
@@ -573,6 +580,13 @@ namespace uam
 		{
 			if (run.status != "running") continue;
 			AcpSessionState* session = FindAcpSessionForChat(app, run.transcript_chat_id);
+			if (session != nullptr && session->managed_cancellation_pending)
+			{
+				if (app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id)) continue;
+				const std::string run_id = run.id;
+				if (AgentRunScheduler::CancelTree(app, run_id)) changed = true;
+				continue;
+			}
 			if (session != nullptr && run.expected_turn_serial > 0 &&
 			    session->last_settled_turn_serial >= run.expected_turn_serial)
 			{
@@ -593,7 +607,8 @@ namespace uam
 				changed = true;
 				continue;
 			}
-			if (session != nullptr && session->managed_launch_attempted && !session->running &&
+			if (session != nullptr && session->managed_launch_attempted &&
+			    !session->managed_cancellation_pending && !session->running &&
 			    !session->processing && !session->reconnect_pending)
 			{
 				RecordProviderCrash(app, run.provider_id, now_epoch_ms);
@@ -725,19 +740,63 @@ namespace uam
 		for (AgentRun& run : app.agent_runs) if (tree.contains(run.id) && !IsTerminal(run.status)) runs.push_back(&run);
 		std::ranges::sort(runs, std::greater{}, &AgentRun::depth);
 		bool success = true;
+		std::string first_error;
 		for (AgentRun* run : runs)
 		{
-			if (!PersistStatus(app, *run, "cancelled", "user_cancelled", "The user cancelled this agent run.")) success = false;
+			AcpSessionState* session = FindAcpSessionForChat(app, run->transcript_chat_id);
+			if (app.pending_chat_save_at_by_chat_id.contains(run->transcript_chat_id))
+			{
+				if (session != nullptr) session->managed_cancellation_pending = true;
+				success = false;
+				if (first_error.empty()) first_error = "The remote stop is saved locally but its recovery marker is still being persisted.";
+				continue;
+			}
+			if (session != nullptr) session->managed_cancellation_pending = false;
+			if (!StopAcpSession(app, run->transcript_chat_id))
+			{
+				session = FindAcpSessionForChat(app, run->transcript_chat_id);
+				if (session != nullptr && !session->running &&
+				    (session->remote_stop_pending ||
+				     app.pending_chat_save_at_by_chat_id.contains(run->transcript_chat_id)))
+				{
+					session->managed_cancellation_pending = true;
+				}
+				success = false;
+				if (first_error.empty())
+					first_error = uam::strings::NonEmptyOrFallback(
+					    app.status_line, "The managed provider could not be stopped safely.");
+				continue;
+			}
+			if (!PersistStatus(app, *run, "cancelled", "user_cancelled", "The user cancelled this agent run."))
+			{
+				session = FindAcpSessionForChat(app, run->transcript_chat_id);
+				if (session != nullptr) session->managed_cancellation_pending = true;
+				success = false;
+				if (first_error.empty())
+					first_error = "One or more cancellation records could not be persisted.";
+				continue;
+			}
 			app.agent_run_deadline_steady_ms.erase(run->id);
-			RemoveRuntimeChat(app, run->transcript_chat_id);
+			EraseRuntimeChat(app, run->transcript_chat_id);
 		}
 		std::erase_if(app.queued_agent_run_ids, [&](const std::string& id) { return tree.contains(id); });
-		if (!success && error_out != nullptr) *error_out = "One or more cancellation records could not be persisted; all provider processes were still stopped.";
+		if (!success && error_out != nullptr) *error_out = std::move(first_error);
 		return success;
 	}
 
 	bool AgentRunScheduler::InterruptForShutdown(AppState& app)
 	{
+		std::vector<std::string> pending_cancellations;
+		for (const AgentRun& run : app.agent_runs)
+		{
+			const AcpSessionState* session = FindAcpSessionForChat(app, run.transcript_chat_id);
+			if (!IsTerminal(run.status) && session != nullptr &&
+			    session->managed_cancellation_pending && !session->remote_stop_pending &&
+			    !app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id))
+				pending_cancellations.push_back(run.id);
+		}
+		for (const std::string& run_id : pending_cancellations)
+			(void)CancelTree(app, run_id);
 		std::vector<std::string> errors;
 		const bool interrupted = AgentRunLedger::MarkNonterminalInterrupted(
 		    app.data_root, &app.agent_runs, "manager_shutdown", &errors);
