@@ -14,11 +14,12 @@ vi.mock('./Sidebar', () => ({
 vi.mock('./MainPanel', () => ({
   MainPanel: () => {
     mainPanelRenderCount.value += 1
-    return <div data-testid="main-panel">Main panel</div>
+    return <div data-testid="main-panel">Main panel<input aria-label="Chat draft" defaultValue=""/></div>
   },
 }))
 
 import { AppShell } from './AppShell'
+import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -163,6 +164,83 @@ describe('AppShell', () => {
     host.remove()
   })
 
+  it('replaces the middle with grouped Settings while retaining chat state and working rails', async () => {
+    useAppStore.setState({
+      setSettingsOpen: vi.fn(open => useAppStore.setState({isSettingsOpen: open})),
+      refreshCustomThemes: vi.fn(async () => true),
+      mcpServers: [],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell/>))
+    const draft = host.querySelector<HTMLInputElement>('[aria-label="Chat draft"]')!
+    draft.value = 'Keep this draft'
+    const sidebar = host.querySelector('[data-testid="sidebar"]')
+    const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
+    act(() => settings.click())
+    expect(host.querySelector<HTMLElement>('[data-testid="chat-region"]')!.hidden).toBe(true)
+    expect(host.querySelector('[aria-label="Settings workspace"]')).toBeTruthy()
+    for (const label of ['Main navigation', 'Tool windows']) {
+      expect(host.querySelector(`[aria-label="${label}"]`)!.closest('[hidden]')).toBeNull()
+    }
+    expect(host.querySelector('[aria-label="Settings pages"]')).toBeTruthy()
+    const collapse = host.querySelector<HTMLButtonElement>('[aria-label="Collapse chat selector"]')!
+    expect(collapse.disabled).toBe(true)
+    act(() => collapse.click())
+    expect(host.querySelector('[aria-label="Settings pages"]')).toBeTruthy()
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false)
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="No new alerts"]')!.click())
+    expect(host.querySelector('[aria-label="Settings workspace"]')).toBeTruthy()
+    expect(host.querySelector('.uam-app')!.getAttribute('data-right-panel-open')).toBe('true')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
+    expect(useAppStore.getState().isSettingsOpen).toBe(false)
+    expect(collapse.disabled).toBe(false)
+    expect(host.querySelector<HTMLElement>('[data-testid="chat-region"]')!.hidden).toBe(false)
+    expect(host.querySelector('[aria-label="Chat draft"]')).toBe(draft)
+    expect(draft.value).toBe('Keep this draft')
+    expect(host.querySelector('[data-testid="sidebar"]')).toBe(sidebar)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('guards the Settings rail toggle and Back with the same unsaved draft confirmation', async () => {
+    const setSettingsOpen = vi.fn((open: boolean) => useAppStore.setState({isSettingsOpen:open}))
+    useAppStore.setState({setSettingsOpen, refreshCustomThemes:vi.fn(async () => true), mcpServers:[]})
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell/>))
+    const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
+    act(() => settings.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+    const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP server configuration"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(editor,'[{"name":"draft"}]')
+      editor.dispatchEvent(new Event('input',{bubbles:true}))
+    })
+    setSettingsOpen.mockClear()
+    act(() => settings.click())
+    expect(setSettingsOpen).not.toHaveBeenCalled()
+    const confirmation = host.querySelector('[aria-label="Discard unsaved MCP changes"]')!
+    expect(confirmation).toBeTruthy()
+    const buttons = confirmation.querySelectorAll<HTMLButtonElement>('button')
+    buttons[buttons.length - 1].focus()
+    const tab = new KeyboardEvent('keydown', {key:'Tab',bubbles:true,cancelable:true})
+    act(() => buttons[buttons.length - 1].dispatchEvent(tab))
+    expect(tab.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(buttons[0])
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Keep editing')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
+    expect(setSettingsOpen).not.toHaveBeenCalled()
+    expect(editor.value).toBe('[{"name":"draft"}]')
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard changes')!.click())
+    expect(setSettingsOpen).toHaveBeenCalledExactlyOnceWith(false)
+    expect(host.querySelector('[aria-label="Settings workspace"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('offers notification-specific actions for missing workspace folders', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/relinked project')
     const renameFolder = vi.fn(async () => true)
@@ -266,7 +344,7 @@ describe('AppShell', () => {
         'remote-chat': { lastError: 'Provider model unavailable.' } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
       },
       cliBindingBySessionId: {
-        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'error', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'Codex app-server process exited during an active turn.' },
+        'remote-chat': { terminalId: 'remote-terminal', boundChatId: 'remote-chat', running: false, lifecycleState: 'stopped', turnState: 'idle', processing: false, readySinceLastSelect: false, active: true, lastError: 'Codex app-server process exited during an active turn.' },
       },
     })
     const host = document.createElement('div')
@@ -852,4 +930,47 @@ describe('AppShell', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('retains real move failures after toast dismissal and allows explicit history dismissal', async () => {
+    vi.useFakeTimers()
+    const originalAdd = useAppStore.getState().addResourceReference
+    useAppStore.setState({
+      updateChecksEnabled: false,
+      resourceCollections: [{ id: 'destination', name: 'Destination', collapsed: false, references: [] }],
+      addResourceReference: vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('Transport closed')),
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<AppShell />))
+      expect(host.querySelector('[aria-label="Dismiss collection notification"]')).toBeNull()
+      await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
+      const toast = host.querySelector('[role="alert"]')!
+      expect(toast.textContent).toContain('Error')
+      expect(toast.textContent).toContain('Could not move "Workspace".')
+      expect(toast.querySelector('time')?.getAttribute('datetime')).toBeTruthy()
+      act(() => (host.querySelector('[aria-label="Dismiss collection notification"]') as HTMLButtonElement).click())
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
+      act(() => vi.advanceTimersByTime(8000))
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(panel.querySelectorAll('time')).toHaveLength(2)
+      expect(panel.textContent).toContain('Transport closed')
+      act(() => useAppStore.setState({ statusLine: 'Another status' }))
+      expect(panel.querySelectorAll('time')).toHaveLength(2)
+      act(() => (panel.querySelector('[aria-label="Dismiss Collection move failed"]') as HTMLButtonElement).click())
+      expect(panel.querySelectorAll('time')).toHaveLength(1)
+      act(() => (panel.querySelector('[aria-label="Close notifications"]') as HTMLButtonElement).click())
+      act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
+      expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ addResourceReference: originalAdd })
+      vi.useRealTimers()
+    }
+  })
+
 })

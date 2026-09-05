@@ -388,6 +388,7 @@ namespace uam
 			message_json["role"] = RoleStr(message.role);
 			message_json["content"] = message.content;
 			message_json["createdAt"] = message.created_at;
+			if (!message.model_id.empty()) message_json["modelId"] = message.model_id;
 			if (message.interrupted) message_json["interrupted"] = true;
 			if (message.priority_steer) message_json["prioritySteer"] = true;
 			if (message.processing_time_ms > 0)
@@ -524,6 +525,7 @@ namespace uam
 				FingerprintHashString(hash, RoleStr(message.role));
 				FingerprintHashString(hash, message.created_at);
 				FingerprintHashString(hash, message.provider);
+				FingerprintHashString(hash, message.model_id);
 				FingerprintHashString(hash, message.content);
 				FingerprintHashString(hash, std::to_string(message.processing_time_ms));
 				FingerprintHashString(hash, message.checkpoint_sha);

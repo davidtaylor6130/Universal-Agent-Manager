@@ -364,7 +364,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           return false
         }
       }
-      set({ shellActions: actions, shellActionNotification: 'Shell action settings saved. Choose Apply to update Finder or Explorer.' })
+      set({ shellActions: actions, shellActionNotification: 'Shell action configuration saved.' })
       return true
     },
 
@@ -735,12 +735,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    closeMemoryLibrary: () => set({
-      memoryLibraryScope: null,
-      memoryLibraryEntries: [],
-      memoryLibraryLoading: false,
-      memoryLibraryError: '',
-    }),
+    closeMemoryLibrary: () => {
+      for (const key of pendingRequestIdsByKey.keys()) {
+        if (key.startsWith('listMemoryEntries:')) pendingRequestIdsByKey.delete(key)
+      }
+      set({memoryLibraryScope: null, memoryLibraryEntries: [], memoryLibraryLoading: false, memoryLibraryError: ''})
+    },
 
     refreshMemoryLibrary: async () => {
       const scope = get().memoryLibraryScope
@@ -816,7 +816,9 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           return false
         }
 
-        return get().refreshMemoryLibrary()
+        // Creation already succeeded; a refresh failure must not invite a duplicate save.
+        await get().refreshMemoryLibrary()
+        return true
       }
 
       const syntheticEntry: MemoryEntry = {

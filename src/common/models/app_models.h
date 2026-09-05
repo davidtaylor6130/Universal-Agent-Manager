@@ -126,6 +126,8 @@ struct Message
 	std::vector<std::string> markdown_store_files;
 	std::vector<std::string> markdown_store_prompt_blocks;
 	std::vector<MessageAttachment> attachments;
+	/// <summary>Runtime model used for this response; absent for legacy or unknown history.</summary>
+	std::string model_id;
 };
 
 /// <summary>

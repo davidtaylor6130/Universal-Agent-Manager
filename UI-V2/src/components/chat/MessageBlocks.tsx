@@ -15,7 +15,8 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Tooltip } from '../ui'
-import { BookOpen, Brain, ChevronRight, LoaderCircle } from 'lucide-react'
+import { BookOpen, Brain, ChevronRight } from 'lucide-react'
+import { ConversationWork } from './ConversationWork'
 import {
   PermissionInlineCard,
   ToolCallModal,
@@ -163,10 +164,6 @@ function formatWorkedDuration(seconds = 0) {
   return `${minutes}m ${remainder}s`
 }
 
-function lastNonEmptyLine(text: string) {
-  return text.split('\n').reverse().find((line) => line.trim())?.trim() ?? ''
-}
-
 export function hasCompactWorkingSummary(message?: Message) {
   if (message?.role !== 'assistant') return false
   const blocks = message.blocks ?? []
@@ -175,7 +172,7 @@ export function hasCompactWorkingSummary(message?: Message) {
       (latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest,
       -1
     )
-    return blocks.some((block, index) =>
+    return Boolean(message.toolCalls?.length) || blocks.some((block, index) =>
       block.type === 'thought' || block.type === 'tool_call' ||
       (block.type === 'assistant_text' && index !== lastText)
     )
@@ -202,91 +199,23 @@ function CompactWorkingSummary({
   prioritySteerText?: string
   prioritySteerAttachments?: Attachment[]
 }) {
-  const [open, setOpen] = useState(active)
-	const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
-	const hasPrioritySteer = Boolean(prioritySteerText?.trim() || prioritySteerAttachments?.length)
-  const toolById = new Map(tools.map((tool) => [tool.id, tool]))
-  const lastToolEvent = events.slice().reverse().find((event) => event.type === 'tool_call')
-  const lastTool = lastToolEvent?.type === 'tool_call' ? toolById.get(lastToolEvent.toolCallId) : undefined
-  const lastTextUpdate = events.slice().reverse().find(
-    (event) => (event.type === 'thought' || event.type === 'assistant_text') && event.text.trim()
-  )
-	const lastUpdate = hasPrioritySteer
-		? prioritySteerText?.trim()
-			? `Steered · ${lastNonEmptyLine(prioritySteerText)}`
-			: 'Steered'
-    : lastTool
-    ? `${lastTool.title || lastTool.id} · ${lastTool.status || 'pending'}`
-    : lastTextUpdate && (lastTextUpdate.type === 'thought' || lastTextUpdate.type === 'assistant_text')
-    ? lastNonEmptyLine(lastTextUpdate.text) || 'Reasoning completed'
-    : tools.length > 0
-      ? `${active ? 'Using' : 'Used'} a tool`
-      : 'Reasoning completed'
-
-  useEffect(() => {
-	if (active && !manuallyCollapsed) setOpen(true)
-	if (!active) {
-	  setOpen(false)
-	  setManuallyCollapsed(false)
-	}
-	}, [active, manuallyCollapsed])
-
+  const hasPrioritySteer = Boolean(prioritySteerText?.trim() || prioritySteerAttachments?.length)
   return (
-    <details
-      data-testid="working-summary"
-      className="uam-working-summary"
-      data-active={active}
-      open={open}
-    >
-      <summary
-        className="uam-working-summary__header"
-        onClick={(event) => {
-          event.preventDefault()
-		  setManuallyCollapsed(active && open)
-		  setOpen(!open)
-        }}
-      >
-        {active
-          ? <LoaderCircle className="uam-working-summary__spinner" size={14} aria-hidden />
-          : <ChevronRight className="uam-working-summary__chevron" size={14} aria-hidden />}
-        <span className="uam-working-summary__label">
-          {active ? 'Working' : `Worked for ${formatWorkedDuration(workedSeconds)}`}
-        </span>
-        <span className="uam-working-summary__last">{lastUpdate}</span>
-      </summary>
-      {open && (
-        <div className="uam-working-summary__content">
-          {events.map((event, index) => {
-            if (event.type === 'assistant_text') {
-              return <MarkdownContent key={`compact-text-${index}`} content={event.text} />
-            }
-            if (event.type === 'thought') {
-              return <ThinkingBlock key={`compact-thought-${index}`} text={event.text} />
-            }
-            if (event.type === 'tool_call') {
-              const tool = toolById.get(event.toolCallId)
-              if (!tool) return null
-              return (
-                <ToolCallInlineRows
-                  key={`compact-tool-${event.toolCallId}-${index}`}
-                  tools={[tool]}
-                  onSelectTool={onSelectTool}
-                  renderSubAgentHistory={renderSubAgentHistory}
-                />
-              )
-            }
-            return null
-          })}
-		  {hasPrioritySteer && (
-			<div data-testid="priority-steer" className="space-y-1 border-t pt-3" style={{ borderColor: 'var(--border-bright)' }}>
-			  <div className="text-xs font-semibold" style={{ color: 'var(--accent)' }}>Steered during this response</div>
-			  {prioritySteerText?.trim() && <MarkdownContent content={prioritySteerText} />}
-              <AttachmentList attachments={prioritySteerAttachments ?? []} />
-            </div>
-          )}
+    <ConversationWork
+      events={events}
+      tools={tools}
+      active={active}
+      duration={formatWorkedDuration(workedSeconds)}
+      onSelectTool={onSelectTool}
+      renderSubAgentHistory={renderSubAgentHistory}
+      prioritySteer={hasPrioritySteer ? (
+        <div data-testid="priority-steer" className="conversation-work__steer">
+          <div className="conversation-work__steer-label">Steered during this response</div>
+          {prioritySteerText?.trim() && <MarkdownContent content={prioritySteerText} />}
+          <AttachmentList attachments={prioritySteerAttachments ?? []} />
         </div>
-      )}
-    </details>
+      ) : undefined}
+    />
   )
 }
 
@@ -573,7 +502,7 @@ export function PersistedMessageBlocksContent({
 
   return (
     <div className="space-y-2">
-      {compactWorkingEvents.length > 0 && (
+      {workingMode === 'compact' && (
         <CompactWorkingSummary
           events={compactWorkingEvents}
           tools={message.toolCalls ?? []}
@@ -866,14 +795,13 @@ export function TurnTimelineContent({
     ? events.filter((event, index) => {
         if (event.type === 'thought' || event.type === 'tool_call') return true
         if (event.type !== 'assistant_text') return false
-		if (active) return true
         return events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
       })
     : []
 
   return (
     <div className="space-y-2">
-      {compactWorkingEvents.length > 0 && (
+      {workingMode === 'compact' && (
         <CompactWorkingSummary
           events={compactWorkingEvents}
           tools={tools}

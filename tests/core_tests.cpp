@@ -6758,6 +6758,30 @@ UAM_TEST(ChatRepositoryPersistsPinnedFlag)
 	UAM_ASSERT(persisted.value("pinned", false));
 }
 
+UAM_TEST(AssistantModelSnapshotSurvivesModelChangesAndPersistence)
+{
+	TempDir temp("uam-model-snapshot");
+	ChatSession chat;
+	chat.id = "model-history";
+	chat.provider_id = "codex-cli";
+	chat.messages_loaded = true;
+	uam::AcpSessionState session;
+	session.provider_id = "codex-cli";
+	session.current_model_id = "model-first";
+	Message& response = uam::acp_detail::EnsureAssistantMessage(chat, session);
+	response.content = "Saved response";
+	UAM_ASSERT_EQ(response.model_id, std::string("model-first"));
+	session.current_model_id = "model-second";
+	UAM_ASSERT_EQ(uam::acp_detail::EnsureAssistantMessage(chat, session).model_id, std::string("model-first"));
+	chat.model_id = "model-second";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->messages.front().model_id, std::string("model-first"));
+	const nlohmann::json state = uam::StateSerializer::SerializeSession(*loaded);
+	UAM_ASSERT_EQ(state["messages"][0].value("modelId", ""), std::string("model-first"));
+}
+
 UAM_TEST(ChatRepositoryRoundTripsGoalAccountingAboveIntMax)
 {
 	TempDir temp("uam-chat-goal-int64");

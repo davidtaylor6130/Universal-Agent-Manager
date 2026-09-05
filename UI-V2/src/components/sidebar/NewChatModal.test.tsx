@@ -41,22 +41,26 @@ describe('NewChatModal', () => {
       document.body.appendChild(host)
       const root = createRoot(host)
       act(() => root.render(<NewChatModal />))
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(false)
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(false)
       act(() => root.unmount())
       host.remove()
     },
   )
 
   it.each(['checking', 'installing', 'known-incompatible'] as const)(
-    'blocks only structured creation for provider readiness %s and keeps terminal creation available',
-    (status) => {
+    'identifies terminal fallback for provider readiness %s',
+    async (status) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      useAppStore.setState({ addSession })
       useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '0.1.0', selectedVersion: '1.0.0', availableVersions: [{ version: '1.0.0', preferred: true }], preferredVersion: '1.0.0', status, message: 'Provider needs attention.', running: status === 'checking' || status === 'installing', lastCommand: '', lastOutput: '' }] } })
       const host = document.createElement('div')
       document.body.appendChild(host)
       const root = createRoot(host)
       act(() => root.render(<NewChatModal />))
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(true)
-      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create terminal chat')?.disabled).toBe(false)
+      expect(host.textContent).toContain('Creates a terminal chat.')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!.click() })
+      expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'cli')
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(false)
       act(() => root.unmount())
       host.remove()
     },
@@ -79,7 +83,7 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
-  it('offers direct provider check and supported-version install actions', async () => {
+  it('directs provider repairs to Settings without running repair actions', async () => {
     const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
     const applyCliProviderVersion = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
@@ -91,10 +95,11 @@ describe('NewChatModal', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    await act(async () => { (Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Install supported version'))?.click(); await Promise.resolve() })
-    expect(applyCliProviderVersion).toHaveBeenCalledWith('gemini-cli', '1.0.0')
-    await act(async () => { (Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Check again'))?.click(); await Promise.resolve() })
-    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
+    expect(host.textContent).toContain('Unsupported version.')
+    expect(host.textContent).toContain('Settings > CLI Version')
+    expect(Array.from(host.querySelectorAll('button')).some((button) => /Install supported version|Check again/.test(button.textContent ?? ''))).toBe(false)
+    expect(applyCliProviderVersion).not.toHaveBeenCalled()
+    expect(refreshCliProviderVersion).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })
@@ -110,8 +115,8 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const structured = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')
-    const terminal = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create terminal chat')
+    const structured = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
+    const terminal = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
     act(() => structured?.click())
     expect(addSession).not.toHaveBeenCalled()
     expect(terminal?.disabled).toBe(true)
@@ -131,9 +136,6 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    act(() => {
-      host.querySelector<HTMLButtonElement>('button[aria-label="Provider"]')?.click()
-    })
     const codex = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
     act(() => codex?.click())
 
@@ -170,7 +172,7 @@ describe('NewChatModal', () => {
     )
     act(() => high?.click())
 
-    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create structured chat')
+    const create = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create')
     act(() => create?.click())
 
 	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high', 'chat')
@@ -187,7 +189,7 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
     expect(create?.disabled).toBe(false)
     act(() => create?.click())
     expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat')
@@ -258,9 +260,7 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
-    const remoteHost = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes('Home lab'))
+    const remoteHost = host.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')
     act(() => remoteHost?.click())
     discoverProviderModels.mockClear()
     const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
@@ -283,7 +283,7 @@ describe('NewChatModal', () => {
 	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
 	  .find((option) => option.textContent?.includes('Remote Only'))?.click())
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create structured chat')
+      .find((button) => button.textContent === 'Create')
     await act(async () => { create?.click(); await Promise.resolve() })
 
 	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
@@ -311,12 +311,10 @@ describe('NewChatModal', () => {
 	  const root = createRoot(host)
 	  await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
-	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-		.find((option) => option.textContent?.includes('Windows PC'))?.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Windows PC"]')?.click())
 	  const input = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
 	  const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-		.find((button) => button.textContent === 'Create structured chat')!
+		.find((button) => button.textContent === 'Create')!
 	  for (const path of ['C:\\work\\project', '\\\\server\\share']) {
 		act(() => {
 		  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, path)
@@ -355,9 +353,7 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Execution host"]')?.click())
-    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes('Homelab'))?.click())
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Homelab"]')?.click())
     expect(listRemoteDirectories).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -435,16 +431,14 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Provider"]')?.click())
-    const codex = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
-      .find((option) => option.textContent?.includes('Codex'))
+    const codex = host.querySelector<HTMLButtonElement>('button[aria-label="Codex"]')
     act(() => codex?.click())
 
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
     const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
     expect(reasoning.textContent).toContain('Low')
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create structured chat')
+      .find((button) => button.textContent === 'Create')
     act(() => create?.click())
 
     expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', '', 'low', 'chat')
@@ -465,7 +459,7 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
 
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create structured chat')!
+      .find((button) => button.textContent === 'Create')!
     act(() => {
       create.click()
       create.click()
@@ -503,12 +497,12 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
 
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create structured chat')!
+      .find((button) => button.textContent === 'Create')!
     act(() => create.click())
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       ;(host.querySelector('button[aria-label="Close new chat"]') as HTMLButtonElement).click()
-      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')?.click()
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Cancel')).toBe(false)
       host.firstElementChild?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
@@ -550,6 +544,7 @@ describe('NewChatModal', () => {
       acpBindingBySessionId: {
         'gemini-existing': {
           sessionId: 'native-gemini',
+          threadId: '',
           providerId: 'gemini-cli',
           protocolKind: 'gemini-acp',
           running: false,
@@ -645,11 +640,138 @@ describe('NewChatModal', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    expect(host.textContent).toContain('A workspace is required')
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create structured chat')?.disabled).toBe(true)
-    const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create workspace')
+    expect(host.textContent).toContain('Choose a workspace.')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(true)
+    const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Choose workspace')
     await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
     expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('remembers host workspaces and provider choices without applying local model defaults remotely', async () => {
+    const addSession = vi.fn().mockResolvedValue(false)
+    const defaults = { modelId: 'reasoning-model', approvalMode: 'default' as const, commandSafetyTier: 'off' as const, memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' }
+    useAppStore.setState({
+      addSession,
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: { 'codex-cli': defaults },
+      executionHosts: [...useAppStore.getState().executionHosts,
+        { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+        { id: 'pc', label: 'Desktop PC', transport: 'ssh', sshAlias: 'pc', runnerStatus: 'ready', runnerVersion: '1', platform: 'windows', architecture: 'x64', lastSeenAt: '' }],
+      folders: [...useAppStore.getState().folders, { id: 'remote', name: 'Remote', parentId: null, directory: '/srv/remote', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+      providerModelCatalogs: [{ providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', currentModelId: 'reasoning-model', modelsLoading: false, modelRefreshError: '', availableModels: [
+        { id: 'reasoning-model', name: 'Reasoning model', description: '', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' },
+        { id: 'plain-model', name: 'Plain model', description: '', supportedReasoningEfforts: [] },
+      ] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />) })
+    const click = (label: string) => act(() => {
+      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label))!
+      button.click()
+    })
+    const setInput = (label: string, value: string) => act(() => {
+      const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(host.querySelector('[aria-label="Codex"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
+    setInput('Chat name', 'Keep my draft')
+    click('Home lab')
+    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Default')
+    click('Folder')
+    click('New remote workspace…')
+    setInput('Remote workspace path', '/srv/custom')
+    click('Desktop PC')
+    click('Home lab')
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.value).toBe('/srv/custom')
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.readOnly).toBe(false)
+    act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
+    expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
+    click('This computer')
+    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Reasoning model')
+    expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
+    click('Model')
+    click('Plain model')
+    expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
+    click('Gemini')
+    click('Codex')
+    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Plain model')
+    await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!.click() })
+    expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps all five providers selectable and honors the saved provider default', () => {
+    const providers = [
+      ['gemini-cli', 'Gemini'], ['codex-cli', 'Codex'], ['opencode-cli', 'OpenCode'], ['claude-cli', 'Claude'], ['copilot-cli', 'Copilot'],
+    ].map(([id, shortName]) => ({ id, name: shortName, shortName, color: '#fff', description: '' }))
+    useAppStore.setState({ providers, defaultNewChatProviderId: 'claude-cli' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    for (const provider of providers) expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${provider.shortName}"]`)?.disabled).toBe(false)
+    expect(host.querySelector('[aria-label="Claude"]')?.getAttribute('aria-pressed')).toBe('true')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('retains the draft and allows retry after a rejected create action', async () => {
+    const addSession = vi.fn().mockRejectedValueOnce(new Error('Connection lost while creating chat.')).mockResolvedValueOnce(false)
+    const setNewChatModalOpen = vi.fn()
+    useAppStore.setState({ addSession, setNewChatModalOpen })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    const name = host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Unsent draft')
+      name.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+    await act(async () => { create.click() })
+    expect(host.textContent).toContain('Connection lost while creating chat.')
+    expect(name.value).toBe('Unsent draft')
+    expect(create.disabled).toBe(false)
+    expect(setNewChatModalOpen).not.toHaveBeenCalled()
+    await act(async () => { create.click() })
+    expect(addSession).toHaveBeenCalledTimes(2)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('rejects invalid remote paths on Enter and blocks incompatible Copilot fallback', async () => {
+    const addSession = vi.fn().mockResolvedValue(false)
+    useAppStore.setState({ addSession,
+      providers: [{ id: 'copilot-cli', name: 'Copilot', shortName: 'Copilot', color: '#fff', description: '' }],
+      defaultNewChatProviderId: 'copilot-cli',
+      cliVersionManager: { providers: [{ providerId: 'copilot-cli', installedVersion: 'old', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'known-incompatible', message: 'Incompatible Copilot version.', running: false, lastCommand: '', lastOutput: '' }] },
+      executionHosts: [...useAppStore.getState().executionHosts, { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+    expect(create().disabled).toBe(true)
+    expect(host.textContent).toContain('Terminal fallback is also unavailable.')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Home lab"]')!.click())
+    const path = host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(path, 'relative')
+      path.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(create().disabled).toBe(true)
+    await act(async () => host.querySelector('[aria-label="Chat name"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(addSession).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -10,9 +10,7 @@ import {
   type EditorFileAssociation,
   type MemoryWorkerBinding,
   type McpServerConfiguration,
-  type AcpBinding,
-  type AcpProviderUsage,
-  type ProviderChatDefaults,
+    type ProviderChatDefaults,
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
 } from '../../store/useAppStore'
@@ -33,12 +31,16 @@ import type { ExecutionHost, Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Download, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Search, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
 import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
-import { ShellActionsSettings } from './ShellActionsSettings'
+import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
+import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
+import { MarkdownStoreModal } from './MarkdownStoreModal'
+import { StatusIndicator } from '../shared/StatusIndicator'
 import {
   DEFAULT_PROVIDER_ID,
   providerCapabilities,
+  providerMetadataForId,
   providerShortName,
 } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
@@ -90,68 +92,6 @@ function runnerDirectoryError(rawValue: string) {
   return ''
 }
 
-function latestProviderUsage(sessions: Session[], providerId: string, bindings: Record<string, AcpBinding>): AcpProviderUsage | null {
-  let tokenUsage: AcpProviderUsage['tokenUsage'] = null
-  let rateLimits: AcpProviderUsage['rateLimits'] = null
-  for (const session of sessions) {
-    if (session.providerId !== providerId) continue
-    const usage = bindings[session.id]?.providerUsage
-    if (usage?.tokenUsage && (!tokenUsage || usage.tokenUsage.updatedAt > tokenUsage.updatedAt)) tokenUsage = usage.tokenUsage
-    if (usage?.rateLimits && (!rateLimits || usage.rateLimits.updatedAt > rateLimits.updatedAt)) rateLimits = usage.rateLimits
-  }
-  return tokenUsage || rateLimits ? { tokenUsage, rateLimits } : null
-}
-
-function ProviderUsageSummary({ providerName, usage }: { providerName: string; usage?: AcpProviderUsage | null }) {
-  const tokenUsage = usage?.tokenUsage
-  const rateLimits = usage?.rateLimits
-  const formatNumber = (value: number) => value.toLocaleString()
-  const rateLimitLine = (label: string, window: NonNullable<AcpProviderUsage['rateLimits']>['primary']) => {
-    if (!window) return null
-    const duration = window.windowDurationMinutes ? ` · ${formatNumber(window.windowDurationMinutes)}-minute window` : ''
-    const reset = window.resetsAt ? ` · resets ${new Date(window.resetsAt * 1000).toLocaleString()}` : ''
-    return <div>{label}: {window.usedPercent}% used · {100 - window.usedPercent}% window remaining{duration}{reset}</div>
-  }
-
-  return (
-    <div
-      role="region"
-      aria-label={`${providerName} provider usage`}
-      className="grid gap-1 rounded-md border px-3 py-2"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-    >
-      <div className="font-medium" style={{ color: 'var(--text)' }}>Provider usage</div>
-      {!tokenUsage && !rateLimits ? (
-        <div style={{ color: 'var(--text-3)' }}>Not reported by provider</div>
-      ) : (
-        <>
-          {tokenUsage && (
-            <>
-              <div>Thread tokens: {formatNumber(tokenUsage.total.totalTokens)} total · {formatNumber(tokenUsage.last.totalTokens)} last turn</div>
-              {tokenUsage.modelContextWindow && <div>Model context: {formatNumber(tokenUsage.modelContextWindow)} tokens</div>}
-            </>
-          )}
-          {rateLimits && (
-            <>
-              <div className="font-medium" style={{ color: 'var(--text)' }}>
-                Account limits{rateLimits.limitName ? ` · ${rateLimits.limitName}` : ''}{rateLimits.planType ? ` · ${rateLimits.planType}` : ''}
-              </div>
-              {rateLimits.rateLimitReachedType && <div style={{ color: 'var(--error)' }}>Limit reached: {rateLimits.rateLimitReachedType.replace(/_/g, ' ')}</div>}
-              {rateLimits.spendControlReached && <div style={{ color: 'var(--error)' }}>Spend control reached</div>}
-              {rateLimits.credits && <div>Credits: {rateLimits.credits.unlimited ? 'Unlimited' : rateLimits.credits.hasCredits ? (rateLimits.credits.balance ? `${rateLimits.credits.balance} available` : 'Available') : 'None available'}</div>}
-              {rateLimits.individualLimit && (
-                <div>Individual limit: {rateLimits.individualLimit.used} of {rateLimits.individualLimit.limit} used · {rateLimits.individualLimit.remainingPercent}% remaining{rateLimits.individualLimit.resetsAt ? ` · resets ${new Date(rateLimits.individualLimit.resetsAt * 1000).toLocaleString()}` : ''}</div>
-              )}
-              {rateLimitLine('Primary limit', rateLimits.primary)}
-              {rateLimitLine('Secondary limit', rateLimits.secondary)}
-            </>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
 function memoryModelOptions(provider?: Provider, providerId = '', selectedModelId = '', discoveredModels: AcpModel[] = []) {
   const caps = providerCapabilities(providerId, provider)
   const baseOptions = discoveredModels.length > 0
@@ -197,27 +137,52 @@ interface LocalChatBundleResult {
 interface SettingsSection {
   id: SettingsSectionId
   label: string
-  detail: string
   icon: LucideIcon
 }
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
-  { id: 'appearance', label: 'Appearance', detail: 'Theme and display', icon: Palette },
-  { id: 'defaults', label: 'Chat Defaults', detail: 'Provider and new-chat settings', icon: MessageSquare },
-  { id: 'agents', label: 'Agents', detail: 'Favorites and composer shortcut', icon: ClipboardList },
-  { id: 'cli-version', label: 'CLI Version', detail: 'Run or revert provider CLIs', icon: TerminalSquare },
-  { id: 'remote-hosts', label: 'Remote Hosts', detail: 'SSH-connected UAM runners', icon: Server },
-  { id: 'voice-input', label: 'Voice Input', detail: 'Speech-to-text provider', icon: Mic },
-  { id: 'memory-settings', label: 'Memory Settings', detail: 'Defaults and workers', icon: Brain },
-  { id: 'memory-store', label: 'Memory Store', detail: 'Library and backfill', icon: MemoryStick },
-  { id: 'markdown-store', label: 'Skills', detail: 'Reusable prompts and attachments', icon: BookOpen },
-  { id: 'goal-loops', label: 'Goal Loops', detail: 'Loop safety', icon: Target },
-  { id: 'mcp-servers', label: 'MCP Servers', detail: 'Local workspace tools', icon: TerminalSquare },
-  { id: 'editors', label: 'Editors', detail: 'Workspace launch presets', icon: Pencil },
-  { id: 'shell-actions', label: 'Shell Actions', detail: 'Finder and Explorer menus', icon: MousePointerClick },
-  { id: 'chat-data', label: 'Chat Data', detail: 'Local export and import', icon: Download },
-  { id: 'about', label: 'About', detail: 'Version information', icon: Info },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
+  { id: 'agents', label: 'Agents', icon: ClipboardList },
+  { id: 'cli-version', label: 'CLI Version', icon: TerminalSquare },
+  { id: 'remote-hosts', label: 'Remote Hosts', icon: Server },
+  { id: 'voice-input', label: 'Voice Input', icon: Mic },
+  { id: 'memory-settings', label: 'Memory Settings', icon: Brain },
+  { id: 'memory-store', label: 'Memory Store', icon: MemoryStick },
+  { id: 'markdown-store', label: 'Skills', icon: BookOpen },
+  { id: 'goal-loops', label: 'Goal Loops', icon: Target },
+  { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
+  { id: 'editors', label: 'Editors', icon: Pencil },
+  { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
+  { id: 'chat-data', label: 'Chat Data', icon: Download },
+  { id: 'about', label: 'About', icon: Info },
 ]
+
+const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
+  { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
+  { label: 'Providers', sections: ['cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
+  { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
+  { label: 'App', sections: ['chat-data', 'about'] },
+]
+
+// Terms name controls inside each page so searches work beyond sidebar titles.
+const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
+  appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
+  defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode',
+  agents: 'agents instructions import providers codex gemini claude copilot opencode',
+  'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
+  'remote-hosts': 'computers ssh connections hosts runners servers install',
+  'voice-input': 'microphone dictation transcription speech whisper',
+  'memory-settings': 'memory workers recall budgets idle models tokens processing',
+  'memory-store': 'memory library lessons entries search delete',
+  'markdown-store': 'skills markdown library import folder file create pin',
+  'goal-loops': 'goals loops tokens budgets auto continue review',
+  'mcp-servers': 'mcp computer browser control setup server config json',
+  editors: 'editors extensions associations groups default vscode clion',
+  'shell-actions': 'finder explorer context menus shell actions groups save',
+  'chat-data': 'chat data history storage import export backup',
+  about: 'version build release updates app information',
+}
 
 const EDITOR_PRESETS = [
   { id: 'vscode', label: 'VS Code' },
@@ -281,100 +246,58 @@ function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'verified') return `Verified by UAM${manager.verifiedAt ? ` on ${manager.verifiedAt}` : ''}`
   if (manager.status === 'untested-newer') return 'Newer than UAM’s last verified build'
   if (manager.status === 'untested') return 'Not yet verified by this UAM build'
-  if (manager.status === 'known-incompatible') return 'Known incompatible — update before structured use'
+  if (manager.status === 'known-incompatible') return 'Known incompatible. Update before structured use.'
   if (manager.status === 'unavailable') return 'Not installed or unavailable on PATH'
   if (manager.status === 'provider-managed') return 'Compatibility is managed by the provider'
   return 'Version has not been checked'
 }
 
-function SectionCard(
-  { title, description, children }: { title: string; description?: string; children: ReactNode }
-) {
-  return (
-    <section
-      className="pb-5"
-      style={{
-        borderBottom: '1px solid var(--border)',
-      }}
-    >
-      <div className="mb-4">
-        <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</div>
-        {description && (
-          <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>{description}</div>
-        )}
-      </div>
-      {children}
-    </section>
-  )
+function SectionCard({ title, children }: { title: string; children: ReactNode }) {
+  return <section aria-label={title} className="pb-4">{children}</section>
 }
 
-function ProviderDisclosureCard(
-  {
-    panelId,
-    providerId,
-    leadingIcon,
-    title,
-    expanded,
-    onToggle,
-    toggleLabel,
-    children,
-  }: {
-    panelId: string
-    providerId?: string
-    leadingIcon?: ReactNode
-    title: string
-    expanded: boolean
-    onToggle: () => void
-    toggleLabel: string
-    children: ReactNode
-  }
-) {
-  return (
-    <div
-      className="rounded-lg p-3"
-      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-    >
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={panelId}
-        aria-label={toggleLabel}
-        title={toggleLabel}
-        onClick={onToggle}
-        className="w-full flex items-center justify-between gap-3 text-left"
-        style={{ color: 'var(--text)', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
-      >
-        <span className="inline-flex min-w-0 items-center gap-2 text-sm">
-          {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId} /> : null)}
-          <span className="truncate">{title}</span>
-        </span>
-        <span
-          aria-hidden="true"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm transition-colors duration-150"
-          style={{
-            background: expanded ? 'var(--accent-dim)' : 'var(--surface-up)',
-            color: 'var(--text-2)',
-            border: '1px solid var(--border)',
-          }}
-        >
-          <ChevronRight size={14} className={`transition-transform duration-150${expanded ? ' rotate-90' : ''}`} />
-        </span>
-      </button>
-
-      {expanded && (
-        <div
-          id={panelId}
-          className="mt-3 pt-3 animate-fade-in"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          {children}
-        </div>
-      )}
+function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, togglePosition = 'left' }: {
+  panelId: string
+  providerId?: string
+  leadingIcon?: ReactNode
+  title: string
+  expanded: boolean
+  onToggle: () => void
+  toggleLabel: string
+  children: ReactNode
+  actions?: ReactNode
+  togglePosition?: 'left' | 'right'
+}) {
+  return <div className="py-3" style={{borderBottom:'1px solid var(--border)'}}>
+    <div className="flex items-center gap-2">
+      {togglePosition === 'left' && <>
+      <IconButton size="sm" icon={<ChevronRight size={14} className={expanded ? 'rotate-90' : undefined}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle} style={{border:'1px solid var(--border)',background:'var(--surface-up)'}}/>
+      </>}
+      {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId}/> : null)}
+      <span className="min-w-0 flex-1 text-sm truncate">{title}</span>
+      {actions}
+      {togglePosition === 'right' && <>
+      <IconButton size="sm" icon={<ChevronRight size={14} className={expanded ? 'rotate-90' : undefined}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle} style={{border:'1px solid var(--border)',background:'var(--surface-up)'}}/>
+      </>}
     </div>
-  )
+    {expanded && <div id={panelId} className="mt-3 pt-3" style={{borderTop:'1px solid var(--border)'}}>{children}</div>}
+  </div>
 }
 
-export function SettingsModal() {
+function cliVersionIssues(manager: CliVersionProviderState): string[] {
+  const healthy = manager.status === 'verified' || manager.status === 'provider-managed'
+  return [...new Set([
+    !healthy ? manager.message || versionStatusText(manager) : '',
+    manager.lastInstallStatus === 'failed' ? 'Last installation failed.' : '',
+  ].filter(Boolean))]
+}
+
+export interface SettingsHandle {
+  requestClose: () => void
+  showMemory: () => void
+}
+
+export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_props, ref) {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const providers = useAppStore(useShallow((s) => s.providers))
   const sessions = useAppStore(useShallow((s) => s.sessions))
@@ -432,14 +355,17 @@ export function SettingsModal() {
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
-  const openMarkdownStore = useAppStore((s) => s.openMarkdownStore)
-  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
-  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const { theme, setTheme } = useTheme()
+  const [settingsSearch, setSettingsSearch] = useState('')
+  const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
+  const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
+    const section = SETTINGS_SECTIONS.find(item => item.id === id)!
+    const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id]}`.toLocaleLowerCase()
+    return searchTerms.every(term => searchable.includes(term))
+  })})).filter(group => group.sections.length > 0)
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
-  const [selectedCliVersions, setSelectedCliVersions] = useState<Record<string, string>>({})
   const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
   const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
   const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
@@ -480,6 +406,23 @@ export function SettingsModal() {
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
+  const memoryRef = useRef<MemoryLibraryHandle>(null)
+  const shellRef = useRef<ShellActionsHandle>(null)
+  const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
+  const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
+  const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
+  const [editorError, setEditorError] = useState('')
+  const editorSavePending = useRef(false)
+  const [editorSaving, setEditorSaving] = useState(false)
+  const mcpRevision = useRef(0)
+  const mcpSavePending = useRef(false)
+  const [browserSetupProvider, setBrowserSetupProvider] = useState<string | null>(null)
+  const [browserSetupSaved, setBrowserSetupSaved] = useState(false)
+  const [themeStep, setThemeStep] = useState(0)
+  const [themeSaving, setThemeSaving] = useState(false)
+  const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
+  const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
+  const [cliActionError, setCliActionError] = useState<Record<string, string>>({})
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [themeMessage, setThemeMessage] = useState('')
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
@@ -491,13 +434,51 @@ export function SettingsModal() {
   const dialogRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
 
-  const requestClose = () => {
-    if (mcpDraftDirty) {
-      setConfirmDiscard(true)
-      return
-    }
-    setSettingsOpen(false)
+  useEffect(() => {
+    if (themeDraft) dialogRef.current?.querySelector<HTMLElement>(themeStep === 0 ? '[aria-label="Theme name"]' : '[data-theme-step]')?.focus()
+  }, [themeDraft?.id, themeStep])
+  const themeDirty = Boolean(themeDraft && JSON.stringify(themeDraft) !== JSON.stringify(customThemes.find(item => item.id === themeDraft.id)))
+  const requestThemeExit = (next: () => void) => {
+    if (themeSaving) return
+    if (themeDirty) setThemeExit(() => next)
+    else next()
   }
+  const requestSectionExit = (next: () => void) => {
+    if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
+    else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
+    else next()
+  }
+  const editorDirty = editorAssociationsDraft.some(item => {
+    const saved = editorFileAssociations.find(candidate => candidate.id === item.id)
+    return (rawEditorNames[item.id] !== undefined && rawEditorNames[item.id].trim() !== saved?.name)
+      || (rawExtensions[item.id] !== undefined && JSON.stringify(parseExtensions(rawExtensions[item.id])) !== JSON.stringify(saved?.extensions))
+  })
+  useEffect(() => {
+    if (!themeDirty && !mcpDraftDirty && !editorDirty) return
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload',guard)
+    return () => window.removeEventListener('beforeunload',guard)
+  }, [themeDirty,mcpDraftDirty,editorDirty])
+  const requestClose = () => {
+    if (mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    requestThemeExit(() => requestSectionExit(() => {
+      if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
+      if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
+      else setSettingsOpen(false)
+    }))
+  }
+  const changeSection = (section: SettingsSectionId) => {
+    if (section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    requestThemeExit(() => requestSectionExit(() => {
+      setThemeDraft(null)
+      setSelectedSection(section)
+      setOpenMemoryMenu(null)
+      setOpenEditorMenu(null)
+      setOpenCliVersionMenu(null)
+    }))
+  }
+
+  useImperativeHandle(ref, () => ({ requestClose, showMemory: () => changeSection('memory-store') }))
 
   const runChatDataAction = async (operation: 'export' | 'import') => {
     if (chatDataBusy) return
@@ -599,21 +580,24 @@ export function SettingsModal() {
   }, [customThemes, theme, themeDraft])
 
   useEffect(() => {
-    setSelectedCliVersions((current) => {
-      const next = { ...current }
-      for (const provider of cliVersionManager.providers) {
-        if (!next[provider.providerId]) {
-          next[provider.providerId] = provider.selectedVersion || provider.preferredVersion || ''
-        }
-      }
-      return next
-    })
-  }, [cliVersionManager.providers])
-
-  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
       if (e.defaultPrevented) return
+      const dialogs = document.querySelectorAll<HTMLElement>('[aria-modal="true"]')
+      const top = dialogs.item(dialogs.length - 1)
+      if (top && top !== dialogRef.current && !top.hasAttribute('data-settings-owned-overlay')) return
+      if (e.key === 'Tab') {
+        if (!top) return
+        const controls = Array.from(top.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([type="hidden"]), textarea:not(:disabled), select:not(:disabled), summary, [tabindex="0"]') ?? []).filter(element => !element.closest('[hidden], .hidden, [aria-hidden="true"]') && (!element.closest('details:not([open])') || element.tagName === 'SUMMARY'))
+        const first = controls[0], last = controls[controls.length - 1]
+        if (e.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); last?.focus() }
+        else if (!e.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); first?.focus() }
+        return
+      }
+      if (e.key !== 'Escape' || (!top && !dialogRef.current?.contains(document.activeElement))) return
+      if (editorExit) { e.preventDefault(); if (!editorSaving) setEditorExit(null); return }
+      if (themeExit) { e.preventDefault(); if (!themeSaving) setThemeExit(null); return }
+      if (pendingDelete) { e.preventDefault(); if (!themeSaving && !editorSaving) setPendingDelete(null); return }
+      if (confirmDiscard) { e.preventDefault(); setConfirmDiscard(false); dialogRef.current?.focus(); return }
       if (isMarkdownStoreOpen) return
       if (openMemoryMenu) {
         setOpenMemoryMenu(null)
@@ -628,14 +612,15 @@ export function SettingsModal() {
         return
       }
 	  if (remotePreview) {
-		setRemotePreview(null)
+		if (!remoteBusy) setRemotePreview(null)
 		return
 	  }
+      if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
       requestClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, remotePreview, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -750,93 +735,32 @@ export function SettingsModal() {
     )
   }
 
-  const saveEditorSettings = (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
+  const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
+    if (editorSavePending.current) return false
+    if (nextAssociations.some(item => !item.name.trim() || !item.extensions.length)) {
+      setEditorError('Each group needs a name and at least one extension.')
+      return false
+    }
+    editorSavePending.current = true
+    setEditorSaving(true)
     setEditorAssociationsDraft(nextAssociations)
     setDefaultEditorDraft(nextDefaultEditor)
-    void setEditorSettings({
-      defaultEditorPresetId: nextDefaultEditor,
-      editorFileAssociations: nextAssociations,
-    })
+    setEditorError('')
+    try {
+      const saved = await setEditorSettings({defaultEditorPresetId:nextDefaultEditor,editorFileAssociations:nextAssociations})
+      if (!saved) setEditorError('Editor settings could not be saved. Try again.')
+      return saved
+    } catch {
+      setEditorError('Editor settings could not be saved. Try again.')
+      return false
+    } finally { editorSavePending.current = false; setEditorSaving(false) }
   }
-
-  const renderCliVersionMenu = (
-    menuId: string,
-    value: string,
-    label: string,
-    options: MemoryModelOption[],
-    disabled: boolean,
-    onSelect: (value: string) => void
-  ) => {
-    const selectedOption = options.find((option) => option.id === value) ?? (value ? { id: value, label: value, detail: 'Current selection' } : undefined)
-    return (
-      <div className="relative">
-        <button
-          ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
-          type="button"
-          title={label}
-          aria-haspopup="listbox"
-          aria-expanded={openCliVersionMenu === menuId}
-          disabled={disabled}
-          onClick={() => setOpenCliVersionMenu(openCliVersionMenu === menuId ? null : menuId)}
-          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left disabled:opacity-50"
-          style={{
-            color: 'var(--text)',
-            borderRadius: 8,
-            padding: '8px 10px',
-          }}
-        >
-          <span className="truncate">{selectedOption?.label ?? 'No versions available'}</span>
-          {!disabled && <ChevronDown className={openCliVersionMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />}
-        </button>
-        {!disabled && openCliVersionMenu === menuId && (
-          <ViewportMenu
-            anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
-            role="listbox"
-            aria-label={label}
-            className="animate-fade-in"
-            style={{
-              width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
-              border: '1px solid var(--border-bright)',
-              borderRadius: 10,
-              background: 'var(--surface)',
-              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
-              padding: 6,
-            }}
-          >
-            {options.map((option) => {
-              const selected = option.id === value
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onSelect(option.id)
-                    setOpenCliVersionMenu(null)
-                  }}
-                  className={`uam-menu-select__option w-full grid gap-0.5 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                  style={{
-                    borderRadius: 6,
-                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                  }}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="flex-1">{option.label}</span>
-                    {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
-                  </span>
-                  {option.detail && (
-                    <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-                      {option.detail}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
-          </ViewportMenu>
-        )}
-      </div>
-    )
+  const commitEditorField = (id: string, field: 'name' | 'extensions') => {
+    const raw = field === 'name' ? rawEditorNames[id] : rawExtensions[id]
+    if (raw === undefined) return
+    const value = field === 'name' ? raw.trim() : parseExtensions(raw)
+    if (!value.length) { setEditorError(field === 'name' ? 'Enter a group name.' : 'Enter at least one extension.'); return }
+    void saveEditorSettings(editorAssociationsDraft.map(item => item.id === id ? {...item,[field]:value} : item))
   }
 
   const renderEditorPresetMenu = (
@@ -935,6 +859,7 @@ export function SettingsModal() {
       base,
       colors: { ...(source?.colors ?? BUILT_IN_THEME_COLORS[base]) },
     })
+    setThemeStep(0)
     setThemeMessage('')
   }
   const cloneCurrentTheme = () => {
@@ -946,26 +871,38 @@ export function SettingsModal() {
     startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
   }
   const saveThemeDraft = async () => {
-    if (!themeDraft || !themeDraftValid || themeSaveInFlightRef.current) return
+    if (!themeDraft || !themeDraftValid || themeSaveInFlightRef.current) return false
     themeSaveInFlightRef.current = true
+    setThemeSaving(true)
     try {
       const saved = await saveCustomTheme(themeDraft)
       if (!saved) {
         setThemeMessage('Theme could not be saved. Check its name and colors.')
-        return
+        return false
       }
-      setThemeDraft(saved)
+      setThemeDraft(null)
       setTheme(saved.id)
       setThemeMessage('Theme saved.')
+      return true
+    } catch {
+      setThemeMessage('Theme could not be saved. Try again.')
+      return false
     } finally {
       themeSaveInFlightRef.current = false
+      setThemeSaving(false)
     }
   }
   const removeSelectedTheme = async () => {
-    if (!selectedCustomTheme) return
-    const deleted = await deleteCustomTheme(selectedCustomTheme.id)
-    setThemeDraft(null)
-    setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
+    if (!selectedCustomTheme || themeSaveInFlightRef.current) return false
+    themeSaveInFlightRef.current = true
+    setThemeSaving(true)
+    try {
+      const deleted = await deleteCustomTheme(selectedCustomTheme.id)
+      setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
+      if (deleted) setThemeDraft(null)
+      return deleted
+    } catch { setThemeMessage('Theme could not be deleted. Try again.'); return false }
+    finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const importThemeFile = async (file?: File) => {
     if (!file) return
@@ -975,7 +912,7 @@ export function SettingsModal() {
       const saved = await saveCustomTheme(imported)
       if (!saved) throw new Error('save')
       setTheme(saved.id)
-      setThemeDraft(saved)
+      setThemeDraft(null)
       setThemeMessage('Theme imported.')
     } catch {
       setThemeMessage('Theme import failed. Choose a valid UAM theme JSON file.')
@@ -991,55 +928,71 @@ export function SettingsModal() {
     URL.revokeObjectURL(url)
     setThemeMessage('Theme exported.')
   }
-  const renderSectionContent = () => {
-    if (selectedSection === 'appearance') {
-      const themeOptions: Array<{ value: StoredTheme; label: string }> = [
-        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
-        ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
-      ]
-      return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Appearance"
-            description="Choose a built-in theme or create a validated custom palette."
-          >
-            <div className="grid gap-4">
-              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <span>Theme</span>
-                <MenuSelect
-                  label="Theme"
-                  value={theme}
-                  options={themeOptions}
-                  onChange={(value) => {
-                    setThemeDraft(null)
-                    setTheme(value as StoredTheme)
-                    setThemeMessage('')
-                  }}
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" onClick={() => startNewTheme()}>Create</Button>
-                <Button size="sm" onClick={cloneCurrentTheme}>Clone</Button>
-                <Button size="sm" disabled={!selectedCustomTheme} onClick={() => setThemeDraft(selectedCustomTheme ? { ...selectedCustomTheme, colors: { ...selectedCustomTheme.colors } } : null)}>Edit</Button>
-                <Button size="sm" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({ kind: 'theme', id: selectedCustomTheme.id, name: selectedCustomTheme.name })}>Delete</Button>
-                <Button size="sm" onClick={() => themeImportRef.current?.click()}>Import JSON</Button>
-                <Button size="sm" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}>Export JSON</Button>
-                <input
-                  ref={themeImportRef}
-                  type="file"
-                  accept="application/json,.json"
-                  className="hidden"
-                  aria-label="Import theme JSON"
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0]
-                    event.currentTarget.value = ''
-                    void importThemeFile(file)
-                  }}
-                />
-              </div>
-              {themeDraft && (
-                <div className="grid gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
-                  <div className="grid gap-3 sm:grid-cols-2">
+  const parseMcpDraft = (): McpServerConfiguration[] | null => {
+    try {
+      const parsed: unknown = JSON.parse(mcpDraft)
+      if (!Array.isArray(parsed)) { setMcpMessage('MCP server configuration must be a JSON array.'); return null }
+      return parsed as McpServerConfiguration[]
+    } catch { setMcpMessage('Enter valid JSON.'); return null }
+  }
+  const saveMcpConfiguration = async (servers: McpServerConfiguration[], browserSetup = false) => {
+    if (mcpSavePending.current) return
+    mcpSavePending.current = true
+    const submittedRevision = mcpRevision.current
+    setMcpSaving(true)
+    setMcpMessage('')
+    setBrowserSetupSaved(false)
+    try {
+      const result = await setMcpServers(servers)
+      if (!result.ok) { setMcpMessage(result.error || 'MCP server configuration was rejected.'); return }
+      const newerEdits = submittedRevision !== mcpRevision.current
+      if (!newerEdits) { setMcpDraft(JSON.stringify(servers,null,2)); setMcpDraftDirty(false) }
+      if (browserSetup) setBrowserSetupSaved(true)
+      setMcpMessage(newerEdits ? 'Submitted configuration saved; newer edits remain unsaved.' : browserSetup ? 'Browser control configured. Start a new local structured chat to launch the tools.' : 'MCP server configuration saved.')
+    } catch { setMcpMessage('MCP server configuration could not be saved. Try again.') }
+    finally { mcpSavePending.current = false; setMcpSaving(false) }
+  }
+  const renderMcpSave = () => <IconButton icon={<Save size={15}/>} label="Save MCP server configuration" disabled={mcpSaving} aria-busy={mcpSaving || undefined} onClick={() => { const servers = parseMcpDraft(); if (servers) void saveMcpConfiguration(servers) }}/>
+  const configureBrowserControl = () => {
+    const configured = parseMcpDraft()
+    if (!configured || !mcpWorkspace.trim() || !mcpExecutable.trim()) return
+    // Settings are workspace-wide. ACP sessions resolve these entries when they start.
+    let suffix = configured.length + 1
+    while (configured.some(server => server?.id === `playwright-browser-${suffix}`)) suffix += 1
+    const server: McpServerConfiguration = {
+      id:`playwright-browser-${suffix}`,name:'Playwright browser control',workspaceDirectory:mcpWorkspace.trim(),
+      transport:'stdio',command:mcpExecutable.trim(),args:['-y','@playwright/mcp@latest','--isolated'],
+      url:'',environment:[],headers:[],enabled:true,
+    }
+    void saveMcpConfiguration([...configured,server],true)
+  }
+
+  const renderAddEditor = () => (
+              <IconButton
+                icon={<Plus size={15} />}
+                label="Add editor group"
+                size="sm"
+                disabled={editorSaving}
+                onClick={() => {
+                  const id = `editor-group-${Date.now()}`
+                  const nextAssociations = [
+                    ...editorAssociationsDraft,
+                    {
+                      id,
+                      name: 'Files',
+                      extensions: ['.txt'],
+                      editorPresetId: defaultEditorDraft,
+                    },
+                  ]
+                  setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
+                  saveEditorSettings(nextAssociations)
+                }}
+              />
+  )
+
+  const renderThemeEditor = () => themeDraft ? (
+<div className="grid gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                  {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
                     <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                       <span>Name</span>
                       <input
@@ -1072,8 +1025,8 @@ export function SettingsModal() {
                         })}
                       </div>
                     </fieldset>
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  </div>}
+                  {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
                     {THEME_COLOR_FIELDS.map(({ key, label }) => (
                       <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
@@ -1101,22 +1054,73 @@ export function SettingsModal() {
                         </span>
                       </label>
                     ))}
-                  </div>
+                  </div>}
                   {!themeDraftValid && (
                     <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>
                       Every color must use #RRGGBB format.
                     </p>
                   )}
+                  {themeStep === 2 && <div className="grid gap-3">
+                    <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}<code>{themeDraft.colors[key]}</code></div>)}</div>
+                  </div>}
                   <div className="flex gap-2">
-                    <Button size="sm" variant="primary" disabled={!themeDraftValid} onClick={() => void saveThemeDraft()}>Save theme</Button>
-                    <Button size="sm" onClick={() => setThemeDraft(null)}>Cancel preview</Button>
+                    {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
+                    {themeStep < 2 ? <Button size="sm" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
-              )}
+  ) : null
+
+  const renderSectionContent = () => {
+    if (selectedSection === 'appearance') {
+      const themeOptions: Array<{ value: StoredTheme; label: string }> = [
+        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
+        ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
+      ]
+      return (
+        <div className="space-y-4">
+          <SectionCard
+            title="Appearance"
+          >
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="grid gap-1 text-xs min-w-40 flex-1" style={{ color: 'var(--text-2)' }}>
+                <span>Theme</span>
+                <MenuSelect
+                  label="Theme"
+                  value={theme}
+                  options={themeOptions}
+                  onChange={(value) => {
+                    setThemeDraft(null)
+                    setTheme(value as StoredTheme)
+                    setThemeMessage('')
+                  }}
+                />
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
+                <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
+                <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage('') } else cloneCurrentTheme() }}/>
+                <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
+                <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
+                <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
+                <input
+                  ref={themeImportRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  aria-label="Import theme JSON"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0]
+                    event.currentTarget.value = ''
+                    void importThemeFile(file)
+                  }}
+                />
+              </div>
               {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--red)' : 'var(--text-2)' }}>{themeMessage}</div>}
             </div>
           </SectionCard>
-          <SectionCard title="Sidebar" description="Choose the context shown beside each chat.">
+          <SectionCard title="Sidebar">
             <div className="grid gap-3">
               <Switch
                 label="Show provider icons in sidebar"
@@ -1130,7 +1134,7 @@ export function SettingsModal() {
               />
             </div>
           </SectionCard>
-          <SectionCard title="Chat activity" description="Choose how reasoning and tool activity is presented.">
+          <SectionCard title="Chat activity">
             <Switch
               label="Compact working"
               checked={workingDisplayMode === 'compact'}
@@ -1156,7 +1160,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="AI Permission Reviewer"
-            description="Optional. AI Review runs this provider in an isolated text-only worker. If it is unavailable or uncertain, you decide."
           >
             <div className="grid gap-3 sm:grid-cols-2 text-xs" style={{ color: 'var(--text-2)' }}>
               <div className="grid gap-1">
@@ -1187,7 +1190,6 @@ export function SettingsModal() {
           </SectionCard>
           <SectionCard
             title="New Chat Defaults"
-            description="Choose the provider preselected for new chats and the defaults each provider applies."
           >
             <div className="grid gap-4">
               <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -1215,7 +1217,6 @@ export function SettingsModal() {
 				  const providerWorkspace = providerSession?.workspaceDirectory || folders[0]?.directory || ''
 				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
 				    ?? providerModelCatalogs.find((catalog) => catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
-                  const providerUsage = latestProviderUsage(sessions, provider.id, acpBindings)
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
@@ -1243,23 +1244,10 @@ export function SettingsModal() {
                       expanded={expanded}
                       toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} chat defaults`}
                       onToggle={() => toggleDefaultProvider(provider.id)}
+                      actions={<IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
-                        <ProviderUsageSummary providerName={providerName} usage={providerUsage} />
-                        <div className="grid gap-1">
-                          <div>Feature preference</div>
-                          {renderDefaultsMenu(
-                            `${provider.id}:feature-preference`,
-                            defaults.featurePreference ?? 'uam',
-                            `${providerName} feature preference`,
-                            [
-                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and permission mediation.' },
-                              { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
-                            ],
-                            (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
                           <div className="grid gap-1">
                             <div>Model</div>
                             {renderDefaultsMenu(
@@ -1272,16 +1260,6 @@ export function SettingsModal() {
                                 modelId,
                                 reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
                               })
-                            )}
-                          </div>
-                          <div className="grid gap-1">
-							<div>Provider mode</div>
-                            {renderDefaultsMenu(
-                              `${provider.id}:mode`,
-                              defaults.approvalMode,
-							  `${providerName} default provider mode`,
-                              modeOptions,
-                              (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
                             )}
                           </div>
                           {(caps.hasReasoningEffort || runtimeSupportsReasoning) && (
@@ -1309,7 +1287,18 @@ export function SettingsModal() {
                             </div>
                           )}
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
+                          <div className="grid gap-1">
+							<div>Provider mode</div>
+                            {renderDefaultsMenu(
+                              `${provider.id}:mode`,
+                              defaults.approvalMode,
+							  `${providerName} default provider mode`,
+                              modeOptions,
+                              (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
+                            )}
+                          </div>
+
                           <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                             <div>Permissions</div>
                             {caps.structuredPermissionControl === 'uam'
@@ -1364,6 +1353,22 @@ export function SettingsModal() {
                             New {pendingDefaultYolo.providerName} chats will automatically approve computer use, commands, file changes, and every other permission request.
                           </Notice>
                         )}
+                        <details>
+                          <summary className="cursor-pointer py-2">Advanced</summary>
+                          <div className="grid gap-3">
+                        <div className="grid gap-1">
+                          <div>Feature preference</div>
+                          {renderDefaultsMenu(
+                            `${provider.id}:feature-preference`,
+                            defaults.featurePreference ?? 'uam',
+                            `${providerName} feature preference`,
+                            [
+                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and permission mediation.' },
+                              { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
+                            ],
+                            (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
+                          )}
+                        </div>
                         <div className="grid gap-1">
                           <div>Goal reviewer model</div>
                           {renderDefaultsMenu(
@@ -1386,10 +1391,11 @@ export function SettingsModal() {
                           </Button>
                           <span style={{ color: 'var(--text-3)' }}>The reviewer model plans and checks one step at a time; the normal model implements it.</span>
                         </div>
+                          </div>
+                        </details>
                         <div className="flex items-center gap-2">
-						  <IconButton icon={<RefreshCw size={14} className={modelsLoading ? 'animate-spin' : ''} />} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />
                           <span role="status" className="text-xs" style={{ color: modelRefreshError ? 'var(--red)' : 'var(--text-3)' }}>
-							{modelsLoading ? 'Refreshing models…' : modelRefreshError || (providerWorkspace ? 'Cached models are ready' : 'Add a workspace to refresh models')}
+							{modelsLoading ? 'Refreshing models…' : modelRefreshError || (!providerWorkspace ? 'Add a workspace to refresh models' : providerAcp?.availableModels?.length ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')}
                           </span>
                         </div>
                       </div>
@@ -1451,7 +1457,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Composer agents"
-            description="Build and Plan always come first. The configured shortcut then follows these favorites in the saved order, skipping agents unavailable in the current workspace."
           >
             <div className="grid gap-4">
               <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -1511,7 +1516,6 @@ export function SettingsModal() {
           </SectionCard>
           <SectionCard
             title="Import provider agent"
-			description="Copy one OpenCode, Copilot CLI, Gemini CLI, or Claude Code Markdown agent into UAM. Provider tool and security settings are never silently translated."
           >
             <div className="grid gap-3">
               <MenuSelect
@@ -1549,7 +1553,7 @@ export function SettingsModal() {
                     setAgentImportPreview(null)
                     setAgentImportMessage('')
                   })}>Browse</Button>
-                  <Button size="sm" loading={agentImportBusy} disabled={!agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
+                  <Button size="sm" aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
                 </span>
               </label>
 
@@ -1609,8 +1613,8 @@ export function SettingsModal() {
                       <Button
                         size="sm"
                         variant="primary"
-                        loading={agentImportBusy}
-                        disabled={!activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
+                        aria-busy={agentImportBusy || undefined}
+                        disabled={agentImportBusy || !activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
                         onClick={() => void runImport()}
                       >Import agent</Button>
                     </>
@@ -1630,7 +1634,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Provider CLIs"
-            description="Check, run, or revert each provider CLI to a curated supported version."
           >
             <div ref={cliVersionMenuRef} className="space-y-3">
               {cliVersionManager.providers.length === 0 && (
@@ -1641,107 +1644,55 @@ export function SettingsModal() {
               {cliVersionManager.providers.map((manager) => {
                 const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
                 const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
-                const selectedCliVersion = selectedCliVersions[manager.providerId] || manager.selectedVersion || manager.preferredVersion || ''
-                const cliVersionChanged = Boolean(selectedCliVersion && selectedCliVersion !== manager.installedVersion)
-                const canApplyCliVersion = Boolean(selectedCliVersion && cliVersionChanged && !manager.running)
                 const expanded = expandedCliVersionProviders[manager.providerId] ?? false
-                const versionOptions = manager.availableVersions.map((option) => ({
-                  id: option.version,
-                  label: option.version,
-                  detail: option.preferred ? 'Preferred version' : 'Curated version',
-                }))
-                if (selectedCliVersion && !versionOptions.some((option) => option.id === selectedCliVersion)) {
-                  versionOptions.push({ id: selectedCliVersion, label: selectedCliVersion, detail: 'Current selection' })
+                const issues = [...cliVersionIssues(manager), ...(cliActionError[manager.providerId] ? [cliActionError[manager.providerId]] : [])]
+                const requestInstall = (version: string) => {
+                  setOpenCliVersionMenu(null)
+                  setExpandedCliVersionProviders(current => ({...current,[manager.providerId]:true}))
+                  setPendingCliInstall({providerId:manager.providerId,providerName,version})
                 }
                 return (
                   <ProviderDisclosureCard
                     key={manager.providerId}
+                    togglePosition="right"
                     panelId={`${manager.providerId}-cli-version-panel`}
                     providerId={manager.providerId}
                     title={providerName}
                     expanded={expanded}
                     toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} CLI version settings`}
                     onToggle={() => toggleCliVersionProvider(manager.providerId)}
+                    actions={<StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>}
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                          {versionStatusText(manager)}
-                        </div>
-                        {manager.message && (
-                          <div className="text-xs mt-1" style={{ color: manager.status === 'known-incompatible' || manager.status === 'unavailable' ? 'var(--red)' : 'var(--text-2)' }}>
-                            {manager.message}
-                          </div>
-                        )}
-                      </div>
-                      <IconButton
-                        icon={<RefreshCw size={15} className={manager.running && manager.status === 'checking' ? 'animate-spin' : undefined} />}
-                        label={`Refresh ${providerName} CLI version`}
-                        disabled={manager.running}
-                        onClick={() => void refreshCliProviderVersion(manager.providerId)}
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 mt-3">
-                      <div>
-                        <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Installed</div>
-                        <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
-                          {manager.installedVersion || 'Unknown'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>Preferred</div>
-                        <div className="text-sm mt-1" style={{ color: 'var(--text)' }}>
-                          {manager.preferredVersion || 'Not configured'}
-                        </div>
+                    <div className="flex items-start justify-between gap-3">
+                    <div className="grid gap-1 text-xs" style={{color:'var(--yellow)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
+                      <div className="flex items-center gap-1">
+                      <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
+                        setCliActionError(current => ({...current,[manager.providerId]:''}))
+                        try { if (!await refreshCliProviderVersion(manager.providerId)) setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
+                        catch { setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
+                      }}/>
+                      <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>
+                      {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
+                        <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
+                        <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
+                      </ViewportMenu>}
                       </div>
                     </div>
-
-                    <div className="grid gap-2 mt-3">
-                      <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        <div>Target version</div>
-                        {renderCliVersionMenu(
-                          `${manager.providerId}:cli-version`,
-                          selectedCliVersion,
-                          `${providerName} target version`,
-                          versionOptions,
-                          manager.running || versionOptions.length === 0,
-                          (nextVersion) => setSelectedCliVersions((current) => ({ ...current, [manager.providerId]: nextVersion }))
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                          Applies with npm globally for this provider.
-                        </div>
-                        <IconButton
-                          icon={manager.running ? <RefreshCw size={15} className="animate-spin" /> : <Download size={15} />}
-                          label={manager.running ? `Installing ${providerName} CLI version` : `Apply ${providerName} CLI version`}
-                          variant={canApplyCliVersion ? 'solid' : 'ghost'}
-                          disabled={!canApplyCliVersion}
-                          onClick={() => setPendingCliInstall({ providerId: manager.providerId, providerName, version: selectedCliVersion })}
-                        />
-                      </div>
-                      {pendingCliInstall?.providerId === manager.providerId && (
-                        <Notice
-                          tone="warning"
-                          title="Install provider CLI?"
-                          dismissLabel={`Dismiss ${providerName} CLI install warning`}
-                          onDismiss={() => setPendingCliInstall(null)}
-                          actions={(
-                            <>
-                              <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
-                              <Button size="sm" variant="danger" onClick={() => {
-                                const pending = pendingCliInstall
-                                setPendingCliInstall(null)
-                                void applyCliProviderVersion(pending.providerId, pending.version)
-                              }}>Install version</Button>
-                            </>
-                          )}
-                        >
-                          Install {pendingCliInstall.providerName} {pendingCliInstall.version} globally with npm?
-                        </Notice>
-                      )}
+                    <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                      <div><div className="text-xs" style={{color:'var(--text-3)'}}>Installed</div>{manager.installedVersion || 'Not detected'}</div>
+                      <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
                     </div>
+                    {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 mt-3 text-xs" role="group" aria-label="Confirm CLI installation">
+                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} globally using {manager.installMethod || 'npm'}?</span>
+                      <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
+                      <Button size="sm" disabled={manager.running} onClick={async () => {
+                        const pending = pendingCliInstall
+                        setPendingCliInstall(null)
+                        setCliActionError(current => ({...current,[manager.providerId]:''}))
+                        try { if (!await applyCliProviderVersion(pending.providerId,pending.version)) setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
+                        catch { setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
+                      }}>Install version</Button>
+                    </div>}
 
                     {(manager.lastCommand || manager.lastOutput) && (
                       <div className="grid gap-2 mt-3">
@@ -1781,7 +1732,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Remote execution hosts"
-            description="Connect UAM to another computer through one existing SSH config alias. Credentials stay with OpenSSH; UAM copies and checksum-verifies its headless helper."
           >
             <div className="grid gap-4">
               <Notice tone="info" title="Remote Computer Use is disabled" dismissLabel="Dismiss remote Computer Use notice">
@@ -1815,7 +1765,7 @@ export function SettingsModal() {
                 </label>
               </div>
               <div className="flex justify-end">
-                <Button size="sm" leadingIcon={<Server size={14} />} loading={remoteBusy} disabled={!remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
+                <Button size="sm" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
                   Preview setup
                 </Button>
               </div>
@@ -1823,7 +1773,7 @@ export function SettingsModal() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Configured hosts" description="New Chat shows Runs on after the first remote host is ready.">
+          <SectionCard title="Configured hosts">
             <div className="grid gap-3">
               {remoteHosts.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No remote hosts configured.</div>}
               {remoteHosts.map((host) => (
@@ -1853,7 +1803,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Memory Defaults"
-            description="Control how new chats use memory and how much background context is retained."
           >
             <div className="space-y-3">
               <div>
@@ -1912,7 +1861,6 @@ export function SettingsModal() {
 
           <SectionCard
             title="Memory Workers"
-            description="Choose which provider and model should handle memory work for each provider."
           >
             <div ref={memoryMenuRef} className="space-y-3">
               {providers.map((provider) => {
@@ -2126,7 +2074,7 @@ export function SettingsModal() {
 
     if (selectedSection === 'voice-input') {
       return (
-        <SectionCard title="Voice Input" description="Use the operating system speech recognition service.">
+        <SectionCard title="Voice Input">
           <div role="status" className="rounded-lg p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
             Dictation stays on the native system speech service. Start it with the microphone button in the composer.
           </div>
@@ -2134,80 +2082,22 @@ export function SettingsModal() {
       )
     }
 
-    if (selectedSection === 'memory-store') {
-      return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Memory Library"
-            description="Browse global and project memory files without leaving the app."
-          >
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm" style={{ color: 'var(--text)' }}>
-                  All memory
-                </div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                  Browse global memory alongside collections and workspace folders.
-                </div>
-              </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void openAllMemoryLibrary()}
-              >
-                Open library
-              </Button>
-            </div>
-          </SectionCard>
-
-          <SectionCard
-            title="Memory Backfill"
-            description="Scan existing chats to extract durable memories from older history."
-          >
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm" style={{ color: 'var(--text)' }}>
-                  Scan current chats
-                </div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
-                  Choose chats and queue a one-off backfill scan for memory extraction.
-                </div>
-              </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void openMemoryScanModal()}
-              >
-                Scan Current Chats
-              </Button>
-            </div>
-          </SectionCard>
+    if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
+    if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
+      <details className="shrink-0">
+        <summary className="cursor-pointer text-xs py-2">Skills folder</summary>
+        <div className="flex items-center gap-2">
+          <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{border:'1px solid var(--border)',borderRadius:8,background:'var(--bg)',color:'var(--text)',padding:'8px 10px'}}/>
+          <IconButton icon={<FolderOpen size={15}/>} label="Browse for Skills directory" onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) setMarkdownStoreDraftDirectory(selected) })}/>
+          <IconButton icon={<Save size={15}/>} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}/>
         </div>
-      )
-    }
-
-    if (selectedSection === 'markdown-store') {
-      return (
-        <SectionCard title="Skills" description="Publish and attach reusable `.uam` files from one shared directory.">
-          <div className="grid gap-3">
-            <div className="flex items-center gap-2">
-              <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={(event) => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)', padding: '8px 10px', outline: 'none' }} />
-              <IconButton icon={<FolderOpen size={15} />} label="Browse for Skills directory" onClick={() => { void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then((selected) => { if (selected) setMarkdownStoreDraftDirectory(selected) }) }} />
-              <IconButton variant="solid" icon={<Save size={15} />} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)} />
-            </div>
-            {markdownStoreError && <div role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{markdownStoreError}</div>}
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Favorite entries become composer slash commands; other entries can be attached from the store.</span>
-              <Button variant="primary" size="sm" leadingIcon={<BookOpen size={14} />} onClick={() => void openMarkdownStore()}>Open store</Button>
-            </div>
-          </div>
-        </SectionCard>
-      )
-    }
+      </details>
+      <MarkdownStoreModal embedded/>
+    </div>
 
     if (selectedSection === 'goal-loops') {
       return (
-        <SectionCard title="Goal Loop Safety" description="Limit UAM-managed review loops. Provider-native goals continue to use provider controls.">
+        <SectionCard title="Goal Loop Safety">
           <div className="grid gap-4 text-xs" style={{ color: 'var(--text-2)' }}>
             <div className="grid gap-1">
               <span>Maximum iterations</span>
@@ -2261,7 +2151,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Workspace Editors"
-            description="Choose which IDE opens when the chat workspace editor button is pressed."
           >
             <div ref={editorMenuRef} className="grid gap-3">
               <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -2283,6 +2172,7 @@ export function SettingsModal() {
                       key={association.id}
                       panelId={`${association.id}-editor-group-panel`}
                       title={groupName}
+                      actions={<IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" style={{border:'1px solid var(--border)',background:'var(--surface-up)'}} disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>}
                       expanded={expanded}
                       toggleLabel={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`}
                       onToggle={() => toggleEditorGroup(association.id)}
@@ -2290,33 +2180,32 @@ export function SettingsModal() {
                       <div className="grid gap-2">
                         <div className="grid grid-cols-3 gap-2">
                           <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            Group
                             <input
-                              value={association.name}
-                              onChange={(event) => {
-                                const nextAssociations = editorAssociationsDraft.map((item) =>
-                                  item.id === association.id ? { ...item, name: event.currentTarget.value } : item
-                                )
-                                saveEditorSettings(nextAssociations)
-                              }}
+                              aria-label={`${groupName} group name`}
+                              placeholder="Group name"
+                              value={rawEditorNames[association.id] ?? association.name}
+                              disabled={editorSaving}
+                              aria-invalid={rawEditorNames[association.id] !== undefined && !rawEditorNames[association.id].trim()}
+                              onChange={event => { const name = event.currentTarget.value; setRawEditorNames(current => ({...current,[association.id]:name})) }}
+                              onBlur={() => commitEditorField(association.id,'name')}
+                              onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
                               style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
                             />
                           </label>
                           <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            Extensions
                             <input
-                              value={extensionsText(association)}
-                              onChange={(event) => {
-                                const nextAssociations = editorAssociationsDraft.map((item) =>
-                                  item.id === association.id ? { ...item, extensions: parseExtensions(event.currentTarget.value) } : item
-                                )
-                                saveEditorSettings(nextAssociations)
-                              }}
+                              aria-label={`${groupName} file extensions`}
+                              placeholder=".ts .tsx"
+                              value={rawExtensions[association.id] ?? extensionsText(association)}
+                              disabled={editorSaving}
+                              aria-invalid={rawExtensions[association.id] !== undefined && !parseExtensions(rawExtensions[association.id]).length}
+                              onChange={event => { const extensions = event.currentTarget.value; setRawExtensions(current => ({...current,[association.id]:extensions})) }}
+                              onBlur={() => commitEditorField(association.id,'extensions')}
+                              onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
                               style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
                             />
                           </label>
                           <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <div>Editor</div>
                             {renderEditorPresetMenu(
                               `${association.id}:editor`,
                               association.editorPresetId,
@@ -2330,44 +2219,14 @@ export function SettingsModal() {
                             )}
                           </div>
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {association.extensions.length} extension{association.extensions.length === 1 ? '' : 's'} open in {editorPresetLabel(association.editorPresetId)}
-                          </div>
-                          <IconButton
-                            icon={<Trash2 size={14} />}
-                            label={`Delete ${groupName} editor group`}
-                            variant="danger"
-                            size="sm"
-                            disabled={editorAssociationsDraft.length <= 1}
-                            onClick={() => setPendingDelete({ kind: 'editor', id: association.id, name: groupName })}
-                          />
-                        </div>
                       </div>
                     </ProviderDisclosureCard>
                   )
                 })}
               </div>
 
-              <IconButton
-                icon={<Plus size={15} />}
-                label="Add editor group"
-                size="sm"
-                onClick={() => {
-                  const id = `editor-group-${Date.now()}`
-                  const nextAssociations = [
-                    ...editorAssociationsDraft,
-                    {
-                      id,
-                      name: 'Files',
-                      extensions: ['.txt'],
-                      editorPresetId: defaultEditorDraft,
-                    },
-                  ]
-                  setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
-                  saveEditorSettings(nextAssociations)
-                }}
-              />
+              {editorError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{editorError}</p>}
+
             </div>
           </SectionCard>
         </div>
@@ -2375,132 +2234,42 @@ export function SettingsModal() {
     }
 
     if (selectedSection === 'shell-actions') {
-      return <ShellActionsSettings />
+      return <ShellActionsSettings ref={shellRef}/>
     }
 
     if (selectedSection === 'mcp-servers') {
-      return (
-        <SectionCard title="Local MCP servers" description="Connect each workspace to local tools such as computer use. Providers run the tools; UAM keeps permissions, activity, and cancellation in the normal chat flow.">
-          <div className="grid gap-3">
-            <div className="grid gap-3 rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
-              <div>
-                <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>Browser control</div>
-                <div className="mt-1 text-xs leading-5" style={{ color: 'var(--text-3)' }}>
-                  Add Microsoft Playwright MCP in an isolated browser profile. Gemini, OpenCode, and Copilot structured chats can use it after starting a new provider session.
-                </div>
-              </div>
-              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                Workspace directory
-                <input
-                  aria-label="Browser control workspace directory"
-                  value={mcpWorkspace}
-                  onChange={(event) => setMcpWorkspace(event.currentTarget.value)}
-                  className="rounded-lg px-3 py-2 outline-none"
-                  style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
-                />
-              </label>
-              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                npx executable
-                <div className="flex gap-2">
-                  <input
-                    aria-label="npx executable path"
-                    value={mcpExecutable}
-                    onChange={(event) => setMcpExecutable(event.currentTarget.value)}
-                    placeholder="Absolute path from which npx / where npx"
-                    className="min-w-0 flex-1 rounded-lg px-3 py-2 outline-none"
-                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
-                  />
-                  <Button size="sm" onClick={() => void browseProviderAgentImport(mcpExecutable).then((path) => path && setMcpExecutable(path))}>Browse</Button>
-                </div>
-              </label>
-              <div className="flex justify-end">
-                <Button
-                  aria-label="Add Playwright browser control"
-                  variant="primary"
-                  size="sm"
-                  leadingIcon={<MousePointerClick size={14} />}
-                  loading={mcpSaving}
-                  disabled={!mcpWorkspace.trim() || !mcpExecutable.trim()}
-                  onClick={() => {
-                    let configured: McpServerConfiguration[]
-                    try {
-                      const parsed = JSON.parse(mcpDraft)
-                      if (!Array.isArray(parsed)) throw new Error()
-                      configured = parsed as McpServerConfiguration[]
-                    } catch {
-                      setMcpMessage('Fix the advanced JSON before adding browser control.')
-                      return
-                    }
-                    let suffix = configured.length + 1
-                    while (configured.some((server) => server.id === `playwright-browser-${suffix}`)) suffix += 1
-                    const server: McpServerConfiguration = {
-                      id: `playwright-browser-${suffix}`,
-                      name: 'Playwright browser control',
-                      workspaceDirectory: mcpWorkspace.trim(),
-                      transport: 'stdio',
-                      command: mcpExecutable.trim(),
-                      args: ['-y', '@playwright/mcp@latest', '--isolated'],
-                      url: '',
-                      environment: [],
-                      headers: [],
-                      enabled: true,
-                    }
-                    const next = [...configured, server]
-                    setMcpSaving(true)
-                    setMcpMessage('')
-                    void setMcpServers(next).then((result) => {
-                      setMcpSaving(false)
-                      if (result.ok) {
-                        setMcpDraft(JSON.stringify(next, null, 2))
-                        setMcpDraftDirty(false)
-                      }
-                      setMcpMessage(result.ok ? 'Browser control saved. Start a new structured provider session to use it.' : result.error || 'Browser control configuration was rejected.')
-                    })
-                  }}
-                >Add browser control</Button>
-              </div>
+      const browserConfigured = mcpServers.some(server => server.enabled && server.transport === 'stdio' && workspaceKey(server.workspaceDirectory) === workspaceKey(mcpWorkspace) && server.args.some(arg => /^@playwright\/mcp(?:@|$)/.test(arg)))
+      return <div className="grid gap-4">
+        <div className="text-sm">Browser control</div>
+        <input aria-label="Browser control workspace directory" placeholder="Workspace directory" value={mcpWorkspace} disabled={mcpSaving} onChange={event => { setMcpWorkspace(event.currentTarget.value); setBrowserSetupSaved(false) }} className="rounded-lg px-3 py-2 text-sm" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+        <div>
+          {providers.map(provider => {
+            const supported = provider.supportsStructured !== false && ['gemini-acp','opencode-acp','copilot-acp'].includes(provider.structuredProtocol || providerMetadataForId(provider.id).structuredProtocol)
+            return <div key={provider.id} className="flex items-center gap-2 py-3 text-sm" style={{borderBottom:'1px solid var(--border)'}}>
+              <ProviderLogo providerId={provider.id}/><span className="flex-1">{providerDisplayName(provider,provider.id)}</span>
+              {!supported ? <span style={{color:'var(--text-3)'}}>Unavailable</span> : mcpSaving ? <span>Saving…</span> : browserConfigured ? <span>Configured</span> : <Button size="sm" aria-label={`Setup ${providerDisplayName(provider,provider.id)} browser control`} onClick={() => { setBrowserSetupProvider(provider.id); setBrowserSetupSaved(false); setMcpMessage('') }}>Setup</Button>}
             </div>
-            <label className="grid gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-              Advanced server configuration (JSON array)
-              <textarea
-                aria-label="MCP server configuration"
-                value={mcpDraft}
-                onChange={(event) => { setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage('') }}
-                spellCheck={false}
-                rows={16}
-                className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs outline-none"
-                style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
-              />
+          })}
+        </div>
+        {browserSetupProvider && <div className="grid gap-3">
+          <p className="text-xs">This configures browser tools for all supported providers in this workspace. The provider downloads and starts the tools in a new local structured chat.</p>
+          {!browserSetupSaved && <>
+            <label className="grid gap-1 text-xs">npx executable
+              <span className="flex gap-2"><input aria-label="npx executable path" placeholder="Absolute npx path" value={mcpExecutable} disabled={mcpSaving} onChange={event => setMcpExecutable(event.currentTarget.value)} className="min-w-0 flex-1 rounded-lg px-3 py-2" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+                <Button size="sm" disabled={mcpSaving} onClick={() => void browseProviderAgentImport(mcpExecutable).then(path => path && setMcpExecutable(path))}>Browse</Button>
+              </span>
             </label>
-            <div className="text-xs leading-5" style={{ color: 'var(--text-3)' }}>
-              Use an absolute workspaceDirectory. stdio requires an absolute command path. http and sse are localhost-only. Put secret values in environment variables and store only their names here. Changes apply to the next provider session.
-            </div>
-            {mcpMessage && <div role="status" className="text-xs" style={{ color: mcpMessage.includes('saved') ? 'var(--green)' : 'var(--red)' }}>{mcpMessage}</div>}
-            <div className="flex justify-end">
-              <IconButton variant="solid" icon={<Save size={15} />} label="Save MCP server configuration" disabled={mcpSaving} onClick={() => {
-                let parsed: unknown
-                try {
-                  parsed = JSON.parse(mcpDraft)
-                } catch {
-                  setMcpMessage('Enter valid JSON.')
-                  return
-                }
-                if (!Array.isArray(parsed)) {
-                  setMcpMessage('MCP server configuration must be a JSON array.')
-                  return
-                }
-                setMcpSaving(true)
-                setMcpMessage('')
-                void setMcpServers(parsed as McpServerConfiguration[]).then((result) => {
-                  setMcpSaving(false)
-                  if (result.ok) setMcpDraftDirty(false)
-                  setMcpMessage(result.ok ? 'MCP server configuration saved.' : result.error || 'MCP server configuration was rejected.')
-                })
-              }} />
-            </div>
-          </div>
-        </SectionCard>
-      )
+            <div className="flex gap-2"><Button size="sm" disabled={mcpSaving} onClick={() => setBrowserSetupProvider(null)}>Cancel</Button><Button size="sm" aria-label="Add Playwright browser control" aria-busy={mcpSaving || undefined} disabled={mcpSaving || !mcpWorkspace.trim() || !mcpExecutable.trim()} onClick={configureBrowserControl}>{mcpSaving ? 'Saving configuration…' : 'Save configuration'}</Button></div>
+          </>}
+          {browserSetupSaved && <Button size="sm" onClick={() => setBrowserSetupProvider(null)}>Done</Button>}
+        </div>}
+        {mcpMessage && <p role="status" className="text-xs">{mcpMessage}</p>}
+        <details>
+          <summary className="cursor-pointer py-2 text-sm">Advanced JSON</summary>
+          <textarea aria-label="MCP server configuration" value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+          <p className="text-xs">Use absolute workspace and executable paths. HTTP and SSE must use localhost. Reference secrets by environment-variable name. Changes apply to the next session.</p>
+        </details>
+      </div>
     }
 
     if (selectedSection === 'chat-data') {
@@ -2508,7 +2277,6 @@ export function SettingsModal() {
         <div className="space-y-4">
           <SectionCard
             title="Portable local chat bundle"
-            description="Move your complete local chat history between UAM installations without changing or deleting existing chats."
           >
             <div className="grid gap-4">
               <p className="text-xs leading-5" style={{ color: 'var(--text-2)' }}>
@@ -2528,7 +2296,7 @@ export function SettingsModal() {
                 <Button
                   size="sm"
                   leadingIcon={<Download size={14} />}
-                  loading={chatDataBusy === 'export'}
+                  aria-busy={chatDataBusy === 'export' || undefined}
                   disabled={chatDataBusy !== null}
                   onClick={() => void runChatDataAction('export')}
                 >
@@ -2538,7 +2306,7 @@ export function SettingsModal() {
                   size="sm"
                   variant="secondary"
                   leadingIcon={<FolderOpen size={14} />}
-                  loading={chatDataBusy === 'import'}
+                  aria-busy={chatDataBusy === 'import' || undefined}
                   disabled={chatDataBusy !== null}
                   onClick={() => void runChatDataAction('import')}
                 >
@@ -2556,7 +2324,6 @@ export function SettingsModal() {
       <div className="space-y-4">
         <SectionCard
           title="Universal Agent Manager"
-          description="Build and release information for the current application."
         >
           <div className="grid gap-3 text-xs">
             <div className="flex justify-between gap-3">
@@ -2571,7 +2338,6 @@ export function SettingsModal() {
         </SectionCard>
         <SectionCard
           title="Update checks"
-          description="Check UAM releases and installed provider CLIs at most once every 24 hours."
         >
           <Switch label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />
         </SectionCard>
@@ -2580,101 +2346,71 @@ export function SettingsModal() {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) requestClose() }}
-    >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-        tabIndex={-1}
-        className="rounded-2xl shadow-2xl w-full max-w-5xl mx-4 overflow-hidden flex flex-col"
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border-bright)',
-          height: 'min(760px, calc(100vh - 2rem))',
-        }}
-      >
-        {/* Header */}
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-            Settings
-          </span>
-          <IconButton
-            icon={<X size={16} />}
-            label="Close settings"
-            onClick={requestClose}
-          />
-        </div>
-
-        <div className="grid md:grid-cols-[220px_minmax(0,1fr)] min-h-[560px] flex-1 min-h-0">
-          <aside
-            className="p-4 overflow-y-auto"
-            style={{
-              background: 'color-mix(in srgb, var(--surface-up) 68%, var(--surface))',
-              borderRight: '1px solid var(--border)',
-            }}
-          >
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] mb-3" style={{ color: 'var(--text-3)' }}>
-              Preferences
+    <div className="flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
+      <div ref={dialogRef} role="region" aria-label="Settings" tabIndex={-1} className="w-full h-full min-h-0 flex flex-col overflow-hidden">
+        <div className="grid flex-1 min-h-0" style={{gridTemplateColumns:'200px minmax(0,1fr)'}}>
+          <aside className="min-h-0 flex flex-col px-3 py-3" style={{borderRight:'1px solid var(--border)',background:'var(--sidebar-bg)'}}>
+            <Button size="sm" variant="ghost" className="self-start mb-5" style={{paddingInline:8}} aria-label="Back to chats" leadingIcon={<ArrowLeft size={15} aria-hidden/>} disabled={mcpSaving || editorSaving || remoteBusy || themeSaving} onClick={requestClose}>Back to chats</Button>
+            <h1 className="text-lg font-semibold px-2 mb-3">Settings</h1>
+            <div className="uam-search-field flex items-center gap-2 px-2 rounded-md mb-5" style={{border:'1px solid var(--border)',background:'var(--surface)'}}>
+              <Search size={14} aria-hidden style={{color:'var(--text-3)',flexShrink:0}}/>
+              <input type="text" role="searchbox" aria-label="Search settings" placeholder="Search settings" value={settingsSearch} onChange={event => setSettingsSearch(event.target.value)} className="min-w-0 w-full py-2 text-xs" style={{background:'transparent',border:0,color:'var(--text)'}}/>
+              {settingsSearch && <IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/>}
             </div>
-            <div className="space-y-1">
-              {SETTINGS_SECTIONS.map((section) => {
-                const active = section.id === selectedSection
-                const SectionIcon = section.icon
-                return (
-                  <button
-                    key={section.id}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => {
-                      setSelectedSection(section.id)
-                      setOpenMemoryMenu(null)
-                      setOpenEditorMenu(null)
-                      setOpenCliVersionMenu(null)
-                    }}
-                    className="uam-choice-button w-full text-left px-3 py-2.5 rounded-xl"
-                    style={{
-                      background: active ? 'var(--surface)' : 'transparent',
-                      border: active ? '1px solid var(--border-bright)' : '1px solid transparent',
-                      boxShadow: active ? '0 8px 20px rgba(0, 0, 0, 0.08)' : 'none',
-                    }}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <SectionIcon size={15} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
-                      <div className="min-w-0"><div className="text-sm font-medium" style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}>{section.label}</div><div className="truncate text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>{section.detail}</div></div>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+            <nav aria-label="Settings pages" className="space-y-5 min-h-0 overflow-y-auto flex-1">
+              {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
+              {visibleSettingsGroups.map(group => <div key={group.label}>
+                <h2 className="px-2 mb-1 text-xs font-medium" style={{color:'var(--text-3)'}}>{group.label}</h2>
+                {group.sections.map(id => {
+                  const section = SETTINGS_SECTIONS.find(item => item.id === id)!
+                  const active = selectedSection === section.id
+                  const SectionIcon = section.icon
+                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-choice-button w-full flex items-center gap-2 text-left px-2 py-2" style={{background:active?'var(--surface-up)':'transparent',border:'none',color:active?'var(--text)':'var(--text-2)'}}><SectionIcon size={15} className="shrink-0" aria-hidden/><span className="text-sm">{section.label}</span></button>
+                })}
+              </div>)}
+            </nav>
           </aside>
-
-          <div className="p-5 md:p-6 overflow-y-auto min-h-0">
-            <div className="mb-5">
-              <div className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
-                {SETTINGS_SECTIONS.find((section) => section.id === selectedSection)?.label}
-              </div>
-              <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                {SETTINGS_SECTIONS.find((section) => section.id === selectedSection)?.detail}
-              </div>
-            </div>
-            <div key={selectedSection}>
-              {renderSectionContent()}
+          <div className="min-w-0 min-h-0 flex flex-col p-5 md:p-6 overflow-hidden">
+            <div className="w-full mx-auto min-h-0 flex-1 flex flex-col" style={{maxWidth: !themeDraft && (selectedSection === 'memory-store' || selectedSection === 'markdown-store') ? 1040 : 800}}>
+              {themeDraft ? <div className="overflow-y-auto">
+                <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
+                {renderThemeEditor()}
+                {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
+              </div> : <>
+                <div className="flex items-center justify-between gap-3 mb-5">
+                  <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
+                  <div className="flex items-center gap-2">
+                    <div id="settings-page-actions" className="flex items-center gap-2"/>
+                    {selectedSection === 'editors' && renderAddEditor()}
+                    {selectedSection === 'mcp-servers' && renderMcpSave()}
+                  </div>
+                </div>
+                <div key={selectedSection} className={`flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto'}`}>{renderSectionContent()}</div>
+              </>}
             </div>
           </div>
         </div>
-
       </div>
+      {editorExit && <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
+        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="max-w-md p-5 space-y-4 rounded-xl" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
+          <h2 className="text-sm font-semibold">Save editor changes?</h2>
+          {editorError && <p role="alert" className="text-xs">{editorError}</p>}
+          <div className="flex gap-2"><Button autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button><Button disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button><Button disabled={editorSaving} onClick={async () => {
+            const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
+            if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
+          }}>Save</Button></div>
+        </div>
+      </div>}
+      {themeExit && <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
+        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="max-w-md rounded-xl p-5 space-y-4" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
+          <h2 className="text-sm font-semibold">Save theme changes?</h2>
+          <div className="flex gap-2"><Button autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button><Button disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button><Button disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button></div>
+          {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
+        </div>
+      </div>}
       {remotePreview && (
 		<div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
-		  <div role="dialog" aria-modal="true" aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+		  <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
 			<div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
 			  <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
 			  <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
@@ -2704,34 +2440,34 @@ export function SettingsModal() {
 			</div>
 			<div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
 			  <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-			  <Button size="sm" variant="primary" loading={remoteBusy} disabled={Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
+			  <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
 			</div>
 		  </div>
 		</div>
 	  )}
       {confirmDiscard && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
-          <div role="alertdialog" aria-modal="true" aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
             <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Discard MCP changes?</div>
             <p className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
             <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
               <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
-              <Button size="sm" variant="danger" onClick={() => setSettingsOpen(false)}>Discard changes</Button>
+              <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
             </div>
           </div>
         </div>
       )}
       {pendingDelete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
             <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
             <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</div>
             <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button size="sm" onClick={() => setPendingDelete(null)}>Cancel</Button>
-              <Button size="sm" variant="danger" onClick={() => {
-                if (pendingDelete.kind === 'theme') void removeSelectedTheme()
-                else saveEditorSettings(editorAssociationsDraft.filter((item) => item.id !== pendingDelete.id))
-                setPendingDelete(null)
+              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <span role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</span>}
+              <Button size="sm" disabled={themeSaving || editorSaving} onClick={() => setPendingDelete(null)}>Cancel</Button>
+              <Button size="sm" variant="danger" disabled={themeSaving || editorSaving} onClick={async () => {
+                const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
+                if (deleted) setPendingDelete(null)
               }}>Delete permanently</Button>
             </div>
           </div>
@@ -2739,4 +2475,4 @@ export function SettingsModal() {
       )}
     </div>
   )
-}
+})

@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Download, FolderPlus, RefreshCw, SquareTerminal, TriangleAlert, X } from 'lucide-react'
+import { FolderPlus, Monitor, RefreshCw, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import type { Provider } from '../../types/provider'
+import { SelectionGrid } from '../shared/SelectionGrid'
+import { StatusIndicator } from '../shared/StatusIndicator'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities, providerRuntimeDescription } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
@@ -23,8 +26,6 @@ export function NewChatModal() {
   const providerModelCatalogs = useAppStore(useShallow((s) => s.providerModelCatalogs))
   const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
-  const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
-  const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const addFolder = useAppStore((s) => s.addFolder)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
@@ -34,6 +35,7 @@ export function NewChatModal() {
   const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
+  const initialIsRemote = Boolean(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local')
   const initialProviderId =
     providers.some((provider) => provider.id === defaultNewChatProviderId)
       ? defaultNewChatProviderId
@@ -41,8 +43,8 @@ export function NewChatModal() {
   const [providerId, setProviderId] = useState(initialProviderId)
 	const [executionHostId, setExecutionHostId] = useState(initialFolder?.executionHostId || 'local')
 	const [remoteWorkspace, setRemoteWorkspace] = useState(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local' ? initialFolder.directory : '')
-  const [modelId, setModelId] = useState(providerChatDefaults[initialProviderId]?.modelId ?? '')
-  const [reasoningEffort, setReasoningEffort] = useState(providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [modelId, setModelId] = useState(initialIsRemote ? '' : providerChatDefaults[initialProviderId]?.modelId ?? '')
+  const [reasoningEffort, setReasoningEffort] = useState(initialIsRemote ? '' : providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
   const [creatingChat, setCreatingChat] = useState(false)
   const [chatError, setChatError] = useState('')
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
@@ -51,6 +53,9 @@ export function NewChatModal() {
   const nameRef = useRef<HTMLInputElement>(null)
   const creatingChatRef = useRef(false)
   const discoveryRequestedRef = useRef(new Set<string>())
+  const workspaceChoices = useRef<Record<string, { folderId: string | null; path: string }>>({})
+  const providerChoices = useRef<Record<string, { modelId: string; effort: string }>>({})
+  const requestedFolderRef = useRef(initialFolder?.id === newChatFolderId ? newChatFolderId : null)
 
   const requestClose = useCallback(() => {
     if (creatingChatRef.current) return
@@ -67,6 +72,7 @@ export function NewChatModal() {
       return
     }
 
+    if (folderId === null && executionHostId !== 'local') return
     const folderExists = folderId !== null && folders.some((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId)
     if (!folderExists) {
 	  const compatible = folders.find((folder) => (folder.executionHostId || 'local') === executionHostId)
@@ -76,9 +82,10 @@ export function NewChatModal() {
   }, [executionHostId, folders, folderId])
 
   useEffect(() => {
-    if (newChatFolderId === null) return
+    if (newChatFolderId === null || requestedFolderRef.current === newChatFolderId) return
     const folder = folders.find((candidate) => candidate.id === newChatFolderId)
     if (folder) {
+      requestedFolderRef.current = newChatFolderId
       setFolderId(newChatFolderId)
 	  setExecutionHostId(folder.executionHostId || 'local')
 	  if ((folder.executionHostId || 'local') !== 'local') setRemoteWorkspace(folder.directory)
@@ -114,57 +121,64 @@ export function NewChatModal() {
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
-  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0] ?? null
-	const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId) ?? executionHosts[0]
-	const isRemote = selectedExecutionHost?.transport === 'ssh'
-  const selectedProviderReadiness = cliVersionManager.providers.find((provider) => provider.providerId === providerId)
-  const readinessStatus = selectedProviderReadiness?.status ?? 'unknown'
-  const remoteUnavailable = isRemote && selectedExecutionHost?.runnerStatus !== 'ready'
-  const structuredCreationBlocked = remoteUnavailable || (!isRemote && (readinessStatus === 'checking' ||
-    readinessStatus === 'installing' ||
-    readinessStatus === 'known-incompatible' ||
-    readinessStatus === 'unavailable'))
-  const terminalCreationBlocked = remoteUnavailable || (!isRemote && (readinessStatus === 'unavailable' ||
-    (providerId === COPILOT_CLI_PROVIDER_ID && readinessStatus === 'known-incompatible')))
-  const supportedInstallVersion = selectedProviderReadiness?.preferredVersion ||
-    selectedProviderReadiness?.availableVersions.find((version) => version.preferred)?.version ||
-    selectedProviderReadiness?.selectedVersion || ''
-  const localReadinessMessage = selectedProviderReadiness?.message || ({
-    unknown: 'Provider readiness has not been checked yet.',
-    checking: 'Checking whether this provider CLI can start structured chats…',
-    installing: 'Installing a supported provider CLI version…',
-    verified: 'This provider CLI is verified for structured chat.',
-    untested: 'This provider CLI version is untested. Structured chat may still work.',
-    'untested-newer': 'This provider CLI is newer than the verified range. Structured chat may still work.',
-    'known-incompatible': 'This provider CLI version is known to be incompatible with structured chat.',
-    unavailable: 'This provider CLI is unavailable for structured chat.',
-    'provider-managed': 'CLI compatibility is managed by this provider.',
-  } as const)[readinessStatus]
-  const readinessMessage = isRemote
-    ? selectedExecutionHost?.runnerStatus === 'ready'
-      ? `Remote runner ${selectedExecutionHost.runnerVersion || 'ready'} on ${selectedExecutionHost.label}.`
-      : `Remote runner is ${selectedExecutionHost?.runnerStatus || 'unavailable'}. Configure it before starting chats.`
-    : localReadinessMessage
+  const selectedProvider = providers.find((provider) => provider.id === providerId)
+  const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId)
+  const isRemote = executionHostId !== 'local'
+  const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
+    : isRemote && selectedExecutionHost.runnerStatus !== 'ready'
+      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
 
-  const handleCreate = async (terminalFallback = false) => {
-    if (creatingChatRef.current || (!isRemote && selectedFolder === null)) {
-      return
+  // Use the same availability rules for the grid and the Create action.
+  const providerAvailability = (provider: Provider | undefined) => {
+    const readiness = !isRemote ? cliVersionManager.providers.find((item) => item.providerId === provider?.id) : undefined
+    const status = readiness?.status ?? 'unknown'
+    const structuredBlocked = !provider || provider.supportsStructured === false ||
+      (!isRemote && ['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status))
+    const terminalBlocked = !provider || provider.supportsCli === false ||
+      (!isRemote && (status === 'unavailable' || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
+    const issues: string[] = []
+    if (!provider) issues.push('No provider is available. Configure a provider in Settings.')
+    else {
+      if (provider.supportsStructured === false) issues.push('This provider does not support structured chat. Choose another provider or check Settings.')
+      if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
+      if (!isRemote && !['verified', 'provider-managed'].includes(status)) {
+        const message = readiness?.message || ({
+          unknown: 'Provider readiness has not been checked.',
+          checking: 'Checking provider compatibility.',
+          installing: 'Installing the provider CLI.',
+          untested: 'This provider version has not been verified for structured chat.',
+          'untested-newer': 'This provider version is newer than the verified range.',
+          'known-incompatible': 'This provider version is incompatible with structured chat.',
+          unavailable: 'The provider CLI is unavailable.',
+        } as Record<string, string>)[status]
+        issues.push(`${message}${provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible' ? ' Terminal fallback is also unavailable.' : ''} Check Settings > CLI Version.`)
+      }
     }
-    if ((!terminalFallback && structuredCreationBlocked) || (terminalFallback && terminalCreationBlocked)) return
+    return { structuredBlocked, terminalBlocked, issues }
+  }
+  const availability = providerAvailability(selectedProvider)
+  const structuredCreationBlocked = Boolean(hostIssue) || availability.structuredBlocked
+  const terminalCreationBlocked = Boolean(hostIssue) || availability.terminalBlocked
+  const terminalFallback = structuredCreationBlocked && !terminalCreationBlocked
 
+  const handleCreate = async () => {
+    if (creatingChatRef.current || !canCreate || (structuredCreationBlocked && terminalCreationBlocked)) return
     creatingChatRef.current = true
     setCreatingChat(true)
     setChatError('')
     const n = name.trim() || 'New chat'
-	const effort = reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
-	const created = isRemote
-	  ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
-	  : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
-    if (!created) {
-      creatingChatRef.current = false
-      setCreatingChat(false)
+    const effort = reasoningOptions.length === 0 ? '' : reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
+    try {
+      const created = isRemote
+        ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
+        : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
+      if (created) return // The store closes the modal only after successful creation.
       setChatError('The chat could not be created. Check the workspace and provider, then try again.')
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'The chat could not be created. Try again.')
     }
+    creatingChatRef.current = false
+    setCreatingChat(false)
   }
 
 	const providerSessions = sessions.filter((session) => session.providerId === providerId)
@@ -182,7 +196,7 @@ export function NewChatModal() {
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
 	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
 	const capabilities = providerCapabilities(providerId, selectedProvider ?? undefined)
-	const reasoningOptions = capabilities.hasReasoningEffort || runtimeSupportsReasoning
+	const reasoningOptions = (capabilities.hasReasoningEffort || runtimeSupportsReasoning) && !(selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length === 0)
 	  ? buildCodexReasoningOptions(
 	      cachedAcp,
 	      selectedModelId,
@@ -191,7 +205,7 @@ export function NewChatModal() {
 	    )
 	  : []
   const requestModelDiscovery = () => {
-	if (!selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
+	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
 	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
 	discoveryRequestedRef.current.add(discoveryKey)
 	void discoverProviderModels(isRemote ? '' : discoverySession?.id ?? '', providerId, selectedWorkspace, executionHostId)
@@ -201,18 +215,45 @@ export function NewChatModal() {
 	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)) || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
 	if (!isRemote) requestModelDiscovery()
 	}, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, executionHostId, isRemote, providerId, selectedExecutionHost?.platform, selectedWorkspace, structuredCreationBlocked])
-  const canCreate = isRemote
+  const canCreate = Boolean(selectedExecutionHost) && (isRemote
     ? isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)
-    : selectedFolder !== null && Boolean(selectedWorkspace)
+    : selectedFolder !== null && Boolean(selectedWorkspace))
 
+  const workspaceIssue = workspaceError || (!canCreate
+    ? isRemote ? 'Enter an absolute workspace path.' : 'Choose a workspace.' : '')
   const createWorkspace = async () => {
+    if (creatingWorkspace) return
     setCreatingWorkspace(true)
     setWorkspaceError('')
-    const directory = await browseFolderDirectory('')
-    const name = directory?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Workspace'
-    const created = directory ? await addFolder(name, null, directory) : false
-    setCreatingWorkspace(false)
-    if (directory && !created) setWorkspaceError('The workspace could not be created. Choose another folder.')
+    try {
+      const directory = await browseFolderDirectory('')
+      const workspaceName = directory?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Workspace'
+      const created = directory ? await addFolder(workspaceName, null, directory) : false
+      if (directory && !created) setWorkspaceError('The workspace could not be created. Choose another folder.')
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : 'The workspace could not be created. Try again.')
+    } finally {
+      setCreatingWorkspace(false)
+    }
+  }
+
+  const chooseProvider = (nextProviderId: string, nextHostId = executionHostId) => {
+    providerChoices.current[`${executionHostId}\n${providerId}`] = { modelId, effort: reasoningEffort }
+    const saved = providerChoices.current[`${nextHostId}\n${nextProviderId}`]
+    const defaults = nextHostId === 'local' ? providerChatDefaults[nextProviderId] : undefined
+    setProviderId(nextProviderId)
+    setModelId(saved?.modelId ?? defaults?.modelId ?? '')
+    setReasoningEffort(saved?.effort ?? defaults?.reasoningEffort ?? '')
+  }
+  const chooseHost = (hostId: string) => {
+    workspaceChoices.current[executionHostId] = { folderId, path: remoteWorkspace }
+    const saved = workspaceChoices.current[hostId]
+    const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
+    chooseProvider(providerId, hostId)
+    setExecutionHostId(hostId)
+    setFolderId(saved ? saved.folderId : compatible?.id ?? null)
+    setRemoteWorkspace(saved ? saved.path : hostId !== 'local' ? compatible?.directory ?? '' : '')
+    setWorkspaceError('')
   }
 
   return (
@@ -244,24 +285,22 @@ export function NewChatModal() {
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             New chat
           </span>
-          <IconButton icon={<X size={16} />} label="Close new chat" disabled={creatingChat} onClick={requestClose} />
+          <IconButton icon={<X size={16} />} variant="danger" label="Close new chat" disabled={creatingChat} onClick={requestClose} />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-5">
           {/* Name */}
           <div>
-            <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
-              Chat name
-            </label>
             <input
               ref={nameRef}
+              aria-label="Chat name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void handleCreate(false)
+                if (e.key === 'Enter') void handleCreate()
               }}
-              placeholder="e.g. API Design Review"
+              placeholder="Chat name"
               className="w-full rounded-md px-3 py-2 text-sm outline-none transition-all duration-150"
               style={{
                 background: 'var(--surface-up)',
@@ -273,6 +312,24 @@ export function NewChatModal() {
               onBlur={(e) => { e.target.style.borderColor = 'var(--border)' }}
             />
           </div>
+
+          <div>
+          <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text)' }}>Runs on</div>
+          <SelectionGrid
+            label="Runs on"
+            value={executionHostId}
+            options={executionHosts.map((host) => ({
+              id: host.id,
+              label: host.label,
+              icon: <Monitor size={18} aria-hidden />,
+              disabled: creatingChat || (host.transport === 'ssh' && host.runnerStatus !== 'ready'),
+              issues: host.transport === 'ssh' && host.runnerStatus !== 'ready'
+                ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
+            }))}
+            onChange={chooseHost}
+          />
+          </div>
+          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{hostIssue}</p>}
 
           {/* Folder */}
           {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
@@ -297,48 +354,27 @@ export function NewChatModal() {
             </div>
           )}
 
-          {executionHosts.length > 1 && (
-            <div>
-              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
-                Runs on
-              </label>
-              <MenuSelect
-                label="Execution host"
-                value={executionHostId}
-                options={executionHosts.map((host) => ({
-                  value: host.id,
-                  label: host.label,
-                  description: host.transport === 'local'
-                    ? 'This computer'
-                    : `${host.sshAlias} · ${host.runnerStatus}`,
-                }))}
-                onChange={(hostId) => {
-                  setExecutionHostId(hostId)
-				  const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
-				  setFolderId(compatible?.id ?? null)
-				  setRemoteWorkspace(hostId !== 'local' ? compatible?.directory ?? '' : '')
-				  setModelId(hostId === 'local' ? providerChatDefaults[providerId]?.modelId ?? '' : '')
-				  setReasoningEffort(hostId === 'local' ? providerChatDefaults[providerId]?.reasoningEffort ?? '' : '')
-                }}
-              />
-            </div>
-          )}
-
           {isRemote && (
             <div>
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Remote workspace path
               </label>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
+                <div className="relative min-w-0 flex-1">
                 <input
+                  aria-label="Remote workspace path"
+                  aria-invalid={!canCreate || undefined}
+                  aria-describedby={workspaceIssue ? 'new-chat-workspace-error' : undefined}
                   type="text"
                   value={remoteWorkspace}
                   onChange={(event) => setRemoteWorkspace(event.target.value)}
                   readOnly={selectedFolder !== null}
                   placeholder="/absolute/path/on/selected/host"
-                  className="min-w-0 flex-1 rounded-md px-3 py-2 text-sm outline-none"
+                  className="w-full rounded-md pl-3 pr-10 py-2 text-sm outline-none"
                   style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--font-mono)' }}
                 />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2"><StatusIndicator issues={workspaceIssue ? [workspaceIssue] : []} okLabel="Absolute workspace path" /></span>
+                </div>
                 {!selectedFolder && (
                   <Button
                     variant="secondary"
@@ -356,98 +392,38 @@ export function NewChatModal() {
             </div>
           )}
 
-          {!selectedFolder && !isRemote && (
-            <div role="alert" className="rounded-lg p-3 animate-fade-in" style={{ background: 'color-mix(in srgb, var(--yellow) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))' }}>
-              <div className="flex items-start gap-2">
-                <TriangleAlert size={16} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0 }} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>A workspace is required</div>
-                  <p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>Agents cannot start a chat without a valid workspace folder.</p>
-                  {workspaceError && <p className="mt-1 text-xs" style={{ color: 'var(--red)' }}>{workspaceError}</p>}
-                  <Button className="mt-3" variant="secondary" size="sm" leadingIcon={<FolderPlus size={14} />} disabled={creatingWorkspace} onClick={() => void createWorkspace()}>
-                    {creatingWorkspace ? 'Choosing…' : 'Create workspace'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {providers.length > 1 && (
-            <div>
-              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
-                Provider
-              </label>
-              <MenuSelect
-                label="Provider"
-                value={providerId}
-                options={providers.map((provider) => ({
-                  value: provider.id,
-                  label: provider.shortName || provider.name,
-                  description: providerRuntimeDescription(provider, provider.id),
-                  icon: <ProviderLogo providerId={provider.id} />,
-                }))}
-                onChange={(nextProviderId) => {
-                  setProviderId(nextProviderId)
-                  setModelId(isRemote ? '' : providerChatDefaults[nextProviderId]?.modelId ?? '')
-				  setReasoningEffort(isRemote ? '' : providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
-                }}
-              />
-            </div>
-          )}
-
-          <div
-            role={structuredCreationBlocked ? 'alert' : 'status'}
-            className="rounded-lg p-3"
-            style={{
-              background: structuredCreationBlocked
-                ? 'color-mix(in srgb, var(--yellow) 10%, var(--surface))'
-                : 'var(--surface-up)',
-              border: `1px solid ${structuredCreationBlocked ? 'color-mix(in srgb, var(--yellow) 35%, var(--border))' : 'var(--border)'}`,
-            }}
-          >
-            <div className="flex items-start gap-2">
-              {structuredCreationBlocked && <TriangleAlert size={15} aria-hidden style={{ color: 'var(--yellow)', flexShrink: 0, marginTop: 1 }} />}
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Provider readiness</div>
-                <p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>{readinessMessage}</p>
-                {structuredCreationBlocked && (
-                  <p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    {terminalCreationBlocked
-                      ? 'Terminal fallback also requires an installed, compatible provider CLI.'
-                      : 'Terminal fallback remains available and does not require structured compatibility.'}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {!isRemote && readinessStatus !== 'checking' && readinessStatus !== 'installing' && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon={<RefreshCw size={13} />}
-                  disabled={Boolean(selectedProviderReadiness?.running)}
-                  onClick={() => void refreshCliProviderVersion(providerId)}
-                >
-                  Check again
-                </Button>
-              )}
-              {!isRemote && (readinessStatus === 'known-incompatible' || readinessStatus === 'unavailable') && supportedInstallVersion && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon={<Download size={13} />}
-                  disabled={Boolean(selectedProviderReadiness?.running)}
-                  onClick={() => void applyCliProviderVersion(providerId, supportedInstallVersion)}
-                >
-                  Install supported version
-                </Button>
-              )}
-            </div>
+          {!selectedFolder && !isRemote && <div className="flex items-center gap-2">
+            <Button className="flex-1" variant="secondary" size="sm" leadingIcon={<FolderPlus size={14} />} disabled={creatingWorkspace} onClick={() => void createWorkspace()}>
+              {creatingWorkspace ? 'Choosing…' : 'Choose workspace'}
+            </Button>
+            <StatusIndicator issues={[workspaceIssue]} />
+          </div>}
+          {workspaceIssue && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{workspaceIssue}</p>}
+          <div>
+          <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text)' }}>Provider</div>
+          <SelectionGrid
+            label="Provider"
+            value={providerId}
+            options={providers.map((provider) => {
+              const state = providerAvailability(provider)
+              return {
+                id: provider.id,
+                label: provider.shortName || provider.name,
+                icon: <ProviderLogo providerId={provider.id} />,
+                disabled: creatingChat || (state.structuredBlocked && state.terminalBlocked),
+                issues: state.issues,
+              }
+            })}
+            onChange={chooseProvider}
+          />
           </div>
+          {availability.issues.length > 0 && <p className="text-xs" style={{ color: 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
+          {terminalFallback && <p role="status" className="flex items-center gap-2 text-xs" style={{ color: 'var(--text)' }}><SquareTerminal size={14} aria-hidden />Creates a terminal chat. Structured chat is unavailable.</p>}
 
+          <div role="group" aria-label="Model and reasoning" className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-start">
           <div>
             <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
-            <MenuSelect
+            <div className="flex items-center gap-2"><div className="min-w-0 flex-1"><MenuSelect
               label="Model"
               value={selectedModelId}
               options={modelOptions.map((option) => ({
@@ -459,9 +435,11 @@ export function NewChatModal() {
 				setModelId(nextModelId)
 				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
               }}
-            />
+            /></div>
+            <StatusIndicator issues={cachedAcp?.modelRefreshError ? [cachedAcp.modelRefreshError] : cachedAcp?.modelsLoading ? ['Discovering models.'] : []} okLabel="Model options available" />
+            </div>
 			{isRemote && (
-			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={!canCreate || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
+			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={!canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
 				{cachedAcp?.modelsLoading ? 'Discovering remote models…' : 'Discover remote models'}
 			  </Button>
 			)}
@@ -486,6 +464,7 @@ export function NewChatModal() {
 			  />
 			</div>
 		  )}
+          </div>
         </div>
 
         {remoteBrowserOpen && selectedExecutionHost && (
@@ -507,31 +486,14 @@ export function NewChatModal() {
           style={{ borderTop: '1px solid var(--border)' }}
         >
           <Button
-            variant="ghost"
-            size="md"
-            onClick={requestClose}
-            disabled={creatingChat}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="secondary"
-            size="md"
-            leadingIcon={<SquareTerminal size={15} />}
-            onClick={() => void handleCreate(true)}
-            disabled={!canCreate || terminalCreationBlocked}
-            loading={creatingChat}
-          >
-            Create terminal chat
-          </Button>
-          <Button
+            block
             variant="primary"
             size="md"
-            onClick={() => void handleCreate(false)}
-            disabled={!canCreate || structuredCreationBlocked}
-            loading={creatingChat}
+            onClick={() => void handleCreate()}
+            disabled={creatingChat || !canCreate || (structuredCreationBlocked && terminalCreationBlocked)}
+            aria-busy={creatingChat || undefined}
           >
-            Create structured chat
+            {creatingChat ? 'Creating…' : 'Create'}
           </Button>
         </div>
       </div>

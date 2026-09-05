@@ -225,9 +225,8 @@ describe('MemoryLibraryModal all memory scope', () => {
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
-    expect(host.textContent).not.toContain('New memory')
-
-    clickButton(host, 'Add memory')
+    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(host, 'Go back')
     expect((Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
 
     clickButton(host, 'Delete Global lesson')
@@ -237,7 +236,8 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.textContent).not.toContain('New memory')
+    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(host, 'Discard')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).toHaveBeenCalledTimes(1)
 

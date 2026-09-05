@@ -322,16 +322,33 @@ describe('chatSearch', () => {
     expect(visibleSessionIds(searchModel('', folders, sessions, { providerIds: [], statusIds: ['attention'] }, context))).toEqual([])
   })
 
-  it('uses OR behavior between search text and active filters', () => {
+  it('requires search text and active filters to match the same chat', () => {
     const folders = [makeFolder('general')]
     const sessions = [
       makeSession('s-search', 'Needle Chat', 'general', now, now, false, 'gemini-cli'),
+      makeSession('s-match', 'Needle Codex Chat', 'general', now, now, false, 'codex-cli'),
       makeSession('s-provider', 'Other Chat', 'general', now, now, false, 'codex-cli'),
       makeSession('s-miss', 'Plain Chat', 'general', now, now, false, 'gemini-cli'),
     ]
 
     const model = searchModel('needle', folders, sessions, { providerIds: ['codex-cli'], statusIds: [] })
 
-    expect(visibleSessionIds(model)).toEqual(['s-provider', 's-search'])
+    expect(visibleSessionIds(model)).toEqual(['s-match'])
   })
+  it('ANDs provider and state groups while ORing selections within each group, including deep search', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('codex', 'Match', 'general', now, now, false, 'codex-cli'),
+      makeSession('gemini', 'Match', 'general', now, now, true, 'gemini-cli'),
+      makeSession('other', 'Match', 'general', now, now, true, 'claude-code'),
+      makeSession('idle', 'Match', 'general', now, now, false, 'codex-cli'),
+    ]
+    const filters: ChatSearchFilters = { providerIds: ['codex-cli', 'gemini-cli'], statusIds: ['running', 'pinned'] }
+    const context = { acpBindingBySessionId: { codex: { processing: true } } }
+    expect(visibleSessionIds(searchModel('match', folders, sessions, filters, context))).toEqual(['gemini', 'codex'])
+    const model = buildChatSearchModel(folders, sessions, buildChatSearchIndex(sessions), ['contents'], new Set(['gemini', 'idle', 'other']), filters, context)
+    expect(visibleSessionIds(model)).toEqual(['gemini'])
+    expect(visibleSessionIds(buildChatSearchModel(folders, sessions, buildChatSearchIndex(sessions), ['contents'], new Set(), filters, context))).toEqual([])
+  })
+
 })

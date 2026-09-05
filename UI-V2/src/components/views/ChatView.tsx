@@ -51,7 +51,6 @@ import {
   selectedRuntimeModel,
 } from '../chat/modelOptions'
 import {
-  AcpErrorDetails,
   buildAcpErrorCopyText,
   CopyTextButton,
   diagnosticTail,
@@ -91,6 +90,7 @@ import {
   type ComposerIconName,
   ComposerIcon,
   ComposerToolbar,
+  ComposerAgentSelector,
   permissionModeIcon,
   permissionModeForTier,
   providerConfigVariantOptions,
@@ -447,6 +447,16 @@ function ProviderHandoffDialog({
   )
 }
 
+/** Attribute each turn from its recorded metadata, independently of current provider/model settings. */
+export function reviewAssistantLabel(provider: string, message?: Message) {
+  const model = message?.modelId?.trim() || ''
+  const date = message?.createdAt
+  const time = date && Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
+  return [provider, model, time].filter(Boolean).join(' · ')
+}
+
 type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
@@ -741,7 +751,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
-  const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const openSubAgentSession = useAppStore((s) => s.openSubAgentSession)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
@@ -1493,7 +1502,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     : ''
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
-  const currentErrorTitle = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)} error`
+  const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
+  const currentErrorTitle = `${currentErrorSource} error`
   const currentAcpErrorKey = acp?.lastError ? `${session.id}:${acp.lastError}` : ''
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
@@ -2303,7 +2313,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     {shouldRenderTimelineAtAssistant ? (
                       <MessageFrame
                         role={message.role}
-                        assistantLabel={messageProviderName}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         copyText={message.content}
                         goalReview={Boolean(goalReviewForMessage(message))}
                         streaming={Boolean(acp?.processing)}
@@ -2336,7 +2346,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       <PersistedMessageRow
                         message={message}
                         index={index}
-                        assistantLabel={messageProviderName}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         sessionId={session.id}
                         sessionParentChatId={session.parentChatId}
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
@@ -2363,7 +2373,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       <MessageFrame
                         key={`turn-${turnSerial}-after-user`}
                         role="assistant"
-                        assistantLabel={currentProviderName}
+                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                         streaming={Boolean(acp?.processing)}
                       >
                         <TurnTimelineContent
@@ -2408,7 +2418,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 <MessageFrame
                   key={`turn-${turnSerial}-fallback`}
                   role="assistant"
-                  assistantLabel={currentProviderName}
+                  assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                   streaming={Boolean(acp?.processing)}
                 >
                   <TurnTimelineContent
@@ -2593,53 +2603,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               </Notice>
             )}
             {acp?.lastError && currentAcpErrorKey !== dismissedAcpErrorKey && (
-              <Notice
-                key={`acp:${currentAcpErrorKey}`}
-                tone="error"
-                title={currentErrorTitle}
-                dismissLabel="Dismiss composer error"
-                onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
-                actions={(
-                  <>
-                    <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
-                    {acp.lifecycleState === 'error' && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Check provider CLI"
-                          onClick={() => void refreshCliProviderVersion(currentProviderId)}
-                        >
-                          Check CLI
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Open CLI settings"
-                          onClick={() => setSettingsOpen(true)}
-                        >
-                          CLI settings
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Open fallback terminal"
-                          disabled={!onOpenTerminalFallback}
-                          onClick={onOpenTerminalFallback}
-                        >
-                          Open terminal
-                        </Button>
-                      </>
-                    )}
-                  </>
-                )}
+              <div
+                role="alert"
+                className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
+                style={{
+                  border: '1px solid color-mix(in srgb, var(--red) 42%, var(--border))',
+                  background: 'color-mix(in srgb, var(--red) 9%, var(--surface))',
+                  color: 'var(--red)',
+                }}
               >
-                <span style={{ color: 'var(--red)', fontWeight: 600 }}>{currentErrorTitle}</span>
-                <span style={{ color: 'var(--text-2)' }}> · </span>
-                {acp.lastError}
-                <AcpErrorDetails acp={acp} title={currentErrorTitle} />
-              </Notice>
-              )}
+                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {acp.lastError}</span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                  <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
+                </span>
+              </div>
+            )}
             {claudePlanPrompt !== null && (
               <Notice
                 tone="warning"
@@ -2903,6 +2882,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 )}
               </div>
             )}
+            <div className="uam-composer-input-row">
+              {featurePreference === 'uam' && <ComposerAgentSelector
+                agents={uamAgents}
+                agentId={selectedUamAgentId}
+                nextTurn={Boolean(providerAcp?.processing)}
+                onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
+              />}
+
             <textarea
               ref={composerTextareaRef}
               value={draft}
@@ -2937,6 +2924,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 outline: 'none',
               }}
             />
+            </div>
             <input
               ref={fileInputRef}
               type="file"

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent } from './MessageBlocks'
 import { ToolCallModal } from './ToolCallViews'
+import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -72,16 +73,17 @@ describe('working transcript', () => {
 
     expect(summary?.open).toBe(false)
     expect(summary?.textContent).toContain('Worked for 1m 23s')
-    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('/bin/zsh -lc "rg TODO src" · completed')
+    expect(summary?.querySelector('summary')?.textContent).toBe('Worked for 1m 23s')
+    expect(summary?.querySelector('.conversation-work__divider')).toBeTruthy()
     expect(summary?.textContent).not.toContain('I will inspect the workspace first.')
     expect(summary?.textContent).not.toContain('The workspace is clean.')
-    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
-    expect(summary?.querySelector('.uam-tool-row')).toBeNull()
+    expect(summary?.querySelector('.conversation-work__reasoning')).toBeNull()
+    expect(summary?.querySelector('.conversation-work__tool')).toBeNull()
 
     act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(summary?.open).toBe(true)
-    expect(summary?.querySelector('[data-testid="thinking-block"]')?.textContent).toContain('Checking the code paths.')
-    expect(summary?.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
+    expect(summary?.textContent).toContain('Checking the code paths.')
+    expect(summary?.querySelector('.conversation-work__tool')?.textContent).toContain('/bin/zsh')
 
     act(() => root.unmount())
     host.remove()
@@ -115,10 +117,11 @@ describe('working transcript', () => {
 
     const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
     expect(summary?.textContent).toContain('Worked for 1m 23s')
-    expect(summary?.querySelector('.uam-working-summary__last')?.textContent).toBe('/bin/zsh -lc "rg TODO src" · completed')
+    expect(summary?.querySelector('summary')?.textContent).toBe('Worked for 1m 23s')
+    expect(summary?.querySelector('.conversation-work__divider')).toBeTruthy()
     expect(host.textContent).toContain('Finished.')
-    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeNull()
-    expect(summary?.querySelector('.uam-tool-row')).toBeNull()
+    expect(summary?.querySelector('.conversation-work__reasoning')).toBeNull()
+    expect(summary?.querySelector('.conversation-work__tool')).toBeNull()
 
     act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(summary?.textContent).toContain('Latest reasoning update.')
@@ -152,13 +155,13 @@ describe('working transcript', () => {
 
     const text = host.textContent ?? ''
     expect(text.indexOf('Worked for 12s')).toBeLessThan(text.indexOf('Final answer.'))
-    expect(host.querySelector('[data-testid="working-summary"] [data-testid="thinking-block"]')).toBeNull()
-    expect(host.querySelector('[data-testid="working-summary"] .uam-tool-row')).toBeNull()
+    expect(host.querySelector('[data-testid="working-summary"] .conversation-work__reasoning')).toBeNull()
+    expect(host.querySelector('[data-testid="working-summary"] .conversation-work__tool')).toBeNull()
 
     const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
     act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
-    expect(summary?.querySelector('.uam-tool-row')).toBeTruthy()
+    expect(summary?.querySelector('.conversation-work__reasoning')).toBeTruthy()
+    expect(summary?.querySelector('.conversation-work__tool')).toBeTruthy()
 
     act(() => root.unmount())
     host.remove()
@@ -169,11 +172,109 @@ describe('working transcript', () => {
     const summary = host.querySelector('[data-testid="working-summary"]') as HTMLDetailsElement | null
 
 	expect(summary?.open).toBe(true)
-	expect(summary?.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
-	expect(summary?.querySelector('.uam-tool-row')?.textContent).toContain('/bin/zsh')
+	expect(summary?.querySelector('.conversation-work__reasoning')).toBeTruthy()
+	expect(summary?.querySelector('.conversation-work__tool')?.textContent).toContain('/bin/zsh')
 	expect(summary?.querySelector('[data-testid="priority-steer"]')?.textContent).toContain('Change direction now.')
 	act(() => summary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 	expect(summary?.open).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('auto-collapses completed work, preserves timeline and steer content, and selects the real tool', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const onSelectTool = vi.fn()
+    const render = (active: boolean, answer: string) => act(() => root.render(
+      <TurnTimelineContent
+        events={[
+          { type: 'assistant_text', text: 'Earlier progress.' },
+          { type: 'thought', text: 'Checking **state**.' },
+          { type: 'tool_call', toolCallId: 'tool-1' },
+          { type: 'assistant_text', text: answer },
+        ]}
+        tools={tools}
+        active={active}
+        workedSeconds={83}
+        workingMode="compact"
+        prioritySteerText="Keep the tests."
+        prioritySteerAttachments={[{ id: 'spec', name: 'spec.txt', type: 'file', size: 10, path: '/tmp/spec.txt' }]}
+        pendingPermission={null}
+        pendingUserInput={null}
+        onSelectTool={onSelectTool}
+        onResolvePermission={vi.fn()}
+        onResolveUserInput={vi.fn()}
+        onCancelTurn={vi.fn()}
+        onStopRuntime={vi.fn()}
+      />
+    ))
+
+    render(true, 'Current response.')
+    const work = host.querySelector('.conversation-work') as HTMLDetailsElement
+    const toggle = () => act(() => work.querySelector('summary')!.click())
+    expect(work.open).toBe(true)
+    expect(work.textContent).not.toContain('Current response.')
+    expect(host.textContent?.match(/Current response\./g)).toHaveLength(1)
+    toggle()
+    render(true, 'Response updated.')
+    expect(work.open).toBe(false)
+    expect(host.textContent).toContain('Response updated.')
+    toggle()
+    render(false, 'Final response.')
+    expect(work.open).toBe(false)
+    expect(work.querySelector('summary')?.textContent).toBe('Worked for 1m 23s')
+    expect(host.textContent).toContain('Final response.')
+
+    toggle()
+    expect(work.open).toBe(true)
+    expect(Array.from(work.querySelectorAll('.conversation-work__event')).map((item) => item.textContent)).toEqual([
+      'Earlier progress.', 'Checking state.', '/bin/zsh -lc "rg TODO src"completed',
+    ])
+    expect(work.querySelector('strong')?.textContent).toBe('state')
+    expect(work.querySelector('[data-testid="priority-steer"]')?.textContent).toContain('Keep the tests.')
+    expect(work.querySelector('[aria-label="File attachments"]')?.textContent).toContain('/tmp/spec.txt')
+    act(() => (work.querySelector('.conversation-work__tool') as HTMLButtonElement).click())
+    expect(onSelectTool).toHaveBeenCalledExactlyOnceWith('tool-1')
+    render(false, 'Final response.')
+    expect(work.open).toBe(true)
+    render(true, 'Next response.')
+    expect(work.open).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps disclosure hooks stable from empty to populated and retains missing, extra, and sub-agent tools', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const onSelectTool = vi.fn()
+    const subAgent = { ...tools[0], id: 'child', title: 'Review child', isSubAgent: true, subAgentId: 'native-child' }
+    const renderSubAgentHistory = vi.fn(() => <p>Child conversation.</p>)
+    act(() => root.render(<ConversationWork events={[]} tools={[]} active={false} duration="0s" onSelectTool={onSelectTool} />))
+    expect(host.childElementCount).toBe(0)
+    act(() => root.render(<ConversationWork
+      events={[{ type: 'tool_call', toolCallId: 'missing' }, { type: 'tool_call', toolCallId: 'child' }]}
+      tools={[subAgent, ...tools]}
+      active
+      duration="1s"
+      onSelectTool={onSelectTool}
+      renderSubAgentHistory={renderSubAgentHistory}
+    />))
+    const buttons = host.querySelectorAll<HTMLButtonElement>('.conversation-work__tool')
+    expect(Array.from(buttons).map((button) => button.textContent)).toEqual([
+      'missingpending', 'Review childcompleted', '/bin/zsh -lc "rg TODO src"completed',
+    ])
+    act(() => buttons[1].click())
+    expect(onSelectTool).toHaveBeenCalledExactlyOnceWith('child')
+    expect(renderSubAgentHistory).not.toHaveBeenCalled()
+    act(() => (host.querySelector('.conversation-work__subagent > summary') as HTMLElement).click())
+    expect(renderSubAgentHistory).toHaveBeenCalledWith(subAgent)
+    expect(host.querySelector('.conversation-work__history')?.textContent).toBe('Child conversation.')
+    act(() => root.render(<ConversationWork events={[]} tools={[]} active={false} duration="2s" onSelectTool={onSelectTool} />))
+    expect(host.childElementCount).toBe(0)
 
     act(() => root.unmount())
     host.remove()
@@ -403,6 +504,8 @@ describe('working transcript', () => {
         onClose={vi.fn()}
       />
     ))
+    const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find((button) => button.textContent === 'Transcript') as HTMLButtonElement
+    act(() => tab.click())
     const open = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'View managed agent transcript') as HTMLButtonElement
     await act(async () => open.click())
 

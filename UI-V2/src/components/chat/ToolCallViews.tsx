@@ -1,18 +1,19 @@
 // Tool call inline rows, permission cards, user-input cards, tool modal, and
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
-import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench } from 'lucide-react'
+import { ConversationTurn } from './ConversationTurn'
+import { useToolQuestionDialog } from './useToolQuestionDialog'
+import './ToolDetails.css'
+import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench, X } from 'lucide-react'
 import type {
   AcpPendingPermission,
-  AcpPendingUserInput,
   AcpPermissionOption,
   AcpToolCall,
-  AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { IconButton, Tooltip } from '../ui'
+import { IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -362,242 +363,21 @@ export function normalizePermissionOptions(options: AcpPermissionOption[]) {
   })
 }
 
-export function UserInputInlineCard({
-  input,
-  onResolve,
-  waitIsStale,
-  waitStaleReason,
-  waitSeconds,
-  onCancelTurn,
-  onStopRuntime,
-}: {
-  input: AcpPendingUserInput
-  onResolve: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
-  waitIsStale?: boolean
-  waitStaleReason?: string
-  waitSeconds?: number
-  onCancelTurn?: () => void
-  onStopRuntime?: () => void
-}) {
-  const [values, setValues] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {}
-    for (const question of input.questions) {
-      initial[question.id] = ''
-    }
-    return initial
-  })
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState('')
-  const submittingRef = useRef(false)
+export { UserInputInlineCard } from './QuestionInput'
 
-  useEffect(() => {
-    setValues((current) => {
-      const next: Record<string, string> = {}
-      for (const question of input.questions) {
-        next[question.id] = current[question.id] ?? ''
-      }
-      return next
-    })
-  }, [input.questions])
-
-  useEffect(() => {
-    submittingRef.current = false
-    setSubmitting(false)
-    setSubmitError('')
-  }, [input.requestId])
-
-  const canSubmit = input.questions.every((question) => (values[question.id] ?? '').trim().length > 0)
-  const submit = async () => {
-    if (!canSubmit || submittingRef.current) return
-    const answers: AcpUserInputAnswers = {}
-    for (const question of input.questions) {
-      answers[question.id] = [(values[question.id] ?? '').trim()]
-    }
-    submittingRef.current = true
-    setSubmitting(true)
-    setSubmitError('')
-    let accepted = false
-    try {
-      accepted = await onResolve(input.requestId, answers)
-      if (!accepted) {
-        setSubmitError('The provider did not accept that response. Check the answers and try again.')
-      }
-    } catch {
-      setSubmitError('The input response failed. Try again.')
-    } finally {
-      if (!accepted) {
-        submittingRef.current = false
-        setSubmitting(false)
-      }
-    }
-  }
-
-  return (
-    <div
-      className="my-2 uam-attention-card"
-      data-testid="user-input-card"
-      style={{
-        border: '1px solid color-mix(in srgb, var(--yellow) 56%, var(--border-bright))',
-        borderLeft: '4px solid var(--yellow)',
-        borderRadius: 7,
-        padding: 10,
-        background: 'color-mix(in srgb, var(--yellow) 9%, var(--surface))',
-      }}
-    >
-      <div className="flex items-center gap-2 text-xs font-semibold mb-2" style={{ color: 'var(--text)' }}>
-        <span style={{ color: 'var(--yellow)', fontSize: 9 }}>●</span>
-        <span>Codex needs input</span>
-      </div>
-      {waitIsStale && (
-        <div
-          className="mb-3 text-[11px]"
-          data-testid="stale-wait-warning"
-          style={{
-            border: '1px solid color-mix(in srgb, var(--yellow) 52%, var(--border))',
-            borderRadius: 6,
-            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
-            color: 'var(--text-2)',
-            padding: '7px 8px',
-          }}
-        >
-          <div className="font-medium" style={{ color: 'var(--text)' }}>
-            This input request has not had runtime activity for {Math.max(120, waitSeconds ?? 0)}s.
-          </div>
-          <div>{waitStaleReason || 'The provider may be waiting on a stale input request.'}</div>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
-              style={{
-                borderRadius: 6,
-                border: '1px solid var(--border-bright)',
-                background: 'var(--surface-up)',
-                color: 'var(--text)',
-              }}
-              onClick={onCancelTurn}
-              disabled={submitting}
-            >
-              Cancel turn
-            </button>
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px]"
-              style={{
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'transparent',
-                color: 'var(--text-2)',
-              }}
-              onClick={onStopRuntime}
-              disabled={submitting}
-            >
-              Stop runtime
-            </button>
-          </div>
-        </div>
-      )}
-      <div className="space-y-3">
-        {input.questions.map((question) => {
-          const selected = values[question.id] ?? ''
-          const showTextInput = question.isOther || question.options.length === 0
-          return (
-            <fieldset key={question.id} className="space-y-2" style={{ minWidth: 0 }}>
-              {(question.header || question.question) && (
-                <legend className="text-xs font-medium" style={{ color: 'var(--text)' }}>
-                  {question.header || question.question}
-                </legend>
-              )}
-              {question.header && question.question && (
-                <div className="text-[11px]" style={{ color: 'var(--text-2)' }}>
-                  {question.question}
-                </div>
-              )}
-              {question.options.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {question.options.map((option) => {
-                    const active = selected === option.label
-                    return (
-                      <button
-                        key={`${question.id}-${option.label}`}
-                        type="button"
-                        disabled={submitting}
-                        className="uam-choice-button px-3 py-1.5 text-[11px] text-left"
-                        style={{
-                          borderRadius: 6,
-                          border: active
-                            ? '1px solid color-mix(in srgb, var(--accent) 72%, var(--border-bright))'
-                            : '1px solid var(--border)',
-                          background: active ? 'var(--accent-dim)' : 'var(--surface-up)',
-                          color: 'var(--text)',
-                        }}
-                        onClick={() =>
-                          setValues((current) => ({
-                            ...current,
-                            [question.id]: option.label,
-                          }))
-                        }
-                      >
-                        <span className="block font-medium">{option.label}</span>
-                        {option.description && (
-                          <span className="block mt-0.5" style={{ color: 'var(--text-3)' }}>
-                            {option.description}
-                          </span>
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-              {showTextInput && (
-                <input
-                  type={question.isSecret ? 'password' : 'text'}
-                  disabled={submitting}
-                  value={selected}
-                  aria-label={question.question || question.header || question.id}
-                  className="w-full text-xs outline-none"
-                  style={{
-                    height: 30,
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg)',
-                    color: 'var(--text)',
-                    padding: '0 9px',
-                  }}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      [question.id]: event.target.value,
-                    }))
-                  }
-                />
-              )}
-            </fieldset>
-          )
-        })}
-      </div>
-      <div className="flex justify-end pt-3">
-        <button
-          type="button"
-          className="uam-choice-button px-3 h-7 text-[11px] font-medium"
-          disabled={!canSubmit || submitting}
-          aria-busy={submitting}
-          style={{
-            borderRadius: 6,
-            border: '1px solid var(--border-bright)',
-            background: canSubmit ? 'var(--accent)' : 'var(--surface-up)',
-            color: canSubmit ? '#ffffff' : 'var(--text-3)',
-          }}
-          onClick={() => void submit()}
-        >
-          {submitting ? 'Submitting…' : 'Submit'}
-        </button>
-      </div>
-      {submitError && <div role="alert" className="mt-2 text-right text-[11px]" style={{ color: 'var(--error)' }}>{submitError}</div>}
-    </div>
-  )
+type ToolCallModalProps = {
+  tool: AcpToolCall
+  chatId?: string
+  onClose: () => void
+  onOpenSubAgent?: () => void
+  accentColor?: string
 }
 
-export function ToolCallModal({
+export function ToolCallModal(props: ToolCallModalProps) {
+  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.tool.id}`} {...props} />
+}
+
+function ToolCallDetails({
   tool,
   chatId,
   onClose,
@@ -648,7 +428,25 @@ export function ToolCallModal({
 		: tool.content || 'No tool output yet.'
   )
   const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
-  const toolCopyText = output
+  const toolCopyText = cleanToolOutput(contentPages.length
+    ? [...contentPages].sort((left, right) => left.offset - right.offset).map(page => page.content).join('')
+    : shouldLoadContent ? '' : tool.content)
+  const [tab, setTab] = useState('Output')
+  const dialogRef = useToolQuestionDialog(onClose)
+  const outputRef = useRef<HTMLPreElement>(null)
+  const id = useId()
+  const tabs = transcriptChatId ? ['Output', 'Details', 'Transcript'] : ['Output', 'Details']
+  const activeTab = tabs.includes(tab) ? tab : 'Output'
+  const disposedRef = useRef(false)
+  const transcriptBusyRef = useRef(false)
+  const resumeBusyRef = useRef(false)
+  useEffect(() => {
+    disposedRef.current = false
+    return () => { disposedRef.current = true; ++contentRequestSerial.current }
+  }, [])
+  useEffect(() => {
+    if (isLive && followLive && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+  }, [output, followLive, isLive, activeTab])
 
   const loadContent = useCallback(async (offset: number, replace = false) => {
     if (!shouldLoadContent || !chatId) return
@@ -659,7 +457,7 @@ export function ToolCallModal({
     const response = await sendToCEF<ToolContentPage>({
       action: 'getToolCallContent',
       payload: { chatId, toolCallId: tool.id, offset },
-    })
+    }).catch(() => ({ ok: false, error: 'Failed to load tool output.', data: undefined }))
     if (requestSerial !== contentRequestSerial.current) return
     setContentLoading(false)
     if (!response.ok || !response.data) {
@@ -703,13 +501,16 @@ export function ToolCallModal({
   }, [tool.id])
 
   const openManagedTranscript = async () => {
-    if (!chatId || !transcriptChatId) return
+    if (!chatId || !transcriptChatId || transcriptBusyRef.current) return
+    transcriptBusyRef.current = true
     setManagedTranscriptLoading(true)
     setManagedTranscriptError('')
     const response = await sendToCEF<{ runId?: string; title?: string; status?: string; executionCapability?: string; messages?: unknown[] }>({
       action: 'getManagedAgentTranscript',
       payload: { chatId, transcriptChatId },
-    })
+    }).catch(() => ({ ok: false, error: 'Managed agent transcript is unavailable.', data: undefined }))
+    if (disposedRef.current) return
+    transcriptBusyRef.current = false
     if (!response.ok) {
       setManagedTranscriptError(response.error || 'Managed agent transcript is unavailable.')
       setManagedTranscriptLoading(false)
@@ -736,118 +537,50 @@ export function ToolCallModal({
   }
 
   const resumeManagedRun = async () => {
-    if (!managedTranscript?.runId || managedTranscript.status !== 'interrupted') return
+    if (!managedTranscript?.runId || managedTranscript.status !== 'interrupted' || resumeBusyRef.current) return
+    resumeBusyRef.current = true
     setManagedResumeMessage('Resuming…')
     const response = await sendToCEF<{ runId?: string }>({
       action: 'resumeAgentRun',
       payload: { runId: managedTranscript.runId },
-    })
+    }).catch(() => ({ ok: false, error: 'Failed to resume the interrupted run.', data: undefined }))
+    if (disposedRef.current) return
+    resumeBusyRef.current = response.ok
     setManagedResumeMessage(response.ok
       ? `Fresh run queued${response.data?.runId ? `: ${response.data.runId}` : '.'}`
       : response.error || 'Failed to resume the interrupted run.')
   }
 
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onClose])
-
   return createPortal(
-    <div
-      className="fixed inset-0 flex items-center justify-center uam-tool-modal-backdrop"
-      style={{
-        zIndex: 1000,
-        background: 'rgba(0, 0, 0, 0.48)',
-        padding: 18,
-        ...(accentColor ? {
-          '--accent': accentColor,
-          '--accent-dim': `color-mix(in srgb, ${accentColor} 12%, transparent)`,
-        } : {}),
-      }}
-      onMouseDown={onClose}
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-label="Tool details"
-        tabIndex={-1}
-        className="w-full uam-tool-modal"
-        style={{
-          maxWidth: 680,
-          maxHeight: 'min(720px, 88vh)',
-          overflow: 'hidden',
-          borderRadius: 8,
-          border: '1px solid var(--border-bright)',
-          background: 'var(--surface)',
-          boxShadow: '0 22px 70px rgba(0, 0, 0, 0.42)',
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="uam-tool-modal__header">
+    <div className="tool-details-backdrop" style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
+      onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} className="uam-tool-modal tool-details-dialog">
+        <header className="tool-details-header">
           <ToolStatusIcon status={tool.status} />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
-              {toolDisplayTitle(tool)}
-            </div>
-            <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {[toolDisplayKind(tool), tool.kind].filter(Boolean).join(' / ') || 'tool call'}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {tool.isSubAgent && onOpenSubAgent && (
-              <Tooltip label="Open sub-agent chat">
-                <button
-                  type="button"
-                  onClick={onOpenSubAgent}
-                  className="px-2 h-7 text-xs"
-                  style={{
-                    borderRadius: 5,
-                    border: '1px solid var(--border-bright)',
-                    background: 'var(--accent-dim)',
-                    color: 'var(--text)',
-                  }}
-                >
-                  Open chat
-                </button>
-              </Tooltip>
-            )}
-            <CopyTextButton text={toolCopyText} label="Copy output" title="Copy loaded tool output" />
-          </div>
-          <Tooltip label="Close tool details">
-            <button
-              type="button"
-              aria-label="Close tool details"
-              onClick={onClose}
-              className="px-2 h-7 text-xs"
-              style={{
-                borderRadius: 5,
-                border: '1px solid var(--border)',
-                background: 'var(--bg)',
-                color: 'var(--text-2)',
-              }}
-            >
-              Close
-            </button>
-          </Tooltip>
+          <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
+          <CopyTextButton text={toolCopyText} label="Copy loaded output" title="Copy loaded output" />
+          <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={onClose} />
+        </header>
+        <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
+          {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}
+            aria-controls={`${id}-panel`} aria-selected={activeTab === name} tabIndex={activeTab === name ? 0 : -1}
+            onClick={() => setTab(name)} onKeyDown={event => {
+              const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1
+              if (next < 0) return
+              event.preventDefault()
+              setTab(tabs[next])
+              document.getElementById(`${id}-${tabs[next]}-tab`)?.focus()
+            }}>{name}</button>)}
         </div>
-        <div className="uam-tool-modal__body">
-          <div className="uam-tool-modal__meta">
-            <span>{tool.kind || 'tool'}</span>
-            <span>{tool.status || 'unknown'}</span>
-            <span title={tool.id || 'unknown'}>{tool.id || 'unknown'}</span>
-            {tool.isSubAgent && (
-              <span>{tool.subAgentId || tool.subAgentTitle || 'provider sub-agent'}</span>
-            )}
-          </div>
-          <div className="uam-tool-modal__output-label">Output</div>
+        <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}-tab`} tabIndex={0}
+          className={`tool-details-panel${activeTab === 'Output' ? ' tool-details-panel--output' : ''}`}>
+          {activeTab === 'Output' && <>
+          {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
 			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
 			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
-			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || (followLive && contentPage.offset === contentPage.lastOffset)} onClick={() => { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) }}>{isLive ? 'Follow live' : 'Load latest'}</button>
+			  <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
               <span aria-live="polite">
                 {contentPage.totalBytes === 0
                   ? '0 bytes'
@@ -862,12 +595,28 @@ export function ToolCallModal({
             </div>
           )}
           <pre
+            ref={outputRef}
+            onScroll={event => {
+              if (isLive && event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight > 24) setFollowLive(false)
+            }}
             aria-label="Tool output chunk"
             tabIndex={0}
             className="whitespace-pre-wrap text-xs uam-tool-modal__output"
           >
             {output}
           </pre>
+          </>}
+          {activeTab === 'Details' && <div className="tool-details-meta">
+            <dl>
+              <dt>Tool ID</dt><dd>{tool.id}</dd>
+              <dt>Type</dt><dd>{[toolDisplayKind(tool), tool.kind].filter(Boolean).join(' / ') || 'tool'}</dd>
+              <dt>Status</dt><dd>{tool.status || 'unknown'}</dd>
+              {tool.isSubAgent && <><dt>Agent</dt><dd>{tool.subAgentId || tool.subAgentTitle || 'provider sub-agent'}</dd></>}
+              {managedTranscript && <><dt>Run ID</dt><dd>{managedTranscript.runId}</dd><dt>Execution</dt><dd>{managedTranscript.executionCapability}</dd></>}
+            </dl>
+            {tool.isSubAgent && onOpenSubAgent && <button type="button" onClick={onOpenSubAgent}>Open chat</button>}
+          </div>}
+          {activeTab === 'Transcript' && <div className="tool-details-transcript">
           {transcriptChatId && !managedTranscript && (
             <button
               type="button"
@@ -886,12 +635,12 @@ export function ToolCallModal({
                 <strong>{managedTranscript.title}</strong>
                 <span className="flex items-center gap-2">
 				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
-				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.executionCapability}</span>
+
                   {managedTranscript.status === 'interrupted' && (
                     <button
                       type="button"
                       onClick={() => void resumeManagedRun()}
-                      disabled={managedResumeMessage === 'Resuming…'}
+                      disabled={resumeBusyRef.current}
                       className="h-7 rounded px-2"
                       style={{ border: '1px solid var(--border-bright)', background: 'var(--accent-dim)', color: 'var(--text)' }}
                     >Resume as fresh run</button>
@@ -910,10 +659,10 @@ export function ToolCallModal({
               ))}
             </section>
           )}
+          </div>}
         </div>
       </section>
-    </div>,
-    document.body
+    </div>, document.body
   )
 }
 
@@ -947,23 +696,26 @@ export function MessageFrame({
   streaming?: boolean
   goalReview?: boolean
 }) {
+  if (role === 'user' || role === 'assistant') {
+    return <ConversationTurn role={role} assistantLabel={assistantLabel} copyText={copyText}
+      branchLabel={branchLabel} branchNavigation={branchNavigation} onEdit={onEdit} onRevert={onRevert}
+      actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}>{children}</ConversationTurn>
+  }
   const accent = goalReview ? 'var(--purple)' : roleAccent(role)
   return (
     <div
       className="flex"
-      style={{ justifyContent: role === 'user' ? 'flex-end' : 'flex-start' }}
+      style={{ justifyContent: 'flex-start' }}
     >
       <article
         className={`min-w-0 uam-message-frame${streaming ? ' is-streaming' : ''}${goalReview ? ' uam-message-frame--goal-review' : ''}`}
         data-message-kind={goalReview ? 'goal-review' : role}
         aria-label={goalReview ? 'Goal Reviewer' : roleLabel(role, assistantLabel)}
         style={{
-          borderLeft: role !== 'user' ? `2px solid ${accent}` : undefined,
+          borderLeft: `2px solid ${accent}`,
           borderRadius: goalReview ? 8 : 0,
-          padding: role === 'user' ? undefined : goalReview ? '8px 10px 10px 12px' : '2px 12px 2px 12px',
-          background: role === 'user'
-            ? undefined
-            : goalReview
+          padding: goalReview ? '8px 10px 10px 12px' : '2px 12px 2px 12px',
+          background: goalReview
               ? 'color-mix(in srgb, var(--purple) 5%, var(--message-assistant-bg))'
               : 'var(--message-assistant-bg)',
           color: 'var(--text)',

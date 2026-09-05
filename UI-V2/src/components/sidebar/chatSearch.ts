@@ -148,15 +148,15 @@ export function sessionMatchesChatSearchFilters(
   context: ChatSearchFilterContext = {}
 ): boolean {
   if (!hasActiveChatSearchFilters(filters)) {
-    return false
+    return true
   }
 
-  const providerMatch =
-    filters?.providerIds.some((providerId) => (session.providerId || DEFAULT_PROVIDER_ID) === providerId) ?? false
-  const statusMatch =
-    filters?.statusIds.some((statusId) => sessionMatchesStatusFilter(session, statusId, context)) ?? false
+  const providerMatch = !filters?.providerIds.length ||
+    filters.providerIds.some((providerId) => (session.providerId || DEFAULT_PROVIDER_ID) === providerId)
+  const statusMatch = !filters?.statusIds.length ||
+    filters.statusIds.some((statusId) => sessionMatchesStatusFilter(session, statusId, context))
 
-  return providerMatch || statusMatch
+  return providerMatch && statusMatch
 }
 
 function sessionRecentTime(session: Session): number {
@@ -215,9 +215,9 @@ export function buildChatSearchSessionGroups(
           ? deepSearchSessionIds
             ? deepSearchSessionIds.has(session.id)
             : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
-          : false
+          : true
         const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
-        return isSearching ? searchMatch || filterMatch : true
+        return searchMatch && filterMatch
       })
       .map(branchRootId)
   )

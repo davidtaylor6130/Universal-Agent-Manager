@@ -1,8 +1,8 @@
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 
-import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, X, Check } from 'lucide-react'
+import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, X, Check } from 'lucide-react'
 import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
 import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
@@ -24,6 +24,7 @@ import {
 import { MenuSelect, ViewportMenu } from '../ui'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import './composer.css'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
 export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
@@ -87,13 +88,52 @@ export function permissionModeIcon(id: string, size = 14) {
   return <ShieldCheck size={size} />
 }
 
+/** Compact composer controls reuse the shared keyboard-accessible option menu. */
+function ComposerChoice({ icon, chipLabel, ...props }: Parameters<typeof MenuSelect>[0] & { icon: ReactNode; chipLabel?: string }) {
+  return <div className="uam-composer-choice" data-mode-chip={chipLabel}>
+    <MenuSelect {...props} onChange={(value) => { if (!props.disabled) props.onChange(value) }} options={props.options.map((option) => ({ ...option, icon: option.icon ?? icon }))} />
+  </div>
+}
+
 function ActiveModeChip({ label, compactLabel = label, icon, onClear }: { label: string; compactLabel?: string; icon: ReactNode; onClear?: () => void }) {
-  const content = <>{icon}<span className="uam-mode-chip__label--full">{label}</span><span className="uam-mode-chip__label--compact">{compactLabel}</span>{onClear && <X size={11} aria-hidden style={{ color: 'var(--text-3)' }} />}</>
-  const className = "inline-flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs"
-  const style = { border: '1px solid transparent', background: 'color-mix(in srgb, var(--surface-up) 72%, transparent)', color: 'var(--text-2)' }
   return onClear
-    ? <button type="button" aria-label={`Disable ${label}`} data-mode-chip={label} onClick={onClear} className={`uam-choice-button ${className}`} style={style}>{content}</button>
-    : <span aria-label={label} data-mode-chip={label} className={className} style={style}>{content}</span>
+    ? <ComposerChoice label={label} chipLabel={label} value="on" icon={icon} options={[{ value: 'on', label: compactLabel }, { value: 'off', label: 'Off' }]} onChange={(value) => { if (value === 'off') onClear() }} />
+    : <span data-mode-chip={label} className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2 text-xs" title={label}>{icon}<span>{compactLabel}</span></span>
+}
+
+/** Selected agent precedes the draft without becoming part of submitted text. */
+export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAgent }: {
+  agents: Array<{ id: string; name: string; description?: string }>
+  agentId: string
+  nextTurn: boolean
+  onSelectUamAgent: (agentId: string) => void
+}) {
+  const agentRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const element = agentRef.current
+    const row = element?.parentElement
+    if (!element || !row) return
+    const measure = () => row.style.setProperty('--agent-prefix-width', `${element.getBoundingClientRect().width}px`)
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(element)
+    return () => {
+      observer?.disconnect()
+      row.style.removeProperty('--agent-prefix-width')
+    }
+  }, [agentId, agents])
+  const selected = agents.find((agent) => agent.id === agentId)
+  const name = selected?.name ?? agentId
+  const hue = Array.from(agentId).reduce((hash, character) => (hash * 31 + character.codePointAt(0)!) % 360, 0)
+  return <div ref={agentRef} className="uam-composer-agent" style={{ color: `hsl(${hue} 70% 72%)` }}>
+    <MenuSelect
+      label={`${nextTurn ? 'Next turn agent' : 'UAM agent'}: ${name}`}
+      value={agentId}
+      options={(selected ? agents : [{ id: agentId, name }, ...agents]).map((agent) => ({ value: agent.id, label: agent.name, description: agent.description }))}
+      onChange={onSelectUamAgent}
+    />
+    <span className="uam-composer-agent-separator" aria-hidden />
+  </div>
 }
 
 export function ComposerToolbar({
@@ -250,12 +290,10 @@ export function ComposerToolbar({
   const selectorDisabled = architectModelsInOptions || (modelDisabled && !canChangeProvider)
   const providerName = providerShortName(provider, providerId)
   const providerPlanActive = providerModeId === 'plan'
-  const selectedUamAgent = uamAgents.find((agent) => agent.id === uamAgentId) ?? uamAgents[0]
   const memoryDisabled = false
   const permissionModes = permissionsManagedByUam
     ? PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
     : [{ id: 'provider', name: 'Provider managed', description: 'Respond to permission prompts in the provider interface.' }]
-  const permissionMode = permissionModes.find((mode) => mode.id === permissionModeId) ?? permissionModes[0]
   const running = Boolean(acp?.processing)
   const dictationVisualState = dictationError ? 'error' : dictationState
   const dictationLabel = !dictationAvailable
@@ -617,19 +655,31 @@ export function ComposerToolbar({
       <div className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
         {computerUseMode && <ActiveModeChip label="Computer use" compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
-        {featurePreference === 'uam' && uamAgentId !== 'build' && <ActiveModeChip label={`${uamAgentNextTurn ? 'Next agent' : 'UAM agent'}: ${selectedUamAgent?.name ?? uamAgentId}`} compactLabel={selectedUamAgent?.name ?? uamAgentId} icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectUamAgent('build')} />}
-        {featurePreference === 'provider' && providerPlanActive && <ActiveModeChip label="Provider Plan" icon={<ClipboardList size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={() => onSelectProviderMode('default')} />}
-        <ActiveModeChip
-          label={!permissionsManagedByUam ? 'Permissions: Provider managed' : permissionModeId === 'default' ? 'Permissions: Default' : permissionMode.name}
-          compactLabel={!permissionsManagedByUam ? 'Provider permissions' : permissionModeId === 'default' ? 'Default' : permissionMode.name}
+        {featurePreference === 'provider' && providerPlanActive && <ComposerChoice label="Provider mode" chipLabel="Provider Plan" value={providerModeId ?? 'default'} icon={<ClipboardList size={12} aria-hidden />} options={providerModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description }))} onChange={onSelectProviderMode} disabled={modelDisabled} />}
+        <ComposerChoice
+          label="Permissions"
+          chipLabel={permissionModeId === 'default' ? 'Permissions: Default' : permissionModes.find((mode) => mode.id === permissionModeId)?.name}
+          value={permissionModeId}
           icon={permissionModeIcon(permissionModeId, 12)}
-          onClear={!permissionsManagedByUam || permissionModeId === 'default' ? undefined : () => onSelectPermissionMode('default')}
+          options={permissionModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description, icon: permissionModeIcon(mode.id, 12) }))}
+          onChange={onSelectPermissionMode}
+          disabled={!permissionsManagedByUam || permissionControlsDisabled}
         />
-        {memoryChipVisible && <ActiveModeChip label={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`} compactLabel={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel} icon={<span aria-hidden>●</span>} onClear={onClearMemoryLevel} />}
+        {memoryChipVisible && <ComposerChoice
+          label="Memory"
+          chipLabel={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`}
+          value={memoryLevel}
+          icon={<Brain size={12} aria-hidden />}
+          options={[...MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: option.label, description: option.detail })), { value: 'reset', label: 'Use default', description: MEMORY_LEVEL_OPTIONS.find((option) => option.id === defaultMemoryLevel)?.label }]}
+          onChange={(level) => level === 'reset' ? onClearMemoryLevel() : onSelectMemoryLevel(level as MemoryLevel)}
+          disabled={memoryDisabled}
+        />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
-        {hasReasoningEffort && <ActiveModeChip label={`Reasoning: ${currentReasoning.label}`} compactLabel={currentReasoning.label} icon={<Cpu size={12} aria-hidden />} />}
-        {speedExplicit && <ActiveModeChip label={`Speed: ${currentSpeed.label}`} compactLabel={currentSpeed.label} icon={<Sparkles size={12} aria-hidden />} onClear={modelDisabled ? undefined : () => onSelectSpeed(CODEX_SPEED_INHERIT_ID)} />}
+        {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
+        {variantOptions.map((option) => <ComposerChoice key={option.id} label={option.name || option.id} value={option.currentValue} icon={<Cpu size={12} aria-hidden />} options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))} onChange={(value) => onSelectConfigOption(option.id, value)} disabled={modelDisabled} />)}
+        {speedExplicit && <ComposerChoice label="Speed" chipLabel={`Speed: ${currentSpeed.label}`} value={currentSpeed.id} icon={<Sparkles size={12} aria-hidden />} options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectSpeed} disabled={modelDisabled} />}
+
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <div ref={modelMenuRef} className="relative">

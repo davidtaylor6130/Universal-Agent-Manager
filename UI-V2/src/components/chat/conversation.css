@@ -1,0 +1,87 @@
+/* Centered transcript; composer retains its original width and spacing. */
+.uam-chat-pane {
+  --conversation-column: 760px;
+}
+
+.uam-chat-pane .uam-chat-transcript .uam-chat-content {
+  width: 100%;
+  max-width: calc(var(--conversation-column) + 48px);
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+
+.uam-chat-pane .uam-chat-transcript .uam-chat-content {
+  padding-block: 16px 20px;
+}
+
+.uam-chat-transcript .uam-chat-content .uam-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uam-chat-transcript .uam-chat-content .uam-message-list > :not([hidden]) ~ :not([hidden]) {
+  margin-block: 0;
+}
+
+/* Match both gutters when the existing multi-pane rules tighten the transcript. */
+.uam-chat-pane[data-multi-pane="true"] .uam-chat-transcript .uam-chat-content {
+  padding-inline: 24px;
+}
+
+.uam-chat-pane[data-multi-pane="true"] .uam-chat-transcript .uam-chat-content {
+  padding-block: 16px 20px;
+}
+
+.conversation-turn { width: 100%; min-width: 0; color: var(--text); }
+.conversation-turn__body { min-width: 0; max-width: 100%; font-size: var(--fs-base); line-height: 1.55; overflow-wrap: anywhere; }
+.conversation-turn__body .prose-msg { font-size: inherit; line-height: inherit; }
+.conversation-turn__body .prose-msg p { margin-block: 0 0.4em; }
+.conversation-turn__body .prose-msg p:last-child { margin-bottom: 0; }
+.conversation-turn__body .prose-msg ul { list-style: disc; padding-left: 24px; }
+.conversation-turn__body .prose-msg ol { list-style: decimal; padding-left: 24px; }
+.conversation-turn__body .prose-msg li { margin-block: 0 0.15em; }
+.conversation-turn--user { display: flex; flex-direction: column; align-items: flex-end; }
+.conversation-turn--user > .conversation-turn__body {
+  width: fit-content;
+  max-width: 85%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #202020;
+  color: #fff;
+}
+.conversation-turn__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; line-height: 1.4; color: var(--text-3); }
+.conversation-turn--user .conversation-turn__footer { justify-content: flex-end; margin-top: 5px; }
+.conversation-turn__attribution { overflow-wrap: anywhere; }
+.conversation-turn__actions, .conversation-turn__branches { display: inline-flex; align-items: center; gap: 3px; }
+.conversation-turn__branches { font-variant-numeric: tabular-nums; }
+
+.conversation-work { width: 100%; margin-bottom: 8px; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.conversation-work__summary { display: block; list-style: none; cursor: pointer; }
+.conversation-work__summary::-webkit-details-marker { display: none; }
+.conversation-work__heading { display: flex; align-items: center; gap: 7px; min-height: 24px; }
+.conversation-work__divider { display: block; width: 100%; border-bottom: 1px solid var(--border); margin-top: 4px; }
+.conversation-work[open] > .conversation-work__summary .conversation-work__chevron { transform: rotate(90deg); }
+.conversation-work__expanded { padding-block: 6px 2px; }
+.conversation-work__timeline { list-style: none; margin: 0 0 0 7px; padding: 0; border-left: 1px solid var(--border); }
+.conversation-work__event { position: relative; padding: 6px 0 6px 22px; list-style: none; }
+.conversation-work__tool { display: flex; width: 100%; align-items: baseline; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
+.conversation-work__event-icon { position: absolute; left: -8px; top: 9px; color: var(--text-3); background: var(--bg); }
+.conversation-work__tool-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-work__status { flex-shrink: 0; font-size: 12px; color: var(--text-3); }
+.conversation-work__status[data-failed="true"] { color: var(--red); }
+.conversation-work__tool:hover .conversation-work__tool-title { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.conversation-work__reasoning, .conversation-work .conversation-work__reasoning .prose-msg { color: var(--text-3); font-size: 12px; line-height: 1.55; }
+.conversation-work__subagent { margin-top: 6px; font-size: 12px; }
+.conversation-work__subagent > summary { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; }
+.conversation-work__subagent > summary::-webkit-details-marker { display: none; }
+.conversation-work__subagent[open] > summary > svg { transform: rotate(90deg); }
+.conversation-work__history { padding-block: 10px; }
+.conversation-work__steer { margin: 12px 0 0 29px; padding-top: 8px; border-top: 1px solid var(--border); }
+.conversation-work__steer-label { margin-bottom: 6px; color: var(--text-2); font-size: 12px; }
+.conversation-work__summary:focus-visible, .conversation-work__tool:focus-visible, .conversation-work__subagent > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+
+@media (max-width: 600px) {
+  .conversation-turn--user > .conversation-turn__body { max-width: 94%; }
+  .conversation-work__tool { gap: 8px; }
+}

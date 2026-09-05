@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut } from './ChatView'
+import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
@@ -155,6 +155,105 @@ describe('ChatView', () => {
       cliBindingBySessionId: {},
       getVcsCommitStatus: vi.fn(() => Promise.resolve(null)),
     })
+  })
+
+  it('keeps the selected real agent outside the draft and sends multiline text without the prefix', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const setSessionUamAgent = vi.fn((id: string, agentId: string) => {
+      useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, uamAgentId: agentId } : session) }))
+      return Promise.resolve(true)
+    })
+    useAppStore.setState((state) => ({
+      sendAcpPrompt,
+      setSessionUamAgent,
+      uamAgentsBySessionId: { 'chat-1': [...state.uamAgentsBySessionId['chat-1'], { id: 'custom-accessibility-reviewer', description: 'Real workspace agent', builtIn: false }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const render = () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    act(render)
+    const textarea = host.querySelector('textarea')!
+    const prefix = () => host.querySelector<HTMLButtonElement>('.uam-composer-agent button')!
+    expect(prefix().textContent).toBe('Build')
+    expect(host.querySelector('.uam-composer-agent')?.textContent).toBe('Build')
+    expect(prefix().closest('.uam-composer-input-row')).toBe(textarea.parentElement)
+    expect(host.querySelector('.uam-composer-agent')?.nextElementSibling).toBe(textarea)
+    expect(host.querySelector('.uam-composer-agent-separator')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Options"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Inspect this file\nthen report findings')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => prefix().click())
+    expect(setSessionUamAgent).not.toHaveBeenCalled()
+    const agentChoice = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Custom Accessibility Reviewer'))!
+    await act(async () => { agentChoice.click(); await Promise.resolve() })
+    act(render)
+    expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'custom-accessibility-reviewer')
+    expect(prefix().textContent).toBe('Custom Accessibility Reviewer')
+    expect(prefix().title).toBe('UAM agent: Custom Accessibility Reviewer')
+    expect(textarea.value).toBe('Inspect this file\nthen report findings')
+    const shiftEnter = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => textarea.dispatchEvent(shiftEnter))
+    expect(shiftEnter.defaultPrevented).toBe(false)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Inspect this file\nthen report findings', [])
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens short permission, memory and reasoning chips without toggling and respects a new runtime lock', () => {
+    const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
+    const setSessionMemoryLevel = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', reasoningEffort: 'high', memoryLevel: 'balanced' as const, commandSafetyTier: 'off' as const })),
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'codex-cli', protocolKind: 'codex-app-server', currentModelId: 'gpt-5.4', availableModels: [{ id: 'gpt-5.4', name: 'GPT-5.4', description: '', supportedReasoningEfforts: ['low', 'high'] }], processing: false, lifecycleState: 'ready', pendingPermission: null } },
+      setSessionCodexOptions, setSessionMemoryLevel, setSessionCommandSafetyTier,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    for (const [label, value] of [['Permissions', 'Default'], ['Memory', 'Balanced'], ['Reasoning', 'High']]) {
+      const button = host.querySelector<HTMLButtonElement>(`.uam-composer-status-chips [aria-label="${label}"]`)!
+      expect(button.textContent).toContain(value)
+      act(() => button.click())
+      const menu = document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)!
+      expect(menu).toBeTruthy()
+      expect(setSessionCodexOptions).not.toHaveBeenCalled()
+      expect(setSessionMemoryLevel).not.toHaveBeenCalled()
+      expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
+      if (label === 'Memory') expect(menu.textContent).toContain('Use default')
+      act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    }
+    act(() => host.querySelector<HTMLButtonElement>('.uam-composer-status-chips [aria-label="Reasoning"]')!.click())
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true } } })))
+    const low = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Reasoning"] [role="option"]')).find((option) => option.textContent?.startsWith('Low'))!
+    act(() => low.click())
+    expect(setSessionCodexOptions).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLButtonElement>('.uam-composer-status-chips [aria-label="Reasoning"]')?.disabled).toBe(true)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('attributes historical messages from recorded provider, model and time', () => {
+    const historical = { ...useAppStore.getState().messages['chat-1'][1], providerId: 'codex-cli', modelId: 'historical-model' }
+    const time = historical.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    expect(reviewAssistantLabel('Codex', historical)).toBe(`Codex · historical-model · ${time}`)
+    expect(reviewAssistantLabel('Codex', { ...historical, modelId: '', createdAt: new Date(NaN) })).toBe('Codex')
+    useAppStore.setState({ messages: { 'chat-1': [historical] }, acpBindingBySessionId: {} })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('article[aria-label]')?.getAttribute('aria-label')).toBe(`Codex · historical-model · ${time}`)
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('builds the agent shortcut cycle from ordered selectable favorites only', () => {
@@ -615,7 +714,7 @@ describe('ChatView', () => {
     expect(host.querySelector('button[aria-label="Permissions: Default"]')).toBeNull()
     expect(host.querySelector('.uam-composer-toolbar .uam-composer-status-chips [data-mode-chip="Permissions: Default"]')).toBeTruthy()
     expect(host.querySelector('.uam-composer-surface')).toBeTruthy()
-    expect(host.querySelector('[data-mode-chip="Permissions: Default"] .uam-mode-chip__label--compact')?.textContent).toBe('Default')
+    expect(host.querySelector('[data-mode-chip="Permissions: Default"] button')?.textContent).toBe('Default')
     expect(host.querySelector('[aria-label="Chat settings"]')).toBeNull()
     expect(stopButton.classList.contains('shrink-0')).toBe(true)
     expect(host.textContent).not.toContain('Working ')
@@ -933,7 +1032,7 @@ describe('ChatView', () => {
     const revertButton = host.querySelector('button[aria-label="Revert to message in new branch"]')
     expect(editButton).toBeTruthy()
     expect(revertButton).toBeTruthy()
-    expect(editButton?.parentElement?.classList.contains('uam-message-frame__actions')).toBe(true)
+    expect(editButton?.parentElement?.classList.contains('conversation-turn__actions')).toBe(true)
 
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
@@ -1040,7 +1139,7 @@ describe('ChatView', () => {
     expect(thinkingBlock?.dataset.active).toBe('false')
     expect(host.querySelector('.uam-tool-row')?.getAttribute('data-active')).toBe('true')
     expect(host.querySelector('.uam-tool-row__kind')?.textContent).toBe('Tool')
-    expect(host.querySelector('.uam-message-frame.is-streaming')).not.toBeNull()
+    expect(host.querySelector('.conversation-turn[data-streaming="true"]')).not.toBeNull()
     expect(host.querySelector('.uam-runtime-status')).toBeNull()
     expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
 
@@ -1056,7 +1155,7 @@ describe('ChatView', () => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(document.body.textContent).toContain('Searching workspace symbols')
-    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('fixed')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('tool-details-backdrop')
     expect(document.body.querySelector('[role="dialog"]')?.parentElement?.parentElement).toBe(document.body)
 
     const closeToolButton = document.body.querySelector('button[aria-label="Close tool details"]')
@@ -1310,35 +1409,22 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Codex needs input')
-    expect(host.textContent).toContain('Which scope?')
-    expect(host.textContent).toContain('Focused')
-    expect(host.textContent).toContain('Any extra detail?')
-
-    const focusedButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Focused'))
-    const noteInput = host.querySelector('input[aria-label="Any extra detail?"]') as HTMLInputElement | null
-    const submitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
-    expect(focusedButton).toBeTruthy()
+    expect(host.textContent).toContain('Answer questions')
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Which scope?')
+    expect(dialog.textContent).toContain('Focused')
+    expect(dialog.textContent).not.toContain('Any extra detail?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    act(() => Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Next')!.click())
+    const noteInput = dialog.querySelector<HTMLInputElement>('input[aria-label="Any extra detail?"]')!
     expect(noteInput).toBeTruthy()
-    expect(submitButton).toBeTruthy()
-
-    await act(async () => {
-      focusedButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      if (noteInput) {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-        setter?.call(noteInput, 'Extra context')
-        noteInput.dispatchEvent(new Event('input', { bubbles: true }))
-      }
-      await Promise.resolve()
+    act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(noteInput, 'Extra context')
+      noteInput.dispatchEvent(new Event('input', { bubbles: true }))
     })
-
-    const enabledSubmitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
-    expect((enabledSubmitButton as HTMLButtonElement | undefined)?.disabled).toBe(false)
-
-    await act(async () => {
-      enabledSubmitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
+    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
+    expect(submitButton.disabled).toBe(false)
+    await act(async () => { submitButton.click(); await Promise.resolve() })
 
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', '11', {
       scope: ['Focused'],
@@ -1381,33 +1467,26 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const answerButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Focused'))
-    act(() => answerButton?.click())
-    const submitButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Submit')
-    expect(submitButton?.disabled).toBe(false)
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    const answerButton = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!
+    act(() => answerButton.click())
+    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
+    expect(submitButton.disabled).toBe(false)
 
-    act(() => {
-      submitButton?.click()
-      submitButton?.click()
-    })
+    act(() => { submitButton.click(); submitButton.click() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
-    expect(answerButton?.disabled).toBe(true)
-    expect(submitButton?.disabled).toBe(true)
+    expect(answerButton.closest('fieldset')?.disabled).toBe(true)
+    expect(submitButton.disabled).toBe(true)
 
-    await act(async () => {
-      finishResponse?.(false)
-      await Promise.resolve()
-    })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
-    expect(submitButton?.disabled).toBe(false)
+    await act(async () => { finishResponse?.(false); await Promise.resolve() })
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
+    expect(submitButton.disabled).toBe(false)
 
     resolveAcpUserInput.mockResolvedValueOnce(true)
-    await act(async () => {
-      submitButton?.click()
-      await Promise.resolve()
-    })
+    await act(async () => { submitButton.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
-    expect(submitButton?.disabled).toBe(true)
+    expect(document.body.querySelector('[role="dialog"].qr-dialog')).toBeNull()
+    expect(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Answers submitted')?.disabled).toBe(true)
 
     act(() => root.unmount())
     host.remove()
@@ -1517,7 +1596,6 @@ describe('ChatView', () => {
 		expect(host.textContent).toContain('Response interrupted')
 		const workingSummary = host.querySelector('[data-testid="working-summary"]')
 		expect(workingSummary).toBeTruthy()
-		expect(workingSummary?.textContent).toContain('Steered')
 		act(() => workingSummary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 		const steer = host.querySelector('[data-testid="priority-steer"]')
 		expect(steer).toBeTruthy()
@@ -1575,12 +1653,12 @@ describe('ChatView', () => {
 		expect(Array.from(host.querySelectorAll('article')).filter((article) =>
 			article.textContent?.includes('Current live reasoning.')
 		)).toHaveLength(1)
-		expect(host.textContent?.match(/Keep it local\./g)).toHaveLength(1)
 		const workingSummary = host.querySelector('[data-testid="working-summary"]')
 		act(() => workingSummary?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 		const steer = host.querySelector('[data-testid="priority-steer"]')
 		expect(steer).toBeTruthy()
 		expect(workingSummary?.contains(steer)).toBe(true)
+		expect(host.textContent?.match(/Keep it local\./g)).toHaveLength(1)
 
 		act(() => root.unmount())
 		host.remove()
@@ -1681,7 +1759,7 @@ describe('ChatView', () => {
     if (optionsButton.getAttribute('aria-expanded') === 'true') {
       act(() => optionsButton.click())
     }
-    expect(document.body.querySelector('button[aria-label="Permissions"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Permissions"]')).toBeTruthy()
     expect(document.body.querySelector('button[aria-label="Auto Decide safety"]')).toBeNull()
     expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(1)
 
@@ -2016,7 +2094,7 @@ describe('ChatView', () => {
     useAppStore.setState({ isSettingsOpen: false })
   })
 
-  it('keeps Codex reasoning and speed in the + menu and always shows the reasoning effort', async () => {
+  it('opens reasoning and speed choices directly without changing their values', async () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -2055,8 +2133,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[data-mode-chip="Reasoning: Low"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Reasoning: Low"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeNull()
-    expect(host.querySelector('button[aria-label="Disable Speed: Flex"]')).toBeTruthy()
-    openComposerOptions(host)
+    expect(host.querySelector('button[aria-label="Speed"]')).toBeTruthy()
 
     const reasoning = document.body.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
     const speed = document.body.querySelector('button[aria-label="Speed"]') as HTMLButtonElement
@@ -2246,10 +2323,10 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[1]} />))
 
     expect(host.querySelector('[aria-label="Chat branches"]')).toBeNull()
-    const branchPoint = host.querySelector('[data-message-kind="user"]')
+    const branchPoint = host.querySelector('.conversation-turn--user')
     const navigation = branchPoint?.querySelector('[aria-label="Message branches"]')
     expect(navigation?.textContent).toContain('2 / 3')
-    expect(navigation?.classList.contains('uam-message-frame__actions')).toBe(true)
+    expect(navigation?.classList.contains('conversation-turn__branches')).toBe(true)
     expect(branchPoint?.querySelector('button[aria-label="Edit message in new branch"]')).toBeTruthy()
     expect(branchPoint?.querySelector('button[aria-label="Revert to message in new branch"]')).toBeTruthy()
     act(() => (navigation?.querySelector('button[aria-label="Previous message branch"]') as HTMLButtonElement).click())
@@ -2961,7 +3038,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-	expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
+	expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -3020,7 +3097,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeTruthy()
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -3037,7 +3114,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
+    expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -3095,9 +3172,12 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const yoloChip = host.querySelector('button[aria-label="Disable YOLO"]') as HTMLButtonElement
+    const yoloChip = host.querySelector('[data-mode-chip="YOLO"] button') as HTMLButtonElement
     expect(yoloChip).toBeTruthy()
     act(() => yoloChip.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'yolo')
+    const defaultPermission = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Permissions"] [role="option"]')).find((option) => option.textContent?.startsWith('Default'))!
+    act(() => defaultPermission.click())
     expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'off')
     expect(useAppStore.getState().sessions[0]).toMatchObject({ approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' })
 
@@ -3148,13 +3228,16 @@ describe('ChatView', () => {
     act(() => (host.querySelector('button[aria-label="Dismiss Claude structured mode warning"]') as HTMLButtonElement).click())
     expect(host.textContent).not.toContain('Claude structured mode cannot surface interactive permission')
 
-    const planButton = host.querySelector('button[aria-label="Disable Provider Plan"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('[data-mode-chip="Provider Plan"] button') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
       planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
+    const defaultMode = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Provider mode"] [role="option"]')).find((option) => option.textContent?.startsWith('Default'))!
+    act(() => defaultMode.click())
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
 
     act(() => {
@@ -3359,7 +3442,7 @@ describe('ChatView', () => {
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Goal: next message')
+    expect(host.querySelector('[data-mode-chip="Goal: next message"]')).toBeTruthy()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
     act(() => {
@@ -3695,7 +3778,7 @@ describe('ChatView', () => {
       newGoalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(resumeGoal).toHaveBeenCalledTimes(1)
-    expect(host.textContent).toContain('Goal: next message')
+    expect(host.querySelector('[data-mode-chip="Goal: next message"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -3750,13 +3833,13 @@ describe('ChatView', () => {
     expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'balanced')
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('button[aria-label="Disable Memory Balanced"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory Balanced"] button')).toBeTruthy()
 
     act(() => { (document.body.querySelector('button[aria-label="Memory"]') as HTMLButtonElement).click() })
     const strict = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Strict')) as HTMLButtonElement
     act(() => strict.click())
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('button[aria-label="Disable Memory Strict"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory Strict"] button')).toBeTruthy()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
@@ -4135,7 +4218,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const goalReviewFrame = host.querySelector('[data-message-kind="goal-review"]')
+    const goalReviewFrame = host.querySelector('article[aria-label="Goal Reviewer"]')
     expect(goalReviewFrame).not.toBeNull()
     expect(goalReviewFrame?.textContent).toContain('Goal Reviewer')
     expect(goalReviewFrame?.querySelector('[data-testid="goal-review-block"]')).not.toBeNull()
@@ -4489,14 +4572,14 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form')
-      expect(form?.textContent).toContain('Gemini ACP error')
-      expect(form?.textContent).not.toContain('OpenCode ACP error')
+      expect(form?.textContent).toContain('Gemini ACP:')
+      expect(form?.textContent).not.toContain('OpenCode ACP:')
       expect(form?.textContent).toContain('Internal ACP failure')
-      expect(form?.textContent).toContain('Diagnostics')
-      expect(form?.textContent).toContain('Exit code: 137')
-      expect(form?.textContent).toContain('jsonrpc_error')
-      expect(form?.textContent).toContain('stderr stack trace')
-      const copyErrorButton = Array.from(form?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Copy error')
+      expect(form?.textContent).not.toContain('Diagnostics')
+      expect(form?.textContent).not.toContain('Exit code: 137')
+      expect(form?.textContent).not.toContain('jsonrpc_error')
+      expect(form?.textContent).not.toContain('stderr stack trace')
+      const copyErrorButton = form?.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')
       expect(copyErrorButton).toBeTruthy()
       await act(async () => {
         copyErrorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -4505,8 +4588,11 @@ describe('ChatView', () => {
       expect(writeText).toHaveBeenCalled()
       expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
       expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
+      expect(writeText.mock.calls[0][0]).toContain('Exit code: 137')
+      expect(writeText.mock.calls[0][0]).toContain('jsonrpc_error')
+      expect(writeText.mock.calls[0][0]).toContain('error.data={"cause":"boom"}')
       const text = host.textContent ?? ''
-      expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
+      expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP:'))
       const dismissErrorButton = form?.querySelector<HTMLButtonElement>('button[aria-label="Dismiss composer error"]')
       expect(dismissErrorButton).toBeTruthy()
       act(() => dismissErrorButton?.click())
@@ -4532,7 +4618,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('offers provider check, settings, and terminal recovery for structured runtime failures', async () => {
+  it('keeps runtime recovery compact and dismisses only its visible error', async () => {
     const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
     const setSettingsOpen = vi.fn()
     const openTerminalFallback = vi.fn()
@@ -4546,12 +4632,25 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} onOpenTerminalFallback={openTerminalFallback} />))
 
-    await act(async () => { (host.querySelector('button[aria-label="Check provider CLI"]') as HTMLButtonElement).click(); await Promise.resolve() })
-    act(() => (host.querySelector('button[aria-label="Open CLI settings"]') as HTMLButtonElement).click())
-    await act(async () => { (host.querySelector('button[aria-label="Open fallback terminal"]') as HTMLButtonElement).click(); await Promise.resolve() })
-    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
-    expect(setSettingsOpen).toHaveBeenCalledWith(true)
-    expect(openTerminalFallback).toHaveBeenCalledOnce()
+    const error = host.querySelector('[aria-label="Dismiss composer error"]')!.closest('[role="alert"]') as HTMLElement
+    expect(error.textContent).toContain('Provider failed to launch.')
+    expect(error.getAttribute('style')).toContain('var(--red) 42%')
+    expect(error.getAttribute('style')).toContain('var(--red) 9%')
+    expect(error.querySelectorAll('button')).toHaveLength(2)
+    expect(error.querySelector('[aria-expanded]')).toBeNull()
+    expect(host.querySelector('[aria-label="Check provider CLI"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Open CLI settings"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Open fallback terminal"]')).toBeNull()
+    const before = useAppStore.getState()
+    act(() => (error.querySelector('[aria-label="Dismiss composer error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[aria-label="Dismiss composer error"]')).toBeNull()
+    expect(host.textContent).toContain('Command safety warning')
+    expect(useAppStore.getState().acpBindingBySessionId).toBe(before.acpBindingBySessionId)
+    expect(useAppStore.getState().messages).toBe(before.messages)
+    expect(useAppStore.getState().sessions).toBe(before.sessions)
+    expect(refreshCliProviderVersion).not.toHaveBeenCalled()
+    expect(setSettingsOpen).not.toHaveBeenCalled()
+    expect(openTerminalFallback).not.toHaveBeenCalled()
 
     act(() => root.unmount())
     host.remove()
@@ -4674,7 +4773,7 @@ describe('ChatView', () => {
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const assistantFrames = host.querySelectorAll('[data-message-kind="assistant"]')
+    const assistantFrames = host.querySelectorAll('.conversation-turn--assistant')
     expect(assistantFrames).toHaveLength(1)
     expect(assistantFrames[0].textContent).toContain('Initial text.')
     expect(assistantFrames[0].textContent).toContain('Search symbols')

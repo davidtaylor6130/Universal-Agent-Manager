@@ -40,6 +40,7 @@ export interface Message {
   role: Role
   content: string
   providerId?: string
+  modelId?: string
   thoughts?: string
   planSummary?: string
   planEntries?: MessagePlanEntry[]

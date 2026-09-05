@@ -33,6 +33,7 @@ export interface CppMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   providerId?: string
+  modelId?: string
   thoughts?: string
   planSummary?: string
   planEntries?: AcpPlanEntry[]

@@ -1,0 +1,83 @@
+/* Keep the existing toolbar and native textarea; only compact their own controls. */
+.uam-composer-input-row {
+  position: relative;
+}
+
+.uam-composer-input-row > textarea {
+  display: block;
+  min-width: 0;
+  text-indent: var(--agent-prefix-width, 0px);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+}
+
+.uam-composer-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  padding-right: 8px;
+  max-width: min(140px, 35%);
+  margin: 0;
+}
+
+.uam-composer-agent .uam-menu-select__trigger {
+  padding: 0;
+  height: 20px;
+  font-size: var(--fs-base);
+  gap: 4px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.uam-composer-agent > .relative {
+  min-width: 0;
+}
+
+.uam-composer-agent-separator {
+  flex-shrink: 0;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.uam-composer-choice {
+  flex-shrink: 0;
+}
+
+.uam-composer-choice .uam-menu-select__trigger {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-up) 72%, transparent);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.uam-composer-choice .uam-menu-select__trigger > span {
+  gap: 6px;
+}
+
+.uam-composer-choice .uam-menu-select__chevron,
+.uam-composer-agent .uam-menu-select__chevron {
+  display: none;
+}
+
+.uam-composer-choice .uam-menu-select__trigger:hover:not(:disabled),
+.uam-composer-agent .uam-menu-select__trigger:hover:not(:disabled) {
+  background: var(--surface-up);
+}
+
+.uam-composer-choice .uam-menu-select__trigger:focus-visible,
+.uam-composer-agent .uam-menu-select__trigger:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}

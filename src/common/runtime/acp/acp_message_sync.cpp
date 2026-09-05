@@ -20,6 +20,7 @@ Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
 	Message message;
 	message.role = MessageRole::Assistant;
 	message.provider = MessageProviderId(session);
+	message.model_id = session.current_model_id;
 	message.created_at = AcpTimestampNow();
 	chat.messages.push_back(std::move(message));
 	session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;

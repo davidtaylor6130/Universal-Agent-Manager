@@ -392,6 +392,7 @@ namespace
 		uam::json::SetString(obj, kMessageCreatedAtField, msg.created_at);
 
 		SetNonEmptyString(obj, kMessageProviderField, msg.provider);
+		SetNonEmptyString(obj, "model_id", msg.model_id);
 		SetPositiveNumber(obj, kMessageTokensInputField, static_cast<double>(msg.tokens_input));
 		SetPositiveNumber(obj, kMessageTokensOutputField, static_cast<double>(msg.tokens_output));
 		SetPositiveNumber(obj, kMessageEstimatedCostUsdField, msg.estimated_cost_usd);
@@ -510,6 +511,7 @@ namespace
 		msg.content = JsonStringOrEmpty(obj.Find(kMessageContentField));
 		msg.created_at = JsonStringOrEmpty(obj.Find(kMessageCreatedAtField));
 		msg.provider = JsonStringOrEmpty(obj.Find(kMessageProviderField));
+		msg.model_id = JsonStringOrEmpty(obj.Find("model_id"));
 		msg.tokens_input = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensInputField));
 		msg.tokens_output = NonNegativeIntFieldOrZero(obj.Find(kMessageTokensOutputField));
 		msg.estimated_cost_usd = NonNegativeNumberFieldOrZero(obj.Find(kMessageEstimatedCostUsdField));
@@ -721,7 +723,7 @@ namespace
 
 	bool MessageIdentityFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider;
+		return lhs.role == rhs.role && lhs.content == rhs.content && lhs.created_at == rhs.created_at && lhs.provider == rhs.provider && lhs.model_id == rhs.model_id;
 	}
 
 	bool MessageUsageFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)

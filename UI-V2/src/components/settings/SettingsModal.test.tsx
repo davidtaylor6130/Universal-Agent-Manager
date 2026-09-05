@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsModal } from './SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
+import { fallbackProviderForId } from '../../utils/providerMetadata'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -131,7 +132,11 @@ describe('SettingsModal memory settings', () => {
       setSidebarSettings: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
-      openAllMemoryLibrary: vi.fn(() => Promise.resolve(true)),
+      openAllMemoryLibrary: vi.fn(async () => { useAppStore.setState({memoryLibraryScope:{scopeType:'all',folderId:'',label:'All Memory',rootPath:'',rootCount:1},memoryLibraryEntries:[],memoryLibraryLoading:false,memoryLibraryError:''}); return true }),
+      closeMemoryLibrary: vi.fn(() => useAppStore.setState({memoryLibraryScope:null})),
+      discoverProviderModels: vi.fn(async () => true),
+      refreshMarkdownStore: vi.fn(async () => true),
+      memoryLibraryScope: null,
       openGlobalMemoryLibrary: vi.fn(() => Promise.resolve(true)),
       openMemoryScanModal: vi.fn(() => Promise.resolve(true)),
     })
@@ -149,7 +154,7 @@ describe('SettingsModal memory settings', () => {
 
   function openEditorsSection(host: HTMLElement) {
     const editorsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Editors') && button.textContent?.includes('Workspace launch presets')
+      (button) => button.textContent?.includes('Editors')
     )
     expect(editorsSectionButton).toBeTruthy()
 
@@ -160,7 +165,7 @@ describe('SettingsModal memory settings', () => {
 
   function openCliVersionSection(host: HTMLElement) {
     const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('CLI Version') && button.textContent?.includes('Run or revert provider CLIs')
+      (button) => button.textContent?.includes('CLI Version')
     )
     expect(cliSectionButton).toBeTruthy()
 
@@ -171,7 +176,7 @@ describe('SettingsModal memory settings', () => {
 
   function openRemoteHostsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Remote Hosts') && candidate.textContent?.includes('SSH-connected UAM runners')
+      (candidate) => candidate.textContent?.includes('Remote Hosts')
     )
     expect(button).toBeTruthy()
     act(() => button?.click())
@@ -358,7 +363,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Settings') && button.textContent?.includes('Defaults and workers')
+      (button) => button.textContent?.includes('Memory Settings')
     )
     expect(memorySectionButton).toBeTruthy()
 
@@ -369,7 +374,7 @@ describe('SettingsModal memory settings', () => {
 
   function openChatDataSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Data') && button.textContent?.includes('Local export and import')
+      (button) => button.textContent?.includes('Chat Data')
     )
     expect(sectionButton).toBeTruthy()
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -377,7 +382,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMcpServersSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('MCP Servers') && button.textContent?.includes('Local workspace tools')
+      (button) => button.textContent?.includes('MCP Servers')
     )
     expect(sectionButton).toBeTruthy()
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -385,7 +390,7 @@ describe('SettingsModal memory settings', () => {
 
   function openAgentsSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Agents') && button.textContent?.includes('Favorites and composer shortcut')
+      (button) => button.textContent?.includes('Agents')
     )
     expect(sectionButton).toBeTruthy()
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -394,7 +399,7 @@ describe('SettingsModal memory settings', () => {
   it('persists the shortcut and exact ordered agent favorites', () => {
 	const { host, root } = renderModal()
 	openAgentsSection(host)
-	expect(host.textContent).toContain('Claude Code')
+	expect(host.querySelector('[aria-label="Source provider"]')).toBeTruthy()
 
     const moveReviewerUp = host.querySelector('button[aria-label="Move reviewer up"]') as HTMLButtonElement
     act(() => moveReviewerUp.click())
@@ -467,6 +472,7 @@ describe('SettingsModal memory settings', () => {
   it('rejects malformed MCP JSON locally and saves environment references', async () => {
     const { host, root } = renderModal()
     openMcpServersSection(host)
+    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
     const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
     const save = host.querySelector('button[aria-label="Save MCP server configuration"]') as HTMLButtonElement
 
@@ -500,6 +506,7 @@ describe('SettingsModal memory settings', () => {
     useAppStore.setState({ setMcpServers })
     const { host, root } = renderModal()
     openMcpServersSection(host)
+    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
     const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
     const save = host.querySelector('button[aria-label="Save MCP server configuration"]') as HTMLButtonElement
     const attempted = [{
@@ -524,6 +531,7 @@ describe('SettingsModal memory settings', () => {
   it('adds isolated Playwright browser control without writing JSON', async () => {
     const { host, root } = renderModal()
     openMcpServersSection(host)
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Setup Gemini browser control"]')?.click())
     const executable = host.querySelector('input[aria-label="npx executable path"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(executable, '/opt/homebrew/bin/npx')
@@ -538,7 +546,7 @@ describe('SettingsModal memory settings', () => {
       command: '/opt/homebrew/bin/npx',
       args: ['-y', '@playwright/mcp@latest', '--isolated'],
     })])
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Browser control saved')
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Browser control configured')
 
     act(() => root.unmount())
     host.remove()
@@ -546,7 +554,7 @@ describe('SettingsModal memory settings', () => {
 
   it('opens and switches sections without a forced animation or duplicate theme refresh', () => {
     const { host, root } = renderModal()
-    const dialog = host.querySelector<HTMLElement>('[role="dialog"][aria-label="Settings"]')
+    const dialog = host.querySelector<HTMLElement>('[role="region"][aria-label="Settings"]')
     expect(dialog?.className).not.toContain('animate-slide-in')
     expect(dialog?.parentElement?.className).not.toContain('animate-fade-in')
     expect(useAppStore.getState().refreshCustomThemes).not.toHaveBeenCalled()
@@ -560,7 +568,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMemoryStoreSection(host: HTMLElement) {
     const memoryStoreSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Store') && button.textContent?.includes('Library and backfill')
+      (button) => button.textContent?.includes('Memory Store')
     )
     expect(memoryStoreSectionButton).toBeTruthy()
 
@@ -571,7 +579,7 @@ describe('SettingsModal memory settings', () => {
 
   function openGoalLoopsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Goal Loops') && candidate.textContent?.includes('Loop safety')
+      (candidate) => candidate.textContent?.includes('Goal Loops')
     )
     expect(button).toBeTruthy()
     act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -579,18 +587,46 @@ describe('SettingsModal memory settings', () => {
 
   function openMarkdownStoreSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Skills') && candidate.textContent?.includes('Reusable prompts and attachments')
+      (candidate) => candidate.textContent?.includes('Skills')
     )
     expect(button).toBeTruthy()
     act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
   }
 
-  it('uses an icon-first modal dismissal', () => {
+  it('finds settings by control terms without changing pages and clears empty results', () => {
     const { host, root } = renderModal()
-    const closeButton = host.querySelector('button[aria-label="Close settings"]') as HTMLButtonElement
+    const field = host.querySelector<HTMLInputElement>('[aria-label="Search settings"]')!
+    const search = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+      field.dispatchEvent(new Event('input', {bubbles:true}))
+    })
+    search('  ReCoMmEnDeD  ')
+    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['CLI Version'])
+    expect(host.querySelector('h2')?.textContent).toBe('Providers')
+    expect(host.querySelector('nav [aria-pressed="true"]')).toBeNull()
+    expect(host.querySelectorAll('h2')[1]?.textContent).toBe('Appearance')
+    search('extensions')
+    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['Editors'])
+    search('no-such-setting')
+    expect(host.textContent).toContain('No settings found.')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Clear settings search"]')!.click())
+    expect(host.querySelectorAll('nav button')).toHaveLength(15)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers Back to chats in the Settings page header', () => {
+    const { host, root } = renderModal()
+    const closeButton = host.querySelector('button[aria-label="Back to chats"]') as HTMLButtonElement
 
     expect(closeButton).toBeTruthy()
-    expect(closeButton.textContent).toBe('')
+    expect(closeButton.textContent).toBe('Back to chats')
+    expect(host.querySelector('[aria-modal="true"]')).toBeNull()
+    expect(host.querySelector('h1')?.textContent).toBe('Settings')
+    expect(Array.from(host.querySelectorAll('nav h2')).map(heading => heading.textContent)).toEqual(['General', 'Providers', 'Workspace', 'App'])
+    const tab = new KeyboardEvent('keydown', {key: 'Tab', bubbles: true, cancelable: true})
+    act(() => closeButton.dispatchEvent(tab))
+    expect(tab.defaultPrevented).toBe(false)
 
     act(() => root.unmount())
     host.remove()
@@ -601,13 +637,14 @@ describe('SettingsModal memory settings', () => {
     document.body.appendChild(opener)
     opener.focus()
     const { host, root } = renderModal()
-    expect(document.activeElement).toBe(host.querySelector('[role="dialog"][aria-label="Settings"]'))
+    expect(document.activeElement).toBe(host.querySelector('[role="region"][aria-label="Settings"]'))
     openMcpServersSection(host)
+    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
     const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, '[{"name":"draft"}]')
       editor.dispatchEvent(new Event('input', { bubbles: true }))
-      ;(host.querySelector('button[aria-label="Close settings"]') as HTMLButtonElement).click()
+      ;(host.querySelector('button[aria-label="Back to chats"]') as HTMLButtonElement).click()
     })
     expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
     expect(host.querySelector('[role="alertdialog"][aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
@@ -754,7 +791,7 @@ describe('SettingsModal memory settings', () => {
 
     openCliVersionSection(host)
 
-    expect(host.textContent).toContain('Provider CLIs')
+    expect(host.textContent).toContain('CLI version control')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('0.123.0')
@@ -771,34 +808,12 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('0.123.0')
     expect(host.querySelector('button[aria-label="Refresh Codex CLI version"]')?.textContent).toBe('')
 
-    const targetVersionButton = host.querySelector(
-      'button[title="Codex target version"]'
-    ) as HTMLButtonElement | null
-    expect(targetVersionButton).toBeTruthy()
-
-    act(() => {
-      targetVersionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    const nextVersionOption = Array.from(document.body.querySelectorAll('button[role="option"]')).find(
-      (button) => button.textContent?.includes('0.124.0')
-    )
-    expect(nextVersionOption).toBeTruthy()
-
-    act(() => {
-      nextVersionOption?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    const applyButton = host.querySelector('button[aria-label="Apply Codex CLI version"]') as HTMLButtonElement
-    expect(applyButton).toBeTruthy()
-    expect(applyButton?.disabled).toBe(false)
-    expect(applyButton.textContent).toBe('')
-
-    act(() => {
-      applyButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(host.textContent).toContain('Install Codex 0.124.0 globally with npm?')
+    const download = host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!
+    act(() => download.click())
+    const recommended = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent?.includes('Download recommended'))!
+    expect(recommended.textContent).toContain('0.124.0')
+    act(() => recommended.click())
+    expect(host.textContent).toContain('Install Codex 0.124.0 globally using npm?')
     expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()
     const confirmInstall = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Install version')
     act(() => confirmInstall?.click())
@@ -810,7 +825,7 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('animates CLI actions while a version check is running', () => {
+  it('disables CLI actions while a version check is running without spinning', () => {
     const providers = useAppStore.getState().cliVersionManager.providers.map((provider) =>
       provider.providerId === 'codex-cli' ? { ...provider, running: true, status: 'checking' as const } : provider
     )
@@ -820,8 +835,9 @@ describe('SettingsModal memory settings', () => {
     openCliVersionSection(host)
     act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement).click())
 
-    expect(host.querySelector('button[aria-label="Refresh Codex CLI version"] svg')?.classList.contains('animate-spin')).toBe(true)
-    expect(host.querySelector('button[aria-label="Installing Codex CLI version"] svg')?.classList.contains('animate-spin')).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Codex CLI version"]')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Download Codex CLI"]')?.disabled).toBe(true)
+    expect(host.querySelector('.animate-spin')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -831,7 +847,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+      (button) => button.textContent?.includes('Chat Defaults')
     )
     expect(defaultsSectionButton).toBeTruthy()
 
@@ -839,7 +855,7 @@ describe('SettingsModal memory settings', () => {
       defaultsSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('New Chat Defaults')
+    expect(host.textContent).toContain('Chat Defaults')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeNull()
@@ -854,9 +870,9 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Reasoning')
-    expect(host.textContent).toContain('AI Review')
+    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeTruthy()
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeTruthy()
-    expect(host.querySelector('#codex-cli-defaults-panel')?.className).toContain('animate-fade-in')
+    expect(host.querySelector('#codex-cli-defaults-panel')?.className).not.toContain('animate-fade-in')
     expect(host.querySelector('select')).toBeNull()
     const memoryLevel = host.querySelector('button[title="Codex default memory level"]') as HTMLButtonElement
     expect(memoryLevel).toBeTruthy()
@@ -886,106 +902,28 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('shows the freshest provider usage independently of chat activity', () => {
-    useAppStore.setState((state) => ({
-      sessions: [
-        {
-          ...state.sessions[0],
-          id: 'chat-codex-usage-old',
-          providerId: 'codex-cli',
-          updatedAt: new Date('2026-08-08T12:00:00Z'),
-        },
-        {
-          ...state.sessions[0],
-          id: 'chat-codex-usage-new',
-          providerId: 'codex-cli',
-          updatedAt: new Date('2026-08-06T12:00:00Z'),
-        },
-        {
-          ...state.sessions[0],
-          id: 'chat-gemini-usage',
-          providerId: 'gemini-cli',
-          updatedAt: new Date('2026-08-07T11:00:00Z'),
-        },
-        {
-          ...state.sessions[0],
-          id: 'chat-codex-without-usage',
-          providerId: 'codex-cli',
-          updatedAt: new Date('2026-08-09T13:00:00Z'),
-        },
-      ],
-      acpBindingBySessionId: {
-        'chat-codex-usage-old': {
-          ...state.acpBindingBySessionId[state.sessions[0]?.id],
-          running: false,
-          providerUsage: {
-            tokenUsage: {
-              updatedAt: 1000,
-              total: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 111 },
-              last: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 11 },
-              modelContextWindow: 1000,
-            },
-            rateLimits: null,
-          },
-        },
-        'chat-codex-usage-new': {
-          ...state.acpBindingBySessionId[state.sessions[0]?.id],
-          running: true,
-          providerUsage: {
-            tokenUsage: {
-              updatedAt: 3000,
-              total: { inputTokens: 10000, cachedInputTokens: 2000, cacheWriteInputTokens: 100, outputTokens: 2000, reasoningOutputTokens: 345, totalTokens: 12345 },
-              last: { inputTokens: 900, cachedInputTokens: 200, cacheWriteInputTokens: 10, outputTokens: 250, reasoningOutputTokens: 84, totalTokens: 1234 },
-              modelContextWindow: 200000,
-            },
-            rateLimits: {
-              updatedAt: 4000,
-              limitId: 'codex',
-              limitName: 'Codex',
-              primary: { usedPercent: 42, resetsAt: 1786118400, windowDurationMinutes: 300 },
-              secondary: { usedPercent: 20, resetsAt: 1786723200, windowDurationMinutes: 10080 },
-              credits: { hasCredits: true, unlimited: false, balance: '12.50' },
-              individualLimit: { limit: '100.00', used: '75.00', remainingPercent: 25, resetsAt: 1786723200 },
-              spendControlReached: true,
-              planType: 'pro',
-              rateLimitReachedType: 'workspace_member_usage_limit_reached',
-            },
-          },
-        },
-      },
-    }))
-
+  it('keeps model refresh outside collapse and advanced preferences available', () => {
     const { host, root } = renderModal()
-    const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
-    )
-    act(() => defaultsSectionButton?.click())
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Gemini chat defaults"]')?.click())
-
-    const codexUsage = host.querySelector('[aria-label="Codex provider usage"]')
-    expect(codexUsage?.getAttribute('role')).toBe('region')
-    expect(codexUsage?.textContent).toContain('12,345 total')
-    expect(codexUsage?.textContent).toContain('1,234 last turn')
-    expect(codexUsage?.textContent).toContain('200,000 tokens')
-    expect(codexUsage?.textContent).toContain('42% used')
-    expect(codexUsage?.textContent).toContain('58% window remaining')
-    expect(codexUsage?.textContent).toContain('20% used')
-    expect(codexUsage?.textContent).toContain('Spend control reached')
-    expect(codexUsage?.textContent).toContain('12.50 available')
-    expect(codexUsage?.textContent).toContain('25% remaining')
-    expect(codexUsage?.textContent).toContain('workspace member usage limit reached')
-    expect(codexUsage?.textContent).not.toContain('111')
-    expect(host.querySelector('[aria-label="Gemini provider usage"]')?.textContent).toContain('Not reported by provider')
-
-    act(() => root.unmount())
-    host.remove()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex models"]')!
+    expect(refresh).toBeTruthy()
+    expect(host.querySelector('#codex-cli-defaults-panel')).toBeNull()
+    act(() => refresh.click())
+    expect(useAppStore.getState().discoverProviderModels).toHaveBeenCalled()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex chat defaults"]')?.click())
+    expect(host.querySelector('[aria-label="Codex provider usage"]')).toBeNull()
+    expect(refresh.closest('#codex-cli-defaults-panel')).toBeNull()
+    const advanced = host.querySelector('#codex-cli-defaults-panel details') as HTMLDetailsElement
+    expect(advanced.open).toBe(false)
+    expect(advanced.textContent).toContain('Feature preference')
+    expect(advanced.textContent).toContain('Architect + worker')
+    act(() => root.unmount()); host.remove()
   })
 
   it('changes provider chat defaults with the keyboard', async () => {
     const { host, root } = renderModal()
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+      (button) => button.textContent?.includes('Chat Defaults')
     )
     act(() => defaultsSectionButton?.click())
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
@@ -1030,8 +968,8 @@ describe('SettingsModal memory settings', () => {
         { ...state.sessions[0], id: 'chat-copilot-catalog', providerId: 'copilot-cli' },
       ],
       providerChatDefaults: {
-        'codex-cli': { modelId: 'gpt-runtime-fast', reasoningEffort: 'ultra', serviceTier: 'flex', approvalMode: 'default', commandSafetyTier: 'medium', memoryLevel: 'off', memoryEnabled: false, smallModelMode: false },
-        'copilot-cli': { modelId: '', reasoningEffort: '', serviceTier: '', approvalMode: 'default', commandSafetyTier: 'medium', memoryLevel: 'off', memoryEnabled: false, smallModelMode: false },
+        'codex-cli': { modelId: 'gpt-runtime-fast', reasoningEffort: 'ultra', serviceTier: 'flex', approvalMode: 'default', commandSafetyTier: 'off', memoryLevel: 'off', memoryEnabled: false, smallModelMode: false },
+        'copilot-cli': { modelId: '', reasoningEffort: '', serviceTier: '', approvalMode: 'default', commandSafetyTier: 'off', memoryLevel: 'off', memoryEnabled: false, smallModelMode: false },
       },
       acpBindingBySessionId: {
         'chat-codex-catalog': {
@@ -1061,7 +999,7 @@ describe('SettingsModal memory settings', () => {
 
     const { host, root } = renderModal()
     act(() => Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')
+      (button) => button.textContent?.includes('Chat Defaults')
     )?.click())
 
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
@@ -1096,7 +1034,7 @@ describe('SettingsModal memory settings', () => {
       discoverProviderModels,
     }))
     const { host, root } = renderModal()
-    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')) as HTMLButtonElement
+    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
     act(() => defaults.click())
     act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
@@ -1113,7 +1051,7 @@ describe('SettingsModal memory settings', () => {
 	  const discoverProviderModels = vi.fn(() => Promise.resolve(true))
 	  useAppStore.setState({ sessions: [], acpBindingBySessionId: {}, discoverProviderModels })
 	  const { host, root } = renderModal()
-	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults') && button.textContent?.includes('Provider and new-chat settings')) as HTMLButtonElement
+	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
 	  act(() => defaults.click())
 	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
 	  const refresh = host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement
@@ -1129,7 +1067,7 @@ describe('SettingsModal memory settings', () => {
 
     openMemorySettingsSection(host)
 
-    expect(host.textContent).toContain('Memory Workers')
+    expect(host.querySelector('[aria-label="Memory Workers"]')).toBeTruthy()
     expect(host.textContent).toContain('Gemini memory worker')
     expect(host.textContent).toContain('Default')
     expect(host.textContent).not.toContain('CLI default')
@@ -1137,12 +1075,12 @@ describe('SettingsModal memory settings', () => {
 
     openMemoryStoreSection(host)
 
-    expect(host.textContent).toContain('Memory Library')
-    expect(host.textContent).toContain('Memory Backfill')
+    expect(host.querySelector('[aria-label="Search memory library"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Memory Backfill')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     const aboutSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('About') && button.textContent?.includes('Version information')
+      (button) => button.textContent?.includes('About')
     )
     expect(aboutSectionButton).toBeTruthy()
 
@@ -1150,7 +1088,7 @@ describe('SettingsModal memory settings', () => {
       aboutSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('Build and release information')
+    expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
     expect(host.textContent).toContain('V4.9.0-alpha-11')
     expect(host.textContent).not.toContain('Gemini memory worker')
 
@@ -1164,7 +1102,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
-    expect(host.textContent).toContain('Workspace Editors')
+    expect(host.querySelector('[aria-label="Workspace Editors"]')).toBeTruthy()
     expect(host.querySelector('select')).toBeNull()
     expect(host.textContent).toContain('C++')
     expect(host.textContent).not.toContain('8 extensions open in VS Code')
@@ -1223,9 +1161,9 @@ describe('SettingsModal memory settings', () => {
       cppGroupToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('Extensions')
-    expect(host.textContent).toContain('8 extensions open in VS Code')
-    expect(host.querySelector('#cpp-editor-group-panel')?.className).toContain('animate-fade-in')
+    expect(host.querySelector('[aria-label="C++ file extensions"]')).toBeTruthy()
+    expect((host.querySelector('[aria-label="C++ file extensions"]') as HTMLInputElement).value.split(' ')).toHaveLength(8)
+    expect(host.querySelector('#cpp-editor-group-panel')?.className).not.toContain('animate-fade-in')
     expect(host.querySelector('button[aria-label="Delete C++ editor group"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Add editor group"]')).toBeTruthy()
 
@@ -1435,15 +1373,8 @@ describe('SettingsModal memory settings', () => {
 
     openMemoryStoreSection(host)
 
-    const openLibraryButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Open library')
-    )
-    expect(openLibraryButton).toBeTruthy()
-
-    act(() => {
-      openLibraryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
+    expect(host.querySelector('[aria-label="Search memory library"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Open library')
     expect(useAppStore.getState().openAllMemoryLibrary).toHaveBeenCalledTimes(1)
     expect(useAppStore.getState().openGlobalMemoryLibrary).not.toHaveBeenCalled()
 
@@ -1458,10 +1389,11 @@ describe('SettingsModal memory settings', () => {
     openMarkdownStoreSection(host)
 
     const saveButton = host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement
-    const openStoreButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open store') as HTMLButtonElement
+    const library = host.querySelector('[role="region"][aria-label="Skills"]')
 
     expect(saveButton.disabled).toBe(true)
-    expect(openStoreButton).toBeTruthy()
+    expect(library).toBeTruthy()
+    expect(host.querySelectorAll('[aria-modal="true"]')).toHaveLength(0)
 
     act(() => root.unmount())
     host.remove()
@@ -1552,7 +1484,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice Input'))
     act(() => voiceSection?.click())
-    expect(host.textContent).toContain('operating system speech recognition')
+    expect(host.textContent).toContain('native system speech service')
     expect(host.querySelector('button[aria-label="Speech-to-text service"]')).toBeNull()
     expect(host.querySelector('input[aria-label="Voice transcription server URL"]')).toBeNull()
     expect(host.textContent).not.toContain('OpenAI-compatible server')
@@ -1560,53 +1492,43 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('opens the scan current chats flow from the memory store section', () => {
-    const { host, root } = renderModal()
-
+  it('guards an embedded memory draft before changing Settings pages', () => {
+    const {host,root} = renderModal()
     openMemoryStoreSection(host)
-
-    const scanButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Scan Current Chats')
-    )
-    expect(scanButton).toBeTruthy()
-
-    act(() => {
-      scanButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(useAppStore.getState().openMemoryScanModal).toHaveBeenCalledTimes(1)
-
-    const modalShell = host.querySelector('.rounded-2xl.shadow-2xl') as HTMLDivElement | null
-    expect(modalShell).toBeTruthy()
-    expect(modalShell?.className).toContain('flex-col')
-
-    act(() => {
-      root.unmount()
-    })
-    host.remove()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add memory"]')?.click())
+    const title = host.querySelector<HTMLInputElement>('[aria-label="Title"]')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(title,'Unsaved lesson'); title.dispatchEvent(new Event('input',{bubbles:true})) })
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    expect(host.querySelector('[aria-label="Unsaved memory"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="New memory"]')).toBeTruthy()
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')?.click())
+    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(useAppStore.getState().closeMemoryLibrary).toHaveBeenCalledTimes(1)
+    act(() => root.unmount()); host.remove()
   })
 
   it('creates, previews, and saves a custom theme', async () => {
     const { host, root } = renderModal()
-    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create')
+    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Add theme')
 
     act(() => createButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
+    expect(host.querySelector('[role="radiogroup"][aria-label="Theme base"]')).toBeTruthy()
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next')?.click())
     const backgroundInput = host.querySelector('input[aria-label="Background color"]') as HTMLInputElement | null
     expect(backgroundInput).toBeTruthy()
     expect(host.querySelectorAll('input[type="color"]')).toHaveLength(0)
     expect(host.querySelectorAll('select')).toHaveLength(0)
-    expect(host.querySelector('[role="radiogroup"][aria-label="Theme base"]')).toBeTruthy()
     expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(12)
 
-    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme') as HTMLButtonElement | undefined
+    const nextButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Next') as HTMLButtonElement
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(backgroundInput, '#123')
       backgroundInput?.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(backgroundInput?.getAttribute('aria-invalid')).toBe('true')
-    expect(saveButton?.disabled).toBe(true)
+    expect(nextButton.disabled).toBe(true)
     expect(host.textContent).toContain('Every color must use #RRGGBB format.')
 
     act(() => {
@@ -1617,8 +1539,10 @@ describe('SettingsModal memory settings', () => {
 
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#123456')
     expect(backgroundInput?.getAttribute('aria-invalid')).toBe('false')
-    expect(saveButton?.disabled).toBe(false)
+    expect(nextButton.disabled).toBe(false)
 
+    act(() => nextButton.click())
+    const saveButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!
     await act(async () => {
       saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -1639,8 +1563,10 @@ describe('SettingsModal memory settings', () => {
     const save = vi.fn(() => new Promise<null>((resolve) => finishes.push(resolve)))
     useAppStore.setState({ saveCustomTheme: save })
     const { host, root } = renderModal()
-    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Create') as HTMLButtonElement
+    const createButton = Array.from(host.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Add theme') as HTMLButtonElement
     act(() => createButton.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next')?.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next')?.click())
     const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save theme') as HTMLButtonElement
 
     act(() => {
@@ -1677,7 +1603,7 @@ describe('SettingsModal memory settings', () => {
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     const { host, root } = renderModal()
 
-    const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export JSON')
+    const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.getAttribute('aria-label') === 'Export theme')
     act(() => exportButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(createObjectUrl).toHaveBeenCalledTimes(1)
     expect(clickSpy).toHaveBeenCalledTimes(1)
@@ -1724,4 +1650,111 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('retains a blank editor name, commits on blur, and keeps failed edits guarded', async () => {
+    const save = vi.fn(async () => false)
+    useAppStore.setState({setEditorSettings:save})
+    const {host,root} = renderModal()
+    openEditorsSection(host)
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show C++ editor group"]')!.click())
+    const field = host.querySelector<HTMLInputElement>('[aria-label="C++ group name"]')!
+    const typeName = (value: string) => act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(field,value); field.dispatchEvent(new Event('input',{bubbles:true})) })
+    typeName('')
+    await act(async () => field.dispatchEvent(new FocusEvent('focusout',{bubbles:true})))
+    expect(save).not.toHaveBeenCalled()
+    expect(field.value).toBe('')
+    expect(host.querySelector('[aria-label="Hide C++ editor group"]')).toBeTruthy()
+    expect(host.textContent).toContain('Enter a group name.')
+    typeName('Native sources')
+    expect(save).not.toHaveBeenCalled()
+    await act(async () => field.dispatchEvent(new FocusEvent('focusout',{bubbles:true})))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({editorFileAssociations:[expect.objectContaining({id:'cpp',name:'Native sources'})]}))
+    expect(host.textContent).toContain('Editor settings could not be saved.')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
+    expect(host.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('retains newer MCP JSON after an older save succeeds', async () => {
+    let finish!: (value: {ok:boolean}) => void
+    const save = vi.fn(() => new Promise<{ok:boolean}>(resolve => {finish=resolve}))
+    useAppStore.setState({setMcpServers:save})
+    const {host,root} = renderModal()
+    openMcpServersSection(host)
+    const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP server configuration"]')!
+    const edit = (value:string) => act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(editor,value); editor.dispatchEvent(new Event('input',{bubbles:true})) })
+    edit('[]')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Save MCP server configuration"]')!.click())
+    edit('[{"id":"newer"}]')
+    await act(async () => finish({ok:true}))
+    expect(editor.value).toBe('[{"id":"newer"}]')
+    expect(host.textContent).toContain('newer edits remain unsaved')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
+    expect(host.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('shows only supported browser Setup actions and never treats a pending or rejected save as configured', async () => {
+    const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)
+    let finish!: (value:{ok:boolean;error?:string}) => void
+    useAppStore.setState({providers,setMcpServers:vi.fn(() => new Promise<{ok:boolean;error?:string}>(resolve => {finish=resolve}))})
+    const {host,root} = renderModal()
+    openMcpServersSection(host)
+    expect(host.querySelectorAll('button[aria-label^="Setup "]')).toHaveLength(3)
+    expect(host.querySelector('[aria-label="Setup Codex browser control"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Setup Claude browser control"]')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Setup Gemini browser control"]')!.click())
+    const executable = host.querySelector<HTMLInputElement>('[aria-label="npx executable path"]')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(executable,'/usr/local/bin/npx'); executable.dispatchEvent(new Event('input',{bubbles:true})) })
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add Playwright browser control"]')!.click())
+    expect(host.textContent).toContain('Saving configuration…')
+    expect(host.textContent).not.toContain('Configured')
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.disabled).toBe(true)
+    await act(async () => finish({ok:false,error:'Settings disk is read-only.'}))
+    expect(host.textContent).toContain('Settings disk is read-only.')
+    expect(host.textContent).not.toContain('Configured')
+    expect(executable.value).toBe('/usr/local/bin/npx')
+    expect(host.querySelector('button[aria-label="Add Playwright browser control"]')).toBeTruthy()
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps all five CLI rows compact and confirms a latest download before calling the real action', () => {
+    const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)
+    const template = useAppStore.getState().cliVersionManager.providers[0]
+    useAppStore.setState({providers,cliVersionManager:{providers:providers.map(provider => ({...template,providerId:provider.id,...(provider.id === 'codex-cli' ? {status:'known-incompatible' as const,message:'Structured chat is incompatible.',lastInstallStatus:'failed' as const} : {})}))}})
+    const {host,root} = renderModal()
+    openCliVersionSection(host)
+    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(5)
+    expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeNull()
+    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!
+    expect(toggle.previousElementSibling?.getAttribute('role')).toBe('img')
+    expect(toggle.previousElementSibling?.textContent).toBe('2')
+    act(() => toggle.click())
+    expect(host.querySelector('#codex-cli-cli-version-panel [aria-label="Refresh Codex CLI version"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
+    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
+    expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Install version')!.click())
+    expect(useAppStore.getState().applyCliProviderVersion).toHaveBeenCalledWith('codex-cli','latest')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps a rejected theme draft open and restores its preview only after discard', async () => {
+    useAppStore.setState({saveCustomTheme:vi.fn(async () => null)})
+    const {host,root} = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add theme"]')!.click())
+    expect(host.querySelector('[aria-label="Settings pages"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!.click())
+    const confirmation = host.querySelector('[aria-label="Unsaved theme changes"]')!
+    expect(confirmation).toBeTruthy()
+    await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!.click())
+    expect(host.textContent).toContain('Theme could not be saved.')
+    expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
+    act(() => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
+    expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
 })

@@ -378,6 +378,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
   return {
     role,
     content: value.content,
+    modelId: isString(value.modelId) ? value.modelId : undefined,
     providerId: isString(value.providerId) ? value.providerId : undefined,
     thoughts: isString(value.thoughts) ? value.thoughts : undefined,
     planSummary: isString(value.planSummary) ? value.planSummary : undefined,

@@ -4,6 +4,7 @@ import type { ExecutionHost, RemoteDirectoryListing } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { defaultRemoteBrowsePath, isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { Button, IconButton } from '../ui'
+import { StatusIndicator } from '../shared/StatusIndicator'
 
 interface RemoteDirectoryBrowserProps {
   host: ExecutionHost
@@ -18,34 +19,51 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
   const [listing, setListing] = useState<RemoteDirectoryListing | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [validatedDirectory, setValidatedDirectory] = useState('')
+  const directoryKey = `${host.id}\n${host.platform}\n${path}`
+  const canConfirm = !loading && Boolean(listing) && validatedDirectory === directoryKey &&
+    path === listing?.directory && host.runnerStatus === 'ready'
   const requestRef = useRef(0)
   const pathRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async (target: string) => {
     const normalized = target.trim()
-    if (!isAbsoluteRemoteWorkspace(host.platform, normalized)) {
-      setError(`Enter an absolute ${host.platform.toLowerCase() === 'windows' ? 'Windows' : 'Linux'} path.`)
-      return
-    }
     const request = ++requestRef.current
-    setLoading(true)
-    setError('')
-    const result = await listRemoteDirectories(host.id, normalized)
-    if (request !== requestRef.current) return
+    setValidatedDirectory('')
+    setPath(normalized)
     setLoading(false)
-    if (!result.ok) {
-      setError(result.error)
+    setError('')
+    if (!isAbsoluteRemoteWorkspace(host.platform, normalized)) {
+      setError(`Enter an absolute ${host.platform.toLowerCase() === 'windows' ? 'Windows' : 'Unix'} path.`)
       return
     }
-    setListing(result.listing)
-    setPath(result.listing.directory)
+    setLoading(true)
+    try {
+      const result = await listRemoteDirectories(host.id, normalized)
+      if (request !== requestRef.current) return
+      if (!result.ok) {
+        setError(result.error)
+        return
+      }
+      if (!isAbsoluteRemoteWorkspace(host.platform, result.listing.directory)) {
+        setError('The remote helper returned an invalid directory path.')
+        return
+      }
+      setListing(result.listing)
+      setPath(result.listing.directory)
+      setValidatedDirectory(`${host.id}\n${host.platform}\n${result.listing.directory}`)
+    } catch (error) {
+      if (request === requestRef.current) setError(error instanceof Error ? error.message : 'The remote directory could not be listed. Try again.')
+    } finally {
+      if (request === requestRef.current) setLoading(false)
+    }
   }, [host.id, host.platform, listRemoteDirectories])
 
   useEffect(() => {
     pathRef.current?.focus()
-    void load(path)
+    void load(initialPath.trim() || defaultRemoteBrowsePath(host.platform))
     return () => { requestRef.current++ }
-  }, []) // Browse is the explicit remote read action; load only once when it opens.
+  }, [load, host.platform]) // Browse is an explicit read; reload only when the target computer changes.
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -81,24 +99,35 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               <span>{host.platform}</span>
             </div>
           </div>
-          <IconButton icon={<X size={16} />} label="Close remote directory browser" onClick={onCancel} />
+          <IconButton icon={<X size={16} />} variant="danger" label="Close remote directory browser" onClick={onCancel} />
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
           <div>
-            <label htmlFor="remote-directory-path" className="mb-1.5 block text-xs font-medium" style={{ color: 'var(--text-2)' }}>
+            <label htmlFor="remote-directory-path" className="sr-only" style={{ color: 'var(--text-2)' }}>
               Directory on {host.label}
             </label>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1">
               <input
                 id="remote-directory-path"
                 ref={pathRef}
                 value={path}
-                onChange={(event) => setPath(event.target.value)}
+                aria-invalid={Boolean(error) || undefined}
+                aria-describedby={error ? 'remote-directory-error' : undefined}
+                onChange={(event) => {
+                  requestRef.current++
+                  setPath(event.target.value)
+                  setValidatedDirectory('')
+                  setLoading(false)
+                  setError('')
+                }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void load(path) }}
-                className="min-w-0 flex-1 rounded-md px-3 py-2 text-sm outline-none"
+                className="w-full rounded-md pl-3 pr-10 py-2 text-sm outline-none"
                 style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--font-mono)' }}
               />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2"><StatusIndicator issues={canConfirm ? [] : [error || (loading ? 'Loading directory.' : 'Load the directory before selecting it.')]} okLabel="Directory verified" /></span>
+              </div>
               <Button variant="secondary" size="md" disabled={loading} onClick={() => void load(path)}>
                 Go
               </Button>
@@ -106,8 +135,9 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           </div>
 
           {error && (
-            <div role="alert" className="rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--red)', background: 'color-mix(in srgb, var(--red) 10%, var(--surface))', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-              {error}
+            <div id="remote-directory-error" role="alert" className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--red)', background: 'color-mix(in srgb, var(--red) 10%, var(--surface))', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
+              <span className="min-w-0 break-words">{error}</span>
+              <IconButton icon={<X size={14} />} label="Dismiss directory error" variant="danger" onClick={() => setError('')} />
             </div>
           )}
 
@@ -116,6 +146,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               <div role="status" className="flex h-full min-h-[220px] items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading directories…</div>
             ) : listing ? (
               <>
+                {validatedDirectory !== directoryKey && <p className="px-3 py-2 text-xs" style={{ color: 'var(--text-2)' }}>Last loaded: {listing.directory}</p>}
                 {listing.parentDirectory && (
                   <button
                     type="button"
@@ -155,8 +186,8 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           <Button
             variant="primary"
             size="md"
-            disabled={loading || !listing}
-            onClick={() => { if (listing) onSelect(listing.directory) }}
+            disabled={!canConfirm}
+            onClick={() => { if (listing && canConfirm) onSelect(listing.directory) }}
           >
             Use this directory
           </Button>

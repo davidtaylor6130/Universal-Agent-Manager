@@ -5105,6 +5105,18 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(result.status?.isolated).toBe(true)
   })
 
+  it.each(['open', 'refresh'])('ignores a late memory %s response after closing the library', async (operation) => {
+    let finish: ((response: string) => void) | undefined
+    ensureTestWindow().cefQuery = vi.fn(({ onSuccess }) => { finish = onSuccess }) as TestWindow['cefQuery']
+    useAppStore.setState({ memoryLibraryScope: {scopeType:'all',folderId:'',label:'All memory',rootPath:''} })
+    const pending = operation === 'open' ? useAppStore.getState().openAllMemoryLibrary() : useAppStore.getState().refreshMemoryLibrary()
+    useAppStore.getState().closeMemoryLibrary()
+    finish?.(JSON.stringify({ scope: {scopeType:'all',folderId:'',label:'All memory',rootPath:''}, entries: [] }))
+    await expect(pending).resolves.toBe(false)
+    expect(useAppStore.getState().memoryLibraryScope).toBeNull()
+    expect(useAppStore.getState().memoryLibraryLoading).toBe(false)
+  })
+
   it('creates and deletes memory entries through the active scope', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     const testWindow = ensureTestWindow()
@@ -5144,6 +5156,16 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests.some((request) => request.action === 'createMemoryEntry')).toBe(true)
     expect(requests.some((request) => request.action === 'deleteMemoryEntry')).toBe(true)
     expect(requests.find((request) => request.action === 'createMemoryEntry')?.payload?.scopeType).toBe('folder')
+  })
+
+  it('does not report a created memory as unsaved when refreshing the list fails', async () => {
+    ensureTestWindow().cefQuery = vi.fn(({ request, onSuccess, onFailure }) => {
+      if (JSON.parse(request as string).action === 'listMemoryEntries') onFailure?.(1, 'Read failed')
+      else onSuccess?.('{}')
+    }) as TestWindow['cefQuery']
+    useAppStore.setState({memoryLibraryScope:{scopeType:'global',folderId:'',label:'Global memory',rootPath:'/tmp/memory'}})
+    await expect(useAppStore.getState().createMemoryEntry({category:'Lessons/AI_Lessons',title:'Saved once',memory:'Keep the created entry.',evidence:'',confidence:'medium',sourceChatId:''})).resolves.toBe(true)
+    expect(useAppStore.getState().memoryLibraryError).toBeTruthy()
   })
 
   it('sends an explicit target when creating from the all memory scope', async () => {

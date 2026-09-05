@@ -19,14 +19,15 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
       className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] max-w-full shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
-      <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: 'var(--text)' }}>
             <ArrowUpCircle size={16} /> Updates
           </div>
           <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{checkedLabel}</div>
         </div>
-        <div className="flex items-center gap-1">
+        <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
+        <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-1">
           {installableUpdates.length > 0 && (
             <Button
               size="sm"
@@ -63,7 +64,6 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           >
             {monitor.checking ? 'Checking…' : 'Check again'}
           </Button>
-          <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
         </div>
       </header>
 

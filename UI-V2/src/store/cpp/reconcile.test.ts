@@ -217,3 +217,16 @@ describe('backend state reconciliation', () => {
     })?.providerUsage).toBeNull()
   })
 })
+
+
+describe('historical model provenance', () => {
+  it('preserves model snapshots and accepts a model-only backend update', () => {
+    const oldMessage = sanitizeCppMessage({...message,role:'assistant',modelId:'model-first'})!
+    const first = reconcileCppMessages('chat-1',undefined,[oldMessage])
+    expect(first[0].modelId).toBe('model-first')
+    const next = reconcileCppMessages('chat-1',first,[{...oldMessage,modelId:'model-second'}])
+    expect(next[0].modelId).toBe('model-second')
+    expect(first[0].modelId).toBe('model-first')
+    expect(sanitizeCppMessage(message)?.modelId).toBeUndefined()
+  })
+})

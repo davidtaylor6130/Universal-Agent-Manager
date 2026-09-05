@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -193,7 +193,9 @@ function buildMemoryLocationGroups(
     })
 }
 
-export function MemoryLibraryModal() {
+export interface MemoryLibraryHandle { requestLeave(next: () => void): void }
+
+export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: boolean }>(function MemoryLibraryModal({ embedded = false }, ref) {
   const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
   const memoryLibraryEntries = useAppStore(useShallow((s) => s.memoryLibraryEntries))
   const memoryLibraryLoading = useAppStore((s) => s.memoryLibraryLoading)
@@ -209,13 +211,35 @@ export function MemoryLibraryModal() {
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
+  const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
+  const [localError, setLocalError] = useState('')
+  const [dismissedError, setDismissedError] = useState('')
+  const libraryRef = useRef<HTMLDivElement>(null)
+  const openAllMemoryLibrary = useAppStore(s => s.openAllMemoryLibrary)
+  useEffect(() => {
+    if (!embedded) return
+    void openAllMemoryLibrary()
+    return () => closeMemoryLibrary()
+  }, [embedded, openAllMemoryLibrary, closeMemoryLibrary])
   const [draft, setDraft] = useState<MemoryEntryDraft>(EMPTY_DRAFT)
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
-  const draftDirty = Object.entries(draft).some(([key, value]) => key !== 'category' && key !== 'confidence' && Boolean(value))
+  const draftDirty = JSON.stringify(draft) !== JSON.stringify(EMPTY_DRAFT)
+  const requestLeave = useCallback((next: () => void) => {
+    if (submittingRef.current) return
+    if (isAdding && draftDirty) setPendingExit(() => next)
+    else next()
+  }, [isAdding, draftDirty])
+  useImperativeHandle(ref, () => ({requestLeave}), [requestLeave])
+  useEffect(() => {
+    if (!isAdding || !draftDirty) return
+    const guard = (event: BeforeUnloadEvent) => {event.preventDefault(); event.returnValue = ''}
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [isAdding, draftDirty])
   const requestClose = useCallback(() => {
     if (submittingRef.current) return
     if (pendingDeleteEntryId) {
@@ -226,12 +250,10 @@ export function MemoryLibraryModal() {
       setPendingMassDeleteEntryIds(null)
       return
     }
-    if (isAdding && draftDirty) {
-      setIsAdding(false)
-      return
-    }
-    closeMemoryLibrary()
-  }, [closeMemoryLibrary, draftDirty, isAdding, pendingDeleteEntryId, pendingMassDeleteEntryIds])
+    if (pendingExit) { setPendingExit(null); return }
+    if (isAdding) { requestLeave(() => setIsAdding(false)); return }
+    if (!embedded) closeMemoryLibrary()
+  }, [closeMemoryLibrary, embedded, isAdding, pendingDeleteEntryId, pendingMassDeleteEntryIds, pendingExit, requestLeave])
 
   useEffect(() => {
     if (!memoryLibraryScope) {
@@ -239,14 +261,19 @@ export function MemoryLibraryModal() {
     }
 
     const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        const dialogs = document.querySelectorAll<HTMLElement>('[aria-modal="true"]')
+        const top = dialogs.item(dialogs.length - 1)
+        if (top && !libraryRef.current?.contains(top)) return
+        if (embedded && !isAdding && !pendingExit && !pendingDeleteEntryId && !pendingMassDeleteEntryIds) return
+        event.preventDefault()
         requestClose()
       }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [memoryLibraryScope, requestClose])
+  }, [memoryLibraryScope, requestClose, embedded, isAdding, pendingExit, pendingDeleteEntryId, pendingMassDeleteEntryIds])
 
   const filteredEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -272,7 +299,7 @@ export function MemoryLibraryModal() {
   )
 
   if (!memoryLibraryScope) {
-    return null
+    return embedded ? <div role="status" className="text-sm">{memoryLibraryError || 'Loading memory library…'}{memoryLibraryError && <Button onClick={() => void openAllMemoryLibrary()}>Retry</Button>}</div> : null
   }
 
   const isAllMemory = memoryLibraryScope.scopeType === 'all'
@@ -295,9 +322,10 @@ export function MemoryLibraryModal() {
 
   const submitDraft = async () => {
     if (submittingRef.current || !draft.title.trim() || !draft.memory.trim()) {
-      return
+      return false
     }
 
+    setLocalError('')
     submittingRef.current = true
     setSubmitting(true)
     const saveDraft: MemoryEntryDraft = {
@@ -314,17 +342,21 @@ export function MemoryLibraryModal() {
     let ok = false
     try {
       ok = await createMemoryEntry(saveDraft)
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : 'Could not save memory. Try again.')
     } finally {
       submittingRef.current = false
       setSubmitting(false)
     }
 
     if (!ok) {
-      return
+      setLocalError(useAppStore.getState().memoryLibraryError || 'Could not save memory. Try again.')
+      return false
     }
 
     setDraft(EMPTY_DRAFT)
     setIsAdding(false)
+    return true
   }
 
   const pendingDelete = memoryLibraryEntries.find((entry) => entry.id === pendingDeleteEntryId) ?? null
@@ -342,21 +374,22 @@ export function MemoryLibraryModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+      ref={libraryRef}
+      className={embedded ? "h-full min-h-0" : "fixed inset-0 z-50 flex items-center justify-center"}
+      style={embedded ? undefined : { background: 'rgba(0,0,0,0.55)' }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) requestClose()
+        if (!embedded && event.target === event.currentTarget) requestClose()
       }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
         aria-label={memoryTitle}
         tabIndex={-1}
-        className="rounded-2xl shadow-2xl w-full max-w-6xl mx-4 animate-slide-in overflow-hidden flex flex-col"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', height: 'min(780px, calc(100vh - 2rem))' }}
+        className={embedded ? "flex flex-col min-h-0 h-full" : "rounded-2xl shadow-2xl w-full max-w-6xl mx-4 overflow-hidden flex flex-col"}
+        style={embedded ? { minHeight: 0 } : { background: 'var(--surface)', border: '1px solid var(--border-bright)', height: 'min(780px, calc(100vh - 2rem))' }}
       >
-        <div
+        {!embedded && <div
           className="flex items-center justify-between px-5 py-4"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
@@ -373,26 +406,18 @@ export function MemoryLibraryModal() {
             label="Close memory library"
             onClick={requestClose}
           />
-        </div>
+        </div>}
 
-        <div className="grid lg:grid-cols-[320px_minmax(0,1fr)] min-h-[620px] flex-1 min-h-0">
+        <div className="grid grid-cols-[192px_minmax(0,1fr)] flex-1 min-h-0">
           <aside
-            className="p-5 space-y-4 overflow-y-auto"
+            className="p-3 space-y-4 overflow-y-auto overflow-x-hidden min-w-0"
             style={{
               background: 'color-mix(in srgb, var(--surface-up) 72%, var(--surface))',
               borderRight: '1px solid var(--border)',
             }}
           >
-            <div className="flex items-center gap-1">
-              {!isAllMemory && (
-                <IconButton icon={<FolderOpen size={15} />} label="Open memory root" onClick={() => void openMemoryRoot()} />
-              )}
-              <IconButton icon={<RefreshCw size={15} className={memoryLibraryLoading ? 'animate-spin' : undefined} />} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()} />
-              <IconButton icon={isAdding ? <X size={15} /> : <Plus size={15} />} label={isAdding ? 'Close add form' : 'Add memory'} variant={isAdding ? 'ghost' : 'solid'} active={isAdding} onClick={() => setIsAdding((value) => !value)} />
-            </div>
-
             {groupedEntries.length > 0 && (
-              <nav aria-label="Memory locations" className="grid gap-1">
+              <nav aria-label="Memory locations" className="grid gap-1 min-w-0">
                 <div className="px-2 text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>Locations</div>
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => {
                   const active = location.key === selectedLocation?.key
@@ -402,7 +427,7 @@ export function MemoryLibraryModal() {
                       type="button"
                       aria-current={active ? 'page' : undefined}
                       onClick={() => setSelectedLocationKey(location.key)}
-                      className="flex items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
+                      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
                       style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
                     >
                       <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
@@ -449,117 +474,11 @@ export function MemoryLibraryModal() {
               </nav>
             )}
 
-            {isAdding && (
-              <div
-                className="rounded-xl p-3 space-y-3"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-              >
-                <div className="text-xs font-semibold" style={{ color: 'var(--text)' }}>
-                  New memory
-                </div>
-
-                {isAllMemory && (
-                  <InlineMenu
-                    label="Save to"
-                    value={targetValue}
-                    options={targetOptions}
-                    onChange={(value) => {
-                      if (value === 'global') {
-                        setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
-                        return
-                      }
-                      const folderId = value.replace(/^folder:/, '')
-                      setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
-                    }}
-                  />
-                )}
-
-                <InlineMenu
-                  label="Category"
-                  value={draft.category}
-                  options={categoryOptions}
-                  onChange={(value) => {
-                    setDraft((current) => ({ ...current, category: value }))
-                  }}
-                />
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Title
-                  <input
-                    value={draft.title}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, title: value }))
-                    }}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                  />
-                </label>
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Memory
-                  <textarea
-                    value={draft.memory}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, memory: value }))
-                    }}
-                    rows={5}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
-                  />
-                </label>
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Evidence
-                  <textarea
-                    value={draft.evidence}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, evidence: value }))
-                    }}
-                    rows={3}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
-                  />
-                </label>
-
-                <div className="grid gap-2">
-                  <InlineMenu
-                    label="Confidence"
-                    value={draft.confidence}
-                    options={confidenceOptions}
-                    onChange={(value) => {
-                      setDraft((current) => ({ ...current, confidence: value }))
-                    }}
-                  />
-
-                  <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    Source chat
-                    <input
-                      value={draft.sourceChatId}
-                      onChange={(event) => {
-                        const value = event.currentTarget.value
-                        setDraft((current) => ({ ...current, sourceChatId: value }))
-                      }}
-                      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                    />
-                  </label>
-                </div>
-
-                <Button
-                  variant="primary"
-                  block
-                  size="sm"
-                  disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
-                  onClick={() => void submitDraft()}
-                >
-                  {submitting ? 'Saving...' : 'Save memory'}
-                </Button>
-              </div>
-            )}
           </aside>
 
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             <div className="flex items-center gap-2 mb-4">
-              <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <label className="uam-search-field flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
                 aria-label="Search memory library"
@@ -568,11 +487,14 @@ export function MemoryLibraryModal() {
                   const value = event.currentTarget.value
                   setSearchQuery(value)
                 }}
-                placeholder="Search memory titles, categories, previews, or source chats"
+                placeholder="Search memory"
                 className="w-full py-2 text-sm outline-none"
                 style={{ background: 'transparent', color: 'var(--text)', border: 0 }}
               />
               </label>
+              {!isAllMemory && <IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/>}
+              <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => {setDismissedError(''); void refreshMemoryLibrary()}}/>
+              <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => {setLocalError(''); setIsAdding(true)}}/>
               <IconButton
                 variant="danger"
                 icon={<Trash2 size={15} />}
@@ -582,9 +504,9 @@ export function MemoryLibraryModal() {
               />
             </div>
 
-            {memoryLibraryError && (
-              <div className="mb-4 rounded-md px-3 py-2 text-xs" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-                {memoryLibraryError}
+            {memoryLibraryError && memoryLibraryError !== dismissedError && (
+              <div className="mb-4 rounded-md px-3 py-2 text-xs flex items-center justify-between gap-2" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
+                <span>{memoryLibraryError}</span><IconButton icon={<X size={14}/>} label="Dismiss memory error" onClick={() => setDismissedError(memoryLibraryError)} />
               </div>
             )}
 
@@ -663,6 +585,119 @@ export function MemoryLibraryModal() {
           </div>
         </div>
       </div>
+
+      {isAdding && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={event => { if(event.target === event.currentTarget) requestClose() }}>
+        <div role="dialog" aria-modal="true" aria-label="New memory" tabIndex={-1} className="rounded-xl p-5 space-y-3 w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)',boxShadow:'var(--elev-3)'}}>
+          <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
+
+
+                {isAllMemory && (
+                  <InlineMenu
+                    label="Save to"
+                    value={targetValue}
+                    options={targetOptions}
+                    onChange={(value) => {
+                      if (value === 'global') {
+                        setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
+                        return
+                      }
+                      const folderId = value.replace(/^folder:/, '')
+                      setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
+                    }}
+                  />
+                )}
+
+                <InlineMenu
+                  label="Category"
+                  value={draft.category}
+                  options={categoryOptions}
+                  onChange={(value) => {
+                    setDraft((current) => ({ ...current, category: value }))
+                  }}
+                />
+
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  Title
+                  <input
+                    autoFocus
+                    aria-label="Title"
+                    value={draft.title}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value
+                      setDraft((current) => ({ ...current, title: value }))
+                    }}
+                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                  />
+                </label>
+
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  Memory
+                  <textarea
+                    value={draft.memory}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value
+                      setDraft((current) => ({ ...current, memory: value }))
+                    }}
+                    rows={5}
+                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
+                  />
+                </label>
+
+                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                  Evidence
+                  <textarea
+                    value={draft.evidence}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value
+                      setDraft((current) => ({ ...current, evidence: value }))
+                    }}
+                    rows={3}
+                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
+                  />
+                </label>
+
+                <div className="grid gap-2">
+                  <InlineMenu
+                    label="Confidence"
+                    value={draft.confidence}
+                    options={confidenceOptions}
+                    onChange={(value) => {
+                      setDraft((current) => ({ ...current, confidence: value }))
+                    }}
+                  />
+
+                  <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                    Source chat
+                    <input
+                      value={draft.sourceChatId}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value
+                        setDraft((current) => ({ ...current, sourceChatId: value }))
+                      }}
+                      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                    />
+                  </label>
+                </div>
+
+                {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--red)'}}>{localError || memoryLibraryError}</div>}
+                <Button
+                  variant="primary"
+                  block
+                  size="sm"
+                  disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
+                  onClick={() => void submitDraft()}
+                >
+                  {submitting ? 'Saving...' : 'Save memory'}
+                </Button>
+        </div>
+      </div>}
+      {pendingExit && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
+        <div role="alertdialog" aria-modal="true" aria-label="Unsaved memory" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}}>
+          <h3 className="text-sm font-semibold">Save this memory before leaving?</h3>
+          {localError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{localError}</p>}
+          <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+        </div>
+      </div>}
 
       {pendingDelete && (
         <div
@@ -763,4 +798,4 @@ export function MemoryLibraryModal() {
       )}
     </div>
   )
-}
+})
