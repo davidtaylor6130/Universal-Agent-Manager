@@ -335,14 +335,15 @@ namespace uam::computer_use
 			const bool is_mouse_event = type == kCGEventMouseMoved || type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDown || type == kCGEventRightMouseUp || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp || type == kCGEventOtherMouseDragged || type == kCGEventScrollWheel;
 			if (reference.target_kind == "window" && reference.process_id != 0 && is_mouse_event)
 			{
+				using SetWindowLocation = void (*)(CGEventRef, CGPoint);
+				static const SetWindowLocation set_window_location = reinterpret_cast<SetWindowLocation>(dlsym(RTLD_DEFAULT, "CGEventSetWindowLocation"));
 				NSEvent* original = [NSEvent eventWithCGEvent:event];
 				if (original == nil)
 					return false;
 				const NSEventType appkit_type = type == kCGEventScrollWheel ? NSEventTypeMouseMoved : original.type;
 				const CGPoint global_location = CGEventGetLocation(event);
-				// NSEvent serializes a foreign window location as top-left window coordinates.
-				// Counter its screen-axis flip before conversion; SetLocation invalidates that payload.
-				const NSPoint local_location = NSMakePoint(global_location.x - reference.desktop_x, CGDisplayBounds(CGMainDisplayID()).size.height - (global_location.y - reference.desktop_y));
+				// Keep desktop and top-left window coordinates as separate payloads after AppKit conversion.
+				const NSPoint local_location = NSMakePoint(global_location.x - reference.desktop_x, global_location.y - reference.desktop_y);
 				const NSEvent* appkit_event = [NSEvent mouseEventWithType:appkit_type
 												location:local_location
 												modifierFlags:original.modifierFlags
@@ -355,6 +356,12 @@ namespace uam::computer_use
 				if (appkit_event == nil || appkit_event.CGEvent == nullptr)
 					return false;
 				CGEventRef converted = appkit_event.CGEvent;
+				if (set_window_location == nullptr)
+					return false;
+				CGEventSetLocation(converted, global_location);
+				set_window_location(converted, CGPointMake(local_location.x, local_location.y));
+				CGEventSetIntegerValueField(converted, kCGMouseEventWindowUnderMousePointer, static_cast<int64_t>(reference.target_id));
+				CGEventSetIntegerValueField(converted, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, static_cast<int64_t>(reference.target_id));
 				CGEventSetIntegerValueField(converted, kCGMouseEventButtonNumber, CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber));
 				if (type == kCGEventScrollWheel)
 				{
