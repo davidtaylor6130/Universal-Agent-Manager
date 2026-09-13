@@ -540,9 +540,15 @@ namespace uam::computer_use
 			return exact_window_focused && bounds_match;
 		}
 
-		bool IsAxWindowTargetCurrent(const AxWindowTarget& target, const CGRect& reference_bounds)
+		bool IsAxWindowTargetCurrent(const AxWindowTarget& target, const Capture& reference)
 		{
 			if (target.window == nullptr)
+				return false;
+			const CGRect reference_bounds = CGRectMake(reference.desktop_x, reference.desktop_y, reference.desktop_width, reference.desktop_height);
+			CGRect native_bounds{};
+			pid_t current_pid = 0;
+			// AX matching tolerates frame decoration differences; input must use unchanged native geometry.
+			if (!WindowBounds(static_cast<CGWindowID>(reference.target_id), &native_bounds, &current_pid) || current_pid != static_cast<pid_t>(reference.process_id) || AxWindowBoundsDifference(native_bounds, reference_bounds) > 0.5)
 				return false;
 			CGRect current_bounds{};
 			return AxBounds(target.window, &current_bounds) && AxWindowBoundsDifference(current_bounds, reference_bounds) <= kAxWindowMatchTolerance;
@@ -569,6 +575,117 @@ namespace uam::computer_use
 			} while (true);
 			return false;
 		}
+
+		bool PostAppKitDefined(pid_t process_id, CGWindowID window_id, short subtype)
+		{
+			NSEvent* event = [NSEvent otherEventWithType:NSEventTypeAppKitDefined
+								location:NSZeroPoint
+								modifierFlags:0xc0000
+								timestamp:0
+								windowNumber:static_cast<NSInteger>(window_id)
+								context:nil
+								subtype:subtype
+								data1:0
+								data2:0];
+			if (event == nil || event.CGEvent == nullptr)
+				return false;
+			CGEventRef cg_event = event.CGEvent;
+			if (cg_event == nullptr)
+				return false;
+			CGEventPostToPid(process_id, cg_event);
+			return true;
+		}
+
+		// Establish native key/main focus before content input without raising the target app.
+		class SyntheticPointerFocusScope
+		{
+		public:
+			SyntheticPointerFocusScope() = default;
+			SyntheticPointerFocusScope(const SyntheticPointerFocusScope&) = delete;
+			SyntheticPointerFocusScope& operator=(const SyntheticPointerFocusScope&) = delete;
+
+			~SyntheticPointerFocusScope()
+			{
+				if (!active_)
+					return;
+				const NSRunningApplication* frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+				if (frontmost == nil || frontmost.processIdentifier != process_id_)
+					(void)PostAppKitDefined(process_id_, window_id_, 2);
+			}
+
+			bool Begin(const AxWindowTarget& target, const Capture& reference, const std::function<bool()>& cancelled, bool* input_applied_out, std::string* error_out)
+			{
+				const pid_t process_id = static_cast<pid_t>(reference.process_id);
+				if (NSRunningApplication* frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+					frontmost != nil && frontmost.processIdentifier == process_id)
+					return true;
+				if (cancelled && cancelled())
+					return Fail("Computer action interrupted before pointer focus.", error_out);
+				if (!IsAxWindowTargetCurrent(target, reference))
+					return Fail("The selected window changed before pointer focus.", error_out);
+
+				const CGRect reference_bounds = CGRectMake(reference.desktop_x, reference.desktop_y, reference.desktop_width, reference.desktop_height);
+				CGRect current_bounds{};
+				if (!AxBounds(target.window, &current_bounds) || AxWindowBoundsDifference(current_bounds, reference_bounds) > kAxWindowMatchTolerance)
+					return Fail("The selected window bounds are not stable enough for pointer focus.", error_out);
+				if (AxString(target.window, kAXRoleAttribute) != "AXWindow")
+					return Fail("The selected target is not a standard application window.", error_out);
+				const std::string subrole = AxString(target.window, kAXSubroleAttribute);
+				if (subrole != "AXStandardWindow" && subrole != "AXDialog")
+					return Fail("The selected window has no verified titled frame for pointer focus.", error_out);
+				CFTypeRef close_value = nullptr;
+				const bool close_available = AXUIElementCopyAttributeValue(target.window, kAXCloseButtonAttribute, &close_value) == kAXErrorSuccess && close_value != nullptr && CFGetTypeID(close_value) == AXUIElementGetTypeID();
+				CGRect close_bounds{};
+				const bool close_valid = close_available && AxBounds(static_cast<AXUIElementRef>(close_value), &close_bounds) && CGRectContainsRect(reference_bounds, close_bounds) && CGRectContainsRect(current_bounds, close_bounds) && close_bounds.origin.x > reference_bounds.origin.x + 1 && close_bounds.origin.y > reference_bounds.origin.y + 1;
+				if (close_value != nullptr)
+					CFRelease(close_value);
+				if (!close_valid)
+					return Fail("The selected window frame could not be verified for safe pointer focus.", error_out);
+
+				if (!PostAppKitDefined(process_id, static_cast<CGWindowID>(reference.target_id), 1))
+					return Fail("The selected window could not be activated for pointer input.", error_out);
+				process_id_ = process_id;
+				window_id_ = static_cast<CGWindowID>(reference.target_id);
+				active_ = true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				if (cancelled && cancelled())
+					return Fail("Computer action interrupted before pointer focus input.", error_out);
+				if (!IsAxWindowTargetCurrent(target, reference))
+					return Fail("The selected window changed before pointer focus input.", error_out);
+
+				const CGPoint corner = CGPointMake(reference.desktop_x + 1, reference.desktop_y + 1);
+				if (!CGRectContainsPoint(reference_bounds, corner) || !CGRectContainsPoint(current_bounds, corner))
+					return Fail("The selected window has no verified neutral frame corner for pointer focus.", error_out);
+				CGEventRef down = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseDown, corner, kCGMouseButtonLeft);
+				CGEventRef up = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, corner, kCGMouseButtonLeft);
+				if (down == nullptr || up == nullptr)
+				{
+					if (down != nullptr) CFRelease(down);
+					if (up != nullptr) CFRelease(up);
+					return Fail("Pointer focus events could not be created.", error_out);
+				}
+				const bool down_posted = PostEvent(down, reference, input_applied_out);
+				const bool up_posted = !down_posted || PostEvent(up, reference);
+				CFRelease(down);
+				CFRelease(up);
+				if (!down_posted || !up_posted)
+					return Fail("Pointer focus events could not be posted safely.", error_out);
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				return true;
+			}
+
+		private:
+			static bool Fail(const char* message, std::string* error_out)
+			{
+				if (error_out != nullptr)
+					*error_out = message;
+				return false;
+			}
+
+			pid_t process_id_ = 0;
+			CGWindowID window_id_ = 0;
+			bool active_ = false;
+		};
 
 		bool ResolveAxWindow(pid_t pid, const CGRect& reference_bounds, AxWindowTarget* target_out, std::string* error_out)
 		{
@@ -1000,6 +1117,7 @@ namespace uam::computer_use
 		if (input_applied_out != nullptr)
 			*input_applied_out = false;
 		AxWindowTarget window_target;
+		SyntheticPointerFocusScope pointer_focus;
 		const CGRect window_bounds = CGRectMake(reference.desktop_x, reference.desktop_y, reference.desktop_width, reference.desktop_height);
 		bool cancellation_seen = false;
 		const auto interrupted = [&]()
@@ -1048,7 +1166,7 @@ namespace uam::computer_use
 		{
 			if (interrupted())
 				return false;
-			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, window_bounds))
+			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, reference))
 			{
 				if (error_out != nullptr)
 					*error_out = "The selected window changed before pointer input.";
@@ -1060,7 +1178,7 @@ namespace uam::computer_use
 		{
 			if (interrupted())
 				return false;
-			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, window_bounds))
+			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, reference))
 			{
 				if (error_out != nullptr)
 					*error_out = "The selected window changed during pointer input.";
@@ -1185,6 +1303,12 @@ namespace uam::computer_use
 					*error_out = "The selected accessibility element press failed after input began.";
 				return false;
 			}
+		}
+
+		if (action.kind == "move" || action.kind == "click" || action.kind == "drag" || action.kind == "scroll")
+		{
+			if (reference.target_kind == "window" && !pointer_focus.Begin(window_target, reference, interrupted, input_applied_out, error_out))
+				return false;
 		}
 
 		if (action.kind == "move" || action.kind == "click")
