@@ -61,6 +61,48 @@ UAM_TEST(ComputerUseArmedStateSurvivesPollBeforeTargetApproval)
 	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(chat.id).state, std::string("armed"));
 }
 
+UAM_TEST(ComputerUseTrustedTaskPersistsAndNamesApplicationsSafely)
+{
+	TempDir temp("uam-computer-use-task");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "task-chat";
+	chat.computer_use_enabled = true;
+	app.chats.push_back(chat);
+	const fs::path task_path = temp.root / "computer-use" / chat.id / "task.json";
+	std::string error;
+
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Safari", &error));
+	const nlohmann::json first = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT(!first.value("id", "").empty());
+	UAM_ASSERT_EQ(first.value("prompt", ""), std::string("Open Safari"));
+	const std::string first_id = first.value("id", "");
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Safari", &error));
+	const nlohmann::json repeated = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT_EQ(repeated.value("id", ""), first_id);
+
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Firefox", &error));
+	const nlohmann::json changed = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT(changed.value("id", "") != first_id);
+	UAM_ASSERT_EQ(changed.value("prompt", ""), std::string("Open Firefox"));
+
+	const std::string before_oversize = ReadFile(task_path);
+	UAM_ASSERT(!uam::ComputerUseService::PersistTrustedTask(app, chat.id, std::string(1024 * 1024 + 1, 'x'), &error));
+	UAM_ASSERT_EQ(ReadFile(task_path), before_oversize);
+
+	ChatSession remote = chat;
+	remote.id = "remote-task-chat";
+	remote.execution_host_id = "remote";
+	app.chats.push_back(remote);
+	UAM_ASSERT(!uam::ComputerUseService::PersistTrustedTask(app, remote.id, "Open Safari", &error));
+	UAM_ASSERT(!fs::exists(temp.root / "computer-use" / remote.id / "task.json"));
+
+	UAM_ASSERT(uam::computer_use::ApplicationNamedInTask("Open SAFARI now", "Safari"));
+	UAM_ASSERT(!uam::computer_use::ApplicationNamedInTask("Open Safariland", "Safari"));
+	UAM_ASSERT(uam::computer_use::ApplicationNamedInTask("Use Google Chrome browser", "Google Chrome"));
+}
+
 UAM_TEST(RemoteComputerUseFailsClosedBeforeProviderLaunchOrInput)
 {
 	ChatSession chat;
@@ -537,6 +579,7 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 	const fs::path directory = temp.root / "computer-use" / "request-chat";
 	UAM_ASSERT(fs::create_directories(directory));
 	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"armed"})" "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "task.json", R"({"id":"task-1","prompt":"Open Firefox"})" "\n"));
 	std::istringstream input(
 	    R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"computer_observe","arguments":{}}})"
 	    "\n");
@@ -553,10 +596,7 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 	const nlohmann::json response = nlohmann::json::parse(output.str());
 	UAM_ASSERT(response["result"].value("isError", false));
 	const std::string response_text = response["result"]["content"][0].value("text", "");
-	UAM_ASSERT(response_text.find("Retry computer_observe with target") != std::string::npos ||
-	           response_text.find("No available computer-use targets") != std::string::npos ||
-	           response_text.find("The window list could not be read") != std::string::npos ||
-	           response_text.find("No visible screens or windows were found") != std::string::npos);
+	UAM_ASSERT(response_text.find("Call computer_observe with target") != std::string::npos);
 	UAM_ASSERT(response["result"]["content"][0].value("text", "").find(
 	               "UAM will ask") == std::string::npos);
 	const fs::path request_path =

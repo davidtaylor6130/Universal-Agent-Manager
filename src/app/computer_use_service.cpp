@@ -2,8 +2,10 @@
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -17,6 +19,8 @@ namespace uam
 		constexpr std::size_t kMaximumHistoryEntries = 50;
 		constexpr std::size_t kMaximumControlBytes = 4096;
 		constexpr std::size_t kMaximumHistoryBytes = 512 * 1024;
+		constexpr std::size_t kMaximumTrustedTaskPromptBytes = 1 * 1024 * 1024;
+		constexpr std::size_t kMaximumTrustedTaskFileBytes = 8 * 1024 * 1024;
 
 		std::filesystem::path SessionDirectory(const AppState& app, const std::string& chat_id)
 		{
@@ -237,6 +241,64 @@ namespace uam
 			return false;
 		}
 		(void)Poll(app);
+		return true;
+	}
+
+	bool ComputerUseService::PersistTrustedTask(AppState& app, const std::string& chat_id,
+	    std::string_view prompt, std::string* error)
+	{
+		if (prompt.empty() || prompt.size() > kMaximumTrustedTaskPromptBytes)
+		{
+			if (error != nullptr) *error = "Computer-use prompts must be at most 1 MiB.";
+			return false;
+		}
+		const auto chat = std::ranges::find_if(app.chats,
+		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
+		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
+		    !uam::computer_use::UsesUamBackend(*chat) || !chat->computer_use_enabled)
+		{
+			if (error != nullptr) *error = "Computer Use is not enabled for this local chat.";
+			return false;
+		}
+		if (!uam::computer_use::IsPortableMcpChatId(chat_id))
+		{
+			if (error != nullptr) *error = "This chat identifier is not portable enough for computer use.";
+			return false;
+		}
+
+		const std::filesystem::path directory = SessionDirectory(app, chat_id);
+		std::error_code path_error;
+		if (!uam::paths::CreateDirectoriesNoThrow(directory, &path_error) || path_error)
+		{
+			if (error != nullptr) *error = "Computer-use task directory could not be created.";
+			return false;
+		}
+		const std::filesystem::path task_file = directory / "task.json";
+		std::string existing_text;
+		nlohmann::json existing = nlohmann::json::value_t::discarded;
+		if (uam::io::TryReadTextFile(task_file, existing_text, kMaximumTrustedTaskFileBytes))
+			existing = nlohmann::json::parse(existing_text, nullptr, false);
+		std::string task_id;
+		if (existing.is_object())
+		{
+			const auto existing_prompt = existing.find("prompt");
+			const auto existing_id = existing.find("id");
+			if (existing_prompt != existing.end() && existing_id != existing.end() &&
+			    existing_prompt->is_string() && existing_id->is_string() &&
+			    existing_prompt->get_ref<const std::string&>() == prompt)
+				task_id = existing_id->get<std::string>();
+		}
+		if (task_id.empty())
+		{
+			task_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			if (task_id.empty()) task_id = uam::time::SystemEpochMicrosecondsTokenNow();
+		}
+		const nlohmann::json task = {{"id", task_id}, {"prompt", std::string(prompt)}};
+		if (!uam::io::AtomicWriteFile(task_file, task.dump() + "\n"))
+		{
+			if (error != nullptr) *error = "Computer-use trusted task could not be saved.";
+			return false;
+		}
 		return true;
 	}
 } // namespace uam

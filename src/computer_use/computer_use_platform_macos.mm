@@ -146,6 +146,40 @@ namespace uam::computer_use
 			}
 		}
 
+		ApplicationIdentity ApplicationForUrl(NSURL* url)
+		{
+			if (url == nil || !url.isFileURL)
+				return {};
+			NSBundle* bundle = [NSBundle bundleWithURL:url];
+			if (bundle == nil)
+				return {};
+			NSString* bundle_id = bundle.bundleIdentifier ?: @"";
+			NSString* title = bundle.localizedInfoDictionary[@"CFBundleDisplayName"] ?: bundle.infoDictionary[@"CFBundleDisplayName"] ?: [bundle objectForInfoDictionaryKey:@"CFBundleName"] ?: url.lastPathComponent.stringByDeletingPathExtension;
+			return {
+				std::string(bundle_id.UTF8String ?: ""),
+				std::string(title.UTF8String ?: "Application"),
+			};
+		}
+
+		NSURL* ResolveApplicationUrl(const ApplicationIdentity& application)
+		{
+			NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
+			NSURL* url = nil;
+			if (!application.id.empty())
+				url = [workspace URLForApplicationWithBundleIdentifier:[NSString stringWithUTF8String:application.id.c_str()]];
+			return url;
+		}
+
+		bool ApplicationQueryMatches(std::string_view query, NSURL* url, const ApplicationIdentity& application)
+		{
+			const std::string normalized_query = uam::strings::ToLowerAscii(uam::strings::Trim(query));
+			const std::string bundle_id = uam::strings::ToLowerAscii(application.id);
+			const std::string title = uam::strings::ToLowerAscii(application.title);
+			NSString* path = url.path ?: @"";
+			const std::string file_name = uam::strings::ToLowerAscii(std::string(path.lastPathComponent.stringByDeletingPathExtension.UTF8String ?: ""));
+			return normalized_query == bundle_id || normalized_query == title || normalized_query == file_name;
+		}
+
 		std::string Utf8(CFStringRef value)
 		{
 			if (value == nullptr)
@@ -953,6 +987,81 @@ namespace uam::computer_use
 	void ConfigureVirtualCursorIdentity(const std::string& label, const std::string& chat_id)
 	{
 		ConfigureVirtualCursorIdentityImpl(label, chat_id);
+	}
+
+	std::optional<ApplicationIdentity> ResolveApplication(std::string_view query, std::string* error_out)
+	{
+		const std::string normalized = uam::strings::Trim(query);
+		if (normalized.empty() || normalized.size() > 160 || normalized.find_first_of("/\\") != std::string::npos)
+		{
+			if (error_out != nullptr) *error_out = "Application name must be a short registered application name or bundle identifier.";
+			return std::nullopt;
+		}
+
+		@autoreleasepool
+		{
+			NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
+			NSURL* url = [workspace URLForApplicationWithBundleIdentifier:[NSString stringWithUTF8String:normalized.c_str()]];
+			if (url == nil)
+			{
+				NSString* path = [workspace fullPathForApplication:[NSString stringWithUTF8String:normalized.c_str()]];
+				if (path != nil) url = [NSURL fileURLWithPath:path];
+			}
+			const ApplicationIdentity application = ApplicationForUrl(url);
+			if (url == nil || application.id.empty() || !ApplicationQueryMatches(normalized, url, application))
+			{
+				if (error_out != nullptr) *error_out = "No registered application matched '" + normalized + "'.";
+				return std::nullopt;
+			}
+			return application;
+		}
+	}
+
+	bool LaunchApplication(const ApplicationIdentity& application, std::string* error_out)
+	{
+		if (error_out != nullptr) error_out->clear();
+		@autoreleasepool
+		{
+			NSURL* url = ResolveApplicationUrl(application);
+			if (url == nil)
+			{
+				if (error_out != nullptr) *error_out = "The application is no longer registered with macOS.";
+				return false;
+			}
+			const ApplicationIdentity resolved = ApplicationForUrl(url);
+			if (resolved.id.empty() || resolved.id != application.id)
+			{
+				if (error_out != nullptr) *error_out = "The requested application identity changed; launch was blocked.";
+				return false;
+			}
+
+			if (@available(macOS 10.15, *))
+			{
+				NSWorkspaceOpenConfiguration* configuration = [NSWorkspaceOpenConfiguration configuration];
+				configuration.activates = NO;
+				configuration.hides = NO;
+				configuration.addsToRecentItems = NO;
+				__block NSError* launch_error = nil;
+				dispatch_semaphore_t completed = dispatch_semaphore_create(0);
+				[[NSWorkspace sharedWorkspace] openApplicationAtURL:url configuration:configuration completionHandler:^(__unused NSRunningApplication*, NSError* error) {
+					launch_error = error;
+					dispatch_semaphore_signal(completed);
+				}];
+				if (dispatch_semaphore_wait(completed, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) != 0)
+				{
+					if (error_out != nullptr) *error_out = "Timed out waiting for macOS to launch the application.";
+					return false;
+				}
+				if (launch_error != nil)
+				{
+					if (error_out != nullptr) *error_out = std::string("macOS could not launch the application: ") + (launch_error.localizedDescription.UTF8String ?: "unknown error") + ".";
+					return false;
+				}
+				return true;
+			}
+			if (error_out != nullptr) *error_out = "Background application launching requires macOS 10.15 or newer.";
+			return false;
+		}
 	}
 
 	bool AcquireControllerLock(std::string* error_out)

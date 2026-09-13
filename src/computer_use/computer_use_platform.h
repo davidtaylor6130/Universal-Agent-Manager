@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam::computer_use
@@ -78,6 +80,8 @@ namespace uam::computer_use
 	};
 
 	std::vector<Target> ListTargets(std::string* error_out = nullptr);
+	std::optional<ApplicationIdentity> ResolveApplication(std::string_view query, std::string* error_out = nullptr);
+	bool LaunchApplication(const ApplicationIdentity& application, std::string* error_out = nullptr);
 	Capture CaptureTarget(const std::string& kind, std::uint64_t id, int max_width, int max_height);
 	bool AcquireControllerLock(std::string* error_out = nullptr);
 	void ReleaseControllerLock();

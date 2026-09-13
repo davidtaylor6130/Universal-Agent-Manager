@@ -406,6 +406,18 @@ namespace uam::computer_use
 		ConfigureVirtualCursorIdentityImpl(label, chat_id);
 	}
 
+	std::optional<ApplicationIdentity> ResolveApplication(std::string_view, std::string* error_out)
+	{
+		if (error_out != nullptr) *error_out = "Application registry resolution is not available on Windows yet.";
+		return std::nullopt;
+	}
+
+	bool LaunchApplication(const ApplicationIdentity&, std::string* error_out)
+	{
+		if (error_out != nullptr) *error_out = "Application launching is not available on Windows yet.";
+		return false;
+	}
+
 	bool AcquireControllerLock(std::string* error_out)
 	{
 		if (controller_lock_handle != INVALID_HANDLE_VALUE)

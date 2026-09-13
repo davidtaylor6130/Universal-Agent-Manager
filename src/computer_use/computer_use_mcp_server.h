@@ -5,10 +5,12 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam::computer_use
 {
+	bool ApplicationNamedInTask(std::string_view prompt, std::string_view application);
 	bool IsMcpServerInvocation(const std::vector<std::string>& arguments);
 	int RunMcpServer(const std::vector<std::string>& arguments);
 	nlohmann::json ToolDefinitionsForTests();
