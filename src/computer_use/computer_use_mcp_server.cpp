@@ -100,7 +100,7 @@ namespace uam::computer_use
 			         {"clickCount", {{"type", "integer"}, {"minimum", 1}, {"maximum", 3}, {"default", 1}}},
 			         {"deltaX", {{"type", "number"}, {"minimum", -2000}, {"maximum", 2000}, {"default", 0}}},
 			         {"deltaY", {{"type", "number"}, {"minimum", -2000}, {"maximum", 2000}, {"default", 0}}},
-			         {"text", {{"type", "string"}, {"maxLength", kMaxTextBytes}, {"description", "Text for an exact window target; unavailable for display targets."}}},
+			         {"text", {{"type", "string"}, {"maxLength", kMaxTextBytes}, {"description", "Inserts text at the current caret or selection; does not clear a field. To replace contents, focus it and send the platform select-all hotkey first. Requires an exact window target."}}},
 			         {"keys", {{"type", "array"}, {"items", {{"type", "string"}, {"maxLength", 32}}}, {"minItems", 1}, {"maxItems", 8}, {"description", "One simultaneous keyboard chord for an exact window target; unavailable for display targets. Include modifiers explicitly, before the primary key: select all is [\"cmd\",\"a\"] on macOS or [\"ctrl\",\"a\"] on Windows. Send sequential shortcuts as separate actions; [\"a\",\"delete\"] does not select all then delete."}}},
 			         {"durationMs", {{"type", "integer"}, {"minimum", 0}, {"maximum", kMaxWaitMilliseconds}, {"default", 250}}},
 			         {"frameId", {{"type", "string"}, {"maxLength", 32}, {"description", "Frame id returned by the latest observation or action."}}},

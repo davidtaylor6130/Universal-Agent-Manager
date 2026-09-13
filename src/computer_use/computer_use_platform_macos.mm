@@ -1247,29 +1247,6 @@ namespace uam::computer_use
 				CFRelease(element);
 				return false;
 			}
-			const std::string role = AxString(element, kAXRoleAttribute);
-			const bool is_text_control = role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox";
-			Boolean focused_attribute_settable = false;
-			const AXError settable_result = is_text_control ? AXUIElementIsAttributeSettable(element, kAXFocusedAttribute, &focused_attribute_settable) : kAXErrorAttributeUnsupported;
-			if (is_text_control && settable_result == kAXErrorSuccess && focused_attribute_settable)
-			{
-				if (interrupted())
-				{
-					CFRelease(element);
-					return false;
-				}
-				if (input_applied_out != nullptr)
-					*input_applied_out = true;
-				const AXError focus_result = AXUIElementSetAttributeValue(element, kAXFocusedAttribute, kCFBooleanTrue);
-				CFRelease(element);
-				// Inactive apps can accept control focus while AXFocused remains false.
-				// Keyboard actions separately validate the destination window.
-				if (focus_result == kAXErrorSuccess)
-					return true;
-				if (error_out != nullptr)
-					*error_out = "The selected text control rejected focus (AX error " + std::to_string(static_cast<int>(focus_result)) + ").";
-				return false;
-			}
 			CFArrayRef action_names = nullptr;
 			const AXError action_names_result = AXUIElementCopyActionNames(element, &action_names);
 			if (action_names_result != kAXErrorSuccess || action_names == nullptr || CFGetTypeID(action_names) != CFArrayGetTypeID())
