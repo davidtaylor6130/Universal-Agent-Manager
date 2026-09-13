@@ -65,12 +65,10 @@ constexpr CGFloat kUamCursorHotspotY = kUamCursorImageFrameY + kUamCursorImageRe
 	[self addSubview:accent_view_];
 	identity_label_ = [[NSTextField alloc] initWithFrame:NSMakeRect(52, 16, 180, 24)];
 	identity_label_.bezeled = NO;
-	identity_label_.drawsBackground = YES;
-	identity_label_.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.78];
+	identity_label_.drawsBackground = NO;
 	identity_label_.editable = NO;
 	identity_label_.selectable = NO;
-	identity_label_.textColor = NSColor.whiteColor;
-	identity_label_.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+	identity_label_.font = [NSFont systemFontOfSize:14 weight:NSFontWeightBold];
 	identity_label_.lineBreakMode = NSLineBreakByTruncatingTail;
 	[self addSubview:identity_label_];
 
@@ -83,7 +81,13 @@ constexpr CGFloat kUamCursorHotspotY = kUamCursorImageFrameY + kUamCursorImageRe
 	const CGFloat red = ((rgb >> 16) & 0xff) / 255.0;
 	const CGFloat green = ((rgb >> 8) & 0xff) / 255.0;
 	const CGFloat blue = (rgb & 0xff) / 255.0;
-	const NSColor* color = [NSColor colorWithCalibratedRed:red green:green blue:blue alpha:1.0];
+	NSColor* color = [NSColor colorWithCalibratedRed:red green:green blue:blue alpha:1.0];
+	identity_label_.textColor = color;
+	[image_view_.image setTemplate:YES];
+	image_view_.contentTintColor = color;
+	NSMutableParagraphStyle* paragraph = [[NSMutableParagraphStyle alloc] init];
+	paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+	identity_label_.attributedStringValue = [[NSAttributedString alloc] initWithString:identity_label_.stringValue attributes:@{NSForegroundColorAttributeName: color, NSFontAttributeName: identity_label_.font, NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle), NSParagraphStyleAttributeName: paragraph}];
 	accent_view_.layer.backgroundColor = color.CGColor;
 }
 
@@ -390,14 +394,14 @@ namespace uam::computer_use
 		const std::unordered_map<std::string, CGKeyCode>& KeyCodes()
 		{
 			static const std::unordered_map<std::string, CGKeyCode> codes = {
-			    {"a", kVK_ANSI_A}, {"b", kVK_ANSI_B}, {"c", kVK_ANSI_C}, {"d", kVK_ANSI_D}, {"e", kVK_ANSI_E}, {"f", kVK_ANSI_F}, {"g", kVK_ANSI_G}, {"h", kVK_ANSI_H}, {"i", kVK_ANSI_I}, {"j", kVK_ANSI_J}, {"k", kVK_ANSI_K}, {"l", kVK_ANSI_L}, {"m", kVK_ANSI_M}, {"n", kVK_ANSI_N}, {"o", kVK_ANSI_O}, {"p", kVK_ANSI_P}, {"q", kVK_ANSI_Q}, {"r", kVK_ANSI_R}, {"s", kVK_ANSI_S}, {"t", kVK_ANSI_T}, {"u", kVK_ANSI_U}, {"v", kVK_ANSI_V}, {"w", kVK_ANSI_W}, {"x", kVK_ANSI_X}, {"y", kVK_ANSI_Y}, {"z", kVK_ANSI_Z}, {"0", kVK_ANSI_0}, {"1", kVK_ANSI_1}, {"2", kVK_ANSI_2}, {"3", kVK_ANSI_3}, {"4", kVK_ANSI_4}, {"5", kVK_ANSI_5}, {"6", kVK_ANSI_6}, {"7", kVK_ANSI_7}, {"8", kVK_ANSI_8}, {"9", kVK_ANSI_9}, {"enter", kVK_Return}, {"return", kVK_Return}, {"tab", kVK_Tab}, {"space", kVK_Space}, {"escape", kVK_Escape}, {"esc", kVK_Escape}, {"backspace", kVK_Delete}, {"delete", kVK_ForwardDelete}, {"left", kVK_LeftArrow}, {"right", kVK_RightArrow}, {"up", kVK_UpArrow}, {"down", kVK_DownArrow}, {"home", kVK_Home}, {"end", kVK_End}, {"pageup", kVK_PageUp}, {"pagedown", kVK_PageDown}, {"cmd", kVK_Command}, {"command", kVK_Command}, {"ctrl", kVK_Control}, {"control", kVK_Control}, {"alt", kVK_Option}, {"option", kVK_Option}, {"shift", kVK_Shift}, {"fn", kVK_Function},
+			    {"a", kVK_ANSI_A}, {"b", kVK_ANSI_B}, {"c", kVK_ANSI_C}, {"d", kVK_ANSI_D}, {"e", kVK_ANSI_E}, {"f", kVK_ANSI_F}, {"g", kVK_ANSI_G}, {"h", kVK_ANSI_H}, {"i", kVK_ANSI_I}, {"j", kVK_ANSI_J}, {"k", kVK_ANSI_K}, {"l", kVK_ANSI_L}, {"m", kVK_ANSI_M}, {"n", kVK_ANSI_N}, {"o", kVK_ANSI_O}, {"p", kVK_ANSI_P}, {"q", kVK_ANSI_Q}, {"r", kVK_ANSI_R}, {"s", kVK_ANSI_S}, {"t", kVK_ANSI_T}, {"u", kVK_ANSI_U}, {"v", kVK_ANSI_V}, {"w", kVK_ANSI_W}, {"x", kVK_ANSI_X}, {"y", kVK_ANSI_Y}, {"z", kVK_ANSI_Z}, {"0", kVK_ANSI_0}, {"1", kVK_ANSI_1}, {"2", kVK_ANSI_2}, {"3", kVK_ANSI_3}, {"4", kVK_ANSI_4}, {"5", kVK_ANSI_5}, {"6", kVK_ANSI_6}, {"7", kVK_ANSI_7}, {"8", kVK_ANSI_8}, {"9", kVK_ANSI_9}, {"enter", kVK_Return}, {"return", kVK_Return}, {"tab", kVK_Tab}, {"space", kVK_Space}, {"escape", kVK_Escape}, {"esc", kVK_Escape}, {"backspace", kVK_Delete}, {"delete", kVK_ForwardDelete}, {"left", kVK_LeftArrow}, {"right", kVK_RightArrow}, {"up", kVK_UpArrow}, {"down", kVK_DownArrow}, {"home", kVK_Home}, {"end", kVK_End}, {"pageup", kVK_PageUp}, {"pagedown", kVK_PageDown}, {"cmd", kVK_Command}, {"command", kVK_Command}, {"meta", kVK_Command}, {"ctrl", kVK_Control}, {"control", kVK_Control}, {"alt", kVK_Option}, {"option", kVK_Option}, {"shift", kVK_Shift}, {"fn", kVK_Function},
 			};
 			return codes;
 		}
 
 		CGEventFlags ModifierFlag(std::string_view key)
 		{
-			if (key == "cmd" || key == "command")
+			if (key == "cmd" || key == "command" || key == "meta")
 				return kCGEventFlagMaskCommand;
 			if (key == "ctrl" || key == "control")
 				return kCGEventFlagMaskControl;
