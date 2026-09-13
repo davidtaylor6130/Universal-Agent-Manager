@@ -1029,7 +1029,9 @@ namespace uam::computer_use
 			}
 			CFRelease(windows);
 		}
-		if (result.empty() && error_out != nullptr)
+		if (windows == nullptr && error_out != nullptr)
+			*error_out = "The window list could not be read.";
+		else if (result.empty() && error_out != nullptr)
 			*error_out = "No visible screens or windows were found.";
 		return result;
 	}

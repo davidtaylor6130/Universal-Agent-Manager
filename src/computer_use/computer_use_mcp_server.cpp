@@ -90,11 +90,12 @@ namespace uam::computer_use
 			    {"properties",
 			     {
 			         {"action", {{"type", "string"}, {"enum", {"move", "click", "drag", "scroll", "type", "hotkey", "wait"}}}},
-			         {"x", {{"type", "number"}, {"description", "X coordinate in the latest screenshot."}}},
-			         {"y", {{"type", "number"}, {"description", "Y coordinate in the latest screenshot."}}},
+			         {"coordinateSpace", {{"type", "string"}, {"enum", {"normalized_1000", "image_pixels"}}, {"description", "For visual points use normalized_1000: 0 is top/left, 1000 bottom/right of the whole screenshot. UAM converts to pixels. Use image_pixels for literal pixel positions from the accessibility map; omitted means image_pixels."}}},
+			         {"x", {{"type", "number"}, {"description", "X coordinate in the declared coordinateSpace."}}},
+			         {"y", {{"type", "number"}, {"description", "Y coordinate in the declared coordinateSpace."}}},
 			         {"elementId", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}, {"description", "Element id from the latest observation; preferred over x and y."}}},
-			         {"endX", {{"type", "number"}, {"description", "Drag destination X coordinate in the latest screenshot."}}},
-			         {"endY", {{"type", "number"}, {"description", "Drag destination Y coordinate in the latest screenshot."}}},
+			         {"endX", {{"type", "number"}, {"description", "Drag destination X coordinate in the declared coordinateSpace."}}},
+			         {"endY", {{"type", "number"}, {"description", "Drag destination Y coordinate in the declared coordinateSpace."}}},
 			         {"button", {{"type", "string"}, {"enum", {"left", "right", "middle"}}, {"default", "left"}}},
 			         {"clickCount", {{"type", "integer"}, {"minimum", 1}, {"maximum", 3}, {"default", 1}}},
 			         {"deltaX", {{"type", "number"}, {"minimum", -2000}, {"maximum", 2000}, {"default", 0}}},
@@ -186,7 +187,7 @@ namespace uam::computer_use
 			    {"coordinateSpace", "image pixels; origin is top-left; x in [0,width), y in [0,height)"},
 			    {"inputMode", capture.input_mode}, {"frameId", frame_id}, {"changed", changed}, {"elementCount", capture.elements.size()}, {"elementsTruncated", capture.elements_truncated}, {"actionApplied", action_applied},
 			};
-			message += "\nCaptured " + std::string(capture.target_kind == "screen" ? "full display " : "window ") + std::to_string(capture.target_id) + ". Screenshot: " + std::to_string(capture.width) + "x" + std::to_string(capture.height) + " pixels. Use image coordinates from the top-left, not desktop or normalized coordinates. x must be less than " + std::to_string(capture.width) + "; y must be less than " + std::to_string(capture.height) + ".";
+			message += "\nCaptured " + std::string(capture.target_kind == "screen" ? "full display " : "window ") + std::to_string(capture.target_id) + ". Screenshot: " + std::to_string(capture.width) + "x" + std::to_string(capture.height) + " pixels. For visual points set coordinateSpace=normalized_1000: x/y are relative positions in [0,1000) across the whole image, starting at top-left. UAM converts them; do not convert yourself. For literal pixel coordinates use image_pixels (default): x < " + std::to_string(capture.width) + ", y < " + std::to_string(capture.height) + ". Accessibility positions remain image pixels.";
 			if (capture.elements_truncated)
 				message += " Accessibility element list is incomplete because the native traversal limit was reached; use the screenshot and call computer_observe again after state changes.";
 			nlohmann::json content = nlohmann::json::array({TextContent(WithFrameMetadata(std::move(message), frame_id, action_applied))});
@@ -400,9 +401,13 @@ namespace uam::computer_use
 				{
 					const std::string title = uam::strings::ToLowerAscii(candidate.title);
 					const std::string selector = candidate.kind + " " + std::to_string(candidate.id);
+					std::string plain_title = title;
+					const std::size_t separator = plain_title.find(" — ");
+					if (separator != std::string::npos)
+						plain_title.replace(separator, std::string(" — ").size(), " ");
 					if (query == title || query == selector || query == selector + " — " + title || query == std::to_string(candidate.id))
 						exact.push_back(candidate);
-					else if (title.find(query) != std::string::npos)
+					else if (title.find(query) != std::string::npos || plain_title.find(query) != std::string::npos)
 						partial.push_back(candidate);
 				}
 				const std::vector<Target>& matches = exact.empty() ? partial : exact;
@@ -570,6 +575,36 @@ namespace uam::computer_use
 				return reason + " The grant was revoked. Retry computer_observe with target naming the replacement application, window, or display.";
 			}
 
+			std::string HandleCaptureFailure(const Capture& failed_capture)
+			{
+				const std::string capture_error = failed_capture.error.empty() ? "The selected target could not be captured." : failed_capture.error;
+				m_lastCapture = {};
+				m_lastElementText.clear();
+				++m_frameSerial;
+
+				std::string list_error;
+				const std::vector<Target> targets = ListTargets(&list_error);
+				const auto target = std::ranges::find_if(targets, [this](const Target& candidate) {
+					return candidate.kind == m_targetKind && candidate.id == m_targetId;
+				});
+				if (target == targets.end())
+				{
+					if (!list_error.empty())
+					{
+						Record("capture", "failed", capture_error);
+						return capture_error + " Observe again before retrying.";
+					}
+					return RevokeGrant("The approved target closed or changed ownership.");
+				}
+				if (m_targetKind == "window" && target->process_id != m_targetProcessId)
+					return RevokeGrant("The approved target closed or changed ownership.");
+				if (const auto policy_error = ValidateTargetPolicy(*target))
+					return RevokeGrant(*policy_error);
+
+				Record("capture", "failed", capture_error);
+				return capture_error + " Observe again before retrying.";
+			}
+
 			nlohmann::json CallTool(const std::string& name, const nlohmann::json& arguments)
 			{
 				if (!arguments.is_object())
@@ -615,19 +650,21 @@ namespace uam::computer_use
 				const bool full = JsonBool(arguments, "full");
 				const std::string previous_png = full ? std::string{} : m_lastCapture.png;
 				const std::string previous_elements = full ? std::string{} : m_lastElementText;
-				m_lastCapture = CaptureSelectedTarget();
-				m_lastElementText = ElementText(m_lastCapture);
+				Capture capture = CaptureSelectedTarget();
 				if (ControlState() != "running")
 				{
 					m_lastCapture = {};
+					m_lastElementText.clear();
 					return ToolError("Screenshot interrupted by the user.");
 				}
-				if (!m_lastCapture.ok)
-					return ToolError(RevokeGrant(m_lastCapture.error.empty() ? "Computer Use policy rejected the approved target." : m_lastCapture.error));
+				if (!capture.ok)
+					return ToolError(HandleCaptureFailure(capture));
+				m_lastCapture = std::move(capture);
+				m_lastElementText = ElementText(m_lastCapture);
 				Record("observe", m_lastCapture.ok ? "completed" : "failed", m_lastCapture.ok ? "selected " + m_targetKind : m_lastCapture.error);
 				if (m_lastCapture.ok)
 					++m_frameSerial;
-				return CaptureResult(m_lastCapture, previous_png == m_lastCapture.png && !previous_png.empty() ? "Selected target is visually unchanged." : "Current screenshot of the user-granted target. Use its pixel coordinates for the next action.", FrameId(), previous_png, previous_elements);
+				return CaptureResult(m_lastCapture, previous_png == m_lastCapture.png && !previous_png.empty() ? "Selected target is visually unchanged." : "Current screenshot of the user-granted target.", FrameId(), previous_png, previous_elements);
 			}
 
 			Capture CaptureSelectedTarget() const
@@ -679,7 +716,7 @@ namespace uam::computer_use
 					if (!std::isfinite(action.x) || !std::isfinite(action.y) || action.x < 0 || action.y < 0 || action.x >= m_lastCapture.width || action.y >= m_lastCapture.height)
 					{
 						std::ostringstream error;
-						error << "Coordinates (" << action.x << ", " << action.y << ") are outside the latest screenshot (" << m_lastCapture.width << "x" << m_lastCapture.height << "). Use image-pixel coordinates from the latest frame, or observe again.";
+						error << "Coordinates (" << action.x << ", " << action.y << ") are outside the latest screenshot (" << m_lastCapture.width << "x" << m_lastCapture.height << "). Check coordinateSpace against the latest frame, or observe again.";
 						return error.str();
 					}
 				}
@@ -690,7 +727,7 @@ namespace uam::computer_use
 				if (action.kind == "drag" && (!arguments.contains("endX") || !arguments["endX"].is_number() || !arguments.contains("endY") || !arguments["endY"].is_number() || !std::isfinite(action.end_x) || !std::isfinite(action.end_y) || action.end_x < 0 || action.end_y < 0 || action.end_x >= m_lastCapture.width || action.end_y >= m_lastCapture.height))
 				{
 					std::ostringstream error;
-					error << "Drag destination (" << action.end_x << ", " << action.end_y << ") is outside the latest screenshot (" << m_lastCapture.width << "x" << m_lastCapture.height << "). Use image-pixel coordinates from the latest frame, or observe again.";
+					error << "Drag destination (" << action.end_x << ", " << action.end_y << ") is outside the latest screenshot (" << m_lastCapture.width << "x" << m_lastCapture.height << "). Check coordinateSpace against the latest frame, or observe again.";
 					return error.str();
 				}
 				if (action.kind == "scroll" && (!std::isfinite(action.delta_x) || !std::isfinite(action.delta_y)))
@@ -773,6 +810,8 @@ namespace uam::computer_use
 						if (key.is_string())
 							action.keys.push_back(key.get<std::string>());
 				}
+				if (const auto invalid = ConvertPointerCoordinates(action, m_lastCapture, arguments))
+					return ToolError(*invalid);
 				if (const auto invalid = ValidateAction(action, arguments))
 					return ToolError(*invalid);
 				if (action.kind != "wait")
@@ -818,7 +857,7 @@ namespace uam::computer_use
 					if (!current_capture.ok)
 					{
 						ReleaseControllerLock();
-						return ToolError(RevokeGrant(current_capture.error.empty() ? "The approved application is no longer available." : current_capture.error));
+						return ToolError(HandleCaptureFailure(current_capture));
 					}
 					if (action.element_id > 0 && !ElementReferenceIsCurrent(m_lastCapture, current_capture, action.element_id))
 					{
@@ -864,15 +903,20 @@ namespace uam::computer_use
 				}
 				const std::string previous_png = m_lastCapture.png;
 				const std::string previous_elements = m_lastElementText;
-				m_lastCapture = CaptureSelectedTarget();
-				m_lastElementText = ElementText(m_lastCapture);
+				Capture capture = CaptureSelectedTarget();
 				if (ControlState() != "running")
 				{
 					m_lastCapture = {};
+					m_lastElementText.clear();
 					return input_applied ? ActionAppliedError("Action completed, but its updated screenshot was interrupted by the user.", FrameId()) : ToolError("Updated screenshot interrupted by the user.");
 				}
-				if (!m_lastCapture.ok && input_applied)
-					return ActionAppliedError(m_lastCapture.error.empty() ? "Action completed, but the updated screenshot failed." : m_lastCapture.error, FrameId());
+				if (!capture.ok)
+				{
+					const std::string failure = HandleCaptureFailure(capture);
+					return input_applied ? ActionAppliedError("Action completed, but " + failure, FrameId()) : ToolError(failure);
+				}
+				m_lastCapture = std::move(capture);
+				m_lastElementText = ElementText(m_lastCapture);
 				if (m_lastCapture.ok && !input_applied)
 					++m_frameSerial;
 				return CaptureResult(m_lastCapture, previous_png == m_lastCapture.png ? "Input sent; the selected target is visually unchanged." : "Input sent. Updated screenshot follows.", FrameId(), previous_png, previous_elements, input_applied);
@@ -926,6 +970,38 @@ namespace uam::computer_use
 		}
 
 	} // namespace
+
+	std::optional<std::string> ConvertPointerCoordinates(Action& action, const Capture& capture, const nlohmann::json& arguments)
+	{
+		const auto space = arguments.find("coordinateSpace");
+		if (space == arguments.end() || *space == "image_pixels")
+			return std::nullopt;
+		if (!space->is_string() || *space != "normalized_1000")
+			return "coordinateSpace must be image_pixels or normalized_1000.";
+		if (arguments.contains("elementId") || (action.kind != "move" && action.kind != "click" && action.kind != "drag" && action.kind != "scroll"))
+			return "normalized_1000 requires a pointer action with coordinates, without elementId.";
+		if (!capture.ok || capture.width <= 0 || capture.height <= 0)
+			return "Observe the target before using normalized coordinates.";
+		for (const char* field : {"x", "y", "endX", "endY"})
+		{
+			if (field[0] == 'e' && action.kind != "drag")
+				continue;
+			const auto value = arguments.find(field);
+			if (value == arguments.end() || !value->is_number())
+				return std::string(field) + " must be a number in [0,1000).";
+			const double coordinate = value->get<double>();
+			if (!std::isfinite(coordinate) || coordinate < 0 || coordinate >= 1000)
+				return std::string(field) + " must be a finite number in [0,1000).";
+		}
+		action.x = arguments["x"].get<double>() * capture.width / 1000.0;
+		action.y = arguments["y"].get<double>() * capture.height / 1000.0;
+		if (action.kind == "drag")
+		{
+			action.end_x = arguments["endX"].get<double>() * capture.width / 1000.0;
+			action.end_y = arguments["endY"].get<double>() * capture.height / 1000.0;
+		}
+		return std::nullopt;
+	}
 
 	nlohmann::json ToolDefinitionsForTests()
 	{

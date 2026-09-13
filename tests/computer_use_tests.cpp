@@ -277,10 +277,85 @@ UAM_TEST(ComputerUseToolSurfaceIsSmallBoundedAndAnnotated)
 	UAM_ASSERT_EQ(tools[1]["inputSchema"]["properties"]["durationMs"].value("maximum", 0), 2000);
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("elementId"));
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("clickCount"));
-	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["x"].value("description", "").find("latest screenshot") != std::string::npos);
-	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["endX"].value("description", "").find("latest screenshot") != std::string::npos);
+	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["coordinateSpace"]["enum"] ==
+	           nlohmann::json::array({"normalized_1000", "image_pixels"}));
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["action"]["enum"] ==
 	    nlohmann::json::array({"move", "click", "drag", "scroll", "type", "hotkey", "wait"}));
+}
+
+UAM_TEST(ComputerUsePointerCoordinatesConvertOnlyTrustedNormalizedInput)
+{
+	uam::computer_use::Capture capture;
+	capture.ok = true;
+	capture.width = 800;
+	capture.height = 600;
+
+	uam::computer_use::Action action;
+	action.kind = "click";
+	action.x = 12;
+	action.y = 34;
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(action, capture, {}).has_value());
+	UAM_ASSERT_EQ(action.x, 12.0);
+	UAM_ASSERT_EQ(action.y, 34.0);
+
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture, {{"coordinateSpace", "image_pixels"}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.x, 12.0);
+	UAM_ASSERT_EQ(action.y, 34.0);
+
+	action.x = 0;
+	action.y = 0;
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture,
+	                 {{"coordinateSpace", "normalized_1000"}, {"x", 125}, {"y", 250}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.x, 100.0);
+	UAM_ASSERT_EQ(action.y, 150.0);
+
+	action.kind = "drag";
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture,
+	                 {{"coordinateSpace", "normalized_1000"}, {"x", 125}, {"y", 250},
+	                  {"endX", 750}, {"endY", 500}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.end_x, 600.0);
+	UAM_ASSERT_EQ(action.end_y, 300.0);
+
+	const auto rejects = [&](uam::computer_use::Action candidate, const nlohmann::json& arguments)
+	{
+		return uam::computer_use::ConvertPointerCoordinates(candidate, capture, arguments).has_value();
+	};
+	uam::computer_use::Action click;
+	click.kind = "click";
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", 1}, {"x", 1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "unknown"}, {"x", 1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", -1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", 1000}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", true}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"},
+	                           {"x", std::numeric_limits<double>::quiet_NaN()}, {"y", 1}}));
+
+	uam::computer_use::Action move;
+	move.kind = "move";
+	UAM_ASSERT(rejects(move, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1},
+	                           {"elementId", 1}}));
+	move.kind = "type";
+	UAM_ASSERT(rejects(move, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}}));
+
+	uam::computer_use::Capture stale = capture;
+	stale.ok = false;
+	UAM_ASSERT(uam::computer_use::ConvertPointerCoordinates(
+	               click, stale, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}})
+	               .has_value());
+	stale.ok = true;
+	stale.width = 0;
+	UAM_ASSERT(uam::computer_use::ConvertPointerCoordinates(
+	               click, stale, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}})
+	               .has_value());
+
+	UAM_ASSERT(rejects(action, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1},
+	                           {"endX", 1}}));
 }
 
 UAM_TEST(ComputerUseElementReferencesRejectStaleIdentityState)
@@ -480,6 +555,7 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 	const std::string response_text = response["result"]["content"][0].value("text", "");
 	UAM_ASSERT(response_text.find("Retry computer_observe with target") != std::string::npos ||
 	           response_text.find("No available computer-use targets") != std::string::npos ||
+	           response_text.find("The window list could not be read") != std::string::npos ||
 	           response_text.find("No visible screens or windows were found") != std::string::npos);
 	UAM_ASSERT(response["result"]["content"][0].value("text", "").find(
 	               "UAM will ask") == std::string::npos);
