@@ -889,3 +889,6 @@ User reports broken trace collapse and animations in actual installed product; q
 repro/fix batch, do not dismiss based on earlier tests. Remote Updates actual platform verification,
 Q001–Q008 and prior authenticated Codex probe denial remain open. All owned handles terminal;
 no daily data changes, restarts, commits or releases. Broad goal remains ACTIVE.
+
+## September 13 Beta-1 handoff
+Installed daily desktop is4.9.0-beta-1, with exact previously authorized helper retained. Doom-loop automatic approval guard is live; full new helper with frame-image recovery and chat cursor labels remains staged in Builds/audit-gui. Do not launch that full candidate or replace helper until user can reauthorize. Both grants verified true after authorized restart. Local commits169abeb2 and7daa9c6f; full validation and remaining limits are recorded at the end of codex-opencode-parity-performance-plan.md. Next frontier is full-helper deployment/acceptance, not another source rewrite or permission reset.
