@@ -329,7 +329,7 @@ namespace uam::computer_use
 			}
 		}
 
-		void PostEvent(CGEventRef event, const Capture& reference, bool* input_applied_out = nullptr)
+		bool PostEvent(CGEventRef event, const Capture& reference, bool* input_applied_out = nullptr)
 		{
 			const CGEventType type = CGEventGetType(event);
 			const bool is_mouse_event = type == kCGEventMouseMoved || type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDown || type == kCGEventRightMouseUp || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp || type == kCGEventOtherMouseDragged || type == kCGEventScrollWheel;
@@ -337,7 +337,7 @@ namespace uam::computer_use
 			{
 				NSEvent* original = [NSEvent eventWithCGEvent:event];
 				if (original == nil)
-					return;
+					return false;
 				const NSEventType appkit_type = type == kCGEventScrollWheel ? NSEventTypeMouseMoved : original.type;
 				const CGPoint global_location = CGEventGetLocation(event);
 				// NSEvent serializes a foreign window location as top-left window coordinates.
@@ -353,7 +353,7 @@ namespace uam::computer_use
 												clickCount:static_cast<NSInteger>(CGEventGetIntegerValueField(event, kCGMouseEventClickState))
 												pressure:static_cast<float>(CGEventGetDoubleValueField(event, kCGMouseEventPressure))];
 				if (appkit_event == nil || appkit_event.CGEvent == nullptr)
-					return;
+					return false;
 				CGEventRef converted = appkit_event.CGEvent;
 				CGEventSetIntegerValueField(converted, kCGMouseEventButtonNumber, CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber));
 				if (type == kCGEventScrollWheel)
@@ -378,6 +378,7 @@ namespace uam::computer_use
 				CGEventPost(kCGHIDEventTap, event);
 			if (input_applied_out != nullptr)
 				*input_applied_out = true;
+			return true;
 		}
 
 		bool PostKey(CGKeyCode code, bool down, CGEventFlags flags, const Capture& reference, bool* input_applied_out)
@@ -386,9 +387,9 @@ namespace uam::computer_use
 			if (event == nullptr)
 				return false;
 			CGEventSetFlags(event, flags);
-			PostEvent(event, reference, input_applied_out);
+			const bool posted = PostEvent(event, reference, input_applied_out);
 			CFRelease(event);
-			return true;
+			return posted;
 		}
 
 		const std::unordered_map<std::string, CGKeyCode>& KeyCodes()
@@ -1209,7 +1210,13 @@ namespace uam::computer_use
 				CFRelease(move);
 				return false;
 			}
-			PostEvent(move, reference, action.kind == "move" ? input_applied_out : nullptr);
+			if (!PostEvent(move, reference, action.kind == "move" ? input_applied_out : nullptr))
+			{
+				CFRelease(move);
+				if (error_out != nullptr)
+					*error_out = "Mouse move event could not be posted safely.";
+				return false;
+			}
 			CFRelease(move);
 			if (action.kind == "move")
 				return true;
@@ -1240,18 +1247,31 @@ namespace uam::computer_use
 					CFRelease(up_event);
 					return false;
 				}
-				PostEvent(down_event, reference, input_applied_out);
+				if (!PostEvent(down_event, reference, input_applied_out))
+				{
+					CFRelease(down_event);
+					CFRelease(up_event);
+					if (error_out != nullptr)
+						*error_out = "Mouse button-down event could not be posted safely.";
+					return false;
+				}
 				if (interrupted())
 				{
-					PostEvent(up_event, reference);
+					(void)PostEvent(up_event, reference);
 					CFRelease(down_event);
 					CFRelease(up_event);
 					return false;
 				}
 				const bool release_target_ready = verify_pointer_target();
-				PostEvent(up_event, reference);
+				const bool release_posted = PostEvent(up_event, reference);
 				CFRelease(down_event);
 				CFRelease(up_event);
+				if (!release_posted)
+				{
+					if (error_out != nullptr)
+						*error_out = "Mouse button-up event could not be posted safely.";
+					return false;
+				}
 				if (!release_target_ready)
 					return false;
 			}
@@ -1276,15 +1296,17 @@ namespace uam::computer_use
 			bool pressed = false;
 			const auto release_events = [&]()
 			{
+				bool release_posted = true;
 				if (pressed)
 				{
 					CGEventSetLocation(up_event, last_posted);
-					PostEvent(up_event, reference);
+					release_posted = PostEvent(up_event, reference);
 				}
 				if (move != nullptr) CFRelease(move);
 				if (down_event != nullptr) CFRelease(down_event);
 				if (drag_event != nullptr) CFRelease(drag_event);
 				if (up_event != nullptr) CFRelease(up_event);
+				return release_posted;
 			};
 			if (move == nullptr || down_event == nullptr || drag_event == nullptr || up_event == nullptr)
 			{
@@ -1297,13 +1319,25 @@ namespace uam::computer_use
 				release_events();
 				return false;
 			}
-			PostEvent(move, reference);
+			if (!PostEvent(move, reference))
+			{
+				release_events();
+				if (error_out != nullptr)
+					*error_out = "Drag move event could not be posted safely.";
+				return false;
+			}
 			if (!prepare_pointer_input())
 			{
 				release_events();
 				return false;
 			}
-			PostEvent(down_event, reference, input_applied_out);
+			if (!PostEvent(down_event, reference, input_applied_out))
+			{
+				release_events();
+				if (error_out != nullptr)
+					*error_out = "Drag button-down event could not be posted safely.";
+				return false;
+			}
 			pressed = true;
 			const int steps = std::max(1, static_cast<int>(std::ceil(action.duration_ms / (1000.0 / 60.0))));
 			const auto started = std::chrono::steady_clock::now();
@@ -1316,13 +1350,26 @@ namespace uam::computer_use
 					return false;
 				}
 				const CGFloat progress = static_cast<CGFloat>(step) / steps;
-				last_posted = CGPointMake(start.x + (end.x - start.x) * progress,
+				const CGPoint next_point = CGPointMake(start.x + (end.x - start.x) * progress,
 				    start.y + (end.y - start.y) * progress);
-				CGEventSetLocation(drag_event, last_posted);
-				PostEvent(drag_event, reference);
+				CGEventSetLocation(drag_event, next_point);
+				if (!PostEvent(drag_event, reference))
+				{
+					release_events();
+					if (error_out != nullptr)
+						*error_out = "Drag event could not be posted safely.";
+					return false;
+				}
+				last_posted = next_point;
 			}
 			const bool release_target_ready = verify_pointer_target();
-			release_events();
+			const bool release_posted = release_events();
+			if (!release_posted)
+			{
+				if (error_out != nullptr)
+					*error_out = "Drag button-up event could not be posted safely.";
+				return false;
+			}
 			return release_target_ready;
 		}
 
@@ -1341,7 +1388,13 @@ namespace uam::computer_use
 				CFRelease(event);
 				return false;
 			}
-			PostEvent(event, reference, input_applied_out);
+			if (!PostEvent(event, reference, input_applied_out))
+			{
+				CFRelease(event);
+				if (error_out != nullptr)
+					*error_out = "Scroll event could not be posted safely.";
+				return false;
+			}
 			CFRelease(event);
 			return true;
 		}
@@ -1379,17 +1432,30 @@ namespace uam::computer_use
 				}
 				CGEventKeyboardSetUnicodeString(down_event, count, characters.data() + offset);
 				CGEventKeyboardSetUnicodeString(up_event, count, characters.data() + offset);
-				PostEvent(down_event, reference, input_applied_out);
+				if (!PostEvent(down_event, reference, input_applied_out))
+				{
+					CFRelease(down_event);
+					CFRelease(up_event);
+					if (error_out != nullptr)
+						*error_out = "Text key-down event could not be posted safely.";
+					return false;
+				}
 				if (interrupted())
 				{
-					PostEvent(up_event, reference);
+					(void)PostEvent(up_event, reference);
 					CFRelease(down_event);
 					CFRelease(up_event);
 					return false;
 				}
-				PostEvent(up_event, reference);
+				const bool release_posted = PostEvent(up_event, reference);
 				CFRelease(down_event);
 				CFRelease(up_event);
+				if (!release_posted)
+				{
+					if (error_out != nullptr)
+						*error_out = "Text key-up event could not be posted safely.";
+					return false;
+				}
 			}
 			return true;
 		}
