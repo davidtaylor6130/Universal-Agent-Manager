@@ -3,7 +3,7 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 project(universal_agent_manager VERSION 4.9.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.9.0-alpha-12")
+set(UAM_PRODUCT_VERSION "4.9.0-alpha-33")
 
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
@@ -19,42 +19,7 @@ if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
 endif()
 
 if(NOT UAM_RUNNER_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
-  set(UAM_REQUIRED_REMOTE_RUNNERS
-    "linux-arm64/uam-runner"
-    "linux-x86_64/uam-runner"
-    "windows-x86_64/uam-runner.exe"
-  )
-  foreach(UAM_REMOTE_RUNNER IN LISTS UAM_REQUIRED_REMOTE_RUNNERS)
-    cmake_path(GET UAM_REMOTE_RUNNER PARENT_PATH UAM_REMOTE_RUNNER_DIR)
-    set(UAM_REMOTE_RUNNER_PATH
-      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER}")
-    set(UAM_REMOTE_RUNNER_SHA256_PATH
-      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.sha256")
-    set(UAM_REMOTE_RUNNER_VERSION_PATH
-      "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/${UAM_REMOTE_RUNNER_DIR}/uam-runner.version")
-    foreach(UAM_REMOTE_RUNNER_FILE
-        "${UAM_REMOTE_RUNNER_PATH}"
-        "${UAM_REMOTE_RUNNER_SHA256_PATH}"
-        "${UAM_REMOTE_RUNNER_VERSION_PATH}")
-      if(NOT EXISTS "${UAM_REMOTE_RUNNER_FILE}")
-        message(FATAL_ERROR
-          "Full app builds require every remote helper. Missing: ${UAM_REMOTE_RUNNER_FILE}")
-      endif()
-    endforeach()
-    file(READ "${UAM_REMOTE_RUNNER_VERSION_PATH}" UAM_REMOTE_RUNNER_VERSION)
-    string(STRIP "${UAM_REMOTE_RUNNER_VERSION}" UAM_REMOTE_RUNNER_VERSION)
-    if(NOT UAM_REMOTE_RUNNER_VERSION STREQUAL UAM_PRODUCT_VERSION)
-      message(FATAL_ERROR
-        "Remote helper version mismatch for ${UAM_REMOTE_RUNNER}: "
-        "expected ${UAM_PRODUCT_VERSION}, got ${UAM_REMOTE_RUNNER_VERSION}")
-    endif()
-    file(READ "${UAM_REMOTE_RUNNER_SHA256_PATH}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
-    string(STRIP "${UAM_REMOTE_RUNNER_EXPECTED_SHA256}" UAM_REMOTE_RUNNER_EXPECTED_SHA256)
-    file(SHA256 "${UAM_REMOTE_RUNNER_PATH}" UAM_REMOTE_RUNNER_ACTUAL_SHA256)
-    if(NOT UAM_REMOTE_RUNNER_ACTUAL_SHA256 STREQUAL UAM_REMOTE_RUNNER_EXPECTED_SHA256)
-      message(FATAL_ERROR "Remote helper checksum mismatch: ${UAM_REMOTE_RUNNER}")
-    endif()
-  endforeach()
+  include("${CMAKE_SOURCE_DIR}/cmake/validate_remote_runners.cmake")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -307,6 +272,8 @@ elseif(APPLE)
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_macos.mm
+    src/computer_use/computer_use_launch_macos.mm
+    src/computer_use/computer_use_install_macos.mm
   )
   set_source_files_properties(
     src/common/platform/platform_dictation_macos.mm
@@ -414,6 +381,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
 	  src/app/agent_run_scheduler.cpp
 	  src/app/uam_control_service.cpp
   src/app/application.cpp
+  src/common/utils/diagnostic_log.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
   src/app/computer_use_service.cpp
@@ -433,12 +401,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/runtime_orchestration_services.cpp
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
-  src/app/pending_call_service.cpp
   src/app/vcs_commit_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_bridge_request.cpp
+  src/cef/companion_server.cpp
   src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
@@ -473,8 +441,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
   src/common/provider/runtime/provider_acp_strategy.cpp
-  src/common/runtime/acp/acp_claude_message_handlers.cpp
-  src/common/runtime/acp/acp_codex_message_handlers.cpp
+  src/common/provider/claude/cli/claude_acp_message_handlers.cpp
+  src/common/provider/codex/cli/codex_acp_message_handlers.cpp
   src/common/runtime/acp/acp_content_text.cpp
   src/common/runtime/acp/acp_diagnostics.cpp
   src/common/runtime/acp/acp_goal_helpers.cpp
@@ -524,6 +492,9 @@ target_include_directories(universal_agent_manager
     src/common
     ${cef_binary_SOURCE_DIR}
 )
+
+find_package(ZLIB REQUIRED)
+target_link_libraries(universal_agent_manager PRIVATE ZLIB::ZLIB)
 
 # CEF link targets depend on platform.
 # The CEF distribution's own CMakeLists.txt exposes 'libcef_dll_wrapper'.
@@ -732,6 +703,7 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${_computer_use_name}</string>
   <key>CFBundleDisplayName</key><string>${_computer_use_name}</string>
+  <key>CFBundleIconFile</key><string>app_icon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${UAM_PRODUCT_VERSION}</string>
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
@@ -748,6 +720,7 @@ file(MAKE_DIRECTORY \"\${_computer_use_dir}/Resources\")
 file(COPY_FILE \"\${UAM_MAIN_EXE}\" \"\${_computer_use_dir}/MacOS/${_computer_use_name}\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${_cef_plists_dir}/computer-use-Info.plist\" \"\${_computer_use_dir}/Info.plist\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png\" \"\${_computer_use_dir}/Resources/SoftwareCursor.png\" ONLY_IF_DIFFERENT)
+file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/app_icon.icns\" \"\${_computer_use_dir}/Resources/app_icon.icns\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/gemini-policy.toml\" \"\${_computer_use_dir}/Resources/gemini-policy.toml\" ONLY_IF_DIFFERENT)
 if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\")
   file(CREATE_LINK \"../../../Chromium Embedded Framework.framework\"
@@ -770,6 +743,7 @@ if(NOT _computer_use_sign_result EQUAL 0)
   message(FATAL_ERROR \"Failed to sign the Computer Use companion\")
 endif()
 ")
+
 
     # Write the script to the build dir.
     set(_helper_cmake_script "${_cef_plists_dir}/create_helpers.cmake")
@@ -899,6 +873,10 @@ endif()
 set(UAM_REMOTE_ARTIFACT_COPY_COMMAND)
 if(UAM_PACKAGE_REMOTE_RUNNERS)
   set(UAM_REMOTE_ARTIFACT_COPY_COMMAND
+    COMMAND ${CMAKE_COMMAND}
+      "-DUAM_REMOTE_RUNNER_ARTIFACT_DIR=${UAM_REMOTE_RUNNER_ARTIFACT_DIR}"
+      "-DUAM_PRODUCT_VERSION=${UAM_PRODUCT_VERSION}"
+      -P "${CMAKE_SOURCE_DIR}/cmake/validate_remote_runners.cmake"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}" "${UAM_REMOTE_ARTIFACT_DEST}")
 endif()
@@ -926,6 +904,9 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/gemini-policy.toml"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/SoftwareCursor.png"
     COMMAND ${CMAKE_COMMAND} -E make_directory
       "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -963,6 +944,9 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
       "$<TARGET_FILE_DIR:universal_agent_manager>/gemini-policy.toml"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/SoftwareCursor.png"
 	COMMAND ${CMAKE_COMMAND} -E make_directory
 	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote"
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1033,6 +1017,20 @@ if(APPLE AND UAM_MACOS_BUNDLE AND EXISTS "${UAM_BUNDLE_ICON_ICNS}")
 endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
+  find_program(UAM_CADDY_EXECUTABLE NAMES caddy)
+  if(UAM_CADDY_EXECUTABLE)
+    get_filename_component(_uam_caddy_real "${UAM_CADDY_EXECUTABLE}" REALPATH)
+    get_filename_component(_uam_caddy_bin "${_uam_caddy_real}" DIRECTORY)
+    find_file(UAM_CADDY_LICENSE NAMES LICENSE PATHS "${_uam_caddy_bin}/.." NO_DEFAULT_PATH REQUIRED)
+    add_custom_command(TARGET universal_agent_manager POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_CADDY_EXECUTABLE}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_CADDY_LICENSE}" "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/LICENSE-caddy"
+      COMMAND codesign --force --sign - "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/companion/caddy"
+      VERBATIM
+      COMMENT "Bundling companion HTTPS transport"
+    )
+  endif()
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND /bin/sh -c
       "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign - '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
@@ -1079,6 +1077,7 @@ if(UAM_BUILD_TESTS)
   enable_testing()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    src/common/utils/diagnostic_log.cpp
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
@@ -1114,7 +1113,6 @@ if(UAM_BUILD_TESTS)
     src/app/runtime_orchestration_services.cpp
     src/app/shell_action_service.cpp
     src/app/theme_service.cpp
-    src/app/pending_call_service.cpp
     src/app/vcs_commit_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
@@ -1132,8 +1130,8 @@ if(UAM_BUILD_TESTS)
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
     src/common/provider/runtime/provider_acp_strategy.cpp
-    src/common/runtime/acp/acp_claude_message_handlers.cpp
-    src/common/runtime/acp/acp_codex_message_handlers.cpp
+    src/common/provider/claude/cli/claude_acp_message_handlers.cpp
+    src/common/provider/codex/cli/codex_acp_message_handlers.cpp
     src/common/runtime/acp/acp_content_text.cpp
     src/common/runtime/acp/acp_diagnostics.cpp
     src/common/runtime/acp/acp_goal_helpers.cpp
@@ -1250,6 +1248,10 @@ if(UAM_BUILD_TESTS)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+  add_test(NAME uam_remote_runner_validation
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
+      -P ${CMAKE_SOURCE_DIR}/cmake/check_remote_runner_validation.cmake)
+
   if(APPLE)
     add_executable(uam_macos_application_tests
       tests/macos_application_tests.mm
@@ -1262,6 +1264,10 @@ if(UAM_BUILD_TESTS)
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake
+  )
+  add_test(
+    NAME uam_provider_terminal_boundary
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_provider_terminal_boundary.cmake
   )
   add_test(
     NAME uam_windows_process_containment_contract

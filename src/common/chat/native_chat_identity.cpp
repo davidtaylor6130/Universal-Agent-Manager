@@ -46,6 +46,12 @@ namespace uam::chat_identity
 {
 	std::string NativeWorkspaceForLocalDeduplication(const ChatSession& chat)
 	{
+		const std::string_view host = uam::strings::TrimAsciiView(chat.execution_host_id);
+		if (!host.empty() && host != uam::execution_hosts::kLocalHostId)
+		{
+			return NativeWorkspaceForHistoryImport(chat);
+		}
+
 		const fs::path workspace_path = TrimmedWorkspacePath(chat);
 		if (!workspace_path.empty())
 		{
@@ -61,7 +67,8 @@ namespace uam::chat_identity
 		if (!host.empty() && host != uam::execution_hosts::kLocalHostId)
 		{
 			std::string workspace = uam::strings::Trim(chat.workspace_directory);
-			std::ranges::replace(workspace, '\\', '/');
+			if (uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace))
+				std::ranges::replace(workspace, '\\', '/');
 			return "remote:" + std::string(host) + ":" + workspace;
 		}
 		const fs::path workspace_path = TrimmedWorkspacePath(chat);

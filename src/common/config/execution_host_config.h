@@ -23,6 +23,34 @@ namespace uam::execution_hosts
 		return {};
 	}
 
+	/// Records a completed probe only while its host configuration and health snapshot remain current.
+	inline bool ApplyHealthObservation(ExecutionHost& current, const ExecutionHost& observed,
+	                                   bool connected, std::string_view timestamp)
+	{
+		if (current != observed) return false;
+		current.runner_status = connected ? "ready" : "error";
+		if (connected) current.last_seen_at = timestamp;
+		return true;
+	}
+
+	/// Allows read-only directory browsing to retry an installed helper after a transient health failure.
+	inline bool CanBrowseRemoteDirectories(const ExecutionHost& host)
+	{
+		return !host.runner_version.empty() &&
+		       (host.runner_status == "ready" || host.runner_status == "offline" ||
+		        host.runner_status == "error");
+	}
+
+	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
+	inline bool SameConnection(const ExecutionHost& left, const ExecutionHost& right)
+	{
+		return left.id == right.id && left.transport == right.transport &&
+		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
+		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
+		       left.runner_protocol_version == right.runner_protocol_version &&
+		       left.runner_directory == right.runner_directory;
+	}
+
 	inline bool IsPortableId(std::string_view value)
 	{
 		return !value.empty() && value.size() <= 64 &&
@@ -97,7 +125,7 @@ namespace uam::execution_hosts
 		const bool windows = platform == "windows" || platform == "Windows";
 		const char separator = windows ? '\\' : '/';
 		std::string result(uam::strings::TrimAsciiView(root));
-		while (result.size() > 1 && (result.back() == '/' || result.back() == '\\'))
+		while (result.size() > 1 && (result.back() == '/' || (windows && result.back() == '\\')))
 			result.pop_back();
 		if (!result.empty()) result.push_back(separator);
 		for (const char character : relative)
@@ -109,7 +137,7 @@ namespace uam::execution_hosts
 	{
 		const bool windows = platform == "windows" || platform == "Windows";
 		std::string result(uam::strings::TrimAsciiView(value));
-		std::ranges::replace(result, '\\', '/');
+		if (windows) std::ranges::replace(result, '\\', '/');
 		while (result.size() > (windows ? 3u : 1u) && result.back() == '/') result.pop_back();
 		if (windows)
 		{

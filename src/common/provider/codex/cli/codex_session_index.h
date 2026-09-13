@@ -9,7 +9,6 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -22,12 +21,6 @@ namespace uam::codex
 {
 	inline constexpr const char* kSessionIndexFilename = "session_index.jsonl";
 	inline constexpr int kMaxRolloutPreludeLines = 12;
-
-	struct SessionIndexEntry
-	{
-		std::string id;
-		std::string updated_at;
-	};
 
 	inline std::filesystem::path CodexHomePath()
 	{
@@ -48,81 +41,27 @@ namespace uam::codex
 		return uam::paths::CurrentPathOrDot() / ".codex";
 	}
 
-	inline std::optional<SessionIndexEntry> ParseSessionIndexLine(std::string_view line)
-	{
-		line = uam::strings::TrimAsciiView(line);
-		if (line.empty())
-		{
-			return std::nullopt;
-		}
-
-		try
-		{
-			const nlohmann::json parsed = nlohmann::json::parse(line.begin(), line.end());
-			SessionIndexEntry entry;
-			entry.id = ValidThreadIdOrEmpty(uam::nlohmann_json::StringViewOrEmpty(parsed, "id"));
-			entry.updated_at = std::string{uam::nlohmann_json::TrimmedStringViewOrEmpty(parsed, "updated_at")};
-			if (!entry.id.empty())
-			{
-				return entry;
-			}
-		}
-		catch (const nlohmann::json::exception&)
-		{
-			// Skip malformed JSONL records; the next valid line can still identify a session.
-		}
-
-		return std::nullopt;
-	}
-
-	inline bool SessionIndexEntrySortsBefore(const SessionIndexEntry& lhs, const SessionIndexEntry& rhs)
-	{
-		if (lhs.updated_at.empty() != rhs.updated_at.empty())
-		{
-			return lhs.updated_at.empty();
-		}
-
-		if (lhs.updated_at == rhs.updated_at)
-		{
-			return false;
-		}
-
-		return lhs.updated_at < rhs.updated_at;
-	}
-
-	inline void SortSessionIndexOldestToNewest(std::vector<SessionIndexEntry>& entries)
-	{
-		std::ranges::stable_sort(entries, SessionIndexEntrySortsBefore);
-	}
-
-	inline std::vector<SessionIndexEntry> ReadSessionIndex(const std::filesystem::path& codex_home = CodexHomePath())
-	{
-		std::vector<SessionIndexEntry> entries;
-		uam::io::ForEachTextFileLine(codex_home / kSessionIndexFilename,
-		                             [&entries](const std::string& line)
-		                             {
-			                             if (!line.empty())
-			                             {
-				                             if (std::optional<SessionIndexEntry> entry = ParseSessionIndexLine(line))
-				                             {
-					                             entries.push_back(std::move(*entry));
-				                             }
-			                             }
-			                             return true;
-		                             });
-		return entries;
-	}
-
+	/// Reads distinct session IDs; Codex can append multiple index records for one session.
 	inline std::vector<std::string> ReadSessionIndexIds(const std::filesystem::path& codex_home = CodexHomePath())
 	{
 		std::vector<std::string> ids;
-		const std::vector<SessionIndexEntry> entries = ReadSessionIndex(codex_home);
-		ids.reserve(entries.size());
-
-		for (const SessionIndexEntry& entry : entries)
-		{
-			ids.push_back(entry.id);
-		}
+		std::unordered_set<std::string> seen;
+		uam::io::ForEachTextFileLine(codex_home / kSessionIndexFilename,
+		    [&ids, &seen](const std::string& line)
+		    {
+			    if (uam::strings::TrimAsciiView(line).empty()) return true;
+			    try
+			    {
+				    const nlohmann::json parsed = nlohmann::json::parse(line);
+				    std::string id = ValidThreadIdOrEmpty(uam::nlohmann_json::StringViewOrEmpty(parsed, "id"));
+				    if (!id.empty() && seen.insert(id).second) ids.push_back(std::move(id));
+			    }
+			    catch (const nlohmann::json::exception&)
+			    {
+				    // A malformed record must not hide later valid session IDs.
+			    }
+			    return true;
+		    });
 		return ids;
 	}
 
@@ -142,10 +81,10 @@ namespace uam::codex
 	inline bool RolloutFileNameMatchesSession(const std::filesystem::path& rollout_file, std::string_view session_id)
 	{
 		const std::string valid_session_id = ValidThreadIdOrEmpty(session_id);
-		return !valid_session_id.empty() && uam::strings::Contains(rollout_file.filename().string(), valid_session_id);
+		return !valid_session_id.empty() && rollout_file.extension() == ".jsonl" && uam::strings::Contains(rollout_file.filename().string(), valid_session_id);
 	}
 
-	inline std::optional<std::filesystem::path> FindRolloutFileForSession(std::string_view session_id, const std::filesystem::path& codex_home = CodexHomePath())
+	inline std::optional<std::filesystem::path> FindRolloutFileForSession(std::string_view session_id, const std::filesystem::path& codex_home = CodexHomePath(), bool include_archived = false)
 	{
 		const std::string valid_session_id = ValidThreadIdOrEmpty(session_id);
 		if (valid_session_id.empty())
@@ -153,23 +92,19 @@ namespace uam::codex
 			return std::nullopt;
 		}
 
-		const std::filesystem::path sessions_root = codex_home / "sessions";
-		if (!uam::paths::PathExistsNoThrow(sessions_root))
+		for (const char* directory : {"sessions", "archived_sessions"})
 		{
-			return std::nullopt;
-		}
-
-		std::error_code iterator_error;
-		constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
-		for (std::filesystem::recursive_directory_iterator it(sessions_root, options, iterator_error), end; !iterator_error && it != end; it.increment(iterator_error))
-		{
-			if (!uam::paths::IsRegularFileEntryNoThrow(*it))
+			if (!include_archived && std::string_view(directory) == "archived_sessions") break;
+			const std::filesystem::path sessions_root = codex_home / directory;
+			if (!uam::paths::IsDirectoryNoThrow(sessions_root)) continue;
+			std::error_code iterator_error;
+			constexpr auto options = std::filesystem::directory_options::skip_permission_denied;
+			for (std::filesystem::recursive_directory_iterator it(sessions_root, options, iterator_error), end; !iterator_error && it != end; it.increment(iterator_error))
 			{
-				continue;
-			}
-			if (RolloutFileNameMatchesSession(it->path(), valid_session_id))
-			{
-				return it->path();
+				if (uam::paths::IsRegularFileEntryNoThrow(*it) && RolloutFileNameMatchesSession(it->path(), valid_session_id))
+				{
+					return it->path();
+				}
 			}
 		}
 		return std::nullopt;
@@ -227,13 +162,11 @@ namespace uam::codex
 	inline std::string PickNewSessionId(const std::vector<std::string>& ids_before, const std::filesystem::path& cwd, const std::filesystem::path& codex_home = CodexHomePath())
 	{
 		const std::unordered_set<std::string> before(ids_before.begin(), ids_before.end());
-		std::vector<SessionIndexEntry> entries = ReadSessionIndex(codex_home);
-		SortSessionIndexOldestToNewest(entries);
 		std::string discovered_id;
 
-		for (const SessionIndexEntry& entry : entries)
+		for (const std::string& id : ReadSessionIndexIds(codex_home))
 		{
-			if (before.contains(entry.id) || !RolloutCwdMatches(entry.id, cwd, codex_home))
+			if (before.contains(id) || !RolloutCwdMatches(id, cwd, codex_home))
 			{
 				continue;
 			}
@@ -241,7 +174,7 @@ namespace uam::codex
 			{
 				return "";
 			}
-			discovered_id = entry.id;
+			discovered_id = id;
 		}
 		return discovered_id;
 	}

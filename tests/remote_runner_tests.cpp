@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
+#include "common/provider/provider_runtime.h"
 #include "remote/runner_service_posix.h"
 
 using namespace uam_test;
@@ -7,6 +8,412 @@ using namespace uam_test;
 namespace
 {
 	constexpr std::string_view kProcessControlToken = "test-process-control-token";
+}
+
+std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
+{
+	if (argc != 2 || std::string_view(argv[1]) != "--uam-test-remote-opencode-create") return std::nullopt;
+	const std::string log_path = uam::env::GetNonEmptyString("UAM_TEST_CREATE_LOG").value_or("");
+	const std::string mode = uam::env::GetNonEmptyString("UAM_TEST_CREATE_MODE").value_or("");
+	uam::remote::RunnerState state;
+	std::string output;
+	std::uint64_t input_sequence = 0;
+	int command_poll_count = 0;
+	nlohmann::json request;
+	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
+	{
+		{
+			std::ofstream log(log_path, std::ios::app);
+			log << request.dump() << '\n';
+		}
+		const std::string type = request.value("type", "");
+		nlohmann::json result = nlohmann::json::object();
+		if (mode == "command-lost-start" && type == "process.start") return 0;
+		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
+		if (mode == "command-lost-start" && type == "process.poll")
+		{
+			++command_poll_count;
+			result = {{"running", command_poll_count == 1}, {"exitCode", 7},
+			          {"stdoutBase64", uam::base64::Encode(command_poll_count == 1 ? "first\n" : "last\n")},
+			          {"stderrBase64", uam::base64::Encode(command_poll_count == 1 ? "warning\n" : "")},
+			          {"stdoutCursor", std::uint64_t(command_poll_count == 1 ? 6 : 11)},
+			          {"stderrCursor", std::uint64_t{8}}};
+		}
+		else if (type == "process.write")
+		{
+			std::string decoded;
+			if (!uam::base64::Decode(request.value("dataBase64", ""), decoded)) return 2;
+			const nlohmann::json rpc = nlohmann::json::parse(decoded);
+			input_sequence = request.value("inputSequence", std::uint64_t{0});
+			if (rpc.value("method", "") == "initialize")
+				output = R"({"jsonrpc":"2.0","id":999,"error":{"message":"unrelated"}})" "\n"
+				         R"({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}})" "\n";
+			else if (rpc.value("method", "") == "session/new")
+			{
+				if (rpc["params"]["cwd"] != R"(C:\Work\Project)" || rpc["params"]["mcpServers"] != nlohmann::json::array()) return 3;
+				if (!uam::io::WriteTextFile(log_path + ".session-new", "accepted")) return 6;
+				if (mode == "error") output = R"({"jsonrpc":"2.0","id":2,"error":{"message":"creation refused"}})" "\n";
+				else if (mode == "invalid") output = R"({"jsonrpc":"2.0","id":2,"result":{"sessionId":"../invalid"}})" "\n";
+				else if (mode == "cancel") output.clear();
+				else output = R"({"jsonrpc":"2.0","id":2,"result":{"sessionId":"ses_remotecreated"}})" "\n";
+			}
+			else return 4;
+			result["inputSequence"] = input_sequence;
+		}
+		else if (type == "process.poll")
+		{
+			result = {{"running", true}, {"stdoutBase64", uam::base64::Encode(output)},
+			          {"stderrBase64", ""}, {"inputSequence", input_sequence}};
+			output.clear();
+		}
+		const bool teardown_error = mode == "teardown-error" &&
+		    (type == "process.closeInput" || type == "process.stop" || type == "process.remove");
+		const nlohmann::json response = teardown_error
+		    ? nlohmann::json{{"id", request["id"]}, {"ok", false}, {"error", {{"message", "fixture teardown rejected"}}}}
+		    : type == "hello"
+		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
+		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
+		if (!uam::remote::WriteFrame(std::cout, response)) return 5;
+		std::cout.flush();
+	}
+	return 0;
+}
+
+UAM_TEST(RemoteCommandRecoversLostStartWithoutReplayingAndPreservesOutputAndExit)
+{
+	TempDir temp("uam-remote-command");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path log = temp.root / "requests.jsonl";
+	ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+	ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "command-lost-start");
+	uam::remote::RunnerClient client(service,
+	    {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"});
+	const ProcessExecutionResult result = client.ExecuteCommand(
+	    "cli-update-fixture", uam::paths::PathFromUtf8(R"(C:\Work\Project)"), {"fixture"}, 5000);
+	client.Disconnect();
+	UAM_ASSERT(!result.ok && result.exit_code == 7 && result.error.empty());
+	UAM_ASSERT_EQ(result.output, std::string("first\nwarning\nlast\n"));
+	std::ifstream stream(log);
+	std::string line, token;
+	int starts = 0, polls = 0, acknowledgements = 0, removes = 0, closes = 0;
+	while (std::getline(stream, line))
+	{
+		const nlohmann::json request = nlohmann::json::parse(line);
+		const std::string type = request.value("type", "");
+		if (type == "hello") continue;
+		if (type == "process.start")
+		{
+			++starts;
+			token = request.at("controlToken").get<std::string>();
+			UAM_ASSERT(!request.at("attachIfExists").get<bool>());
+			UAM_ASSERT_EQ(request.at("transientLeaseMs").get<int>(), 60000);
+		}
+		UAM_ASSERT_EQ(request.at("sessionId").get<std::string>(), std::string("cli-update-fixture"));
+		UAM_ASSERT_EQ(request.at("controlToken").get<std::string>(), token);
+		polls += type == "process.poll";
+		acknowledgements += type == "process.ack";
+		removes += type == "process.remove";
+		closes += type == "process.closeInput";
+	}
+	UAM_ASSERT_EQ(starts, 1);
+	UAM_ASSERT_EQ(polls, 2);
+	UAM_ASSERT_EQ(acknowledgements, 2);
+	UAM_ASSERT_EQ(removes, 1);
+	UAM_ASSERT_EQ(closes, 1);
+	std::stop_source canceled;
+	canceled.request_stop();
+	UAM_ASSERT(client.ExecuteCommand("never-started", temp.root, {"fixture"}, 5000,
+	    canceled.get_token()).canceled);
+}
+
+UAM_TEST(RemoteOpenCodeCreationUsesCorrelatedHandshakeAndCleansUp)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-remote-opencode-create");
+	const fs::path ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_CREATE_EXECUTABLE\" --uam-test-remote-opencode-create\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar executable("UAM_TEST_CREATE_EXECUTABLE", PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string());
+	ExecutionHost host;
+	host.id = "remote-create";
+	host.transport = "ssh";
+	host.ssh_alias = "fixture";
+	host.platform = "windows";
+	host.runner_status = "ready";
+	host.runner_version = "development";
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	for (const std::string mode : {"success", "invalid", "error", "cancel", "teardown-error", "teardown-lost-reply"})
+	{
+		const fs::path log = temp.root / (mode + ".jsonl");
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", mode);
+		std::stop_source stop;
+		std::jthread cancel;
+		if (mode == "cancel") cancel = std::jthread([&](std::stop_token token)
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!token.stop_requested() && std::chrono::steady_clock::now() < deadline)
+			{
+				if (fs::exists(log.string() + ".session-new")) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			stop.request_stop();
+		});
+		std::string error;
+		const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+		const std::string id = ProviderRuntimeRegistry::Resolve(profile).CreateNativeSession(
+		    profile, fs::path(R"(C:\Work\Project)"), stop.get_token(), &error, &host);
+		cancel.request_stop();
+		if (cancel.joinable()) cancel.join();
+		const bool expected_success = mode == "success" || mode == "teardown-error" || mode == "teardown-lost-reply";
+		if (expected_success && id != "ses_remotecreated") throw std::runtime_error("Remote creation fixture failed: " + error);
+		if (!expected_success) UAM_ASSERT(id.empty() && !error.empty());
+		if (mode == "error") UAM_ASSERT(error.find("creation refused") != std::string::npos);
+		if (mode == "cancel") UAM_ASSERT(error.find("canceled") != std::string::npos);
+		std::ifstream stream(log);
+		std::string line, process_id, control_token;
+		bool stopped = false, removed = false, input_closed = false;
+		int session_new_count = 0;
+		while (std::getline(stream, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			const std::string type = request.value("type", "");
+			if (type == "hello") continue;
+			if (type == "process.start")
+			{
+				process_id = request.at("sessionId").get<std::string>();
+				control_token = request.at("controlToken").get<std::string>();
+				UAM_ASSERT(!process_id.empty() && !control_token.empty());
+				UAM_ASSERT_EQ(request.at("cwd").get<std::string>(), std::string(R"(C:\Work\Project)"));
+				UAM_ASSERT_EQ(request.at("transientLeaseMs").get<int>(), 60000);
+			}
+			UAM_ASSERT_EQ(request.at("sessionId").get<std::string>(), process_id);
+			UAM_ASSERT_EQ(request.at("controlToken").get<std::string>(), control_token);
+			if (type == "process.write")
+			{
+				std::string decoded;
+				UAM_ASSERT(uam::base64::Decode(request.at("dataBase64").get<std::string>(), decoded));
+				if (nlohmann::json::parse(decoded).value("method", "") == "session/new") ++session_new_count;
+			}
+			input_closed = input_closed || type == "process.closeInput";
+			stopped = stopped || type == "process.stop";
+			removed = removed || type == "process.remove";
+		}
+		UAM_ASSERT(stopped && removed);
+		UAM_ASSERT_EQ(session_new_count, 1);
+		if (expected_success) UAM_ASSERT(input_closed);
+	}
+#endif
+}
+
+std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
+{
+#if !defined(_WIN32)
+	const std::optional<std::string> log_path = uam::env::GetNonEmptyString("UAM_TEST_MCP_LOST_ACK_LOG");
+	if (!log_path || argc < 2) return std::nullopt;
+	if (std::string_view(argv[1]) == "--uam-test-mcp-lost-ack")
+		return uam::remote::RunRemoteMcpShim("lost-ack", fs::path("unused.sock"));
+	if (std::string_view(argv[1]) != "bridge") return std::nullopt;
+	uam::remote::RunnerState state;
+	nlohmann::json request;
+	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
+	{
+		const std::string type = request.value("type", "");
+		if (type == "channel.write")
+		{
+			std::ofstream log(*log_path, std::ios::app);
+			log << request.at("writeSequence").get<std::uint64_t>() << '\n';
+			// Accept the bytes, then lose every response, including the same-sequence retry.
+			return 0;
+		}
+		const nlohmann::json response = type == "hello"
+		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
+		    : nlohmann::json{{"id", request["id"]}, {"ok", true},
+		        {"result", {{"remoteToDesktopWriteSequence", fs::exists(*log_path) ? 1 : 0}}}};
+		if (!uam::remote::WriteFrame(std::cout, response)) return 1;
+		std::cout.flush();
+	}
+	return 0;
+#else
+	(void)argc;
+	(void)argv;
+	return std::nullopt;
+#endif
+}
+
+UAM_TEST(RemoteMcpShimDoesNotReplayAcceptedInputAfterLostAcknowledgements)
+{
+#if !defined(_WIN32)
+	TempDir temp("uam-mcp-lost-ack");
+	const fs::path log = temp.root / "writes.txt";
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields shim;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(shim, temp.root,
+	    {service.ResolveCurrentExecutablePath().string(), "--uam-test-mcp-lost-ack"}, &error,
+	    {{"UAM_TEST_MCP_LOST_ACK_LOG", log.string()}}));
+	struct ProcessGuard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProcessGuard() { PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true); }
+	} guard{shim};
+	const std::string input = "{\"id\":1,\"method\":\"tools/call\"}\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, input.data(), input.size(), &error));
+	int exit_code = -1;
+	bool exited = false;
+	for (int attempt = 0; attempt < 300 && !exited; ++attempt)
+	{
+		exited = service.PollStdioProcessExited(shim, &exit_code);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(exit_code, 70);
+	UAM_ASSERT_EQ(ReadFile(log), std::string("1\n1\n"));
+#endif
+}
+
+UAM_TEST(RemoteRunnerClientRejectsMalformedHandshakeFieldsWithoutThrowing)
+{
+#if !defined(_WIN32)
+	TempDir temp("uam-runner-malformed-response");
+	const std::vector<nlohmann::json> malformed = {
+	    {{"id", 12}, {"ok", true}},
+	    {{"id", "1"}, {"ok", "yes"}},
+	    {{"id", "1"}, {"ok", false}, {"error", {{"message", nlohmann::json::array()}}}},
+	    {{"id", "1"}, {"ok", true}, {"nonce", 12}}
+	};
+	for (const auto& response : malformed)
+	{
+		std::ostringstream wire;
+		std::string error;
+		UAM_ASSERT(uam::remote::WriteFrame(wire, response, &error));
+		const fs::path reply = temp.root / "response.bin";
+		UAM_ASSERT(uam::io::WriteTextFile(reply, wire.str()));
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+		    {"/bin/sh", "-c", "/bin/cat \"$1\"; /bin/sleep 5", "uam-malformed-bridge", reply.string()});
+		UAM_ASSERT(!client.Connect(&error));
+		UAM_ASSERT(!error.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteRunnerClientRejectsMalformedResultsBeforeUpdatingSessionState)
+{
+#if !defined(_WIN32)
+	const std::vector<std::pair<std::string, nlohmann::json>> cases = {
+	    {"poll", nullptr},
+	    {"poll", {{"running", "yes"}}},
+	    {"poll", {{"stdoutBase64", 12}}},
+	    {"poll", {{"stderrBase64", nlohmann::json::array()}}},
+	    {"poll", {{"stdoutCursor", -1}}},
+	    {"poll", {{"stderrCursor", 1.5}}},
+	    {"poll", {{"exitCode", 4294967296ULL}}},
+	    {"poll", {{"running", false}, {"stdoutBase64", "eA=="}, {"stderrBase64", "!"}}},
+	    {"start", {{"inputSequence", "bad"}}},
+	    {"write", {{"inputSequence", -1}}},
+	    {"open", {{"remoteToDesktopCursor", 9}, {"desktopToRemoteCursor", "bad"}}},
+	    {"channel", {{"dataBase64", "eA=="}, {"cursor", -1}}},
+	    {"channel", {{"dataBase64", "!"}}}
+	};
+	const std::string executable = PlatformServicesFactory::Instance().process_service
+	    .ResolveCurrentExecutablePath().string();
+	for (const auto& [operation, result] : cases)
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+		    {executable, "--uam-test-runner-result", result.dump()});
+		std::string error;
+		UAM_ASSERT(client.Connect(&error));
+		client.SetProcessControlToken("session", "token");
+		if (operation == "poll")
+		{
+			uam::remote::ProcessPollResult polled;
+			polled.running = true;
+			polled.standard_output = "retained";
+			polled.stdout_cursor = 7;
+			UAM_ASSERT(!client.PollProcess("session", polled, &error));
+			UAM_ASSERT(polled.running);
+			UAM_ASSERT_EQ(polled.standard_output, std::string("retained"));
+			UAM_ASSERT_EQ(polled.stdout_cursor, std::uintmax_t{7});
+		}
+		else if (operation == "start")
+			UAM_ASSERT(!client.StartProcess("session", fs::current_path(), {"unused"}, {}, &error));
+		else if (operation == "write")
+			UAM_ASSERT(!client.WriteProcess("session", "input", &error));
+		else if (operation == "open")
+			UAM_ASSERT(!client.OpenChannel("channel", &error));
+		else
+		{
+			std::string bytes = "retained";
+			std::uintmax_t cursor = 7;
+			UAM_ASSERT(!client.PollChannel("channel", "remoteToDesktop", bytes, &error, &cursor));
+			UAM_ASSERT_EQ(bytes, std::string("retained"));
+			UAM_ASSERT_EQ(cursor, std::uintmax_t{7});
+		}
+		UAM_ASSERT(!error.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteNativeHistoryCancellationInterruptsStalledPollAndCleansUp)
+{
+#if !defined(_WIN32)
+	TempDir temp("uam-remote-history-cancel");
+	const fs::path log = temp.root / "requests.txt";
+	const fs::path ssh = temp.root / "ssh";
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec " + ShellQuoteForTest(executable) +
+	    " --uam-test-runner-result '{}' " + ShellQuoteForTest(log.string()) + "\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	ExecutionHost host;
+	host.id = "history-lab";
+	host.ssh_alias = "history-lab";
+	host.platform = "windows";
+	host.runner_status = "ready";
+	host.runner_version = "test";
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	ChatSession chat;
+	chat.id = "history-cancel";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "C:\\workspace";
+	for (const bool codex : {true, false})
+	{
+		fs::remove(log);
+		chat.native_session_id = codex ? "33333333-3333-4333-8333-333333333333" : "ses_cancel";
+		std::stop_source stop;
+		std::jthread cancel([&](std::stop_token done)
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!done.stop_requested() && std::chrono::steady_clock::now() < deadline)
+			{
+				if (uam::io::ReadTextFile(log).find("process.poll ") != std::string::npos)
+				{
+					stop.request_stop();
+					return;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+		});
+		const auto started = std::chrono::steady_clock::now();
+		const std::string error = codex
+		    ? ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop.get_token()).error
+		    : ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, ProviderProfileStore::DefaultOpenCodeProfile(), stop.get_token()).error;
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		cancel.request_stop();
+		cancel.join();
+		UAM_ASSERT(stop.stop_requested());
+		UAM_ASSERT(elapsed < std::chrono::seconds(3));
+		UAM_ASSERT(error.find("canceled") != std::string::npos);
+		const std::string requests = uam::io::ReadTextFile(log);
+		UAM_ASSERT(requests.find("process.stop ") != std::string::npos);
+		UAM_ASSERT(requests.find("process.remove ") != std::string::npos);
+		fs::remove(log);
+		if (codex) (void)ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop.get_token());
+		else (void)ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, ProviderProfileStore::DefaultOpenCodeProfile(), stop.get_token());
+		UAM_ASSERT(!fs::exists(log));
+	}
+#endif
 }
 
 UAM_TEST(RemoteRunnerProtocolIsBoundedVersionedAndComputerUseFree)
@@ -222,13 +629,17 @@ UAM_TEST(RemoteRunnerReplaysPolledOutputUntilItIsAcknowledged)
 
 UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach)
 {
+	TempDir temp("uam-proxy-unicode");
+	const fs::path workspace = temp.root / uam::paths::PathFromUtf8("r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae");
+	fs::create_directories(workspace);
 	const std::string encoded = uam::remote::BuildProcessProxySpec(
-	    "acp-chat-1", fs::temp_directory_path(), {"provider", "--stdio"},
+	    "acp-chat-1", workspace, {"provider", "--stdio"},
 	    {{"PATH", "/usr/bin"}}, true, "delivery-token", 123, 45);
 	std::string decoded;
 	UAM_ASSERT(uam::base64::Decode(encoded, decoded));
 	const nlohmann::json spec = nlohmann::json::parse(decoded);
 	UAM_ASSERT_EQ(spec.value("sessionId", ""), std::string("acp-chat-1"));
+	UAM_ASSERT_EQ(spec.value("cwd", ""), uam::paths::Utf8PathString(workspace));
 	UAM_ASSERT_EQ(spec["argv"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(spec["environment"].value("PATH", ""), std::string("/usr/bin"));
 	UAM_ASSERT(spec.value("attachOnly", false));
@@ -245,13 +656,13 @@ UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach
 	const nlohmann::json started = uam::remote::HandleRunnerRequest(
 	    {{"id", "start"}, {"type", "process.start"}, {"sessionId", "acp-chat-1"},
 	     {"controlToken", kProcessControlToken},
-	     {"cwd", fs::temp_directory_path().string()}, {"argv", arguments}},
+	     {"cwd", uam::paths::Utf8PathString(workspace)}, {"argv", arguments}},
 	    "test-version", &state);
 	UAM_ASSERT(started.value("ok", false));
 	const nlohmann::json attached = uam::remote::HandleRunnerRequest(
 	    {{"id", "attach"}, {"type", "process.start"}, {"sessionId", "acp-chat-1"},
 	     {"controlToken", kProcessControlToken},
-	     {"cwd", fs::temp_directory_path().string()}, {"argv", arguments},
+	     {"cwd", uam::paths::Utf8PathString(workspace)}, {"argv", arguments},
 	     {"attachIfExists", true}},
 	    "test-version", &state);
 	UAM_ASSERT(attached.value("ok", false));
@@ -259,7 +670,7 @@ UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach
 	const nlohmann::json conflict = uam::remote::HandleRunnerRequest(
 	    {{"id", "conflict"}, {"type", "process.start"}, {"sessionId", "acp-chat-1"},
 	     {"controlToken", kProcessControlToken},
-	     {"cwd", fs::temp_directory_path().string()},
+	     {"cwd", uam::paths::Utf8PathString(workspace)},
 	     {"argv", nlohmann::json::array({"/usr/bin/printf", "different"})},
 	     {"attachIfExists", true}},
 	    "test-version", &state);
@@ -354,7 +765,13 @@ UAM_TEST(RemoteRunnerTransientLeaseReclaimsAnAbandonedLiveProcess)
 
 UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 {
-	const fs::path cwd = "/tmp";
+	TempDir temp("uam-terminal-unicode");
+#if defined(__APPLE__)
+	const fs::path cwd = temp.root / uam::paths::PathFromUtf8("r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae");
+	fs::create_directories(cwd);
+#else
+	const fs::path cwd = uam::paths::PathFromUtf8("/tmp/r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae");
+#endif
 	const std::vector<std::string> provider_argv = {"/usr/bin/printf", "terminal-ok"};
 	const std::vector<std::string> ssh_argv =
 	    uam::remote::BuildRemoteTerminalSshArgv("home-lab", "linux", "4.5.7", cwd,
@@ -373,16 +790,24 @@ UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 	std::string decoded;
 	UAM_ASSERT(uam::base64::Decode(encoded_spec, decoded));
 	const nlohmann::json spec = nlohmann::json::parse(decoded);
-	UAM_ASSERT_EQ(spec.value("cwd", ""), cwd.string());
+	UAM_ASSERT_EQ(spec.value("cwd", ""), uam::paths::Utf8PathString(cwd));
 	UAM_ASSERT_EQ(spec["argv"].get<std::vector<std::string>>(), provider_argv);
 	UAM_ASSERT(spec["environment"].empty());
 
 	const std::vector<std::string> windows_ssh =
 	    uam::remote::BuildRemoteTerminalSshArgv(
-	        "windows-lab", "windows", "4.5.7", fs::path("C:\\Work\\Project"),
+	        "windows-lab", "windows", "4.5.7", uam::paths::PathFromUtf8("C:\\Work\\r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae"),
 	        {"opencode.cmd", "--help"});
 	UAM_ASSERT(!windows_ssh.empty());
 	UAM_ASSERT(windows_ssh.back().starts_with("powershell.exe "));
+	const std::string windows_command = windows_ssh.back();
+	const std::size_t spec_end = windows_command.rfind("'\"");
+	UAM_ASSERT(spec_end != std::string::npos);
+	const std::size_t spec_start = windows_command.rfind("'", spec_end - 1);
+	UAM_ASSERT(spec_start != std::string::npos);
+	std::string windows_decoded;
+	UAM_ASSERT(uam::base64::Decode(windows_command.substr(spec_start + 1, spec_end - spec_start - 1), windows_decoded));
+	UAM_ASSERT_EQ(nlohmann::json::parse(windows_decoded).value("cwd", ""), std::string("C:\\Work\\r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae"));
 	UAM_ASSERT(windows_ssh.back().find(".uam/runner/4.5.7/uam-runner.exe") !=
 	           std::string::npos);
 
@@ -464,6 +889,38 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 }
 
 #if defined(__APPLE__)
+UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
+{
+	TempDir temp("uam-runner-canceled-bootstrap");
+	const fs::path runner = temp.root / "uam-runner";
+	const fs::path ssh = temp.root / "ssh";
+	const fs::path log = temp.root / "ssh.log";
+	UAM_ASSERT(uam::io::WriteTextFile(runner, "unused-runner"));
+	UAM_ASSERT(uam::io::WriteTextFile(ssh,
+	    "#!/bin/sh\nprintf launched >> \"$UAM_TEST_BOOTSTRAP_LOG\"\nexit 1\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	ScopedEnvVar scoped_path("PATH", temp.root.string());
+	ScopedEnvVar scoped_log("UAM_TEST_BOOTSTRAP_LOG", log.string());
+	uam::remote::BootstrapPlan plan;
+	std::string error;
+	UAM_ASSERT(uam::remote::BuildBootstrapPlan(
+	    "canceled-lab", "4.5.7", "nonce-1",
+	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error));
+	std::stop_source canceled;
+	canceled.request_stop();
+	const uam::remote::BootstrapResult result =
+	    uam::remote::ExecuteBootstrapPlan(plan, canceled.get_token());
+	UAM_ASSERT(!result.ok);
+	UAM_ASSERT_EQ(result.error, std::string("Remote setup was canceled."));
+	uam::remote::BootstrapResult installed;
+	installed.platform = "linux";
+	UAM_ASSERT(!uam::remote::FinalizeBootstrapPlan(
+	    plan, installed, false, &error, canceled.get_token()));
+	UAM_ASSERT_EQ(error, std::string("Remote setup was canceled."));
+	UAM_ASSERT(!fs::exists(log));
+}
+
 UAM_TEST(RemoteRunnerBootstrapRollbackNeverStopsThePreviousLinuxService)
 {
 	TempDir temp("uam-runner-linux-rollback");
@@ -655,15 +1112,19 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 #endif
 	UAM_ASSERT(fs::exists(runner));
 	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-	                                 {runner.string(), "bridge-direct"});
+	                                 {uam::paths::Utf8PathString(runner), "bridge-direct"});
 	std::string error;
 	UAM_ASSERT(client.Connect(&error));
-#if defined(__APPLE__)
-	const std::vector<std::string> arguments = {"/usr/bin/printf", "bridge-ok"};
+	TempDir upload("uam-runner-upload");
+	const fs::path workspace = upload.root / uam::paths::PathFromUtf8("r\xc3\xa9sum\xc3\xa9-\xe9\xa1\xb9\xe7\x9b\xae");
+	fs::create_directories(workspace);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "cwd-marker.txt", "bridge-ok"));
+#if !defined(_WIN32)
+	const std::vector<std::string> arguments = {"/bin/cat", "cwd-marker.txt"};
 #elif defined(_WIN32)
-	const std::vector<std::string> arguments = {"cmd.exe", "/d", "/s", "/c", "<nul set /p =bridge-ok"};
+	const std::vector<std::string> arguments = {"cmd.exe", "/d", "/s", "/c", "type cwd-marker.txt"};
 #endif
-	UAM_ASSERT(client.StartProcess("bridge-session", fs::temp_directory_path(), arguments, {},
+	UAM_ASSERT(client.StartProcess("bridge-session", workspace, arguments, {},
 	                               &error));
 	std::string output;
 	bool exited = false;
@@ -679,13 +1140,13 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 	UAM_ASSERT(exited);
 	UAM_ASSERT_EQ(output, std::string("bridge-ok"));
 	UAM_ASSERT(client.RemoveProcess("bridge-session", &error));
-	TempDir upload("uam-runner-upload");
-	const fs::path uploaded = upload.root / "nested" / "attachment.txt";
+	const fs::path nested = workspace / uam::paths::PathFromUtf8("caf\xc3\xa9-\xe6\x96\x87\xe6\xa1\xa3");
+	const fs::path uploaded = nested / uam::paths::PathFromUtf8("pi\xc3\xa8" "ce-\xe9\x99\x84\xe4\xbb\xb6.txt");
 	UAM_ASSERT(client.UploadFile("upload-1", uploaded, "attachment-ok", &error));
 	std::string uploaded_bytes;
 	UAM_ASSERT(uam::io::TryReadBinaryFile(uploaded, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
-	const fs::path copied = upload.root / "nested" / "attachment-copy.txt";
+	const fs::path copied = nested / uam::paths::PathFromUtf8("copi\xc3\xa9-\xe5\x89\xaf\xe6\x9c\xac.txt");
 	UAM_ASSERT(client.CopyFile("copy-1", uploaded, copied, false, &error));
 	UAM_ASSERT(uam::io::TryReadBinaryFile(copied, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
@@ -695,10 +1156,15 @@ UAM_TEST(RemoteRunnerClientRoundTripsThroughTheRealBridgeProcess)
 	UAM_ASSERT(uam::io::TryReadBinaryFile(uploaded, uploaded_bytes));
 	UAM_ASSERT_EQ(uploaded_bytes, std::string("attachment-ok"));
 	uam::remote::DirectoryListing listing;
-	UAM_ASSERT(client.ListDirectories(upload.root, listing, &error));
-	UAM_ASSERT_EQ(listing.directory, upload.root.string());
+	UAM_ASSERT(client.ListDirectories(workspace, listing, &error));
+	UAM_ASSERT_EQ(listing.directory, uam::paths::Utf8PathString(workspace));
 	UAM_ASSERT_EQ(listing.directories.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(listing.directories.front().first, std::string("nested"));
+	UAM_ASSERT_EQ(listing.directories.front().first, uam::paths::Utf8PathString(nested.filename()));
+	UAM_ASSERT_EQ(listing.directories.front().second, uam::paths::Utf8PathString(nested));
+	UAM_ASSERT(client.RemoveFile("remove-copy", copied, &error));
+	UAM_ASSERT(!fs::exists(copied));
+	UAM_ASSERT(client.RemoveFile("remove-upload", uploaded, &error));
+	UAM_ASSERT(!fs::exists(uploaded));
 	client.Disconnect();
 }
 
@@ -861,6 +1327,60 @@ UAM_TEST(RemoteRunnerConcurrentUploadFinalizationRejectsLateRequestsAndLeavesNoT
 		UAM_ASSERT_EQ(late["error"].value("code", ""), std::string("upload_not_found"));
 		UAM_ASSERT(!fs::exists(temporary));
 	}
+}
+
+UAM_TEST(RemoteRunnerLeasedChannelsAreBoundedAndConsumedOnce)
+{
+	uam::remote::RunnerState state;
+	const std::function<nlohmann::json(nlohmann::json)> request = [&](nlohmann::json body)
+	{
+		body["id"] = "lease-test";
+		return uam::remote::HandleRunnerRequest(body, "test-version", &state);
+	};
+	const std::function<bool(const std::string&, std::int64_t)> open = [&](const std::string& id, std::int64_t lease)
+	{
+		return request({{"type", "channel.open"}, {"channelId", id}, {"leaseMs", lease}, {"attachIfExists", false}}).value("ok", false);
+	};
+	const std::function<nlohmann::json(const std::string&)> take = [&](const std::string& id)
+	{
+		return request({{"type", "channel.take"}, {"channelId", id}, {"direction", "desktopToRemote"}});
+	};
+	UAM_ASSERT(!open("invalid", -1));
+	UAM_ASSERT(!open("invalid", 60001));
+	UAM_ASSERT(!request({{"type", "channel.open"}, {"channelId", "invalid"}, {"leaseMs", "100"}}).value("ok", false));
+	UAM_ASSERT(open("ordinary", 0));
+	UAM_ASSERT(!take("ordinary").value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+	UAM_ASSERT(open("secret", 60000));
+	UAM_ASSERT(state.HasManagedProcesses());
+	UAM_ASSERT(!open("secret", 60000));
+	UAM_ASSERT(!request({{"type", "channel.open"}, {"channelId", "secret"}, {"attachIfExists", true}}).value("ok", false));
+	const std::string payload(65536, 'x');
+	const nlohmann::json write = {{"type", "channel.write"}, {"channelId", "secret"},
+	    {"direction", "desktopToRemote"}, {"writeSequence", std::uint64_t{1}}, {"dataBase64", uam::base64::Encode(payload)}};
+	UAM_ASSERT(request(write).value("ok", false));
+	UAM_ASSERT(request(write)["result"].value("duplicate", false));
+	UAM_ASSERT(!request({{"type", "channel.write"}, {"channelId", "secret"}, {"direction", "remoteToDesktop"},
+	    {"dataBase64", uam::base64::Encode("x")}}).value("ok", false));
+	UAM_ASSERT(!request({{"type", "channel.poll"}, {"channelId", "secret"}, {"direction", "desktopToRemote"}}).value("ok", false));
+	UAM_ASSERT(!request({{"type", "channel.take"}, {"channelId", "secret"}, {"direction", "invalid"}}).value("ok", false));
+	const nlohmann::json claimed = take("secret");
+	std::string decoded;
+	UAM_ASSERT(claimed.value("ok", false));
+	UAM_ASSERT(uam::base64::Decode(claimed["result"].value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded, payload);
+	UAM_ASSERT(!take("secret").value("ok", false));
+	UAM_ASSERT(!request(write).value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+	UAM_ASSERT(open("canceled", 60000));
+	UAM_ASSERT(request({{"type", "channel.close"}, {"channelId", "canceled"}}).value("ok", false));
+	UAM_ASSERT(!take("canceled").value("ok", false));
+	UAM_ASSERT(open("expired", 1));
+	std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT(!take("expired").value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+	for (int index = 0; index < 64; ++index) UAM_ASSERT(open("bounded-" + std::to_string(index), 60000));
+	UAM_ASSERT(!open("over-limit", 60000));
 }
 
 UAM_TEST(RemoteRunnerChannelsRelayBoundedBytesInBothDirections)
@@ -1528,8 +2048,13 @@ UAM_TEST(RemoteRunnerProxyStopsAndRemovesTheProviderOnlyOnTheExplicitControlLine
 	std::array<char, 256> buffer{};
 	const std::ptrdiff_t read = service.ReadStdioProcessStdout(
 	    proxy, buffer.data(), buffer.size(), &error);
+	const std::ptrdiff_t diagnostic_read = service.ReadStdioProcessStderr(
+	    proxy, buffer.data(), buffer.size(), &error);
+	const std::string diagnostics = diagnostic_read > 0
+	    ? std::string(buffer.data(), static_cast<std::size_t>(diagnostic_read)) : std::string{};
 	service.CloseStdioProcessHandles(proxy);
-	UAM_ASSERT_EQ(exit_code, 0);
+	if (exit_code != 0) throw TestFailure("Remote stop proxy exit=" + std::to_string(exit_code) +
+	    " stderr=" + diagnostics + " transport=" + error);
 	UAM_ASSERT(read <= 0);
 }
 
@@ -1650,6 +2175,90 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 		if (!has_goal_response()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT(has_goal_response());
+	// A relay must drain the child's final response after observing its exit.
+	const std::string final_response =
+	    "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":\"" + std::string(128 * 1024 + 7, 'x') + "\"}\n";
+	const fs::path final_response_path = temp.root / "final-response.json";
+	UAM_ASSERT(uam::io::WriteTextFile(final_response_path, final_response));
+	const std::string final_control_line = uam::remote::BuildRemoteMcpControlLine(
+	    channel_id, temp.root, {"/bin/sh", "-c", "exec cat \"$1\"", "mcp-final-response",
+	                           final_response_path.string()}, {});
+	output.clear();
+	UAM_ASSERT(service.WriteToStdioProcess(
+	    proxy, final_control_line.data(), final_control_line.size(), &error));
+	std::array<char, 16 * 1024> final_buffer{};
+	for (int attempt = 0; attempt < 500 && output.find(final_response) == std::string::npos;
+	     ++attempt)
+	{
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(
+		    shim, final_buffer.data(), final_buffer.size(), &error);
+		if (read > 0) output.append(final_buffer.data(), static_cast<std::size_t>(read));
+		if (output.find(final_response) == std::string::npos)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(output.find(final_response) != std::string::npos);
+	// Pipe backpressure must retain channel input until the asynchronous writer drains.
+	const fs::path input_release = temp.root / "release-input";
+	const fs::path input_ready = temp.root / "input-ready";
+	const fs::path received_input = temp.root / "received-input";
+	const std::string blocked_input(512 * 1024, 'q');
+	const std::string blocked_control_line = uam::remote::BuildRemoteMcpControlLine(
+	    channel_id, temp.root,
+	    {"/bin/sh", "-c",
+	     ": > \"$3\"; while [ ! -f \"$1\" ]; do sleep 0.01; done; exec cat > \"$2\"",
+	     "mcp-blocked-input", input_release.string(), received_input.string(),
+	     input_ready.string()}, {});
+	UAM_ASSERT(service.WriteToStdioProcess(
+	    proxy, blocked_control_line.data(), blocked_control_line.size(), &error));
+	for (int attempt = 0; attempt < 500 && !fs::exists(input_ready); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(input_ready));
+	uam::remote::RunnerClient observer(
+	    service, {runner.string(), "bridge", "--socket", socket.string()}, runner_version);
+	UAM_ASSERT(observer.OpenChannel(channel_id, &error, true));
+	std::string retained_input;
+	std::uintmax_t initial_input_cursor = 0;
+	UAM_ASSERT(observer.PollChannel(
+	    channel_id, "remoteToDesktop", retained_input, &error, &initial_input_cursor));
+	UAM_ASSERT(retained_input.empty());
+	UAM_ASSERT(observer.WriteChannel(channel_id, "remoteToDesktop",
+	    std::string_view(blocked_input).substr(0, 256 * 1024), &error));
+	UAM_ASSERT(observer.WriteChannel(channel_id, "remoteToDesktop",
+	    std::string_view(blocked_input).substr(256 * 1024), &error));
+	std::uintmax_t observed_input_cursor = initial_input_cursor;
+	bool acknowledged_while_blocked = false;
+	const std::chrono::steady_clock::time_point blocked_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (std::chrono::steady_clock::now() < blocked_deadline && !acknowledged_while_blocked)
+	{
+		UAM_ASSERT(observer.OpenChannel(channel_id, &error, true));
+		// The relay may advance the acknowledged cursor between open and poll.
+		if (!observer.PollChannel(
+		        channel_id, "remoteToDesktop", retained_input, &error, &observed_input_cursor))
+			continue;
+		acknowledged_while_blocked = retained_input.empty() &&
+		    observed_input_cursor == initial_input_cursor + blocked_input.size();
+		if (!acknowledged_while_blocked)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const bool retained_while_blocked = !retained_input.empty();
+	UAM_ASSERT(uam::io::WriteTextFile(input_release, "release"));
+	bool input_delivered_and_acknowledged = false;
+	const std::chrono::steady_clock::time_point delivered_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < delivered_deadline && !input_delivered_and_acknowledged)
+	{
+		UAM_ASSERT(observer.OpenChannel(channel_id, &error, true));
+		if (!observer.PollChannel(
+		        channel_id, "remoteToDesktop", retained_input, &error, &observed_input_cursor))
+			continue;
+		input_delivered_and_acknowledged = retained_input.empty() &&
+		    observed_input_cursor == initial_input_cursor + blocked_input.size() &&
+		    ReadFile(received_input) == blocked_input;
+		if (!input_delivered_and_acknowledged)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!acknowledged_while_blocked);
+	UAM_ASSERT(retained_while_blocked);
+	UAM_ASSERT(input_delivered_and_acknowledged);
 	UAM_ASSERT(service.WriteToStdioProcess(
 	    proxy, uam::remote::kRemoteStopControlLine.data(),
 	    uam::remote::kRemoteStopControlLine.size(), &error));

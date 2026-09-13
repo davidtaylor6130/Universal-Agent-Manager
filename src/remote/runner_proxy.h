@@ -39,7 +39,8 @@ namespace uam::remote
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
-	    const std::string& runner_directory = {});
+	    const std::string& runner_directory = {},
+	    const std::string& launch_channel_id = {});
 	std::string BuildRemoteMcpControlLine(
 	    const std::string& channel_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
@@ -52,6 +53,9 @@ namespace uam::remote
 	                    const std::string& runner_directory = {},
 	                    int protocol_version = kRunnerProtocolVersion);
 	int RunTerminalProcess(const std::string& encoded_spec);
+	/// <summary>Consumes a private one-use launch before taking over the native terminal.</summary>
+	int RunTerminalProcessFromChannel(const std::string& channel_id,
+	                                  const std::filesystem::path& socket_path = {});
 	int RunRemoteMcpShim(const std::string& channel_id, const std::filesystem::path& socket_path);
 	int RunRemoteMcpShim(const std::string& channel_id);
 }

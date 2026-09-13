@@ -9,11 +9,13 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <stop_token>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 class IPlatformProcessService;
+struct ProcessExecutionResult;
 
 namespace uam::remote
 {
@@ -61,7 +63,12 @@ namespace uam::remote
 		                  const std::vector<std::pair<std::string, std::string>>& environment,
 		                  std::string* error_out = nullptr,
 		                  bool attach_if_exists = false,
-		                  std::string control_token = {});
+		                  std::string control_token = {},
+		                  bool retry_lost_reply = true);
+		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
+		    const std::filesystem::path& working_directory,
+		    const std::vector<std::string>& argv, int timeout_ms,
+		    std::stop_token stop_token = {});
 		void SetProcessControlToken(const std::string& session_id,
 		                            std::string control_token);
 		bool WriteProcess(const std::string& session_id, std::string_view bytes,
@@ -78,8 +85,11 @@ namespace uam::remote
 		                              std::string* error_out = nullptr);
 		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr);
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
+		/// <summary>Leased handoffs require a fresh, never-reused UUID and attach_if_exists=false.</summary>
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,
-		                 bool attach_if_exists = true);
+		                 bool attach_if_exists = true, std::int64_t lease_ms = 0);
+		bool TakeChannel(const std::string& channel_id, std::string_view direction,
+		                 std::string& bytes, std::string* error_out = nullptr);
 		bool WriteChannel(const std::string& channel_id, std::string_view direction,
 		                  std::string_view bytes, std::string* error_out = nullptr);
 		bool PollChannel(const std::string& channel_id, std::string_view direction,
@@ -124,6 +134,7 @@ namespace uam::remote
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
 		bool m_directoryBrowsing = false;
+		bool m_leasedChannelTake = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

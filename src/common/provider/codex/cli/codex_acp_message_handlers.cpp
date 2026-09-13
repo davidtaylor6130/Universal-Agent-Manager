@@ -1,4 +1,4 @@
-#include "common/runtime/acp/acp_codex_message_handlers.h"
+#include "common/provider/codex/cli/codex_acp_message_handlers.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -749,26 +749,46 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 {
 	const std::string method = JsonDiagnosticStringValue(message, "method");
 	const nlohmann::json params = JsonObjectValue(message, "params");
+	if (!message.contains("id"))
+	{
+		const std::string thread_id = JsonDiagnosticStringValue(params, "threadId");
+		if (!session.codex_thread_id.empty() && !thread_id.empty() && thread_id != session.codex_thread_id) return;
+		const std::string turn_id = method == uam::acp_methods::kTurnCompleted
+		    ? JsonDiagnosticStringValue(JsonObjectValue(params, "turn"), "id")
+		    : JsonDiagnosticStringValue(params, "turnId");
+		if (method != uam::acp_methods::kTurnStarted && !session.codex_turn_id.empty() &&
+		    !turn_id.empty() && turn_id != session.codex_turn_id) return;
+	}
 	const bool permission_request = method == uam::acp_methods::kItemCommandExecutionRequestApproval ||
 	                                method == uam::acp_methods::kItemFileChangeRequestApproval ||
 	                                method == uam::acp_methods::kItemPermissionsRequestApproval;
 	if ((permission_request || method == uam::acp_methods::kItemToolRequestUserInput) &&
 	    ReplayPersistedInteractionResponseIfMatched(app, session, chat, message))
 		return;
-	if (!permission_request && !uam::AcpSessionHasActiveTurn(session) && (method.rfind("item/", 0) == 0 || method.rfind("turn/", 0) == 0 || method == uam::acp_methods::kError))
+	const bool pending_cancel = uam::AcpSessionHasPendingCancel(session);
+	const bool cancel_boundary = pending_cancel &&
+	    (method == uam::acp_methods::kTurnStarted || method == uam::acp_methods::kTurnCompleted);
+	// A queued steer keeps the session active, but late output still belongs to the cancelled turn.
+	// Keep its lifecycle notifications so a deferred interrupt can be sent and settled normally.
+	if (!permission_request && method != uam::acp_methods::kItemToolRequestUserInput &&
+	    (!uam::AcpSessionHasActiveTurn(session) || pending_cancel) && !cancel_boundary &&
+	    (method.rfind("item/", 0) == 0 || method.rfind("turn/", 0) == 0 || method == uam::acp_methods::kError))
 	{
 		return;
 	}
 
 	if (method == uam::acp_methods::kTurnStarted)
 	{
+		// Codex marks live turns explicitly; an answer may repeat resumed history.
+		session.assistant_replay_prefixes.clear();
+		session.load_history_replay_updates.clear();
 		const nlohmann::json turn = JsonObjectValue(params, "turn");
 		if (turn.is_object())
 		{
 			session.codex_turn_id = JsonDiagnosticStringValueOr(turn, "id", session.codex_turn_id);
 		}
-		(void)SendDeferredCodexInterruptIfReady(session);
 		session.lifecycle_state = kAcpLifecycleProcessing;
+		(void)SendDeferredCodexInterruptIfReady(app, session, chat);
 		return;
 	}
 	if (method == uam::acp_methods::kTurnCompleted)
@@ -839,7 +859,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string appended = AppendCodexAgentMessageText(chat, session, item_id, delta);
 		if (browser && !appended.empty())
 		{
-			uam::PushStreamToken(browser, chat.id, appended);
+			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 		}
 		ScheduleChatSave(app, chat, 0.5);
 		return;

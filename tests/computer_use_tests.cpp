@@ -2,6 +2,20 @@
 
 using namespace uam_test;
 
+UAM_TEST(ComputerUseMcpUsesNestedCompanionWhenPackaged)
+{
+	TempDir temp("uam-computer-use-mcp");
+	const fs::path current = temp.root / "UAM.app/Contents/MacOS/Universal Agent Manager";
+	const fs::path companion = temp.root / "UAM.app/Contents/Frameworks/UAM Computer Use.app/Contents/MacOS/UAM Computer Use";
+	UAM_ASSERT(fs::create_directories(companion.parent_path()));
+	std::ofstream(companion).put('\n');
+#if defined(__APPLE__)
+	UAM_ASSERT_EQ(uam::computer_use::ResolveMcpExecutablePath(current), companion.string());
+	fs::remove(companion);
+#endif
+	UAM_ASSERT_EQ(uam::computer_use::ResolveMcpExecutablePath(current), current.string());
+}
+
 UAM_TEST(ComputerUseBackendPreferenceAndEffectiveRoutingAreConservative)
 {
 	UAM_ASSERT_EQ(uam::computer_use::BackendPreference("auto"), std::string("auto"));
@@ -24,6 +38,27 @@ UAM_TEST(ComputerUseBackendPreferenceAndEffectiveRoutingAreConservative)
 		UAM_ASSERT_EQ(effective_backend(provider, "auto"), std::string("uam"));
 	UAM_ASSERT_EQ(effective_backend("claude-cli", "provider"), std::string("uam"));
 	UAM_ASSERT_EQ(effective_backend("codex-cli", "provider"), std::string("provider"));
+}
+
+UAM_TEST(ComputerUseArmedStateSurvivesPollBeforeTargetApproval)
+{
+	TempDir temp("uam-computer-use-armed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "armed-chat";
+	chat.provider_id = "claude-cli";
+	chat.computer_use_backend = "uam";
+	app.chats.push_back(chat);
+
+	const fs::path directory = temp.root / "computer-use" / chat.id;
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", "{\"state\":\"armed\"}\n"));
+
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	UAM_ASSERT(app.chats.front().computer_use_target_id.empty());
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(chat.id).state, std::string("armed"));
 }
 
 UAM_TEST(RemoteComputerUseFailsClosedBeforeProviderLaunchOrInput)
@@ -92,6 +127,22 @@ UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
 	UAM_ASSERT_EQ(loaded.execution_hosts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.execution_hosts[1].ssh_alias, std::string("uam-lab"));
 	UAM_ASSERT_EQ(loaded.execution_hosts[1].runner_directory, std::string("helpers/uam"));
+}
+
+UAM_TEST(ComputerUseSettingsRoundTripPreservesStableApplicationPolicy)
+{
+	TempDir temp("uam-computer-use-settings");
+	AppSettings settings;
+	settings.computer_use_allowlist_enabled = true;
+	settings.computer_use_allowed_applications = {{"bundleId", "com.apple.TextEdit"}, {"executablePath", "/usr/bin/Calculator"}};
+	const fs::path path = temp.root / "settings.txt";
+	UAM_ASSERT(SettingsStore::Save(path, settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(path, loaded).loaded);
+	UAM_ASSERT(loaded.computer_use_allowlist_enabled);
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications[0].identity, std::string("com.apple.TextEdit"));
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications[1].identity_kind, std::string("executablepath"));
 }
 
 UAM_TEST(ComputerUseCodexLaunchSelectsExactlyOneController)
@@ -226,8 +277,29 @@ UAM_TEST(ComputerUseToolSurfaceIsSmallBoundedAndAnnotated)
 	UAM_ASSERT_EQ(tools[1]["inputSchema"]["properties"]["durationMs"].value("maximum", 0), 2000);
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("elementId"));
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("clickCount"));
+	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["x"].value("description", "").find("latest screenshot") != std::string::npos);
+	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["endX"].value("description", "").find("latest screenshot") != std::string::npos);
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["action"]["enum"] ==
 	    nlohmann::json::array({"move", "click", "drag", "scroll", "type", "hotkey", "wait"}));
+}
+
+UAM_TEST(ComputerUseElementReferencesRejectStaleIdentityState)
+{
+	uam::computer_use::Capture reference;
+	reference.elements.push_back({7, "button", "Save", 10, 20, 80, 30, true});
+	uam::computer_use::Capture current = reference;
+	UAM_ASSERT(uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current.elements[0].label = "Delete";
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements[0].enabled = false;
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements[0].x += 1;
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements.clear();
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
 }
 
 UAM_TEST(ComputerUseMcpRejectsStorageUnsafeChatIds)
@@ -351,15 +423,31 @@ UAM_TEST(ComputerUseActionResultsPreventDuplicateInput)
 	UAM_ASSERT_EQ(failure["structuredContent"].value("frameId", ""), std::string("8"));
 	UAM_ASSERT(failure["content"][0].value("text", "").find("frameId: 8") != std::string::npos);
 	UAM_ASSERT(failure["content"][0].value("text", "").find("actionApplied: true") != std::string::npos);
+	UAM_ASSERT(failure["content"][0].value("text", "").find("does not verify the intended outcome") != std::string::npos);
+
+	const nlohmann::json stale = uam::computer_use::StaleFrameFailureForTests("The supplied frameId '21' is stale; the current frameId is '22'. No input was applied.", "22");
+	UAM_ASSERT(!stale.value("isError", true));
+	UAM_ASSERT(stale["structuredContent"].value("staleFrame", false));
+	UAM_ASSERT(stale["structuredContent"].value("actionRejected", false));
+	UAM_ASSERT(!stale["structuredContent"].value("actionApplied", true));
+	UAM_ASSERT_EQ(stale["structuredContent"].value("frameId", ""), std::string("22"));
+	UAM_ASSERT(stale["content"][0].value("text", "").find("Screenshot: 1024x642 pixels") != std::string::npos);
+	UAM_ASSERT(stale["content"][0].value("text", "").find("actionApplied: false") != std::string::npos);
+	UAM_ASSERT(std::ranges::any_of(stale["content"], [](const nlohmann::json& item) { return item.value("type", "") == "image"; }));
 
 	const nlohmann::json observation =
 	    uam::computer_use::ObservationSuccessForTests("12");
+	UAM_ASSERT(observation["content"][0].value("text", "").find("Screenshot: 1024x661 pixels") != std::string::npos);
 	UAM_ASSERT_EQ(observation["structuredContent"].value("frameId", ""),
 	    std::string("12"));
+	UAM_ASSERT(!observation["structuredContent"].value("elementsTruncated", true));
 	UAM_ASSERT(observation["content"][0].value("text", "").find("frameId: 12") !=
 	    std::string::npos);
 	UAM_ASSERT(observation["content"][0].value("text", "").find("actionApplied: false") !=
 	    std::string::npos);
+	const nlohmann::json truncated = uam::computer_use::ObservationSuccessForTests("13", true);
+	UAM_ASSERT(truncated["structuredContent"].value("elementsTruncated", false));
+	UAM_ASSERT(truncated["content"][0].value("text", "").find("element list is incomplete") != std::string::npos);
 
 	const nlohmann::json wait = uam::computer_use::WaitSuccessForTests("9");
 	UAM_ASSERT(!wait.value("isError", true));
@@ -367,10 +455,13 @@ UAM_TEST(ComputerUseActionResultsPreventDuplicateInput)
 	UAM_ASSERT(wait["content"][0].value("text", "").find("computer_observe") != std::string::npos);
 }
 
-UAM_TEST(ComputerUseModelMustNameItsTargetBeforeUserApproval)
+UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 {
 	TempDir temp("uam-computer-use-request");
 	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	const fs::path directory = temp.root / "computer-use" / "request-chat";
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"armed"})" "\n"));
 	std::istringstream input(
 	    R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"computer_observe","arguments":{}}})"
 	    "\n");
@@ -386,11 +477,42 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeUserApproval)
 	UAM_ASSERT_EQ(exit_code, 0);
 	const nlohmann::json response = nlohmann::json::parse(output.str());
 	UAM_ASSERT(response["result"].value("isError", false));
+	const std::string response_text = response["result"]["content"][0].value("text", "");
+	UAM_ASSERT(response_text.find("Retry computer_observe with target") != std::string::npos ||
+	           response_text.find("No available computer-use targets") != std::string::npos ||
+	           response_text.find("No visible screens or windows were found") != std::string::npos);
 	UAM_ASSERT(response["result"]["content"][0].value("text", "").find(
-	               "Retry computer_observe with target") != std::string::npos);
+	               "UAM will ask") == std::string::npos);
 	const fs::path request_path =
 	    temp.root / "computer-use" / "request-chat" / "request.json";
 	UAM_ASSERT(!fs::exists(request_path));
+}
+
+UAM_TEST(ComputerUseMcpCannotReenableStoppedControl)
+{
+	TempDir temp("uam-computer-use-stopped");
+	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	const fs::path directory = temp.root / "computer-use" / "stopped-chat";
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"stopped"})" "\n"));
+	std::istringstream input(
+	    R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"computer_observe","arguments":{"target":"anything"}}})"
+	    "\n");
+	std::ostringstream output;
+	std::streambuf* previous_input = std::cin.rdbuf(input.rdbuf());
+	std::streambuf* previous_output = std::cout.rdbuf(output.rdbuf());
+	const int exit_code = uam::computer_use::RunMcpServer({
+	    uam::computer_use::kMcpServerFlag, "--chat-id", "stopped-chat"});
+	std::cin.rdbuf(previous_input);
+	std::cin.clear();
+	std::cout.rdbuf(previous_output);
+
+	UAM_ASSERT_EQ(exit_code, 0);
+	const nlohmann::json response = nlohmann::json::parse(output.str());
+	UAM_ASSERT(response["result"].value("isError", false));
+	UAM_ASSERT(response["result"]["content"][0].value("text", "").find("stopped") != std::string::npos);
+	UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(directory / "control.json")).value("state", ""),
+	    std::string("stopped"));
 }
 
 UAM_TEST(ComputerUseControlStateAndRedactedHistoryAreBounded)

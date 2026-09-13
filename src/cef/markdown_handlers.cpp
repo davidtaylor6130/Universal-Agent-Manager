@@ -109,7 +109,7 @@ void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*bro
 {
 	const std::filesystem::path root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
 	const std::string request_id = payload.value("requestId", "");
-	RunAsyncCefQuery(cb,
+	RunAsyncCefQuery(m_asyncLifetime, cb,
 	                 [root, request_id]()
 	                 {
 		                 std::string error;
@@ -206,7 +206,7 @@ void UamQueryHandler::HandlePreviewMarkdownStoreImports(CefRefPtr<CefBrowser> /*
 				sources.push_back({"manual", uam::paths::PathFromUtf8(value.get<std::string>())});
 		}
 	}
-	RunAsyncCefQuery(cb, [root, sources = std::move(sources)]()
+	RunAsyncCefQuery(m_asyncLifetime, cb, [root, sources = std::move(sources)]()
 	{
 		std::string error;
 		const auto candidates = MarkdownStoreService::PreviewImports(root, sources, &error);

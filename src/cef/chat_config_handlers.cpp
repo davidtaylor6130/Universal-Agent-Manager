@@ -1,5 +1,6 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
+#include "cef/uam_query_handler_async.h"
 
 #include "app/chat_domain_service.h"
 #include "app/agent_definition_service.h"
@@ -13,6 +14,8 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "common/config/provider_chat_defaults.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "computer_use/computer_use_platform.h"
 #include "common/memory/memory_levels.h"
@@ -20,7 +23,6 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/codex_options.h"
-#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -35,51 +37,279 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <optional>
 #include <string>
+#include <thread>
 
 // ---------------------------------------------------------------------------
 // Chat configuration handlers (model, provider, approval, memory)
 // ---------------------------------------------------------------------------
 
+namespace
+{
+	uam::query_handler_async::AsyncCefResult RunComputerUseSettingsHelper(
+	    std::string action, std::string permission = {})
+	{
+		const bool user_prompt = action == "request";
+		std::vector<std::string> argv = {
+		    uam::computer_use::McpExecutablePath(), "--uam-computer-use-mcp", "--settings-action", std::move(action)};
+		if (!permission.empty())
+		{
+			argv.push_back("--permission");
+			argv.push_back(std::move(permission));
+		}
+
+		uam::platform::StdioProcessPlatformFields process;
+		std::string error;
+		auto& process_service = PlatformServicesFactory::Instance().process_service;
+		if (!process_service.StartStdioProcessWithInput(process, {}, argv, {}, &error))
+			return uam::query_handler_async::AsyncFailure(500, error.empty() ? "Computer Use helper could not start." : error);
+
+		std::string output;
+		std::string stderr_output;
+		std::array<char, 4096> buffer{};
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(user_prompt ? 120 : 60);
+		int exit_code = -1;
+		bool exited = false;
+		for (;;)
+		{
+			std::string read_error;
+			const std::ptrdiff_t read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
+			if (read > 0)
+			{
+				output.append(buffer.data(), static_cast<std::size_t>(read));
+				if (output.size() > 1024 * 1024)
+				{
+					process_service.TerminateStdioProcess(process, true);
+					process_service.CloseStdioProcessHandles(process);
+					return uam::query_handler_async::AsyncFailure(502, "Computer Use helper returned too much output.");
+				}
+			}
+			const std::ptrdiff_t error_read = process_service.ReadStdioProcessStderr(process, buffer.data(), buffer.size(), nullptr);
+			if (error_read > 0)
+			{
+				stderr_output.append(buffer.data(), static_cast<std::size_t>(error_read));
+				if (stderr_output.size() > 1024 * 1024)
+				{
+					process_service.TerminateStdioProcess(process, true);
+					process_service.CloseStdioProcessHandles(process);
+					return uam::query_handler_async::AsyncFailure(502, "Computer Use helper returned too much diagnostic output.");
+				}
+			}
+			if (!exited) exited = process_service.PollStdioProcessExited(process, &exit_code);
+			if (exited && read <= 0 && error_read <= 0) break;
+			if (std::chrono::steady_clock::now() >= deadline)
+			{
+				process_service.TerminateStdioProcess(process, true);
+				process_service.CloseStdioProcessHandles(process);
+				return uam::query_handler_async::AsyncFailure(504, "Computer Use helper timed out.");
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		process_service.CloseStdioProcessHandles(process);
+		const nlohmann::json result = nlohmann::json::parse(output, nullptr, false);
+		if (exit_code != 0)
+			return uam::query_handler_async::AsyncFailure(409, result.is_object() ? result.value("error", "Computer Use helper failed.") : "Computer Use helper failed.");
+		if (!result.is_object() && !result.is_array())
+			return uam::query_handler_async::AsyncFailure(502, stderr_output.empty() ? "Computer Use helper returned invalid output." : stderr_output);
+		return uam::query_handler_async::AsyncSuccess(result);
+	}
+}
+
 using namespace uam::query_handler_internal;
 
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	using namespace uam::query_handler_async;
+	const std::string source_id = payload.value("chatId", "");
+	const std::string native_id = uam::strings::Trim(payload.value("nativeSessionId", ""));
+	ChatSession* source = ChatDomainService().FindChatById(m_app, source_id);
+	const ProviderProfile* provider = source == nullptr ? nullptr : &ProviderResolutionService().ProviderForChatOrDefault(m_app, *source);
+	const std::string provider_id = provider == nullptr ? std::string{} : uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider->id);
+	const bool needs_export = source != nullptr && provider != nullptr && !native_id.empty() &&
+	    (provider_id == uam::provider_ids::kOpenCodeCli || provider_id == uam::provider_ids::kCodexCli) &&
+	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source, *provider, native_id, false) == nullptr);
+	if (!needs_export)
+	{
+		const AsyncCefResult result = FinishOpenNativeSessionChat(browser, payload);
+		if (result.ok) cb->Success(result.body);
+		else cb->Failure(result.status, result.error);
+		return;
+	}
+
+	std::optional<ExecutionHost> remote_host;
+	if (!uam::paths::IsControllerLocalWorkspace(*source))
+	{
+		const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
+		if (host == nullptr || host->runner_status != "ready")
+		{
+			cb->Failure(409, "The remote execution host is not ready to load child history.");
+			return;
+		}
+		remote_host = *host;
+	}
+
+	ChatSession* target = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source, *provider, native_id, false);
+	std::string hydrate_error;
+	if (target != nullptr && !ChatRepository::HydrateChatMessages(m_app.data_root, *target, &hydrate_error))
+	{
+		cb->Failure(500, uam::strings::NonEmptyOrFallback(hydrate_error, "Failed to load the current child history."));
+		return;
+	}
+	const std::string target_id = target == nullptr ? std::string{} : target->id;
+	const std::string target_digest = target == nullptr ? std::string{} : uam::StateSerializer::SerializeSession(*target).value("messagesDigest", "");
+	const std::string request_key = target_id.empty() ? source_id + "/" + native_id : target_id;
+	const auto previous_request = m_nativeHistoryRequests.find(request_key);
+	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
+	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
+	m_nativeHistoryRequests[request_key] = request;
+
+	ChatSession identity;
+	identity.id = source_id;
+	identity.provider_id = source->provider_id;
+	identity.native_session_id = source->native_session_id;
+	identity.workspace_directory = source->workspace_directory;
+	identity.execution_host_id = source->execution_host_id;
+	identity.folder_id = source->folder_id;
+	auto snapshot = std::make_shared<ChatSession>();
+	snapshot->id = native_id;
+	snapshot->native_session_id = native_id;
+	snapshot->provider_id = provider_id;
+	snapshot->workspace_directory = source->workspace_directory;
+	snapshot->folder_id = source->folder_id;
+	snapshot->execution_host_id = source->execution_host_id;
+	snapshot->title = uam::strings::NonEmptyOrFallback(uam::strings::Trim(payload.value("title", "")), native_id);
+	snapshot->created_at = target == nullptr ? uam::time::TimestampNow() : target->created_at;
+	snapshot->updated_at = target == nullptr ? snapshot->created_at : target->updated_at;
+	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
+	    [snapshot, remote_host, request, profile_snapshot = *provider]()
+	    {
+		    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
+		    if (!remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
+		    {
+			    std::string error;
+			    std::optional<ChatSession> loaded = ChatHistorySyncService().LoadLocalCodexChildChat(*snapshot, &error);
+			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(error, "Codex child history is unavailable."));
+			    *snapshot = std::move(*loaded);
+			    return AsyncSuccess({});
+		    }
+		    if (remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
+		    {
+			    auto transcript = ChatHistorySyncService().LoadRemoteCodexTranscript(*remote_host, *snapshot, request->get_token());
+			    if (!transcript.success) return AsyncFailure(502, transcript.error);
+			    snapshot->messages = std::move(transcript.messages);
+		    }
+		    else
+		    {
+			    auto transcript = remote_host
+			        ? ChatHistorySyncService().LoadRemoteOpenCodeTranscript(*remote_host, *snapshot, profile_snapshot, request->get_token())
+			        : ChatHistorySyncService().LoadLocalOpenCodeTranscript(*snapshot, profile_snapshot, request->get_token());
+			    if (!transcript.success) return AsyncFailure(502, transcript.error);
+			    snapshot->messages = std::move(transcript.messages);
+		    }
+		    snapshot->messages_loaded = true;
+		    snapshot->created_at = uam::strings::NonEmptyOrFallback(snapshot->messages.empty() ? std::string{} : snapshot->messages.front().created_at, snapshot->created_at);
+		    snapshot->updated_at = uam::strings::NonEmptyOrFallback(snapshot->messages.empty() ? std::string{} : snapshot->messages.back().created_at, snapshot->updated_at);
+		    return AsyncSuccess({});
+	    },
+	    [this, browser, payload, identity, snapshot, remote_host, target_id, target_digest, request_key, request](AsyncCefResult& result)
+	    {
+		    const auto pending = m_nativeHistoryRequests.find(request_key);
+		    if (pending == m_nativeHistoryRequests.end() || pending->second != request)
+		    {
+			    result = AsyncFailure(409, "A newer history refresh was requested.");
+			    return;
+		    }
+		    m_nativeHistoryRequests.erase(pending);
+		    if (!result.ok) return;
+		    const ChatSession* current = ChatDomainService().FindChatById(m_app, identity.id);
+		    if (current == nullptr || current->provider_id != identity.provider_id ||
+		        current->native_session_id != identity.native_session_id ||
+		        current->workspace_directory != identity.workspace_directory ||
+		        current->execution_host_id != identity.execution_host_id || current->folder_id != identity.folder_id)
+		    {
+			    result = AsyncFailure(409, "Source chat changed while its child history was loading.");
+			    return;
+		    }
+		    if (remote_host)
+		    {
+			    const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, remote_host->id);
+			    if (host == nullptr || host->transport != remote_host->transport ||
+			        host->ssh_alias != remote_host->ssh_alias || host->platform != remote_host->platform ||
+			        host->runner_directory != remote_host->runner_directory ||
+			        host->runner_version != remote_host->runner_version ||
+			        host->runner_protocol_version != remote_host->runner_protocol_version)
+			    {
+				    result = AsyncFailure(409, "Remote host changed while its child history was loading.");
+				    return;
+			    }
+		    }
+		    const ProviderProfile& current_provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *current);
+		    ChatSession* current_target = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *current, current_provider, snapshot->native_session_id, false);
+		    if ((current_target == nullptr ? std::string{} : current_target->id) != target_id)
+		    {
+			    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
+			    return;
+		    }
+		    if (current_target != nullptr)
+		    {
+			    std::string error;
+			    if (!ChatRepository::HydrateChatMessages(m_app.data_root, *current_target, &error))
+			    {
+				    result = AsyncFailure(500, uam::strings::NonEmptyOrFallback(error, "Failed to reload the current child history."));
+				    return;
+			    }
+			    if (uam::StateSerializer::SerializeSession(*current_target).value("messagesDigest", "") != target_digest)
+			    {
+				    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
+				    return;
+			    }
+		    }
+		    result = FinishOpenNativeSessionChat(browser, payload, snapshot.get());
+	    })))
+	{
+		m_nativeHistoryRequests.erase(request_key);
+		cb->Failure(503, "The background task queue is unavailable.");
+	}
+}
+
+uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot)
+{
+	using namespace uam::query_handler_async;
 	const std::string source_chat_id = payload.value("chatId", "");
 	const std::string native_session_id = uam::strings::Trim(payload.value("nativeSessionId", ""));
 	const bool select_chat = payload.value("selectChat", true);
 	if (native_session_id.empty())
 	{
-		cb->Failure(400, "A native session id is required.");
-		return;
+		return AsyncFailure(400, "A native session id is required.");
 	}
 
-	ChatSession* source_chat = FindChatOrFail(m_app, source_chat_id, cb, "Source chat not found: " + source_chat_id);
+	ChatSession* source_chat = ChatDomainService().FindChatById(m_app, source_chat_id);
 	if (source_chat == nullptr)
 	{
-		return;
+		return AsyncFailure(404, "Source chat not found: " + source_chat_id);
 	}
-	if (!uam::paths::IsControllerLocalWorkspace(*source_chat))
-	{
-		cb->Failure(409, "Remote provider history is not available on this computer.");
-		return;
-	}
-
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *source_chat);
 	if (!ProviderRuntime::UsesNativeOverlayHistory(provider) && !ProviderRuntime::UsesLocalHistory(provider))
 	{
-		cb->Failure(409, "This provider does not expose a native or local session history path.");
-		return;
+		return AsyncFailure(409, "This provider does not expose a native or local session history path.");
 	}
 
 	const std::string source_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider.id);
+	if (!uam::paths::IsControllerLocalWorkspace(*source_chat) &&
+	    source_provider_id != uam::provider_ids::kCodexCli && source_provider_id != uam::provider_ids::kOpenCodeCli)
+		return AsyncFailure(409, "Remote child history is unavailable for this provider.");
+
 
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-	const auto previous_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(source_chat->id);
+	const auto previous_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(source_chat_id);
 	const bool had_previous_resolved_native_session = previous_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
 	const std::string previous_resolved_native_session_id = had_previous_resolved_native_session ? previous_resolved_native_session->second : std::string{};
 	ChatSession* target_chat = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+	std::optional<ChatSession> previous_target_chat;
+	if (target_chat != nullptr) previous_target_chat = *target_chat;
 
 	bool inserted_chat = false;
 	std::string target_chat_id;
@@ -87,11 +317,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	std::string previous_target_resolved_native_session_id;
 	if (target_chat == nullptr)
 	{
-		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot);
 		if (target_chat == nullptr)
 		{
-			cb->Failure(404, "Sub-agent chat not found in native history.");
-			return;
+			return AsyncFailure(404, "Sub-agent chat not found in native history.");
 		}
 		inserted_chat = true;
 		target_chat_id = target_chat->id;
@@ -102,22 +331,24 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		const auto previous_target_resolved_native_session = m_app.resolved_native_sessions_by_chat_id.find(target_chat_id);
 		had_previous_target_resolved_native_session = previous_target_resolved_native_session != m_app.resolved_native_sessions_by_chat_id.end();
 		previous_target_resolved_native_session_id = had_previous_target_resolved_native_session ? previous_target_resolved_native_session->second : std::string{};
-		m_app.resolved_native_sessions_by_chat_id[target_chat->id] = native_session_id;
 	}
 
-	const std::string previous_provider_id = target_chat->provider_id;
-	const std::string previous_native_session_id = target_chat->native_session_id;
-	const std::string previous_updated_at = target_chat->updated_at;
-	const std::string previous_last_opened_at = target_chat->last_opened_at;
-	if (!inserted_chat && !select_chat)
+	if (!inserted_chat && (payload.value("refreshHistory", !select_chat) || native_snapshot != nullptr))
 	{
-		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false);
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot);
 		if (target_chat == nullptr)
 		{
-			cb->Failure(404, "Sub-agent chat history is unavailable.");
-			return;
+			return AsyncFailure(404, "Sub-agent chat history is unavailable.");
+		}
+		if (target_chat->id != target_chat_id)
+		{
+			// A conflicting resolved link can yield a new import instead of the hinted chat.
+			inserted_chat = true;
+			target_chat_id = target_chat->id;
+			previous_target_chat.reset();
 		}
 	}
+	m_app.resolved_native_sessions_by_chat_id[target_chat->id] = native_session_id;
 	if (target_chat->provider_id.empty())
 	{
 		target_chat->provider_id = source_provider_id;
@@ -132,16 +363,15 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	{
 		if (inserted_chat)
 		{
-			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id);
 		}
 		if (!inserted_chat)
 		{
-			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*target_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			*target_chat = std::move(*previous_target_chat);
 			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
 		}
-		ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
-		cb->Failure(404, "Selected chat no longer exists.");
-		return;
+		ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat_id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+		return AsyncFailure(404, "Selected chat no longer exists.");
 	}
 
 	if (select_chat)
@@ -150,51 +380,47 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	}
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		selected_chat->last_opened_at = previous_last_opened_at;
 		if (select_chat)
 		{
 			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
 		}
 		if (!inserted_chat)
 		{
-			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			*selected_chat = std::move(*previous_target_chat);
 			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
-			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat_id, had_previous_resolved_native_session, previous_resolved_native_session_id);
 		}
 		if (inserted_chat)
 		{
-			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id);
 		}
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
-		return;
+		return AsyncFailure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 	}
 
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
 	{
-		selected_chat->last_opened_at = previous_last_opened_at;
 		if (select_chat)
 		{
 			ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
 		}
 		if (!inserted_chat)
 		{
-			ChatHistorySyncService().RestoreOpenNativeSessionChatMetadata(*selected_chat, previous_provider_id, previous_native_session_id, previous_updated_at);
+			*selected_chat = std::move(*previous_target_chat);
 			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, target_chat_id, had_previous_target_resolved_native_session, previous_target_resolved_native_session_id);
-			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat->id, had_previous_resolved_native_session, previous_resolved_native_session_id);
+			ChatHistorySyncService().RestoreOpenNativeSessionResolvedMapping(m_app, source_chat_id, had_previous_resolved_native_session, previous_resolved_native_session_id);
 		}
 		if (inserted_chat)
 		{
-			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id, true);
+			ChatHistorySyncService().RollbackOpenNativeSessionChatImport(m_app, target_chat_id, previous_selected_chat_id);
 		}
 		(void)PersistenceCoordinator().SaveSettings(m_app);
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
-		return;
+		return AsyncFailure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 	}
 
 	ChatDomainService().SortChatsByRecent(m_app.chats);
 	ChatDomainService().SelectChatById(m_app, select_chat ? target_chat_id : previous_selected_chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"chatId", target_chat_id}}.dump());
+	return AsyncSuccess(nlohmann::json{{"chatId", target_chat_id}});
 }
 
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -370,7 +596,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	const bool is_codex = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCodexCli);
 	const bool is_copilot = uam::provider_ids::IsCliProviderAliasOf(chat->provider_id, uam::provider_ids::kCopilotCli);
 	bool service_tier_explicit = is_codex && (payload.contains("serviceTierExplicit") ? payload.value("serviceTierExplicit", false) : payload.contains("serviceTier"));
-	std::string reasoning_effort = is_copilot ? NormalizeCopilotReasoningEffort(requested_reasoning_effort) : uam::codex::NormalizeReasoningEffort(requested_reasoning_effort);
+	std::string reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(chat->provider_id, requested_reasoning_effort);
 	if (session != nullptr && uam::AcpSessionHasBlockingRuntimeWork(*session))
 	{
 		cb->Failure(409, "Wait for the active provider request to finish before changing model options.");
@@ -887,11 +1113,6 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 		return;
 	}
 	const bool uses_uam_backend = uam::computer_use::UsesUamBackend(*chat);
-	if (enabled && uses_uam_backend)
-	{
-		cb->Failure(409, "Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.");
-		return;
-	}
 
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
@@ -899,12 +1120,12 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
 	}
-	if (enabled && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
+	if (enabled && !uses_uam_backend && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
 	{
 		cb->Failure(409, "Activate provider computer use after the current structured turn finishes.");
 		return;
 	}
-	if (session != nullptr && session->running && !uam::StopAcpSession(m_app, chat_id))
+	if (session != nullptr && session->running && (!enabled || !uses_uam_backend) && !uam::StopAcpSession(m_app, chat_id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
@@ -924,6 +1145,16 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	}
 
 	chat->computer_use_enabled = true;
+	if (uses_uam_backend)
+	{
+		std::string error;
+		if (!uam::ComputerUseService::SetControlState(m_app, chat_id, "armed", &error))
+		{
+			chat->computer_use_enabled = false;
+			cb->Failure(500, FailureDetailOrFallback(error, "Failed to arm Computer Use."));
+			return;
+		}
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -1020,6 +1251,74 @@ void UamQueryHandler::HandleSetComputerUseControl(CefRefPtr<CefBrowser> browser,
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleGetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	nlohmann::json allowed = nlohmann::json::array();
+	for (const auto& rule : m_app.settings.computer_use_allowed_applications)
+		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
+	cb->Success(nlohmann::json{{"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
+}
+
+void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (payload.contains("allowlistEnabled") && !payload["allowlistEnabled"].is_boolean()) { cb->Failure(400, "allowlistEnabled must be a boolean."); return; }
+	AppSettings previous = m_app.settings;
+	const bool enabled = payload.value("allowlistEnabled", m_app.settings.computer_use_allowlist_enabled);
+	std::vector<ComputerUseApplicationRule> allowed = m_app.settings.computer_use_allowed_applications;
+	if (payload.contains("allowedApplications"))
+	{
+		if (!payload["allowedApplications"].is_array()) { cb->Failure(400, "allowedApplications must be an array."); return; }
+		allowed.clear();
+		for (const auto& item : payload["allowedApplications"])
+		{
+			if (!item.is_object() || !item.contains("identityKind") || !item["identityKind"].is_string() || !item.contains("identity") || !item["identity"].is_string()) { m_app.settings = previous; cb->Failure(400, "Each allowed application needs identityKind and identity."); return; }
+			allowed.push_back({item.value("identityKind", ""), item.value("identity", "")});
+		}
+	}
+	m_app.settings.computer_use_allowlist_enabled = enabled;
+	m_app.settings.computer_use_allowed_applications = std::move(allowed);
+	if (!PersistenceCoordinator().SaveSettings(m_app)) { m_app.settings = previous; cb->Failure(500, "Failed to persist Computer Use Settings."); return; }
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
+}
+
+void UamQueryHandler::HandleListComputerUseApplications(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [] {
+		const auto result = RunComputerUseSettingsHelper("list");
+		if (!result.ok) return result;
+		const nlohmann::json applications = nlohmann::json::parse(result.body, nullptr, false);
+		return uam::query_handler_async::AsyncSuccess(nlohmann::json{{"applications", applications}, {"error", ""}});
+	});
+}
+
+void UamQueryHandler::HandleOpenComputerUseSystemSettings(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string permission = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("permission", "")));
+	if (permission != "screenrecording" && permission != "accessibility") { cb->Failure(400, "permission must be screenRecording or accessibility."); return; }
+	const std::string helper_permission = permission == "screenrecording" ? "screenRecording" : "accessibility";
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [helper_permission] {
+		return RunComputerUseSettingsHelper("open", helper_permission);
+	});
+}
+
+void UamQueryHandler::HandleCheckComputerUsePermissions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [] {
+		return RunComputerUseSettingsHelper("check");
+	});
+}
+
+void UamQueryHandler::HandleRequestComputerUsePermission(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string permission = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("permission", "")));
+	if (permission != "screenrecording" && permission != "accessibility") { cb->Failure(400, "permission must be screenRecording or accessibility."); return; }
+	const std::string helper_permission = permission == "screenrecording" ? "screenRecording" : "accessibility";
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [helper_permission] {
+		return RunComputerUseSettingsHelper("request", helper_permission);
+	});
 }
 
 void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

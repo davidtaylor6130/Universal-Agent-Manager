@@ -224,8 +224,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           set((state) => ({
             folders: state.folders.map((folder) => (folder.id === id ? {
               ...folder,
-              name: previousFolder.name,
-              directory: previousFolder.directory,
+              name: folder.name === name ? previousFolder.name : folder.name,
+              directory: folder.directory === directory ? previousFolder.directory : folder.directory,
             } : folder)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
@@ -588,7 +588,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     })),
 
     openAllMemoryLibrary: async () => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      set({
+        memoryLibraryScope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -635,7 +640,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     },
 
     openGlobalMemoryLibrary: async () => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      set({
+        memoryLibraryScope: { scopeType: 'global', folderId: '', label: 'Global memory', rootPath: '' },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -681,7 +691,16 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     },
 
     openFolderMemoryLibrary: async (folderId: string) => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      const folder = get().folders.find((candidate) => candidate.id === folderId)
+      set({
+        memoryLibraryScope: {
+          scopeType: 'folder', folderId, label: folder?.name ?? folderId,
+          rootPath: folder?.directory ? `${folder.directory}/.UAM` : '',
+        },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -712,7 +731,6 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         return true
       }
 
-      const folder = get().folders.find((candidate) => candidate.id === folderId)
       if (!folder) {
         set({
           memoryLibraryLoading: false,

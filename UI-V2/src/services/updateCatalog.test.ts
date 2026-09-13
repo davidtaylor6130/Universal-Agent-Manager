@@ -99,6 +99,20 @@ describe('update catalog', () => {
     expect(updates[1]).toMatchObject({ currentVersion: '0.124.0', latestVersion: '0.130.0' })
   })
 
+  it('keeps local and remote updates for the same provider independently dismissible', () => {
+    const state = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    const manager = { providers: [state], remoteProviders: [
+      { ...state, executionHostId: 'alpha', executionHostName: 'Alpha' },
+      { ...state, executionHostId: 'beta', executionHostName: 'Beta' },
+    ] }
+    const catalog = { checkedAt: '2026-09-01T00:00:00Z', uam: { version: '1.0.0', url: '' }, providers: { 'codex-cli': { version: '2.0.0', url: '' } } }
+    const updates = availableUpdates(catalog, '1.0.0', manager, [], {})
+    expect(updates.map((update) => update.id)).toEqual(['codex-cli', JSON.stringify(['alpha', 'codex-cli']), JSON.stringify(['beta', 'codex-cli'])])
+    expect(updates[1]).toMatchObject({ name: 'codex-cli · Alpha', executionHostId: 'alpha', installable: true })
+    expect(updates[1].remoteHostId).toBeUndefined()
+    expect(availableUpdates(catalog, '1.0.0', manager, [], { [updates[1].id]: '2.0.0' }).map((update) => update.id)).toEqual([updates[0].id, updates[2].id])
+  })
+
   it('never presents an older curated version as an update', () => {
     const updates = availableUpdates(
       {

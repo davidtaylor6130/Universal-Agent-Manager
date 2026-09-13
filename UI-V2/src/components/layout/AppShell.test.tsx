@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
@@ -179,6 +179,9 @@ describe('AppShell', () => {
     const sidebar = host.querySelector('[data-testid="sidebar"]')
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
     act(() => settings.click())
+    act(() => settings.click())
+    expect(useAppStore.getState().isSettingsOpen).toBe(false)
+    await act(async () => { settings.click(); await import('../settings/SettingsModal') })
     expect(host.querySelector<HTMLElement>('[data-testid="chat-region"]')!.hidden).toBe(true)
     expect(host.querySelector('[aria-label="Settings workspace"]')).toBeTruthy()
     for (const label of ['Main navigation', 'Tool windows']) {
@@ -212,7 +215,7 @@ describe('AppShell', () => {
     const root = createRoot(host)
     await act(async () => root.render(<AppShell/>))
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
-    act(() => settings.click())
+    await act(async () => { settings.click(); await import('../settings/SettingsModal') })
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
     const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP server configuration"]')!
     act(() => {
@@ -266,7 +269,8 @@ describe('AppShell', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<AppShell />))
+    const onRender = vi.fn()
+    act(() => root.render(<Profiler id="notifications" onRender={onRender}><AppShell /></Profiler>))
 
     const alerts = host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement
     expect(alerts).toBeTruthy()
@@ -276,6 +280,11 @@ describe('AppShell', () => {
     expect(panel?.classList.contains('uam-shell-panel--right')).toBe(true)
     expect(panel?.textContent).toContain('Workspace folder missing: Deleted project')
     expect(panel?.textContent).toContain('/tmp/deleted project')
+    onRender.mockClear()
+    for (let index = 0; index < 20; index++) {
+      act(() => useAppStore.setState({ cliTranscriptBySessionId: { other: { terminalId: 'other', content: String(index) } } }))
+    }
+    expect(onRender).not.toHaveBeenCalled()
     const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Relink')
     const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Remove')
     expect(relink).toBeTruthy()
@@ -296,6 +305,8 @@ describe('AppShell', () => {
     await act(async () => confirmRemoval?.click())
     expect(deleteFolder).toHaveBeenCalledWith('missing')
 
+    act(() => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, missing: false })) })))
+    expect(panel?.textContent).not.toContain('Workspace folder missing: Deleted project')
     act(() => root.unmount())
     host.remove()
   })
@@ -633,7 +644,7 @@ describe('AppShell', () => {
     const openButton = host.querySelector('button[aria-label="Open Git/SVN commit panel"]') as HTMLButtonElement
     await act(async () => {
       openButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
+      await import('./VcsCommitPanel')
     })
 
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')

@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
 import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider } from './sanitizers'
+import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+
+describe('Computer Use settings sanitization', () => {
+  it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
+    expect(sanitizeCppSettings({
+      computerUseAllowlistEnabled: true,
+      computerUseAllowedApplications: [
+        { identityKind: 'bundleid', identity: 'com.apple.TextEdit' },
+        { identityKind: 'executablepath', identity: '/Applications/Preview.app' },
+      ],
+    }).computerUseAllowedApplications).toEqual([
+      { identityKind: 'bundleId', identity: 'com.apple.TextEdit' },
+      { identityKind: 'executablePath', identity: '/Applications/Preview.app' },
+    ])
+  })
+})
 
 const message: CppMessage = {
   role: 'user',
@@ -11,11 +26,15 @@ const message: CppMessage = {
 
 describe('reconcileCppMessages attachments', () => {
 	it('preserves persisted interruption and steering provenance', () => {
-		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true })
+		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true, continuesTurn: true })
 		const reconciled = reconcileCppMessages('chat-1', undefined, [sanitized!])
 
 		expect(reconciled[0].interrupted).toBe(true)
 		expect(reconciled[0].prioritySteer).toBe(true)
+		expect(reconciled[0].continuesTurn).toBe(true)
+		const ordinary = reconcileCppMessages('chat-1', reconciled, [message])
+		expect(ordinary[0].continuesTurn).toBe(false)
+		expect(ordinary[0]).not.toBe(reconciled[0])
 	})
 
   it('keeps an ordinary attachment-only update', () => {
@@ -105,6 +124,14 @@ describe('reconcileCppMessages deferred tool content', () => {
 
     expect(reconciled).not.toBe(existing)
     expect(reconciled[0].toolCalls?.[0].contentDeferred).toBe(true)
+    const revised = sanitizeCppMessage({
+      ...toolMessage,
+      toolCalls: [{ ...toolMessage.toolCalls![0], contentDeferred: true, contentDigest: 'revised' }],
+    })!
+    const refreshed = reconcileCppMessages('chat-1', reconciled, [revised], true)
+    expect(refreshed).not.toBe(reconciled)
+    expect(refreshed[0].toolCalls?.[0].contentDigest).toBe('revised')
+
   })
 })
 

@@ -16,6 +16,22 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 {
 }
 
+UamQueryHandler::~UamQueryHandler()
+{
+	m_asyncLifetime.reset();
+	if (m_companion) m_companion->Stop();
+}
+
+void UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
+{
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	m_companion = UamCompanionServer::StartFromEnvironment([this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
+		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
+		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
+			callback->Failure(404, "Unknown companion action.");
+	}, m_app.data_root);
+}
+
 // ---------------------------------------------------------------------------
 // CefMessageRouterBrowserSide::Handler
 // ---------------------------------------------------------------------------
@@ -63,6 +79,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatComputerUseEnabled", &UamQueryHandler::HandleSetChatComputerUseEnabled},
 		{"setChatComputerUseBackend", &UamQueryHandler::HandleSetChatComputerUseBackend},
 		{"setComputerUseControl", &UamQueryHandler::HandleSetComputerUseControl},
+		{"getComputerUseSettings", &UamQueryHandler::HandleGetComputerUseSettings},
+		{"setComputerUseSettings", &UamQueryHandler::HandleSetComputerUseSettings},
+		{"listComputerUseApplications", &UamQueryHandler::HandleListComputerUseApplications},
+		{"checkComputerUsePermissions", &UamQueryHandler::HandleCheckComputerUsePermissions},
+		{"requestComputerUsePermission", &UamQueryHandler::HandleRequestComputerUsePermission},
+		{"openComputerUseSystemSettings", &UamQueryHandler::HandleOpenComputerUseSystemSettings},
+		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
+		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
+		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},

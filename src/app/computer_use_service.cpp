@@ -25,7 +25,7 @@ namespace uam
 
 		std::string NormalizeState(std::string state, std::string fallback)
 		{
-			return state == "running" || state == "paused" || state == "stopped" ? state : fallback;
+			return state == "armed" || state == "running" || state == "paused" || state == "stopped" ? state : fallback;
 		}
 
 		std::string FileSignature(const std::filesystem::path& path)
@@ -165,20 +165,21 @@ namespace uam
 			    current->second.source_signature == source_signature) continue;
 			ComputerUseRuntimeState next = ReadState(app, chat);
 			next.source_signature = source_signature;
-			const bool enabled = next.state != "stopped" && !next.target_id.empty();
+			const bool enabled = next.state == "armed" || (next.state != "stopped" && !next.target_id.empty());
+			const bool target_approved = next.state != "stopped" && !next.target_id.empty();
 			if (chat.computer_use_enabled != enabled ||
-			    chat.computer_use_target_kind != (enabled ? next.target_kind : "window") ||
-			    chat.computer_use_target_id != (enabled ? next.target_id : "") ||
-			    chat.computer_use_target_process_id != (enabled ? next.target_process_id : "") ||
-			    chat.computer_use_target_title != (enabled ? next.target_title : "") ||
-			    chat.computer_use_target_input_mode != (enabled ? next.target_input_mode : ""))
+			    chat.computer_use_target_kind != (target_approved ? next.target_kind : "window") ||
+			    chat.computer_use_target_id != (target_approved ? next.target_id : "") ||
+			    chat.computer_use_target_process_id != (target_approved ? next.target_process_id : "") ||
+			    chat.computer_use_target_title != (target_approved ? next.target_title : "") ||
+			    chat.computer_use_target_input_mode != (target_approved ? next.target_input_mode : ""))
 			{
 				chat.computer_use_enabled = enabled;
-				chat.computer_use_target_kind = enabled ? next.target_kind : "window";
-				chat.computer_use_target_id = enabled ? next.target_id : "";
-				chat.computer_use_target_process_id = enabled ? next.target_process_id : "";
-				chat.computer_use_target_title = enabled ? next.target_title : "";
-				chat.computer_use_target_input_mode = enabled ? next.target_input_mode : "";
+				chat.computer_use_target_kind = target_approved ? next.target_kind : "window";
+				chat.computer_use_target_id = target_approved ? next.target_id : "";
+				chat.computer_use_target_process_id = target_approved ? next.target_process_id : "";
+				chat.computer_use_target_title = target_approved ? next.target_title : "";
+				chat.computer_use_target_input_mode = target_approved ? next.target_input_mode : "";
 				changed = true;
 			}
 			auto found = app.computer_use_by_chat_id.find(chat.id);
@@ -198,9 +199,9 @@ namespace uam
 	bool ComputerUseService::SetControlState(AppState& app, const std::string& chat_id,
 	    std::string_view state, std::string* error)
 	{
-		if (state != "running" && state != "paused" && state != "stopped")
+		if (state != "armed" && state != "running" && state != "paused" && state != "stopped")
 		{
-			if (error != nullptr) *error = "Computer-use state must be running, paused, or stopped.";
+			if (error != nullptr) *error = "Computer-use state must be armed, running, paused, or stopped.";
 			return false;
 		}
 		if (!uam::computer_use::IsPortableMcpChatId(chat_id))

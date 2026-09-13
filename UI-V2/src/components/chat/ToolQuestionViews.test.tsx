@@ -1,8 +1,8 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MessageFrame, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
-import type { AcpPendingUserInput } from '../../store/useAppStore'
+import { MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
+import type { AcpPendingPermission, AcpPendingUserInput } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: Root
@@ -88,6 +88,37 @@ describe('production tool details', () => {
         await click('Retry')
         await click('Copy loaded output')
         expect(writes).toEqual(['recovered'])
+    })
+
+    it('waits for slow live output before polling again', async () => {
+        vi.useFakeTimers()
+        const replies: Array<(response: string) => void> = []
+        window.cefQuery = ({ onSuccess }) => { replies.push(onSuccess) }
+        await render(<ToolCallModal tool={{ ...tool, status: 'running' }} chatId="chat-1" onClose={vi.fn()} />)
+        await act(async () => { vi.advanceTimersByTime(4500) })
+        expect(replies).toHaveLength(1)
+        await act(async () => {
+            replies[0](JSON.stringify({ content: 'slow output', offset: 0, nextOffset: 11, previousOffset: 0, lastOffset: 0, totalBytes: 11, hasPrevious: false, hasMore: false }))
+        })
+        expect(document.querySelector('pre')?.textContent).toBe('slow output')
+        await act(async () => { vi.advanceTimersByTime(1500) })
+        expect(replies).toHaveLength(2)
+    })
+
+    it.each(['completed', 'failed'])('loads final output when a followed tool becomes %s', async (status) => {
+        vi.useFakeTimers()
+        const replies: Array<(response: string) => void> = []
+        window.cefQuery = ({ onSuccess }) => { replies.push(onSuccess) }
+        const props = { chatId: 'chat-1', onClose: vi.fn() }
+        await render(<ToolCallModal {...props} tool={{ ...tool, status: 'running' }} />)
+        await render(<ToolCallModal {...props} tool={{ ...tool, status }} />)
+        expect(replies).toHaveLength(2)
+        const page = { offset: 0, nextOffset: 5, previousOffset: 0, lastOffset: 0, totalBytes: 5, hasPrevious: false, hasMore: false }
+        await act(async () => { replies[1](JSON.stringify({ ...page, content: 'final' })) })
+        await act(async () => { replies[0](JSON.stringify({ ...page, content: 'stale' })) })
+        expect(document.querySelector('pre')?.textContent).toBe('final')
+        await act(async () => { vi.advanceTimersByTime(6000) })
+        expect(replies).toHaveLength(2)
     })
 
     it('follows real live pages, pauses for earlier output, and retains pages after completion', async () => {
@@ -242,8 +273,35 @@ it('forwards message props and actions to the approved conversation turn', async
     await render(<MessageFrame role="assistant" assistantLabel="Claude" copyText="answer" onEdit={onEdit} streaming branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
     expect(document.querySelector('.conversation-turn')?.getAttribute('aria-label')).toBe('Claude')
     expect(document.querySelector('.conversation-turn')?.getAttribute('data-streaming')).toBe('true')
+    expect(document.querySelector('button[aria-label="Copy message"]')).toBeNull()
+    await render(<MessageFrame role="assistant" assistantLabel="Claude" copyText="answer" onEdit={onEdit} branchLabel="Branch" branchNavigation={{ current: 1, total: 2, onPrevious: vi.fn(), onNext }}>Answer body</MessageFrame>)
+    expect(document.querySelector('button[aria-label="Copy message"]')).not.toBeNull()
     await click('Edit message in new branch')
     await click('Next message branch')
     expect(onEdit).toHaveBeenCalledOnce()
     expect(onNext).toHaveBeenCalledOnce()
+})
+
+
+it.each(['failure', 'rejection'])('ignores a stale permission %s while the next response is submitting', async (outcome) => {
+    let finishOld: (value: boolean) => void = () => {}
+    let rejectOld: (error: Error) => void = () => {}
+    let finishNew: (value: boolean) => void = () => {}
+    const onResolve = vi.fn()
+        .mockImplementationOnce(() => new Promise<boolean>((resolve, reject) => { finishOld = resolve; rejectOld = reject }))
+        .mockImplementationOnce(() => new Promise<boolean>(resolve => { finishNew = resolve }))
+    const permission: AcpPendingPermission = { requestId: 'old', toolCallId: 'tool', title: 'Approval', kind: 'tool', status: 'pending', content: '', options: [{ id: 'allow', name: 'Allow once', kind: 'allow_once' }] }
+    await render(<PermissionInlineCard permission={permission} onResolve={onResolve} />)
+    await click('Allow once')
+    await render(<PermissionInlineCard permission={{ ...permission, requestId: 'new' }} onResolve={onResolve} />)
+    await click('Allow once')
+    await act(async () => { if (outcome === 'failure') finishOld(false); else rejectOld(new Error('Old connection failed')) })
+    expect(document.querySelector('[role="alert"]')).toBeNull()
+    expect(button('Submitting…').disabled).toBe(true)
+    await click('Submitting…')
+    expect(onResolve).toHaveBeenCalledTimes(2)
+    expect(onResolve).toHaveBeenLastCalledWith('new', 'allow')
+    await act(async () => { finishNew(false) })
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Try again')
+    expect(button('Allow once').disabled).toBe(false)
 })

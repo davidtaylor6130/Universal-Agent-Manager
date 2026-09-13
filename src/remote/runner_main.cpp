@@ -68,6 +68,11 @@ int main(int argc, char** argv)
 	}
 	if (argc == 3 && std::string(argv[1]) == "terminal")
 		return uam::remote::RunTerminalProcess(argv[2]);
+	if (argc == 4 && std::string(argv[1]) == "terminal" && std::string(argv[2]) == "--channel")
+		return uam::remote::RunTerminalProcessFromChannel(argv[3]);
+	if (argc == 6 && std::string(argv[1]) == "terminal" &&
+	    std::string(argv[2]) == "--channel" && std::string(argv[4]) == "--socket")
+		return uam::remote::RunTerminalProcessFromChannel(argv[3], argv[5]);
 #if defined(__APPLE__) || defined(__linux__)
 	if (argc == 6 && std::string(argv[1]) == "mcp" &&
 	    std::string(argv[2]) == "--channel" && std::string(argv[4]) == "--socket")

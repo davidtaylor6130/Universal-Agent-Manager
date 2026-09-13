@@ -397,8 +397,8 @@ namespace
 			const std::string relative = ".UAM/attachments/" + chat_id + "/" +
 			    uam::time::SystemEpochMicrosecondsTokenNow() + "-" +
 			    std::to_string(index) + "-" + attachment.name;
-			const std::filesystem::path target(uam::execution_hosts::JoinRemotePath(
-			    host.platform, workspace_root, relative));
+			const std::filesystem::path target = uam::paths::PathFromUtf8(
+			    uam::execution_hosts::JoinRemotePath(host.platform, workspace_root, relative));
 			std::string error;
 			if (!client.UploadFile("attachment-" + std::to_string(index) + "-" +
 			                       uam::time::SystemEpochMicrosecondsTokenNow(),
@@ -677,16 +677,16 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	{
 		if (execution_host->runner_status != "ready" ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
-		        workspace_root.string()))
+		        uam::paths::Utf8PathString(workspace_root)))
 		{
 			cb->Failure(409, "The selected remote runner or workspace is not ready.");
 			return;
 		}
 		auto result = std::make_shared<RemoteAttachmentResult>();
-		uam::query_handler_async::RunAsyncCefQuery(
+		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
 		    cb,
 		    [items = *items, host = *execution_host, chat_id,
-		     workspace = workspace_root.string(), result]()
+		     workspace = uam::paths::Utf8PathString(workspace_root), result]()
 		    {
 			    *result = StageRemoteAttachments(items, host, chat_id, workspace);
 			    return result->ok
@@ -925,7 +925,7 @@ void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 
-	uam::query_handler_async::RunAsyncCefQuery(cb, [text]() {
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [text]() {
 		std::string error;
 		if (!WriteNativeClipboardText(text, &error))
 		{

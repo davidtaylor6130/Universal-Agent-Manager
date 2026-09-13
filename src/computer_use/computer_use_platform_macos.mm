@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -26,12 +27,23 @@
 #include <utility>
 #include <vector>
 
+constexpr CGFloat kUamCursorImageFrameX = 21.0;
+constexpr CGFloat kUamCursorImageFrameY = 18.5;
+constexpr CGFloat kUamCursorImageRenderSize = 18.0;
+constexpr CGFloat kUamCursorSourceSize = 950.0;
+constexpr CGFloat kUamCursorSourceHotspotX = 129.0;
+constexpr CGFloat kUamCursorSourceHotspotY = 73.0;
+constexpr CGFloat kUamCursorHotspotX = kUamCursorImageFrameX + kUamCursorImageRenderSize * kUamCursorSourceHotspotX / kUamCursorSourceSize;
+constexpr CGFloat kUamCursorHotspotY = kUamCursorImageFrameY + kUamCursorImageRenderSize * (1.0 - kUamCursorSourceHotspotY / kUamCursorSourceSize);
+
 @interface UAMComputerUseCursorView : NSView
 {
 	NSImageView* image_view_;
+	NSTextField* identity_label_;
+	NSView* accent_view_;
 }
 - (void)animateClick;
-- (void)animateMotionFrom:(NSPoint)from to:(NSPoint)to;
+- (void)setIdentityLabel:(NSString*)label accentRGB:(uint32_t)rgb;
 @end
 
 @implementation UAMComputerUseCursorView
@@ -43,13 +55,36 @@
 
 	self.wantsLayer = YES;
 	self.layer.backgroundColor = NSColor.clearColor.CGColor;
-	image_view_ = [[NSImageView alloc] initWithFrame:NSMakeRect(21, 17, 18, 21)];
+	image_view_ = [[NSImageView alloc] initWithFrame:NSMakeRect(kUamCursorImageFrameX, kUamCursorImageFrameY, kUamCursorImageRenderSize, kUamCursorImageRenderSize)];
 	NSString* cursor_path = [NSBundle.mainBundle pathForResource:@"SoftwareCursor" ofType:@"png"];
 	image_view_.image = cursor_path == nil ? nil : [[NSImage alloc] initWithContentsOfFile:cursor_path];
 	image_view_.imageScaling = NSImageScaleProportionallyUpOrDown;
 	[self addSubview:image_view_];
+	accent_view_ = [[NSView alloc] initWithFrame:NSMakeRect(44, 18, 3, 20)];
+	accent_view_.wantsLayer = YES;
+	[self addSubview:accent_view_];
+	identity_label_ = [[NSTextField alloc] initWithFrame:NSMakeRect(52, 16, 180, 24)];
+	identity_label_.bezeled = NO;
+	identity_label_.drawsBackground = YES;
+	identity_label_.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.78];
+	identity_label_.editable = NO;
+	identity_label_.selectable = NO;
+	identity_label_.textColor = NSColor.whiteColor;
+	identity_label_.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+	identity_label_.lineBreakMode = NSLineBreakByTruncatingTail;
+	[self addSubview:identity_label_];
 
 	return self;
+}
+
+- (void)setIdentityLabel:(NSString*)label accentRGB:(uint32_t)rgb
+{
+	identity_label_.stringValue = label.length == 0 ? @"Chat" : label;
+	const CGFloat red = ((rgb >> 16) & 0xff) / 255.0;
+	const CGFloat green = ((rgb >> 8) & 0xff) / 255.0;
+	const CGFloat blue = (rgb & 0xff) / 255.0;
+	const NSColor* color = [NSColor colorWithCalibratedRed:red green:green blue:blue alpha:1.0];
+	accent_view_.layer.backgroundColor = color.CGColor;
 }
 
 - (BOOL)isOpaque
@@ -59,31 +94,12 @@
 
 - (void)animateClick
 {
-	CAKeyframeAnimation* press = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-	press.values = @[ @1, @0.82, @1.04, @1 ];
-	press.keyTimes = @[ @0, @0.28, @0.68, @1 ];
-	press.duration = 0.24;
+	CAKeyframeAnimation* press = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+	press.values = @[ @1, @0.62, @1 ];
+	press.keyTimes = @[ @0, @0.45, @1 ];
+	press.duration = 0.18;
 	press.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
 	[self.layer addAnimation:press forKey:@"press"];
-}
-
-- (void)animateMotionFrom:(NSPoint)from to:(NSPoint)to
-{
-	const CGFloat dx = to.x - from.x;
-	const CGFloat dy = to.y - from.y;
-	const CGFloat distance = std::hypot(dx, dy);
-	if (distance < 2)
-		return;
-	const CGFloat angle = std::clamp(dx / std::max<CGFloat>(distance, 1) * -0.13, -0.13, 0.13);
-	const CGFloat stretch = 1 + std::min<CGFloat>(0.12, distance / 1800);
-	CGAffineTransform scoot = CGAffineTransformMakeRotation(angle);
-	scoot = CGAffineTransformScale(scoot, stretch, 1 / std::sqrt(stretch));
-	CABasicAnimation* settle = [CABasicAnimation animationWithKeyPath:@"transform"];
-	settle.fromValue = [NSValue valueWithCATransform3D:CATransform3DMakeAffineTransform(scoot)];
-	settle.toValue = [NSValue valueWithCATransform3D:CATransform3DIdentity];
-	settle.duration = 0.34;
-	settle.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-	[self.layer addAnimation:settle forKey:@"scoot"];
 }
 @end
 
@@ -92,6 +108,23 @@ namespace uam::computer_use
 	namespace
 	{
 		int controller_lock_fd = -1;
+		std::string virtual_cursor_label = "Chat";
+		std::uint32_t virtual_cursor_accent_rgb = 0x14b8a6;
+
+		std::uint32_t CursorAccentForChat(std::string_view chat_id)
+		{
+			constexpr std::uint32_t colors[] = {0xf97316, 0x0ea5e9, 0x7c3aed, 0x14b8a6, 0x22c55e, 0xe11d48};
+			std::uint32_t hash = 2166136261u;
+			for (const unsigned char value : chat_id)
+				hash = (hash ^ value) * 16777619u;
+			return colors[hash % (sizeof(colors) / sizeof(colors[0]))];
+		}
+
+		void ConfigureVirtualCursorIdentityImpl(const std::string& label, const std::string& chat_id)
+		{
+			virtual_cursor_label = label.empty() ? "Chat" : label;
+			virtual_cursor_accent_rgb = CursorAccentForChat(chat_id);
+		}
 
 		ApplicationIdentity ApplicationForPid(pid_t pid)
 		{
@@ -212,8 +245,6 @@ namespace uam::computer_use
 
 		NSPanel* cursor_panel = nil;
 		UAMComputerUseCursorView* cursor_view = nil;
-		constexpr CGFloat kCursorHotspotX = 39;
-		constexpr CGFloat kCursorHotspotY = 30;
 
 		void EnsureCursorPanel()
 		{
@@ -222,7 +253,7 @@ namespace uam::computer_use
 			[NSApplication sharedApplication];
 			[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 			[NSApp finishLaunching];
-			cursor_panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 56, 56) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+			cursor_panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 240, 56) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
 			cursor_panel.opaque = NO;
 			cursor_panel.backgroundColor = [NSColor clearColor];
 			cursor_panel.hasShadow = NO;
@@ -230,7 +261,8 @@ namespace uam::computer_use
 			cursor_panel.ignoresMouseEvents = YES;
 			cursor_panel.level = CGWindowLevelForKey(kCGCursorWindowLevelKey) - 1;
 			cursor_panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorFullScreenAuxiliary;
-			cursor_view = [[UAMComputerUseCursorView alloc] initWithFrame:NSMakeRect(0, 0, 56, 56)];
+			cursor_view = [[UAMComputerUseCursorView alloc] initWithFrame:NSMakeRect(0, 0, 240, 56)];
+			[cursor_view setIdentityLabel:[NSString stringWithUTF8String:virtual_cursor_label.c_str()] accentRGB:virtual_cursor_accent_rgb];
 			cursor_panel.contentView = cursor_view;
 		}
 
@@ -254,25 +286,24 @@ namespace uam::computer_use
 			}
 			dispatch_semaphore_t movement_complete = dispatch_semaphore_create(0);
 			void (^show_cursor)() = ^{
-			  EnsureCursorPanel();
-			  const CGRect primary = CGDisplayBounds(CGMainDisplayID());
-			  const NSPoint origin = NSMakePoint(point.x - kCursorHotspotX, primary.size.height - point.y - kCursorHotspotY);
-			  NSPoint previous = cursor_panel.frame.origin;
-			  if (!cursor_panel.visible)
-			  {
-				  const CGPoint center = CGPointMake(reference.desktop_x + reference.desktop_width / 2, reference.desktop_y + reference.desktop_height / 2);
-				  previous = NSMakePoint(center.x - kCursorHotspotX, primary.size.height - center.y - kCursorHotspotY);
-				  [cursor_panel setFrameOrigin:previous];
-			  }
-			  ShowCursorPanel();
-			  const CGFloat distance = std::hypot(origin.x - previous.x, origin.y - previous.y);
-			  [cursor_view animateMotionFrom:previous to:origin];
-			  const double duration = std::clamp(static_cast<double>(distance) / 1200, 0.18, 0.45);
-			  const int steps = std::max(1, static_cast<int>(std::ceil(duration * 60)));
-			  for (int index = 1; index <= steps; ++index)
-			  {
-				  const int step = index;
-				  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(duration * NSEC_PER_SEC * step / steps)), dispatch_get_main_queue(), ^{
+			EnsureCursorPanel();
+			const CGRect primary = CGDisplayBounds(CGMainDisplayID());
+			const NSPoint origin = NSMakePoint(point.x - kUamCursorHotspotX, primary.size.height - point.y - kUamCursorHotspotY);
+			NSPoint previous = cursor_panel.frame.origin;
+			if (!cursor_panel.visible)
+			{
+				const CGPoint center = CGPointMake(reference.desktop_x + reference.desktop_width / 2, reference.desktop_y + reference.desktop_height / 2);
+				previous = NSMakePoint(center.x - kUamCursorHotspotX, primary.size.height - center.y - kUamCursorHotspotY);
+				[cursor_panel setFrameOrigin:previous];
+			}
+			ShowCursorPanel();
+			const CGFloat distance = std::hypot(origin.x - previous.x, origin.y - previous.y);
+			const double duration = std::clamp(static_cast<double>(distance) / 1200, 0.18, 0.45);
+			const int steps = std::max(1, static_cast<int>(std::ceil(duration * 60)));
+			for (int index = 1; index <= steps; ++index)
+			{
+				const int step = index;
+				dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(duration * NSEC_PER_SEC * step / steps)), dispatch_get_main_queue(), ^{
 					const CGFloat t = static_cast<CGFloat>(step) / steps;
 					const CGFloat eased = t * t * (3 - 2 * t);
 					[cursor_panel setFrameOrigin:NSMakePoint(previous.x + (origin.x - previous.x) * eased, previous.y + (origin.y - previous.y) * eased)];
@@ -296,14 +327,47 @@ namespace uam::computer_use
 
 		void PostEvent(CGEventRef event, const Capture& reference, bool* input_applied_out = nullptr)
 		{
-			if (reference.process_id != 0)
+			const CGEventType type = CGEventGetType(event);
+			const bool is_mouse_event = type == kCGEventMouseMoved || type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDown || type == kCGEventRightMouseUp || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp || type == kCGEventOtherMouseDragged || type == kCGEventScrollWheel;
+			if (reference.target_kind == "window" && reference.process_id != 0 && is_mouse_event)
 			{
-				const CGEventType type = CGEventGetType(event);
-				if (type == kCGEventMouseMoved || type == kCGEventLeftMouseDown || type == kCGEventLeftMouseUp || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDown || type == kCGEventRightMouseUp || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDown || type == kCGEventOtherMouseUp || type == kCGEventOtherMouseDragged || type == kCGEventScrollWheel)
+				NSEvent* original = [NSEvent eventWithCGEvent:event];
+				if (original == nil)
+					return;
+				const NSEventType appkit_type = type == kCGEventScrollWheel ? NSEventTypeMouseMoved : original.type;
+				const CGPoint global_location = CGEventGetLocation(event);
+				// NSEvent serializes a foreign window location as top-left window coordinates.
+				// Counter its screen-axis flip before conversion; SetLocation invalidates that payload.
+				const NSPoint local_location = NSMakePoint(global_location.x - reference.desktop_x, CGDisplayBounds(CGMainDisplayID()).size.height - (global_location.y - reference.desktop_y));
+				const NSEvent* appkit_event = [NSEvent mouseEventWithType:appkit_type
+												location:local_location
+												modifierFlags:original.modifierFlags
+												timestamp:static_cast<NSTimeInterval>(CGEventGetTimestamp(event)) / 1000000000.0
+												windowNumber:static_cast<NSInteger>(reference.target_id)
+												context:nil
+												eventNumber:static_cast<NSInteger>(CGEventGetIntegerValueField(event, kCGMouseEventNumber))
+												clickCount:static_cast<NSInteger>(CGEventGetIntegerValueField(event, kCGMouseEventClickState))
+												pressure:static_cast<float>(CGEventGetDoubleValueField(event, kCGMouseEventPressure))];
+				if (appkit_event == nil || appkit_event.CGEvent == nullptr)
+					return;
+				CGEventRef converted = appkit_event.CGEvent;
+				CGEventSetIntegerValueField(converted, kCGMouseEventButtonNumber, CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber));
+				if (type == kCGEventScrollWheel)
 				{
-					CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointer, static_cast<std::int64_t>(reference.target_id));
-					CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, static_cast<std::int64_t>(reference.target_id));
+					CGEventSetType(converted, kCGEventScrollWheel);
+					for (const CGEventField field : {kCGScrollWheelEventDeltaAxis1, kCGScrollWheelEventDeltaAxis2, kCGScrollWheelEventDeltaAxis3, kCGScrollWheelEventPointDeltaAxis1, kCGScrollWheelEventPointDeltaAxis2, kCGScrollWheelEventPointDeltaAxis3, kCGScrollWheelEventScrollPhase, kCGScrollWheelEventScrollCount, kCGScrollWheelEventMomentumPhase, kCGScrollWheelEventIsContinuous})
+						CGEventSetIntegerValueField(converted, field, CGEventGetIntegerValueField(event, field));
+					for (const CGEventField field : {kCGScrollWheelEventFixedPtDeltaAxis1, kCGScrollWheelEventFixedPtDeltaAxis2, kCGScrollWheelEventFixedPtDeltaAxis3})
+						CGEventSetDoubleValueField(converted, field, CGEventGetDoubleValueField(event, field));
 				}
+				CGEventPostToPid(static_cast<pid_t>(reference.process_id), converted);
+			}
+			else if (reference.target_kind == "screen" && is_mouse_event)
+			{
+				CGEventPost(kCGHIDEventTap, event);
+			}
+			else if (reference.process_id != 0)
+			{
 				CGEventPostToPid(static_cast<pid_t>(reference.process_id), event);
 			}
 			else
@@ -398,6 +462,8 @@ namespace uam::computer_use
 		{
 			if (application == nullptr)
 				return nullptr;
+			// Some applications initialize their accessibility tree when a reader requests the app role.
+			(void)AxString(application, kAXRoleAttribute);
 			CFTypeRef windows_value = nullptr;
 			if (AXUIElementCopyAttributeValue(application, kAXWindowsAttribute, &windows_value) != kAXErrorSuccess || windows_value == nullptr || CFGetTypeID(windows_value) != CFArrayGetTypeID())
 			{
@@ -452,8 +518,6 @@ namespace uam::computer_use
 		{
 			if (target.application == nullptr || target.window == nullptr)
 				return false;
-			CFTypeRef frontmost_value = nullptr;
-			const bool frontmost = AXUIElementCopyAttributeValue(target.application, kAXFrontmostAttribute, &frontmost_value) == kAXErrorSuccess && frontmost_value != nullptr && CFGetTypeID(frontmost_value) == CFBooleanGetTypeID() && CFBooleanGetValue(static_cast<CFBooleanRef>(frontmost_value));
 			CFTypeRef focused_window_value = nullptr;
 			const bool focused_window_available = AXUIElementCopyAttributeValue(target.application, kAXFocusedWindowAttribute, &focused_window_value) == kAXErrorSuccess && focused_window_value != nullptr && CFGetTypeID(focused_window_value) == AXUIElementGetTypeID();
 			const bool exact_window_focused = focused_window_available && CFEqual(focused_window_value, target.window);
@@ -461,23 +525,40 @@ namespace uam::computer_use
 			const bool bounds_match = exact_window_focused && AxBounds(static_cast<AXUIElementRef>(focused_window_value), &focused_bounds) && AxWindowBoundsDifference(focused_bounds, reference_bounds) <= kAxWindowMatchTolerance;
 			if (focused_window_value != nullptr)
 				CFRelease(focused_window_value);
-			if (frontmost_value != nullptr)
-				CFRelease(frontmost_value);
-			return frontmost && exact_window_focused && bounds_match;
+			return exact_window_focused && bounds_match;
+		}
+
+		bool IsAxWindowTargetCurrent(const AxWindowTarget& target, const CGRect& reference_bounds)
+		{
+			if (target.window == nullptr)
+				return false;
+			CGRect current_bounds{};
+			return AxBounds(target.window, &current_bounds) && AxWindowBoundsDifference(current_bounds, reference_bounds) <= kAxWindowMatchTolerance;
 		}
 
 		bool FocusAndVerifyAxWindow(const AxWindowTarget& target, const CGRect& reference_bounds)
 		{
 			if (target.application == nullptr || target.window == nullptr)
 				return false;
-			const AXError frontmost_result = AXUIElementSetAttributeValue(target.application, kAXFrontmostAttribute, kCFBooleanTrue);
-			const AXError raise_result = AXUIElementPerformAction(target.window, kAXRaiseAction);
-			(void)AXUIElementSetAttributeValue(target.window, kAXMainAttribute, kCFBooleanTrue);
-			(void)AXUIElementSetAttributeValue(target.window, kAXFocusedAttribute, kCFBooleanTrue);
-			return frontmost_result == kAXErrorSuccess && raise_result == kAXErrorSuccess && IsAxWindowFocused(target, reference_bounds);
+			if (IsAxWindowFocused(target, reference_bounds))
+				return true;
+			const AXError main_result = AXUIElementSetAttributeValue(target.window, kAXMainAttribute, kCFBooleanTrue);
+			const AXError focused_result = AXUIElementSetAttributeValue(target.window, kAXFocusedAttribute, kCFBooleanTrue);
+			if (main_result != kAXErrorSuccess && focused_result != kAXErrorSuccess)
+				return false;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+			do
+			{
+				if (IsAxWindowFocused(target, reference_bounds))
+					return true;
+				if (std::chrono::steady_clock::now() >= deadline)
+					break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			} while (true);
+			return false;
 		}
 
-		bool FocusAxWindow(pid_t pid, const CGRect& reference_bounds, AxWindowTarget* target_out, std::string* error_out)
+		bool ResolveAxWindow(pid_t pid, const CGRect& reference_bounds, AxWindowTarget* target_out, std::string* error_out)
 		{
 			AXUIElementRef application = AXUIElementCreateApplication(pid);
 			AXUIElementRef window = MatchingAxWindow(application, reference_bounds);
@@ -491,13 +572,20 @@ namespace uam::computer_use
 					*error_out = "The selected window could not be matched uniquely to an accessibility window for input.";
 				return false;
 			}
+			target_out->application = application;
+			target_out->window = window;
+			return true;
+		}
+
+		bool FocusAxWindow(pid_t pid, const CGRect& reference_bounds, AxWindowTarget* target_out, std::string* error_out)
+		{
 			AxWindowTarget target;
-			target.application = application;
-			target.window = window;
+			if (!ResolveAxWindow(pid, reference_bounds, &target, error_out))
+				return false;
 			if (FocusAndVerifyAxWindow(target, reference_bounds))
 			{
-				target_out->application = application;
-				target_out->window = window;
+				target_out->application = target.application;
+				target_out->window = target.window;
 				target.application = nullptr;
 				target.window = nullptr;
 				return true;
@@ -513,6 +601,10 @@ namespace uam::computer_use
 			std::string label = AxString(element, kAXTitleAttribute);
 			if (label.empty())
 				label = AxString(element, kAXDescriptionAttribute);
+			if (label.empty() && role == "AXStaticText")
+				label = AxString(element, kAXValueAttribute);
+			if (label.empty() && (role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox"))
+				label = AxString(element, CFSTR("AXPlaceholderValue"));
 			CGRect bounds{};
 			CFTypeRef enabled_value = nullptr;
 			bool enabled = true;
@@ -524,14 +616,37 @@ namespace uam::computer_use
 				CFRelease(enabled_value);
 			const bool useful_without_label = role == "AXButton" || role == "AXTextField" || role == "AXTextArea" || role == "AXCheckBox" || role == "AXRadioButton" || role == "AXPopUpButton" || role == "AXComboBox" || role == "AXLink" || role == "AXSlider" || role == "AXTab" || role == "AXMenuItem" || role == "AXDisclosureTriangle" || role == "AXStaticText";
 			if (AxBounds(element, &bounds) && bounds.size.width > 0 && bounds.size.height > 0 && CGRectIntersectsRect(bounds, window_bounds) && (!label.empty() || useful_without_label))
-				return Element{0, role.empty() ? "element" : role, label, bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, enabled};
+				{
+				const CGRect visible_bounds = CGRectIntersection(bounds, window_bounds);
+				return Element{0, role.empty() ? "element" : role, label, visible_bounds.origin.x, visible_bounds.origin.y, visible_bounds.size.width, visible_bounds.size.height, enabled};
+			}
 			return std::nullopt;
 		}
 
-		void AppendAxElements(AXUIElementRef element, const CGRect& window_bounds, std::vector<Element>& result, int depth)
+		void NormalizeElement(Element& element, const CGRect& window_bounds, int width, int height)
 		{
-			if (depth > 12 || result.size() >= 200)
+			element.x = (element.x - window_bounds.origin.x) * width / window_bounds.size.width;
+			element.y = (element.y - window_bounds.origin.y) * height / window_bounds.size.height;
+			element.width *= width / window_bounds.size.width;
+			element.height *= height / window_bounds.size.height;
+		}
+
+		constexpr int kAxTraversalNodeBudget = 4096;
+		constexpr int kAxTraversalDepthBudget = 64;
+
+		void AppendAxElements(AXUIElementRef element, const CGRect& window_bounds, std::vector<Element>& result, int depth, int& visited_nodes, bool& truncated)
+		{
+			if (visited_nodes >= kAxTraversalNodeBudget)
+			{
+				truncated = true;
 				return;
+			}
+			++visited_nodes;
+			if (depth > kAxTraversalDepthBudget || result.size() >= 200)
+			{
+				truncated = true;
+				return;
+			}
 			if (std::optional<Element> described = DescribeAxElement(element, window_bounds))
 			{
 				described->id = static_cast<int>(result.size() + 1);
@@ -546,16 +661,25 @@ namespace uam::computer_use
 				return;
 			}
 			const CFArrayRef children = static_cast<CFArrayRef>(children_value);
-			for (CFIndex index = 0; index < CFArrayGetCount(children) && result.size() < 200; ++index)
+			const CFIndex child_count = CFArrayGetCount(children);
+			for (CFIndex index = 0; index < child_count; ++index)
 			{
-				AppendAxElements(static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(children, index)), window_bounds, result, depth + 1);
+				if (result.size() >= 200 || visited_nodes >= kAxTraversalNodeBudget)
+				{
+					truncated = true;
+					break;
+				}
+				AppendAxElements(static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(children, index)), window_bounds, result, depth + 1, visited_nodes, truncated);
 			}
 			CFRelease(children_value);
 		}
 
-		AXUIElementRef FindAxElement(AXUIElementRef element, const CGRect& window_bounds, int target_id, int& current_id, int depth)
+		AXUIElementRef FindAxElement(AXUIElementRef element, const CGRect& window_bounds, int target_id, int& current_id, int depth, int& visited_nodes)
 		{
-			if (depth > 12 || current_id >= 200)
+			if (visited_nodes >= kAxTraversalNodeBudget)
+				return nullptr;
+			++visited_nodes;
+			if (depth > kAxTraversalDepthBudget || current_id >= 200)
 				return nullptr;
 			if (DescribeAxElement(element, window_bounds))
 			{
@@ -573,24 +697,28 @@ namespace uam::computer_use
 			}
 			AXUIElementRef found = nullptr;
 			const CFArrayRef children = static_cast<CFArrayRef>(children_value);
-			for (CFIndex index = 0; index < CFArrayGetCount(children) && found == nullptr; ++index)
-				found = FindAxElement(static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(children, index)), window_bounds, target_id, current_id, depth + 1);
+			for (CFIndex index = 0; index < CFArrayGetCount(children) && found == nullptr && visited_nodes < kAxTraversalNodeBudget; ++index)
+				found = FindAxElement(static_cast<AXUIElementRef>(CFArrayGetValueAtIndex(children, index)), window_bounds, target_id, current_id, depth + 1, visited_nodes);
 			CFRelease(children_value);
 			return found;
 		}
 
-		std::vector<Element> AccessibilityElements(pid_t pid, const CGRect& window_bounds)
+		std::vector<Element> AccessibilityElements(pid_t pid, const CGRect& window_bounds, bool* truncated_out)
 		{
 			std::vector<Element> result;
+			bool truncated = false;
 			AXUIElementRef application = AXUIElementCreateApplication(pid);
 			AXUIElementRef window = MatchingAxWindow(application, window_bounds);
 			if (window != nullptr)
 			{
-				AppendAxElements(window, window_bounds, result, 0);
+				int visited_nodes = 0;
+				AppendAxElements(window, window_bounds, result, 0, visited_nodes, truncated);
 				CFRelease(window);
 			}
 			if (application != nullptr)
 				CFRelease(application);
+			if (truncated_out != nullptr)
+				*truncated_out = truncated;
 			return result;
 		}
 
@@ -598,8 +726,9 @@ namespace uam::computer_use
 		{
 			AXUIElementRef application = AXUIElementCreateApplication(pid);
 			int current_id = 0;
+			int visited_nodes = 0;
 			AXUIElementRef window = MatchingAxWindow(application, window_bounds);
-			AXUIElementRef result = window == nullptr ? nullptr : FindAxElement(window, window_bounds, element_id, current_id, 0);
+			AXUIElementRef result = window == nullptr ? nullptr : FindAxElement(window, window_bounds, element_id, current_id, 0, visited_nodes);
 			if (window != nullptr)
 				CFRelease(window);
 			if (application != nullptr)
@@ -669,6 +798,7 @@ namespace uam::computer_use
 					                                           configuration.width = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(bounds.size.width * scale)));
 					                                           configuration.height = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(bounds.size.height * scale)));
 					                                           configuration.showsCursor = YES;
+					                                           configuration.ignoreShadowsSingleWindow = YES;
 					                                           [SCScreenshotManager captureImageWithFilter:filter
 					                                                                         configuration:configuration
 					                                                                     completionHandler:^(CGImageRef image, NSError*) {
@@ -690,6 +820,11 @@ namespace uam::computer_use
 			return nullptr;
 		}
 	} // namespace
+
+	void ConfigureVirtualCursorIdentity(const std::string& label, const std::string& chat_id)
+	{
+		ConfigureVirtualCursorIdentityImpl(label, chat_id);
+	}
 
 	bool AcquireControllerLock(std::string* error_out)
 	{
@@ -738,7 +873,7 @@ namespace uam::computer_use
 				for (uint32_t index = 0; index < display_count; ++index)
 				{
 					const CGRect bounds = CGDisplayBounds(displays[index]);
-					result.push_back({"screen", displays[index], "Full display " + std::to_string(index + 1), bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, displays[index] == CGMainDisplayID(), "foreground", 0});
+					result.push_back({"screen", displays[index], "Full display " + std::to_string(displays[index]), bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, displays[index] == CGMainDisplayID(), "foreground", 0});
 				}
 			}
 		}
@@ -761,7 +896,7 @@ namespace uam::computer_use
 				}
 				const std::string owner = Utf8(static_cast<CFStringRef>(CFDictionaryGetValue(dictionary, kCGWindowOwnerName)));
 				const std::string name = Utf8(static_cast<CFStringRef>(CFDictionaryGetValue(dictionary, kCGWindowName)));
-				result.push_back({"window", static_cast<std::uint64_t>(id), name.empty() ? owner : owner + " — " + name, bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, false, "foreground", static_cast<std::uint64_t>(std::max<std::int64_t>(0, process_id))});
+				result.push_back({"window", static_cast<std::uint64_t>(id), name.empty() ? owner : owner + " — " + name, bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, false, "background", static_cast<std::uint64_t>(std::max<std::int64_t>(0, process_id))});
 			}
 			CFRelease(windows);
 		}
@@ -783,8 +918,9 @@ namespace uam::computer_use
 			const CGDirectDisplayID display = raw_id == 0 ? CGMainDisplayID() : static_cast<CGDirectDisplayID>(raw_id);
 			result.target_id = display;
 			bounds = CGDisplayBounds(display);
-			source = ModernCapture(kind, display, bounds, max_width, max_height);
-			if (source == nullptr)
+			if (@available(macOS 14.0, *))
+				source = ModernCapture(kind, display, bounds, max_width, max_height);
+			else
 				source = LegacyCapture(kind, display);
 		}
 		else if (kind == "window")
@@ -800,14 +936,15 @@ namespace uam::computer_use
 			result.process_id = static_cast<std::uint64_t>(std::max<pid_t>(0, pid));
 			result.application_id = application.id;
 			result.application_title = application.title;
-			result.input_mode = "foreground";
-			source = ModernCapture(kind, window, bounds, max_width, max_height);
-			if (source == nullptr)
+			result.input_mode = "background";
+			if (@available(macOS 14.0, *))
+				source = ModernCapture(kind, window, bounds, max_width, max_height);
+			else
 				source = LegacyCapture(kind, window);
 		}
 		if (source == nullptr && !CGPreflightScreenCaptureAccess())
 		{
-			result.error = "macOS denied Screen Recording. Enable the current UAM app in System Settings > Privacy & Security > Screen & System Audio Recording, then restart UAM. If it is already enabled after an app update, remove the stale entry and add the current UAM app again.";
+			result.error = "macOS denied Screen Recording. Enable UAM Computer Use in System Settings > Privacy & Security > Screen & System Audio Recording, then retry.";
 			return result;
 		}
 		if (source == nullptr)
@@ -835,17 +972,12 @@ namespace uam::computer_use
 		result.desktop_x = bounds.origin.x;
 		result.desktop_y = bounds.origin.y;
 		result.desktop_width = bounds.size.width;
-		result.desktop_height = bounds.size.height;
-		if (kind == "window")
-		{
-			result.elements = AccessibilityElements(static_cast<pid_t>(result.process_id), bounds);
-			for (Element& element : result.elements)
+			result.desktop_height = bounds.size.height;
+			if (kind == "window")
 			{
-				element.x = (element.x - bounds.origin.x) * result.width / bounds.size.width;
-				element.y = (element.y - bounds.origin.y) * result.height / bounds.size.height;
-				element.width *= result.width / bounds.size.width;
-				element.height *= result.height / bounds.size.height;
-			}
+				result.elements = AccessibilityElements(static_cast<pid_t>(result.process_id), bounds, &result.elements_truncated);
+				for (Element& element : result.elements)
+					NormalizeElement(element, bounds, result.width, result.height);
 		}
 		result.ok = true;
 		return result;
@@ -883,7 +1015,11 @@ namespace uam::computer_use
 		const bool uses_input = action.kind == "move" || action.kind == "click" || action.kind == "drag" || action.kind == "scroll" || action.kind == "type" || action.kind == "hotkey";
 		if (uses_input && reference.target_kind == "window")
 		{
-			if (!FocusAxWindow(static_cast<pid_t>(reference.process_id), window_bounds, &window_target, error_out))
+			const bool requires_keyboard_focus = action.kind == "type" || action.kind == "hotkey";
+			const bool resolved = requires_keyboard_focus
+				? FocusAxWindow(static_cast<pid_t>(reference.process_id), window_bounds, &window_target, error_out)
+				: ResolveAxWindow(static_cast<pid_t>(reference.process_id), window_bounds, &window_target, error_out);
+			if (!resolved)
 				return false;
 			if (interrupted())
 				return false;
@@ -900,26 +1036,128 @@ namespace uam::computer_use
 		{
 			if (interrupted())
 				return false;
-			if (reference.target_kind == "window" && !FocusAndVerifyAxWindow(window_target, window_bounds))
+			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, window_bounds))
 			{
 				if (error_out != nullptr)
-					*error_out = "The selected window could not be focused and verified immediately before pointer input.";
+					*error_out = "The selected window changed before pointer input.";
+				return false;
+			}
+			return !interrupted();
+		};
+		const auto verify_pointer_target = [&]()
+		{
+			if (interrupted())
+				return false;
+			if (reference.target_kind == "window" && !IsAxWindowTargetCurrent(window_target, window_bounds))
+			{
+				if (error_out != nullptr)
+					*error_out = "The selected window changed during pointer input.";
 				return false;
 			}
 			return !interrupted();
 		};
 
-		if (action.kind == "click" && action.element_id > 0 && action.button == "left" && action.click_count == 1)
+		int click_element_id = action.element_id;
+		if (action.kind == "click" && click_element_id == 0 && reference.target_kind == "window" && action.button == "left" && action.click_count == 1)
+		{
+			const Element* hit = nullptr;
+			for (const Element& candidate : reference.elements)
+			{
+				const bool pressable = candidate.role == "AXButton" || candidate.role == "AXLink" || candidate.role == "AXCheckBox" || candidate.role == "AXRadioButton" || candidate.role == "AXPopUpButton" || candidate.role == "AXDisclosureTriangle" || candidate.role == "AXMenuItem" || candidate.role == "AXTextField" || candidate.role == "AXTextArea" || candidate.role == "AXComboBox";
+				if (candidate.enabled && pressable && action.x >= candidate.x && action.y >= candidate.y && action.x < candidate.x + candidate.width && action.y < candidate.y + candidate.height &&
+					(hit == nullptr || candidate.width * candidate.height < hit->width * hit->height))
+					hit = &candidate;
+			}
+			if (hit != nullptr)
+				click_element_id = hit->id;
+		}
+
+		if (action.kind == "click" && click_element_id > 0 && action.button == "left" && action.click_count == 1)
 		{
 			const pid_t target_process_id = static_cast<pid_t>(reference.process_id);
-			AXUIElementRef element = AccessibilityElement(target_process_id, window_bounds, action.element_id);
-			if (element != nullptr)
+			AXUIElementRef element = AccessibilityElement(target_process_id, window_bounds, click_element_id);
+			if (element == nullptr)
 			{
-				if (!prepare_pointer_input())
+				if (error_out != nullptr)
+					*error_out = "The selected accessibility element is no longer available. Observe again before retrying.";
+				return false;
+			}
+			const auto reference_element = std::ranges::find_if(reference.elements, [id = click_element_id](const Element& candidate) { return candidate.id == id; });
+			const std::optional<Element> reacquired_description = DescribeAxElement(element, window_bounds);
+			if (reference_element == reference.elements.end() || !reacquired_description.has_value())
+			{
+				CFRelease(element);
+				if (error_out != nullptr)
+					*error_out = "The selected accessibility element changed or is no longer describable. Observe again before retrying.";
+				return false;
+			}
+			Element normalized_description = *reacquired_description;
+			NormalizeElement(normalized_description, window_bounds, reference.width, reference.height);
+			const auto close = [](double left, double right) { return std::abs(left - right) <= 1.0; };
+			const bool same_element = normalized_description.role == reference_element->role &&
+				normalized_description.label == reference_element->label && normalized_description.enabled == reference_element->enabled &&
+				close(normalized_description.x, reference_element->x) && close(normalized_description.y, reference_element->y) &&
+				close(normalized_description.width, reference_element->width) && close(normalized_description.height, reference_element->height);
+			if (!same_element)
+			{
+				CFRelease(element);
+				if (error_out != nullptr)
+					*error_out = "The selected accessibility element changed before input. Observe again before retrying.";
+				return false;
+			}
+			if (!prepare_pointer_input())
+			{
+				CFRelease(element);
+				return false;
+			}
+			if (interrupted())
+			{
+				CFRelease(element);
+				return false;
+			}
+			const std::string role = AxString(element, kAXRoleAttribute);
+			const bool is_text_control = role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox";
+			Boolean focused_attribute_settable = false;
+			const AXError settable_result = is_text_control ? AXUIElementIsAttributeSettable(element, kAXFocusedAttribute, &focused_attribute_settable) : kAXErrorAttributeUnsupported;
+			if (is_text_control && settable_result == kAXErrorSuccess && focused_attribute_settable)
+			{
+				if (interrupted())
 				{
 					CFRelease(element);
 					return false;
 				}
+				if (input_applied_out != nullptr)
+					*input_applied_out = true;
+				const AXError focus_result = AXUIElementSetAttributeValue(element, kAXFocusedAttribute, kCFBooleanTrue);
+				CFRelease(element);
+				// Inactive apps can accept control focus while AXFocused remains false.
+				// Keyboard actions separately validate the destination window.
+				if (focus_result == kAXErrorSuccess)
+					return true;
+				if (error_out != nullptr)
+					*error_out = "The selected text control rejected focus (AX error " + std::to_string(static_cast<int>(focus_result)) + ").";
+				return false;
+			}
+			CFArrayRef action_names = nullptr;
+			const AXError action_names_result = AXUIElementCopyActionNames(element, &action_names);
+			if (action_names_result != kAXErrorSuccess || action_names == nullptr || CFGetTypeID(action_names) != CFArrayGetTypeID())
+			{
+				if (action_names != nullptr)
+					CFRelease(action_names);
+				CFRelease(element);
+				if (error_out != nullptr)
+					*error_out = "The selected accessibility element could not be queried safely for actions.";
+				return false;
+			}
+			const bool supports_press = CFArrayContainsValue(action_names, CFRangeMake(0, CFArrayGetCount(action_names)), kAXPressAction);
+			CFRelease(action_names);
+			if (!supports_press)
+			{
+				CFRelease(element);
+				element = nullptr;
+			}
+			else
+			{
 				if (interrupted())
 				{
 					CFRelease(element);
@@ -931,6 +1169,9 @@ namespace uam::computer_use
 				CFRelease(element);
 				if (result == kAXErrorSuccess)
 					return true;
+				if (error_out != nullptr)
+					*error_out = "The selected accessibility element press failed after input began.";
+				return false;
 			}
 		}
 
@@ -1003,7 +1244,7 @@ namespace uam::computer_use
 					CFRelease(up_event);
 					return false;
 				}
-				const bool release_target_ready = prepare_pointer_input();
+				const bool release_target_ready = verify_pointer_target();
 				PostEvent(up_event, reference);
 				CFRelease(down_event);
 				CFRelease(up_event);
@@ -1025,24 +1266,26 @@ namespace uam::computer_use
 			CGEventType up = button == kCGMouseButtonRight ? kCGEventRightMouseUp : button == kCGMouseButtonCenter ? kCGEventOtherMouseUp : kCGEventLeftMouseUp;
 			CGEventRef move = CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, start, button);
 			CGEventRef down_event = CGEventCreateMouseEvent(nullptr, down, start, button);
-			CGEventRef drag_event = CGEventCreateMouseEvent(nullptr, dragged, end, button);
-			CGEventRef up_event = CGEventCreateMouseEvent(nullptr, up, end, button);
+			CGEventRef drag_event = CGEventCreateMouseEvent(nullptr, dragged, start, button);
+			CGEventRef up_event = CGEventCreateMouseEvent(nullptr, up, start, button);
+			CGPoint last_posted = start;
+			bool pressed = false;
 			const auto release_events = [&]()
 			{
-				if (move != nullptr)
-					CFRelease(move);
-				if (down_event != nullptr)
-					CFRelease(down_event);
-				if (drag_event != nullptr)
-					CFRelease(drag_event);
-				if (up_event != nullptr)
-					CFRelease(up_event);
+				if (pressed)
+				{
+					CGEventSetLocation(up_event, last_posted);
+					PostEvent(up_event, reference);
+				}
+				if (move != nullptr) CFRelease(move);
+				if (down_event != nullptr) CFRelease(down_event);
+				if (drag_event != nullptr) CFRelease(drag_event);
+				if (up_event != nullptr) CFRelease(up_event);
 			};
 			if (move == nullptr || down_event == nullptr || drag_event == nullptr || up_event == nullptr)
 			{
 				release_events();
-				if (error_out != nullptr)
-					*error_out = "Drag events could not be created.";
+				if (error_out != nullptr) *error_out = "Drag events could not be created.";
 				return false;
 			}
 			if (!prepare_pointer_input())
@@ -1051,43 +1294,34 @@ namespace uam::computer_use
 				return false;
 			}
 			PostEvent(move, reference);
-			if (interrupted())
-			{
-				release_events();
-				return false;
-			}
 			if (!prepare_pointer_input())
 			{
 				release_events();
 				return false;
 			}
 			PostEvent(down_event, reference, input_applied_out);
-			if (interrupted())
+			pressed = true;
+			const int steps = std::max(1, static_cast<int>(std::ceil(action.duration_ms / (1000.0 / 60.0))));
+			const auto started = std::chrono::steady_clock::now();
+			for (int step = 1; step <= steps; ++step)
 			{
-				CGEventSetLocation(up_event, start);
-				PostEvent(up_event, reference);
-				release_events();
-				return false;
+				std::this_thread::sleep_until(started + std::chrono::milliseconds(action.duration_ms * step / steps));
+				if (!verify_pointer_target())
+				{
+					release_events();
+					return false;
+				}
+				const CGFloat progress = static_cast<CGFloat>(step) / steps;
+				last_posted = CGPointMake(start.x + (end.x - start.x) * progress,
+				    start.y + (end.y - start.y) * progress);
+				CGEventSetLocation(drag_event, last_posted);
+				PostEvent(drag_event, reference);
 			}
-			if (!prepare_pointer_input())
-			{
-				CGEventSetLocation(up_event, start);
-				PostEvent(up_event, reference);
-				release_events();
-				return false;
-			}
-			PostEvent(drag_event, reference);
-			if (interrupted())
-			{
-				PostEvent(up_event, reference);
-				release_events();
-				return false;
-			}
-			const bool release_target_ready = prepare_pointer_input();
-			PostEvent(up_event, reference);
+			const bool release_target_ready = verify_pointer_target();
 			release_events();
 			return release_target_ready;
 		}
+
 		if (action.kind == "scroll")
 		{
 			CGEventRef event = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel, 2, static_cast<std::int32_t>(std::llround(action.delta_y)), static_cast<std::int32_t>(std::llround(action.delta_x)));
@@ -1157,8 +1391,14 @@ namespace uam::computer_use
 		}
 		if (action.kind == "hotkey")
 		{
-			std::vector<std::pair<CGKeyCode, CGEventFlags>> keys;
-			CGEventFlags flags = 0;
+			struct HotkeyKey
+			{
+				CGKeyCode code;
+				CGEventFlags modifier;
+				bool is_modifier;
+			};
+			std::vector<HotkeyKey> modifiers;
+			std::vector<HotkeyKey> ordinary_keys;
 			for (const std::string& raw_key : action.keys)
 			{
 				const std::string key = Lower(raw_key);
@@ -1169,10 +1409,19 @@ namespace uam::computer_use
 						*error_out = "Unsupported hotkey key: " + raw_key;
 					return false;
 				}
-				flags |= ModifierFlag(key);
-				keys.emplace_back(found->second, flags);
+				const CGEventFlags modifier = ModifierFlag(key);
+				HotkeyKey parsed{found->second, modifier, modifier != 0};
+				if (parsed.is_modifier)
+				{
+					modifiers.push_back(parsed);
+				}
+				else
+					ordinary_keys.push_back(parsed);
 			}
+			modifiers.insert(modifiers.end(), ordinary_keys.begin(), ordinary_keys.end());
+			const std::vector<HotkeyKey>& keys = modifiers;
 			std::size_t posted = 0;
+			CGEventFlags pressed_flags = 0;
 			bool post_failed = false;
 			bool focus_lost = false;
 			for (; posted < keys.size();)
@@ -1184,11 +1433,16 @@ namespace uam::computer_use
 					focus_lost = true;
 					break;
 				}
-				if (!PostKey(keys[posted].first, true, keys[posted].second, reference, input_applied_out))
+				const HotkeyKey& key = keys[posted];
+				CGEventFlags next_flags = pressed_flags;
+				if (key.is_modifier)
+					next_flags |= key.modifier;
+				if (!PostKey(key.code, true, next_flags, reference, input_applied_out))
 				{
 					post_failed = true;
 					break;
 				}
+				pressed_flags = next_flags;
 				++posted;
 				if (interrupted())
 					break;
@@ -1196,10 +1450,14 @@ namespace uam::computer_use
 			if (!cancellation_seen && !keyboard_target_is_focused())
 				focus_lost = true;
 			bool release_failed = false;
+			CGEventFlags release_flags = pressed_flags;
 			for (std::size_t index = posted; index > 0; --index)
 			{
 				(void)interrupted();
-				release_failed = !PostKey(keys[index - 1].first, false, flags, reference, nullptr) || release_failed;
+				const HotkeyKey& key = keys[index - 1];
+				if (key.is_modifier)
+					release_flags &= ~key.modifier;
+				release_failed = !PostKey(key.code, false, release_flags, reference, nullptr) || release_failed;
 			}
 			if (cancellation_seen)
 				return false;
@@ -1221,37 +1479,48 @@ namespace uam::computer_use
 		if (AXIsProcessTrusted())
 			return true;
 		if (error_out != nullptr)
-			*error_out = "macOS denied Accessibility input. Enable the current UAM app in System Settings > Privacy & Security > Accessibility, then restart UAM. If it is already enabled after an app update, remove the stale entry and add the current UAM app again.";
+			*error_out = "macOS denied Accessibility input. Enable UAM Computer Use in System Settings > Privacy & Security > Accessibility, then restart UAM. If it is already enabled after an app update, remove the stale entry and add the current UAM Computer Use app again.";
 		return false;
 	}
 
-	bool ConfirmComputerUse(const std::string& message)
+	bool EnsureCapturePermission(std::string* error_out)
 	{
-		__block bool allowed = false;
-		void (^show_confirmation)() = ^{
-		  @autoreleasepool
-		  {
-			  [NSApplication sharedApplication];
-			  NSRunningApplication* previous = NSWorkspace.sharedWorkspace.frontmostApplication;
-			  NSAlert* alert = [[NSAlert alloc] init];
-			  alert.messageText = @"Allow UAM computer control";
-			  alert.informativeText = [NSString stringWithUTF8String:message.c_str()];
-			  [alert addButtonWithTitle:@"Deny"];
-			  [alert addButtonWithTitle:@"Allow"];
-			  alert.window.level = NSModalPanelWindowLevel;
-			  alert.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-			      NSWindowCollectionBehaviorFullScreenAuxiliary;
-			  [NSApp activateIgnoringOtherApps:YES];
-			  [alert.window orderFrontRegardless];
-			  allowed = [alert runModal] == NSAlertSecondButtonReturn;
-			  [previous activateWithOptions:NSApplicationActivateAllWindows];
-		  }
-		};
-		if (NSThread.isMainThread)
-			show_confirmation();
-		else
-			dispatch_sync(dispatch_get_main_queue(), show_confirmation);
-		return allowed;
+		if (CGPreflightScreenCaptureAccess())
+			return true;
+		if (error_out != nullptr)
+			*error_out = "macOS denied Screen Recording. Enable UAM Computer Use in System Settings > Privacy & Security > Screen & System Audio Recording, then restart UAM.";
+		return false;
+	}
+
+	bool RequestCapturePermission(std::string* error_out)
+	{
+		if (CGPreflightScreenCaptureAccess()) return true;
+		if (CGRequestScreenCaptureAccess()) return true;
+		return EnsureCapturePermission(error_out);
+	}
+
+	bool RequestActionPermission(std::string* error_out)
+	{
+		NSDictionary* options = @{(__bridge NSString*)kAXTrustedCheckOptionPrompt : @YES};
+		if (AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options)) return true;
+		return EnsureActionPermission(error_out);
+	}
+
+	ApplicationIdentity ApplicationIdentityForTarget(const std::string& kind, std::uint64_t, std::uint64_t process_id)
+	{
+		if (kind != "window" || process_id == 0) return {};
+		return ApplicationForPid(static_cast<pid_t>(process_id));
+	}
+
+	bool OpenPermissionSettings(const std::string& permission, std::string* error_out)
+	{
+		NSString* url_text = permission == "accessibility"
+		    ? @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+		    : @"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+		NSURL* url = [NSURL URLWithString:url_text];
+		if ([[NSWorkspace sharedWorkspace] openURL:url]) return true;
+		if (error_out != nullptr) *error_out = "Open System Settings manually and enable UAM Computer Use under Privacy & Security.";
+		return false;
 	}
 
 	int RunWithUi(const std::function<int()>& work)

@@ -1,6 +1,7 @@
 #include "common/provider/provider_runtime.h"
 
 #include "common/config/approval_modes.h"
+#include "common/chat/chat_ids.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
@@ -62,7 +63,8 @@ nlohmann::json IProviderRuntime::OnAcpBuildSetupRequest(int request_id, const Ch
 
 std::string IProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
 {
-	return uam::acp_detail::ValidGeminiResumeId(chat);
+	const std::string id = uam::strings::Trim(chat.native_session_id);
+	return uam::chat_ids::IsLocalDraftChatId(id) ? std::string{} : id;
 }
 
 nlohmann::json IProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
@@ -95,20 +97,6 @@ nlohmann::json IProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState& se
 	(void)request_id;
 	out_method.clear();
 	return BuildCancelNotification(session.session_id);
-}
-
-bool IProviderRuntime::OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const
-{
-	(void)session;
-	(void)mode_id;
-	return false;
-}
-
-bool IProviderRuntime::OnAcpSetModelLocally(uam::AcpSessionState& session, const std::string& model_id) const
-{
-	(void)session;
-	(void)model_id;
-	return false;
 }
 
 nlohmann::json IProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,

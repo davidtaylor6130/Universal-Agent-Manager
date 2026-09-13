@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,6 +11,9 @@ vi.mock('@xterm/xterm', () => ({
     write() {}
     writeln() {}
     dispose() {}
+    onResize() {
+      return { dispose() {} }
+    }
     onData() {
       return { dispose() {} }
     }
@@ -153,6 +156,12 @@ describe('MainPanel', () => {
         },
       })
     })
+    expect(cliButton().disabled).toBe(false)
+    act(() => useAppStore.setState((state) => ({
+      cliBindingBySessionId: {
+        'chat-1': { ...state.cliBindingBySessionId['chat-1'], lifecycleState: 'shuttingDown' },
+      },
+    })))
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -162,6 +171,8 @@ describe('MainPanel', () => {
   })
 
   it('opens a terminal-first session in the terminal fallback view', async () => {
+    const binding = useAppStore.getState().acpBindingBySessionId['chat-1']
+    const onRender = vi.fn()
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => ({ ...session, viewMode: 'cli' })),
       acpBindingBySessionId: {},
@@ -171,15 +182,72 @@ describe('MainPanel', () => {
     const root = createRoot(host)
 
     await act(async () => {
-      root.render(<MainPanel />)
+      root.render(<Profiler id="terminal-pane" onRender={onRender}><MainPanel /></Profiler>)
       await Promise.resolve()
     })
 
     expect(host.querySelector('button[aria-label="Terminal fallback"]')?.getAttribute('aria-pressed')).toBe('true')
     expect(host.textContent).toContain('Loading terminal')
 
+    onRender.mockClear()
+    for (let index = 0; index < 20; index += 1) {
+      act(() => useAppStore.setState({
+        acpBindingBySessionId: { 'chat-1': { ...binding, processing: false, lifecycleState: 'ready', recentStderr: `diagnostic ${index}` } },
+      }))
+    }
+    const commits = onRender.mock.calls.length
     act(() => root.unmount())
     host.remove()
+    expect(commits).toBe(0)
+  })
+
+  it.each([false, true])('retains the selected terminal view across remount before native push (storage unavailable: %s)', async (storageUnavailable) => {
+    const originalLoad = useAppStore.getState().loadSessionMessages
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState({ acpBindingBySessionId: {}, loadSessionMessages })
+    if (storageUnavailable) Object.defineProperty(globalThis, 'localStorage', { configurable: true, get: () => { throw new Error('Storage unavailable') } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    let root = createRoot(host)
+    await act(async () => root.render(<MainPanel />))
+    await act(async () => (host.querySelector('[aria-label="Terminal fallback"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().sessions[0].viewMode).toBe('cli')
+    act(() => root.unmount())
+    root = createRoot(host)
+    await act(async () => root.render(<MainPanel />))
+    expect(host.querySelector('[aria-label="Terminal fallback"]')?.getAttribute('aria-pressed')).toBe('true')
+    loadSessionMessages.mockClear()
+    act(() => (host.querySelector('[aria-label="Chat view"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().sessions[0].viewMode).toBe('chat')
+    expect(loadSessionMessages.mock.calls).toEqual([['chat-1', true, true]])
+    act(() => (host.querySelector('[aria-label="Chat view"]') as HTMLButtonElement).click())
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ loadSessionMessages: originalLoad })
+  })
+
+  it('refreshes native history only when switching from terminal to chat', () => {
+    const originalLoad = useAppStore.getState().loadSessionMessages
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, viewMode: 'cli' })),
+      acpBindingBySessionId: {},
+      loadSessionMessages,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+    loadSessionMessages.mockClear()
+    const chatButton = host.querySelector('button[aria-label="Chat view"]') as HTMLButtonElement
+    act(() => chatButton.click())
+    expect(loadSessionMessages.mock.calls).toEqual([['chat-1', true, true]])
+    act(() => chatButton.click())
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ loadSessionMessages: originalLoad })
   })
 
   it('keeps imported transcripts in chat view and disables terminal fallback', () => {
@@ -270,6 +338,9 @@ describe('MainPanel', () => {
     expect(button('Chat view').disabled).toBe(false)
     act(() => button('Chat view').click())
     expect(readChatViewMode('chat-1')).toBe('chat')
+    expect(button('Terminal fallback').disabled).toBe(false)
+    await act(async () => button('Terminal fallback').click())
+    expect(readChatViewMode('chat-1')).toBe('cli')
     expect(requests).not.toContainEqual(expect.objectContaining({
       action: 'stopCliTerminal',
       payload: expect.objectContaining({ quit: true }),

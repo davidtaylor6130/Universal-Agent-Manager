@@ -4,6 +4,7 @@
 import { ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ConversationTurn } from './ConversationTurn'
+import { useSubAgentDisclosure } from './ConversationWork'
 import { useToolQuestionDialog } from './useToolQuestionDialog'
 import './ToolDetails.css'
 import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench, X } from 'lucide-react'
@@ -44,7 +45,7 @@ export function SubAgentRunningPanel({
   onSelectTool: (toolId: string) => void
   renderHistory?: () => ReactNode
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useSubAgentDisclosure(tool.id)
   const displayTitle = toolDisplayTitle(tool)
   const transcriptAvailable = Boolean(tool.subAgentId)
   return (
@@ -187,30 +188,32 @@ export function PermissionInlineCard({
   const normalizedOptions = normalizePermissionOptions(permission.options)
   const [submittingOptionId, setSubmittingOptionId] = useState('')
   const [submitError, setSubmitError] = useState('')
-  const submittingRef = useRef(false)
+  const submittingRef = useRef<string | null>(null)
 
   useEffect(() => {
-    submittingRef.current = false
+    submittingRef.current = null
     setSubmittingOptionId('')
     setSubmitError('')
   }, [permission.requestId])
 
   const resolve = async (optionId: string) => {
-    if (submittingRef.current) return
-    submittingRef.current = true
+    if (submittingRef.current !== null) return
+    submittingRef.current = permission.requestId
     setSubmittingOptionId(optionId)
     setSubmitError('')
     let accepted = false
     try {
       accepted = await onResolve(permission.requestId, optionId)
+      if (submittingRef.current !== permission.requestId) return
       if (!accepted) {
         setSubmitError('The provider did not accept that response. Try again.')
       }
     } catch {
+      if (submittingRef.current !== permission.requestId) return
       setSubmitError('The permission response failed. Try again.')
     } finally {
-      if (!accepted) {
-        submittingRef.current = false
+      if (!accepted && submittingRef.current === permission.requestId) {
+        submittingRef.current = null
         setSubmittingOptionId('')
       }
     }
@@ -368,28 +371,24 @@ export { UserInputInlineCard } from './QuestionInput'
 type ToolCallModalProps = {
   tool: AcpToolCall
   chatId?: string
+  messageIndex?: number
   onClose: () => void
   onOpenSubAgent?: () => void
   accentColor?: string
 }
 
 export function ToolCallModal(props: ToolCallModalProps) {
-  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.tool.id}`} {...props} />
+  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}`} {...props} />
 }
 
 function ToolCallDetails({
   tool,
   chatId,
+  messageIndex,
   onClose,
   onOpenSubAgent,
   accentColor,
-}: {
-  tool: AcpToolCall
-  chatId?: string
-  onClose: () => void
-  onOpenSubAgent?: () => void
-  accentColor?: string
-}) {
+}: ToolCallModalProps) {
   type ToolContentPage = {
     content: string
     offset: number
@@ -414,6 +413,8 @@ function ToolCallDetails({
   const [managedResumeMessage, setManagedResumeMessage] = useState('')
   const shouldLoadContent = Boolean(tool.contentDeferred && chatId && isCefContext())
   const initialContentOffset = useRef(isLive ? Number.MAX_SAFE_INTEGER : 0).current
+  const contentOffset = useRef(initialContentOffset)
+  const contentDigest = useRef(tool.contentDigest)
   const output = cleanToolOutput(
 	shouldLoadContent && contentPages.length === 0
       ? contentLoading ? 'Loading tool output…' : 'Tool output is unavailable.'
@@ -451,12 +452,13 @@ function ToolCallDetails({
   const loadContent = useCallback(async (offset: number, replace = false) => {
     if (!shouldLoadContent || !chatId) return
     const requestSerial = ++contentRequestSerial.current
+    contentOffset.current = offset
     setRetryOffset(offset)
     setContentLoading(true)
     setContentError('')
     const response = await sendToCEF<ToolContentPage>({
       action: 'getToolCallContent',
-      payload: { chatId, toolCallId: tool.id, offset },
+      payload: { chatId, toolCallId: tool.id, offset, ...(messageIndex === undefined ? {} : { messageIndex }) },
     }).catch(() => ({ ok: false, error: 'Failed to load tool output.', data: undefined }))
     if (requestSerial !== contentRequestSerial.current) return
     setContentLoading(false)
@@ -471,7 +473,7 @@ function ToolCallDetails({
 	  pages.push(response.data!)
 	  return pages
 	})
-  }, [chatId, shouldLoadContent, tool.id])
+  }, [chatId, messageIndex, shouldLoadContent, tool.id])
 
   useEffect(() => {
     ++contentRequestSerial.current
@@ -488,10 +490,20 @@ function ToolCallDetails({
   }, [initialContentOffset, loadContent, shouldLoadContent, tool.id])
 
 	useEffect(() => {
-	  if (!shouldLoadContent || !isLive || !followLive) return
+      const changed = contentDigest.current !== tool.contentDigest
+      if (!isLive) contentDigest.current = tool.contentDigest
+      if (shouldLoadContent && !isLive && (followLive || changed)) {
+        // Chunks from different content revisions must never be combined.
+        setContentPages([])
+        void loadContent(followLive ? Number.MAX_SAFE_INTEGER : contentOffset.current, true)
+      }
+	}, [followLive, isLive, loadContent, shouldLoadContent, tool.contentDigest])
+
+	useEffect(() => {
+	  if (!shouldLoadContent || !isLive || !followLive || contentLoading) return
 	  const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
 	  return () => window.clearInterval(timer)
-	}, [followLive, isLive, loadContent, shouldLoadContent])
+	}, [contentLoading, followLive, isLive, loadContent, shouldLoadContent])
 
   useEffect(() => {
     setManagedTranscript(null)
@@ -730,7 +742,7 @@ export function MessageFrame({
           )}
           {(copyText.trim() || onEdit || onRevert) && (
             <span className="ml-auto flex items-center gap-1 uam-message-frame__actions">
-              <CopyTextButton text={copyText} label="Copy message" title="Copy message" />
+              {!streaming && copyText.trim() && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
               {onEdit && (
                 <IconButton
                   icon={<Pencil size={13} aria-hidden />}

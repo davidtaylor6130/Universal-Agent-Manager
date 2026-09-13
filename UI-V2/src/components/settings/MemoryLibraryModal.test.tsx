@@ -297,6 +297,31 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
+  it('shows a repeated memory failure after the previous error was dismissed', () => {
+    const { host, root } = renderModal()
+    const deleteMemoryEntry = vi.fn(async () => {
+      useAppStore.setState({ memoryLibraryError: 'Permission denied' })
+      return false
+    })
+    act(() => useAppStore.setState({ deleteMemoryEntry }))
+    const attemptDelete = () => {
+      clickButton(host, 'Delete Global lesson')
+      const dialog = host.querySelector('[aria-label="Delete memory entry"]') as HTMLElement
+      clickButton(dialog, 'Delete memory')
+    }
+    attemptDelete()
+    expect(host.textContent).toContain('Permission denied')
+    clickButton(host, 'Dismiss memory error')
+    expect(host.textContent).not.toContain('Permission denied')
+    expect(useAppStore.getState().memoryLibraryError).toBe('')
+
+    attemptDelete()
+    expect(deleteMemoryEntry).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('Permission denied')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('deletes only the currently visible memory entries after confirmation', () => {
     const deleteMemoryEntries = vi.fn().mockResolvedValue(true)
     const { host, root } = renderModal({ deleteMemoryEntries })

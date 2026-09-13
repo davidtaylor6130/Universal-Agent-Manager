@@ -8,9 +8,7 @@ export interface ChatComposerDraft {
 const chatPrefix = 'uam-chat-composer-draft-v1:'
 const terminalPrefix = 'uam-terminal-steer-draft-v1:'
 const chatDraftMemory = new Map<string, ChatComposerDraft>()
-const terminalDraftMemory = new Map<string, string>()
 const chatDraftDirty = new Set<string>()
-const terminalDraftDirty = new Set<string>()
 
 function storage(): Storage | null {
   try {
@@ -60,35 +58,10 @@ export function writeChatComposerDraft(sessionId: string, draft: ChatComposerDra
   }
 }
 
-export function readTerminalSteerDraft(sessionId: string): string {
-	if (terminalDraftDirty.has(sessionId)) return terminalDraftMemory.get(sessionId) ?? ''
-  try {
-    return storage()?.getItem(`${terminalPrefix}${sessionId}`) ?? terminalDraftMemory.get(sessionId) ?? ''
-  } catch {
-    return terminalDraftMemory.get(sessionId) ?? ''
-  }
-}
-
-export function writeTerminalSteerDraft(sessionId: string, text: string): void {
-  if (text) terminalDraftMemory.set(sessionId, text)
-  else terminalDraftMemory.delete(sessionId)
-  try {
-    const key = `${terminalPrefix}${sessionId}`
-    const target = storage()
-    if (!target) throw new Error('Draft persistence is unavailable.')
-    if (text) target.setItem(key, text)
-    else target.removeItem(key)
-    terminalDraftDirty.delete(sessionId)
-  } catch {
-    terminalDraftDirty.add(sessionId)
-  }
-}
-
 export function removeComposerDrafts(sessionIds: Iterable<string>): void {
   const ids = Array.from(sessionIds)
   for (const sessionId of ids) {
     chatDraftMemory.delete(sessionId)
-    terminalDraftMemory.delete(sessionId)
   }
   const target = storage()
   for (const sessionId of ids) {
@@ -102,9 +75,8 @@ export function removeComposerDrafts(sessionIds: Iterable<string>): void {
     try {
       if (!target) throw new Error('Draft persistence is unavailable.')
       target.removeItem(`${terminalPrefix}${sessionId}`)
-      terminalDraftDirty.delete(sessionId)
     } catch {
-      terminalDraftDirty.add(sessionId)
+      // Legacy terminal drafts are no longer read; cleanup is best effort.
     }
   }
 }

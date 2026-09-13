@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -32,6 +33,7 @@ namespace uam
 	/// </summary>
 	enum class CliTerminalTurnState
 	{
+		Unknown,
 		Idle,
 		Busy,
 	};
@@ -40,6 +42,7 @@ namespace uam
 	{
 		Disabled,
 		Stopped,
+		Unknown,
 		Idle,
 		Busy,
 		ShuttingDown,
@@ -58,6 +61,8 @@ namespace uam
 		int cols = kCliTerminalDefaultCols;
 		bool should_launch = false;
 		bool ui_attached = false;
+		std::string ui_attachment_id;
+		std::shared_ptr<std::stop_source> native_session_setup_cancel;
 		double last_sync_time_s = 0.0;
 		double last_output_time_s = 0.0;
 		double last_activity_time_s = 0.0;
@@ -71,6 +76,7 @@ namespace uam
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;
+		bool uses_prompt_activity_tracking = true;
 		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
 		CliTerminalLifecycleState lifecycle_state = CliTerminalLifecycleState::Stopped;
 		std::string recent_output_bytes;
@@ -318,6 +324,13 @@ namespace uam
 		std::unordered_set<std::string> owned_agent_run_ids;
 	};
 
+	struct AcpPendingSteerState
+	{
+		int user_message_index = -1;
+		int turn_serial = 0;
+		std::string provider_turn_id;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		std::string chat_id;
@@ -441,6 +454,8 @@ namespace uam
 		std::string agent_title;
 		std::string agent_version;
 		std::unordered_map<int, std::string> pending_request_methods;
+		std::unordered_map<std::string, AcpPendingSteerState> pending_steer_requests;
+		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
@@ -455,6 +470,14 @@ namespace uam
 		std::optional<std::string> mode_change_previous_chat_id;
 		std::optional<std::string> mode_change_previous_command_safety_tier;
 		std::string mode_change_requested_id;
+		// Keep paginated discovery separate from the last complete model catalog.
+		struct CodexModelDiscoveryState
+		{
+			std::vector<AcpModelState> models;
+			std::unordered_set<std::string> model_ids;
+			std::unordered_set<std::string> cursors;
+			std::string current_model_id;
+		} codex_model_discovery;
 		std::vector<AcpModelState> available_models;
 		std::vector<AcpConfigOptionState> available_config_options;
 		std::string current_model_id;
@@ -486,6 +509,7 @@ namespace uam
 	struct PendingAcpRemoteStop : public platform::StdioProcessPlatformFields
 	{
 		std::string chat_id;
+		std::string stderr_tail;
 		double deadline_time_s = 0.0;
 		bool recoverable_turn = false;
 		bool restart_after_stop = false;
@@ -503,6 +527,7 @@ namespace uam
 	struct AsyncCommandTask
 	{
 		bool running = false;
+		ExecutionHost execution_host;
 		std::string command_preview;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
@@ -624,6 +649,8 @@ namespace uam
 
 	struct CliProviderVersionState
 	{
+		std::string provider_id;
+		ExecutionHost execution_host;
 		bool checked = false;
 		bool supported = false;
 		std::string installed_version;
@@ -633,6 +660,7 @@ namespace uam
 		std::string last_install_status = "none";
 		std::string raw_output;
 		std::string message;
+		std::string check_error;
 		std::string install_output;
 	};
 
@@ -704,6 +732,9 @@ namespace uam
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
+		// Ownership of the native-sync failure currently shown in status_line.
+		std::string native_chat_refresh_error_target_id;
+		std::string native_chat_refresh_error_status;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
@@ -712,13 +743,12 @@ namespace uam
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;
 
-		std::vector<PendingRuntimeCall> pending_calls;
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
 		AsyncCommandTask runtime_cli_version_check_task;
 		AsyncCommandTask runtime_cli_pin_task;
 		std::string runtime_cli_version_provider_id;
 		std::string runtime_cli_pin_provider_id;
-		std::deque<std::string> runtime_cli_version_check_queue;
+		std::deque<std::pair<std::string, std::string>> runtime_cli_version_check_queue;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
 		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;
@@ -735,7 +765,9 @@ namespace uam
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
+		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
 	};

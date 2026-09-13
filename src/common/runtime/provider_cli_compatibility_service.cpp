@@ -1,16 +1,21 @@
 #include "provider_cli_compatibility_service.h"
 
+#include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/platform/platform_services.h"
+#include "common/config/execution_host_config.h"
+#include "common/paths/path_utils.h"
+#include "remote/runner_client.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/state/app_state.h"
 #include "common/utils/range_utils.h"
+#include "common/utils/base64.h"
 #include "common/utils/string_utils.h"
-#include "core/gemini_cli_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -24,15 +29,7 @@
 
 namespace
 {
-	constexpr const char* kGeminiVerifiedVersion = "0.55.1";
-	constexpr const char* kCodexVerifiedVersion = "0.148.0";
-	constexpr const char* kOpenCodeVerifiedVersion = "1.18.15";
-	constexpr const char* kCopilotVerifiedVersion = "1.0.80";
-	constexpr const char* kVerifiedAt = "2026-08-27";
-	constexpr const char* kCopilotMinimumVersion = "1.0.60";
-	constexpr const char* kOpenCodeMinimumVersion = "1.15.13";
 	constexpr const char* kLatestVersion = "latest";
-	constexpr const char* kDefaultProviderCliPolicyId = uam::provider_ids::kGeminiCli;
 	constexpr const char* kCommandFailurePrefix = "Failed to run command: ";
 	constexpr const char* kProviderCliTimedOutSuffix = "\n\n[Provider CLI command timed out]";
 	constexpr const char* kProviderCliCanceledSuffix = "\n\n[Provider CLI command canceled]";
@@ -47,29 +44,6 @@ namespace
 	    '-',
 	});
 
-	enum class CliVersionPolicy
-	{
-		MinimumSemver,
-		AnySafeToken,
-	};
-
-	struct ProviderCliPolicy
-	{
-		std::string_view provider_id;
-		std::string_view npm_package;
-		std::string_view fallback_title;
-		std::string_view executable_name;
-		std::string_view version_probe_command;
-		std::string_view homebrew_package;
-		std::string_view winget_package;
-		bool homebrew_cask = false;
-		const char* preferred_version = nullptr;
-		const char* fallback_version = nullptr;
-		const char* minimum_version = nullptr;
-		CliVersionPolicy version_policy = CliVersionPolicy::AnySafeToken;
-		bool provider_managed = false;
-	};
-
 	struct ResolvedProviderCliPolicy
 	{
 		std::string provider_id;
@@ -82,99 +56,111 @@ namespace
 		const ProviderCliPolicy* policy = nullptr;
 	};
 
-	constexpr auto kProviderCliPolicies = std::to_array<ProviderCliPolicy>({
-	    ProviderCliPolicy{
-	        .provider_id = uam::provider_ids::kGeminiCli,
-	        .npm_package = "@google/gemini-cli",
-	        .fallback_title = "Gemini CLI",
-	        .executable_name = "gemini",
-	        .version_probe_command = "gemini --version",
-	        .homebrew_package = "gemini-cli",
-	        .preferred_version = kLatestVersion,
-	        .fallback_version = kGeminiVerifiedVersion,
-	        .minimum_version = kGeminiVerifiedVersion,
-	        .version_policy = CliVersionPolicy::MinimumSemver,
-	    },
-	    ProviderCliPolicy{
-	        .provider_id = uam::provider_ids::kCodexCli,
-	        .npm_package = "@openai/codex",
-	        .fallback_title = "Codex CLI",
-	        .executable_name = "codex",
-	        .version_probe_command = "codex --version",
-	        .homebrew_package = "codex",
-	        .homebrew_cask = true,
-	        .preferred_version = kLatestVersion,
-	        .fallback_version = kCodexVerifiedVersion,
-	    },
-	    ProviderCliPolicy{
-	        .provider_id = uam::provider_ids::kClaudeCli,
-	        .npm_package = "@anthropic-ai/claude-code",
-	        .fallback_title = "Claude Code",
-	        .executable_name = "claude",
-	        .version_probe_command = "claude --version",
-	        .homebrew_package = "claude-code",
-	        .homebrew_cask = true,
-	        .preferred_version = kLatestVersion,
-	        .provider_managed = true,
-	    },
-	    ProviderCliPolicy{
-	        .provider_id = uam::provider_ids::kOpenCodeCli,
-	        .npm_package = "opencode-ai",
-	        .fallback_title = "OpenCode",
-	        .executable_name = "opencode",
-	        .version_probe_command = "opencode --version",
-	        .homebrew_package = "opencode",
-	        .preferred_version = kLatestVersion,
-	        .fallback_version = kOpenCodeVerifiedVersion,
-	        .minimum_version = kOpenCodeMinimumVersion,
-	        .version_policy = CliVersionPolicy::MinimumSemver,
-	    },
-	    ProviderCliPolicy{
-	        .provider_id = uam::provider_ids::kCopilotCli,
-	        .npm_package = "@github/copilot",
-	        .fallback_title = "GitHub Copilot CLI",
-	        .executable_name = "copilot",
-	        .version_probe_command = "copilot --version",
-	        .homebrew_package = "copilot-cli",
-	        .winget_package = "GitHub.Copilot",
-	        .homebrew_cask = true,
-	        .preferred_version = kLatestVersion,
-	        .fallback_version = kCopilotVerifiedVersion,
-	        .minimum_version = kCopilotMinimumVersion,
-	        .version_policy = CliVersionPolicy::MinimumSemver,
-	    },
-	});
-
-	const ProviderCliPolicy* FindProviderCliPolicy(std::string_view normalized_provider_id)
+	const ProviderCliPolicy* FindProviderCliPolicy(std::string_view provider_id)
 	{
-		const auto it = std::ranges::find_if(kProviderCliPolicies, [normalized_provider_id](const ProviderCliPolicy& policy) { return policy.provider_id == normalized_provider_id; });
-		return it == kProviderCliPolicies.end() ? nullptr : &*it;
+		return ProviderRuntimeRegistry::ResolveById(provider_id).CliVersionPolicy();
 	}
 
-	const ProviderCliPolicy& ProviderCliPolicyOrDefault(std::string_view normalized_provider_id)
+	const ProviderCliPolicy& ProviderCliPolicyOrUnsupported(std::string_view provider_id)
 	{
-		if (const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id))
+		if (const ProviderCliPolicy* policy = FindProviderCliPolicy(provider_id))
 		{
 			return *policy;
 		}
-		if (const ProviderCliPolicy* policy = FindProviderCliPolicy(kDefaultProviderCliPolicyId))
-		{
-			return *policy;
-		}
-		return kProviderCliPolicies.front();
+		static constexpr ProviderCliPolicy unsupported;
+		return unsupported;
 	}
 
-	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const std::string& command, int timeout_ms = -1)
+	std::string LocalPlatform()
+	{
+#if defined(_WIN32)
+		return "windows";
+#elif defined(__APPLE__)
+		return "macos";
+#else
+		return "linux";
+#endif
+	}
+
+	bool IsReadyCliHost(const ExecutionHost& host)
+	{
+		return host.id == uam::execution_hosts::kLocalHostId ||
+		       (host.transport == "ssh" && host.runner_status == "ready" &&
+		        host.runner_protocol_version >= 3 && !host.runner_version.empty() &&
+		        uam::execution_hosts::IsPortableId(host.id) &&
+		        uam::execution_hosts::IsSafeSshAlias(host.ssh_alias) &&
+		        uam::execution_hosts::IsSafeRunnerDirectory(host.runner_directory) &&
+		        (host.platform == "windows" || host.platform == "macos" || host.platform == "linux"));
+	}
+
+	std::string BuildInstallAwareProbeCommand(const ProviderCliPolicy& policy, std::string_view platform);
+	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error);
+
+	ProcessExecutionResult RunCliCommand(const ExecutionHost& host, const std::string& provider_id,
+	    const std::string& command, bool installing, int timeout_ms, std::stop_token stop_token, const std::string& previous_probe)
+	{
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		if (host.id == uam::execution_hosts::kLocalHostId)
+			return service.ExecuteCommand(command, timeout_ms, stop_token);
+		ProcessExecutionResult result;
+		if (stop_token.stop_requested())
+		{
+			result.canceled = true;
+			result.error = "Remote CLI command was canceled.";
+			return result;
+		}
+		uam::remote::RunnerClient client(service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		        host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
+		uam::remote::DirectoryListing home;
+		if (!client.ListDirectories({}, home, &result.error)) return result;
+		if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, home.directory))
+		{
+			result.error = "The SSH helper returned an invalid home directory.";
+			return result;
+		}
+		if (installing)
+		{
+			const ProviderCliPolicy* policy = FindProviderCliPolicy(provider_id);
+			if (policy == nullptr) { result.error = "The provider update policy is unavailable."; return result; }
+			const std::string probe_command = BuildInstallAwareProbeCommand(*policy, host.platform);
+			const std::vector<std::string> probe_argv = host.platform == "windows"
+			    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", probe_command}
+			    : std::vector<std::string>{"sh", "-lc", probe_command};
+			result = client.ExecuteCommand("cli-check-" + service.GenerateUuid(), uam::paths::PathFromUtf8(home.directory), probe_argv, kProviderCliVersionProbeTimeoutMs, stop_token);
+			if (!result.ok || result.exit_code != 0 || result.output_truncated || stop_token.stop_requested())
+			{
+				if (result.error.empty()) result.error = "Could not recheck the installed CLI. No update was started.";
+				result.ok = false;
+				return result;
+			}
+			if (!ValidateRemoteInstallProbe(previous_probe, result.output, host.platform, &result.error))
+			{
+				result.ok = false;
+				return result;
+			}
+		}
+		const std::vector<std::string> argv = host.platform == "windows"
+		    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", command}
+		    : std::vector<std::string>{"sh", "-lc", command};
+		// The fixed install ID excludes a second installer while an uncertain old lease remains.
+		const std::string process_id = installing ? "cli-update-" + provider_id : "cli-check-" + service.GenerateUuid();
+		return client.ExecuteCommand(process_id, uam::paths::PathFromUtf8(home.directory), argv, timeout_ms, stop_token);
+	}
+
+	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const ExecutionHost& host, const std::string& provider_id, const std::string& command, bool installing, int timeout_ms, const std::string& previous_probe = {})
 	{
 		uam::ResetAsyncCommandTask(task);
 		task.running = true;
+		task.execution_host = host;
 		task.command_preview = command;
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		std::shared_ptr<AsyncProcessTaskState> state = task.state;
 		task.worker = std::make_unique<std::jthread>(
-		    [command, timeout_ms, state](std::stop_token stop_token)
+		    [host, provider_id, command, installing, timeout_ms, previous_probe, state](std::stop_token stop_token)
 		    {
-			    state->result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout_ms, stop_token);
+			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms, stop_token, previous_probe);
 
 			    if (!state->result.error.empty() && state->result.output.empty())
 			    {
@@ -378,21 +364,10 @@ namespace
 		});
 	}
 
-	std::string NormalizeProviderCliPolicyIdOrDefault(std::string_view provider_id)
+	ResolvedProviderCliPolicy ResolveProviderCliPolicy(std::string_view provider_id)
 	{
-		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(provider_id);
-		if (!normalized.empty())
-		{
-			return normalized;
-		}
-
-		return kDefaultProviderCliPolicyId;
-	}
-
-	ResolvedProviderCliPolicy ResolveProviderCliPolicyOrDefault(std::string_view provider_id)
-	{
-		const std::string normalized_provider_id = NormalizeProviderCliPolicyIdOrDefault(provider_id);
-		return {normalized_provider_id, ProviderCliPolicyOrDefault(normalized_provider_id)};
+		const std::string normalized_provider_id = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+		return {normalized_provider_id, ProviderCliPolicyOrUnsupported(normalized_provider_id)};
 	}
 
 	OptionalProviderCliPolicy ResolveKnownProviderCliPolicy(std::string_view provider_id)
@@ -456,12 +431,12 @@ namespace
 		return BuildNpmGlobalInstallCommand(policy.npm_package, version);
 	}
 
-	std::string InstallMethodFromProbeOutput(std::string_view output)
+	std::string InstallMethodFromProbeOutput(std::string_view output, bool remote = false)
 	{
 		const std::size_t marker = output.find(kProviderCliPathMarker);
 		if (marker == std::string_view::npos)
 		{
-			return "npm";
+			return remote ? "unknown" : "npm";
 		}
 		const std::size_t line_end = output.find('\n', marker);
 		const std::string_view path_line = output.substr(marker, line_end == std::string_view::npos ? output.size() - marker : line_end - marker);
@@ -477,7 +452,31 @@ namespace
 		{
 			return "winget";
 		}
-		return "npm";
+		return !remote || uam::strings::Contains(path_line, "node_modules/") || uam::strings::Contains(path_line, "node_modules\\") ? "npm" : "unknown";
+	}
+
+	std::string_view ProbeIdentity(std::string_view output)
+	{
+		const std::size_t marker = output.find(kProviderCliPathMarker);
+		if (marker == std::string_view::npos) return {};
+		const std::size_t begin = marker + kProviderCliPathMarker.size();
+		return uam::strings::TrimAsciiView(output.substr(begin, output.find('\n', begin) - begin));
+	}
+
+	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
+	{
+		const std::string_view identity = ProbeIdentity(previous);
+		const std::size_t separator = identity.find('|');
+		const std::string method = InstallMethodFromProbeOutput(previous, true);
+		if (identity.empty() || separator == std::string_view::npos ||
+		    !uam::execution_hosts::IsAbsoluteRemotePath(platform, identity.substr(0, separator)) ||
+		    method == "unknown" || identity != ProbeIdentity(current) ||
+		    method != InstallMethodFromProbeOutput(current, true) ||
+		    OutputIndicatesCommandFailure(current))
+		{
+			return FailProviderCliInstall(error, "The CLI installation changed or could not be identified. Check this machine again before updating. No update was started.");
+		}
+		return true;
 	}
 
 	std::string StripProbePathLine(std::string output)
@@ -490,68 +489,103 @@ namespace
 		return output;
 	}
 
-	std::string BuildInstallAwareProbeCommand(const ProviderCliPolicy& policy)
+	std::string BuildInstallAwareProbeCommand(const ProviderCliPolicy& policy, std::string_view platform)
 	{
-#if defined(__APPLE__)
+		if (policy.version_probe_command.empty() || policy.executable_name.empty())
+		{
+			return "";
+		}
+		if (platform != "windows")
+		{
 		std::string command = "uam_cli_path=$(command -v " + std::string(policy.executable_name) + " 2>/dev/null || true); ";
 		command += "uam_cli_target=$(readlink \"$uam_cli_path\" 2>/dev/null || true); ";
+		command += "case \"$uam_cli_target\" in *node_modules/" + std::string(policy.npm_package) + "/*) "
+		    "uam_npm_prefix=$(npm prefix -g 2>/dev/null); "
+		    "if [ \"$uam_cli_path\" != \"$uam_npm_prefix/bin/" + std::string(policy.executable_name) + "\" ]; then uam_cli_target=''; fi;; esac; ";
 		command += "printf '[UAM CLI PATH] %s|%s\\n' \"$uam_cli_path\" \"$uam_cli_target\"; ";
 		command += policy.version_probe_command;
 		return command;
-#elif defined(_WIN32)
-		std::string command;
-		if (policy.provider_id == uam::provider_ids::kCopilotCli)
-		{
-			command = "where pwsh >nul 2>nul || (echo GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found. & exit /b 1) & ";
 		}
-		command += "for /f \"delims=\" %I in ('where " + std::string(policy.executable_name) + " 2^>nul') do @echo [UAM CLI PATH] %I^| & " + std::string(policy.version_probe_command);
-		return command;
-#else
-		return std::string(policy.version_probe_command);
-#endif
+		{
+			std::string package_path(policy.npm_package);
+			std::ranges::replace(package_path, '/', '\\');
+			// Only npm's real global shim plus its installed package identifies npm ownership.
+			const std::string script =
+			    "$ErrorActionPreference='Stop';$p=(Get-Command '" + std::string(policy.executable_name) +
+			    "' -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1).Source;"
+			    "$t='';try{if($p -and [IO.Path]::GetExtension($p) -eq '.cmd'){"
+			    "$prefix=(& npm.cmd prefix -g 2>$null|Select-Object -Last 1);"
+			    "if($LASTEXITCODE -eq 0 -and $prefix -and "
+			    "[IO.Path]::GetDirectoryName($p).TrimEnd('\\') -eq $prefix.Trim().TrimEnd('\\')){"
+			    "$pkg=Join-Path $prefix.Trim() 'node_modules\\" + package_path + "';"
+			    "if((Test-Path -LiteralPath (Join-Path $pkg 'package.json')) -and "
+			    "(Get-Content -LiteralPath $p -Raw).Contains('node_modules\\" + package_path + "\\')){$t=$pkg}}}}catch{};"
+			    "Write-Output ('[UAM CLI PATH] '+$p+'|'+$t);"
+			    "& cmd.exe /d /c '" + std::string(policy.version_probe_command) + "';exit $LASTEXITCODE";
+			std::string utf16_le;
+			utf16_le.reserve(script.size() * 2);
+			for (const char character : script)
+			{
+				utf16_le.push_back(character);
+				utf16_le.push_back('\0');
+			}
+			std::string command;
+			if (policy.provider_id == uam::provider_ids::kCopilotCli)
+			{
+				command = "where pwsh >nul 2>nul || (echo GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found. & exit /b 1) & ";
+			}
+			return command + "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + uam::base64::Encode(utf16_le);
+		}
 	}
 
 	std::string ProviderTitle(const uam::AppState& app, std::string_view provider_id)
 	{
-		const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+		const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, resolved.provider_id); profile != nullptr && !profile->title.empty())
 		{
 			return profile->title;
 		}
-		return std::string(resolved.policy.fallback_title);
+		return std::string(resolved.policy.fallback_title.empty() ? std::string_view(resolved.provider_id) : resolved.policy.fallback_title);
 	}
 
-	bool AcpSessionHasProviderInstallBlockingWork(const uam::AppState& app, const uam::AcpSessionState& session)
+	bool AcpSessionHasProviderInstallBlockingWork(const uam::AppState& app, const uam::AcpSessionState& session, bool local)
 	{
-		if (uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) &&
+		if (local && uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli) &&
 		    uam::AcpSessionHasDeferredUserQueueOnly(session) &&
-		    !CopilotLaunchBlockReason(app).empty())
+		    !ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app).empty())
 		{
 			return false;
 		}
 		return uam::AcpSessionHasBlockingRuntimeWork(session);
 	}
 
-	bool ProviderHasActiveRuntimeWork(const uam::AppState& app, std::string_view provider_id)
+	bool ProviderHasActiveRuntimeWork(const uam::AppState& app, std::string_view provider_id, std::string_view host_id = "local")
 	{
-		const bool acp_has_work = std::ranges::any_of(app.acp_sessions, [&app, provider_id](const auto& session) {
-			return session != nullptr &&
-			       uam::provider_ids::IsCliProviderAliasOf(session->provider_id, provider_id) &&
-			       AcpSessionHasProviderInstallBlockingWork(app, *session);
+		const bool acp_has_work = std::ranges::any_of(app.acp_sessions, [&app, provider_id, host_id](const auto& session) {
+			if (session == nullptr || !uam::provider_ids::IsCliProviderAliasOf(session->provider_id, provider_id)) return false;
+			const ChatSession* chat = ChatDomainService().FindChatById(app, session->chat_id);
+			if (chat == nullptr)
+			{
+				const auto found = std::ranges::find(app.model_discovery_chats, session->chat_id, &ChatSession::id);
+				if (found != app.model_discovery_chats.end()) chat = &*found;
+			}
+			return (chat == nullptr || chat->execution_host_id == host_id) &&
+			       AcpSessionHasProviderInstallBlockingWork(app, *session, chat != nullptr && chat->execution_host_id == "local");
 		});
 		if (acp_has_work)
 		{
 			return true;
 		}
 
-		return std::ranges::any_of(app.cli_terminals, [&app, provider_id](const auto& terminal) {
-			if (terminal == nullptr || !terminal->running || !uam::CliTerminalHasActiveTurn(*terminal))
+		return std::ranges::any_of(app.cli_terminals, [&app, provider_id, host_id](const auto& terminal) {
+			if (terminal == nullptr || (!terminal->native_session_setup_cancel &&
+			    (!terminal->running || !uam::CliTerminalHasActiveTurn(*terminal))))
 			{
 				return false;
 			}
 
 			const ChatSession* chat = uam::FindChatForCliTerminal(app, *terminal);
-			if (chat == nullptr)
+			if (chat == nullptr || chat->execution_host_id != host_id)
 			{
 				return false;
 			}
@@ -563,78 +597,88 @@ namespace
 
 } // namespace
 
-void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force) const
+std::string ProviderCliLaunchBlockReason(const uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id)
 {
-	if (app.runtime_cli_version_check_task.running)
-	{
-		return;
-	}
+	if (!app.runtime_cli_pin_task.running ||
+	    !uam::provider_ids::IsCliProviderAliasOf(provider_id, app.runtime_cli_pin_provider_id)) return {};
+	const std::string_view requested_host = execution_host_id.empty() ? uam::execution_hosts::kLocalHostId : execution_host_id;
+	const std::string_view installer_host = app.runtime_cli_pin_task.execution_host.id.empty()
+	    ? uam::execution_hosts::kLocalHostId : std::string_view(app.runtime_cli_pin_task.execution_host.id);
+	return requested_host == installer_host
+	    ? "This provider is being updated on this machine. Retry when the update finishes." : "";
+}
+
+std::string CliProviderVersionStateKey(std::string_view provider_id, std::string_view execution_host_id)
+{
+	const std::string normalized = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+	return execution_host_id.empty() || execution_host_id == uam::execution_hosts::kLocalHostId
+	    ? normalized : std::string(execution_host_id) + "/" + normalized;
+}
+
+void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force, bool include_remote) const
+{
+	if (app.runtime_cli_version_check_task.running || app.runtime_cli_pin_task.running) return;
 	app.runtime_cli_version_check_queue.clear();
-	for (const ProviderProfile& profile : app.provider_profiles)
+	std::vector<ExecutionHost> hosts{uam::execution_hosts::LocalHost()};
+	if (include_remote)
 	{
-		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(profile.id);
-		if (FindProviderCliPolicy(provider_id) == nullptr || std::ranges::find(app.runtime_cli_version_check_queue, provider_id) != app.runtime_cli_version_check_queue.end())
-		{
-			continue;
-		}
-		if (!force)
-		{
-			const auto existing = app.runtime_cli_versions_by_provider_id.find(provider_id);
-			if (existing != app.runtime_cli_versions_by_provider_id.end() && existing->second.checked)
-			{
-				continue;
-			}
-		}
-		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[provider_id];
-		state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, provider_id), " version...");
-		app.runtime_cli_version_check_queue.push_back(provider_id);
+		for (const ExecutionHost& host : app.settings.execution_hosts)
+			if (host.id != uam::execution_hosts::kLocalHostId && IsReadyCliHost(host)) hosts.push_back(host);
 	}
-	if (!app.runtime_cli_version_check_queue.empty())
+	for (const ExecutionHost& host : hosts)
 	{
-		const std::string provider_id = app.runtime_cli_version_check_queue.front();
+		for (const ProviderProfile& profile : app.provider_profiles)
+		{
+			const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(profile.id);
+			const std::pair<std::string, std::string> target{provider_id, host.id};
+			if (FindProviderCliPolicy(provider_id) == nullptr ||
+			    std::ranges::find(app.runtime_cli_version_check_queue, target) != app.runtime_cli_version_check_queue.end()) continue;
+			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, host.id)];
+			if (!force && state.checked && uam::execution_hosts::SameConnection(state.execution_host, host)) continue;
+			if (!uam::execution_hosts::SameConnection(state.execution_host, host)) state = {};
+			state.provider_id = provider_id;
+			state.execution_host = host;
+			state.check_error.clear();
+			state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, provider_id), " version...");
+			app.runtime_cli_version_check_queue.push_back(target);
+		}
+	}
+	while (!app.runtime_cli_version_check_queue.empty() && !app.runtime_cli_version_check_task.running)
+	{
+		const std::pair<std::string, std::string> target = app.runtime_cli_version_check_queue.front();
 		app.runtime_cli_version_check_queue.pop_front();
-		StartProviderVersionCheck(app, provider_id, true);
+		StartProviderVersionCheck(app, target.first, true, target.second);
 	}
 }
 
-void ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force) const
+bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id,
+    bool force, std::string_view execution_host_id, std::string* error_out) const
 {
-	const std::string normalized_provider_id = NormalizeProviderCliPolicyIdOrDefault(provider_id);
-	if (app.runtime_cli_version_check_task.running)
-	{
-		return;
-	}
-
-	const auto existing_state = app.runtime_cli_versions_by_provider_id.find(normalized_provider_id);
-	if (!force && existing_state != app.runtime_cli_versions_by_provider_id.end() && existing_state->second.checked)
-	{
-		return;
-	}
-
-	const ProviderCliPolicy& policy = ProviderCliPolicyOrDefault(normalized_provider_id);
-	const std::string command = BuildInstallAwareProbeCommand(policy);
-	if (command.empty())
-	{
-		app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = "Provider CLI version checks are not supported for this provider.";
-		return;
-	}
-
+	const std::string normalized_provider_id = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
+	if (host == nullptr || !IsReadyCliHost(*host))
+		return FailProviderCliInstall(error_out, "The selected SSH helper is unavailable. Reconnect it and check again.");
+	if (app.runtime_cli_version_check_task.running || app.runtime_cli_pin_task.running)
+		return FailProviderCliInstall(error_out, "A provider CLI command is already running.");
+	const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id);
+	if (policy == nullptr)
+		return FailProviderCliInstall(error_out, "Provider CLI version checks are not supported for this provider.");
+	const std::string key = CliProviderVersionStateKey(normalized_provider_id, host->id);
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[key];
+	if (!force && state.checked && uam::execution_hosts::SameConnection(state.execution_host, *host)) return true;
+	const std::string command = BuildInstallAwareProbeCommand(*policy, host->id == "local" ? LocalPlatform() : host->platform);
+	if (command.empty()) return FailProviderCliInstall(error_out, "Provider CLI version checks are not supported for this provider.");
+	if (!uam::execution_hosts::SameConnection(state.execution_host, *host)) state = {};
+	state.provider_id = normalized_provider_id;
+	state.execution_host = *host;
+	state.check_error.clear();
+	state.message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
 	app.runtime_cli_version_provider_id = normalized_provider_id;
-	app.runtime_cli_versions_by_provider_id[normalized_provider_id].message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
-	StartAsyncCommandTask(app.runtime_cli_version_check_task, command, kProviderCliVersionProbeTimeoutMs);
+	StartAsyncCommandTask(app.runtime_cli_version_check_task, *host, normalized_provider_id, command, false, kProviderCliVersionProbeTimeoutMs);
+	return true;
 }
 
-void ProviderCliCompatibilityService::StartPinToSupported(uam::AppState& app) const
-{
-	std::string error;
-	(void)StartInstallProviderVersion(app, kDefaultProviderCliPolicyId, PreferredVersionForProvider(kDefaultProviderCliPolicyId), &error);
-	if (!error.empty())
-	{
-		app.status_line = error;
-	}
-}
-
-bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out) const
+bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out, std::string_view execution_host_id) const
 {
 	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
 	const std::string unsupported_provider_id = uam::strings::NonEmptyOrFallback(resolved.provider_id, uam::strings::TrimAsciiView(provider_id));
@@ -660,100 +704,140 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 		message.append(trimmed_version);
 		return FailProviderCliInstall(error_out, std::move(message));
 	}
-	if (ProviderHasActiveRuntimeWork(app, resolved.provider_id))
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
+	if (host == nullptr || !IsReadyCliHost(*host))
+		return FailProviderCliInstall(error_out, "The selected SSH helper is unavailable. Reconnect it and check again.");
+	if (ProviderHasActiveRuntimeWork(app, resolved.provider_id, host->id))
 	{
 		return FailProviderCliInstall(error_out, "Cannot install a provider CLI version while that provider is processing.");
 	}
 
-	uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[resolved.provider_id];
+	uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(resolved.provider_id, host->id)];
+	if (host->id != "local" && (!provider_state.checked || provider_state.installed_version.empty() ||
+	    !uam::execution_hosts::SameConnection(provider_state.execution_host, *host)))
+		return FailProviderCliInstall(error_out, "Check this machine's installed CLI version before updating.");
+	if (host->id != "local" && provider_state.install_method != "npm" && provider_state.install_method != "homebrew-formula" &&
+	    provider_state.install_method != "homebrew-cask" && provider_state.install_method != "winget")
+		return FailProviderCliInstall(error_out, "The CLI installation method could not be identified. Use its existing installer to update it.");
+	if (host->id != "local" &&
+	    (provider_state.install_method != InstallMethodFromProbeOutput(provider_state.raw_output, true) ||
+	     !ValidateRemoteInstallProbe(provider_state.raw_output, provider_state.raw_output, host->platform, error_out)))
+		return FailProviderCliInstall(error_out, "Check this machine's CLI installation again before updating.");
 	const std::string command = BuildInstallCommand(*resolved.policy, trimmed_version, provider_state.install_method);
 	if (command.empty())
 	{
 		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
 	}
 
+	provider_state.provider_id = resolved.provider_id;
+	provider_state.execution_host = *host;
 	app.runtime_cli_pin_provider_id = resolved.provider_id;
 	provider_state.selected_version.assign(trimmed_version);
 	provider_state.install_command = command;
 	provider_state.install_output.clear();
 	provider_state.last_install_status = "running";
-	StartAsyncCommandTask(app.runtime_cli_pin_task, command, kProviderCliInstallTimeoutMs);
+	StartAsyncCommandTask(app.runtime_cli_pin_task, *host, resolved.provider_id, command, true, kProviderCliInstallTimeoutMs, provider_state.raw_output);
 	app.status_line = ProviderTitleMessage("Running ", ProviderTitle(app, resolved.provider_id), " install command...");
 	return true;
 }
 
 void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 {
+	const auto host_matches = [&app](const ExecutionHost& captured)
+	{
+		const ExecutionHost* current = uam::execution_hosts::Find(app.settings.execution_hosts, captured.id);
+		return current != nullptr && uam::execution_hosts::SameConnection(captured, *current);
+	};
+	std::erase_if(app.runtime_cli_versions_by_provider_id, [&host_matches](const auto& entry)
+	{
+		return entry.second.execution_host.id != uam::execution_hosts::kLocalHostId &&
+		       !host_matches(entry.second.execution_host);
+	});
 	std::string output;
 
+	const ExecutionHost check_host = app.runtime_cli_version_check_task.execution_host;
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output))
 	{
-		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(app.runtime_cli_version_provider_id);
-		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
-		provider_state.install_method = InstallMethodFromProbeOutput(output);
-		output = StripProbePathLine(std::move(output));
-		provider_state.checked = true;
-		provider_state.raw_output = output;
-		provider_state.installed_version.clear();
-		provider_state.supported = false;
-
-		const bool command_failed = OutputIndicatesCommandFailure(output);
-
-		const std::optional<std::string> parsed = command_failed ? std::nullopt : ExtractSemverVersion(output);
-
-		if (command_failed)
+		const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(app.runtime_cli_version_provider_id);
+		if (host_matches(check_host))
 		{
-			provider_state.message = provider_id == uam::provider_ids::kCopilotCli && uam::strings::ContainsCaseInsensitive(output, "PowerShell 6 or newer") ? "GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows." : ProviderTitleMessage("Could not check ", ProviderTitle(app, provider_id), " version.");
-		}
-		else if (parsed)
-		{
-			provider_state.installed_version = *parsed;
-			const std::string compatibility = CompatibilityStatusForProvider(provider_id, provider_state.installed_version);
-			provider_state.supported = compatibility != "known-incompatible" && compatibility != "unavailable";
+			uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, check_host.id)];
+			provider_state.install_method = InstallMethodFromProbeOutput(output, check_host.id != "local");
+			const std::string probe_output = output;
+			output = StripProbePathLine(std::move(output));
+			provider_state.checked = true;
+			provider_state.raw_output = check_host.id == "local" ? output : probe_output;
+			provider_state.installed_version.clear();
+			provider_state.supported = false;
 
-			if (compatibility == "verified")
+			const bool command_failed = OutputIndicatesCommandFailure(output);
+
+			const std::optional<std::string> parsed = command_failed ? std::nullopt : ExtractSemverVersion(output);
+
+			if (command_failed)
 			{
-				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version matches UAM's last verified build.");
+				provider_state.message = provider_id == uam::provider_ids::kCopilotCli && uam::strings::ContainsCaseInsensitive(output, "PowerShell 6 or newer") ? "GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows." : ProviderTitleMessage("Could not check ", ProviderTitle(app, provider_id), " version.");
 			}
-			else if (compatibility == "untested-newer")
+			else if (parsed)
 			{
-				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is newer than UAM's last verified build; it remains available for use.");
-			}
-			else if (compatibility == "untested")
-			{
-				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version has not been verified by this UAM build; it remains available for use.");
-			}
-			else if (compatibility == "provider-managed")
-			{
-				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " compatibility is managed by the provider.");
+				provider_state.installed_version = *parsed;
+				const std::string compatibility = CompatibilityStatusForProvider(provider_id, provider_state.installed_version);
+				provider_state.supported = compatibility != "known-incompatible" && compatibility != "unavailable";
+
+				if (compatibility == "verified")
+				{
+					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version matches UAM's last verified build.");
+				}
+				else if (compatibility == "untested-newer")
+				{
+					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is newer than UAM's last verified build; it remains available for use.");
+				}
+				else if (compatibility == "untested")
+				{
+					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version has not been verified by this UAM build; it remains available for use.");
+				}
+				else if (compatibility == "provider-managed")
+				{
+					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " compatibility is managed by the provider.");
+				}
+				else
+				{
+					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is known to be incompatible with this UAM build.");
+				}
 			}
 			else
 			{
-				provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is known to be incompatible with this UAM build.");
+				provider_state.message = UnparsedVersionOutputMessage(ProviderTitle(app, provider_id), output);
 			}
-		}
-		else
-		{
-			provider_state.message = UnparsedVersionOutputMessage(ProviderTitle(app, provider_id), output);
+			const bool confirmed_missing = ProbeIdentity(probe_output).starts_with('|') && OutputIndicatesCommandMissing(output);
+			provider_state.check_error = (command_failed || !parsed) && !confirmed_missing ? provider_state.message : "";
 		}
 
 		while (!app.runtime_cli_version_check_queue.empty() && !app.runtime_cli_version_check_task.running)
 		{
-			const std::string queued_provider_id = app.runtime_cli_version_check_queue.front();
+			const std::pair<std::string, std::string> target = app.runtime_cli_version_check_queue.front();
 			app.runtime_cli_version_check_queue.pop_front();
-			StartProviderVersionCheck(app, queued_provider_id, true);
+			const auto queued = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(target.first, target.second));
+			if (queued == app.runtime_cli_versions_by_provider_id.end() || !host_matches(queued->second.execution_host)) continue;
+			StartProviderVersionCheck(app, target.first, true, target.second);
 		}
 	}
 
+	const ExecutionHost install_host = app.runtime_cli_pin_task.execution_host;
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output))
 	{
-		const std::string provider_id = NormalizeProviderCliPolicyIdOrDefault(app.runtime_cli_pin_provider_id);
-		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[provider_id];
+		if (!host_matches(install_host))
+		{
+			app.status_line = "Machine configuration changed. Check its CLI version again.";
+			return;
+		}
+		const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(app.runtime_cli_pin_provider_id);
+		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, install_host.id)];
 		provider_state.install_output = output;
 
 		if (OutputIndicatesCommandFailure(output))
 		{
-			app.status_line = "Provider CLI update command failed. Review output in Settings.";
+			app.status_line = "Provider CLI update command failed. Review its output in Updates.";
 			provider_state.message = "Update command failed.";
 			provider_state.last_install_status = "failed";
 		}
@@ -762,14 +846,14 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			app.status_line = "Provider CLI update completed. Re-checking installed version.";
 			provider_state.message = app.status_line;
 			provider_state.last_install_status = "succeeded";
-			StartProviderVersionCheck(app, provider_id, true);
+			StartProviderVersionCheck(app, provider_id, true, install_host.id);
 		}
 	}
 }
 
 std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::SupportedVersionsForProvider(std::string_view provider_id) const
 {
-	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 	std::vector<CliProviderVersionOption> versions;
 	if (resolved.policy.preferred_version != nullptr)
 	{
@@ -789,24 +873,24 @@ std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::Supported
 
 std::string ProviderCliCompatibilityService::PreferredVersionForProvider(std::string_view provider_id) const
 {
-	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 	return resolved.policy.preferred_version == nullptr ? std::string() : std::string(resolved.policy.preferred_version);
 }
 
 bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(std::string_view provider_id, std::string_view version) const
 {
-	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 	std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
-	if (!IsSafeVersionToken(trimmed_version))
+	if (resolved.policy.provider_id.empty() || !IsSafeVersionToken(trimmed_version))
 	{
 		return false;
 	}
 
 	switch (resolved.policy.version_policy)
 	{
-		case CliVersionPolicy::MinimumSemver:
+		case ProviderCliVersionPolicy::MinimumSemver:
 			return trimmed_version == kLatestVersion || (resolved.policy.minimum_version != nullptr && SemverAtLeast(trimmed_version, resolved.policy.minimum_version));
-		case CliVersionPolicy::AnySafeToken:
+		case ProviderCliVersionPolicy::AnySafeToken:
 			return true;
 	}
 	return false;
@@ -814,7 +898,7 @@ bool ProviderCliCompatibilityService::IsSupportedVersionForProvider(std::string_
 
 std::string ProviderCliCompatibilityService::CompatibilityStatusForProvider(std::string_view provider_id, std::string_view version) const
 {
-	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 	const std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
 	if (trimmed_version.empty())
 	{
@@ -841,66 +925,21 @@ std::string ProviderCliCompatibilityService::CompatibilityStatusForProvider(std:
 
 std::string ProviderCliCompatibilityService::VerifiedVersionForProvider(std::string_view provider_id) const
 {
-	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicyOrDefault(provider_id);
+	const ResolvedProviderCliPolicy resolved = ResolveProviderCliPolicy(provider_id);
 	return resolved.policy.fallback_version == nullptr ? std::string() : std::string(resolved.policy.fallback_version);
 }
 
 std::string ProviderCliCompatibilityService::VerifiedAtForProvider(std::string_view provider_id) const
 {
-	return VerifiedVersionForProvider(provider_id).empty() ? std::string() : std::string(kVerifiedAt);
+	const ProviderCliPolicy& policy = ResolveProviderCliPolicy(provider_id).policy;
+	return policy.fallback_version == nullptr || policy.verified_at == nullptr ? std::string() : std::string(policy.verified_at);
 }
 
-std::string CopilotLaunchBlockReason(const uam::AppState& app)
-{
-	const auto state_it = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kCopilotCli);
-	if (state_it == app.runtime_cli_versions_by_provider_id.end())
-	{
-		return "";
-	}
 
-	const uam::CliProviderVersionState& state = state_it->second;
-	if (!state.checked)
-	{
-		return "Checking GitHub Copilot CLI compatibility. Try again in a moment.";
-	}
-	if (state.supported)
-	{
-		return "";
-	}
-	if (!state.installed_version.empty())
-	{
-		return "GitHub Copilot CLI 1.0.60 or newer is required (installed " + state.installed_version + "). Update it in Settings.";
-	}
-	return uam::strings::NonEmptyOrFallback(state.message, "GitHub Copilot CLI is not installed or its version could not be determined.") + " Open Settings to check or update it.";
-}
-
-std::string OpenCodeLaunchBlockReason(const uam::AppState& app)
-{
-	const auto state_it = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kOpenCodeCli);
-	if (state_it == app.runtime_cli_versions_by_provider_id.end())
-	{
-		return "";
-	}
-
-	const uam::CliProviderVersionState& state = state_it->second;
-	if (!state.checked)
-	{
-		return "Checking OpenCode compatibility. Try again in a moment.";
-	}
-	if (state.supported)
-	{
-		return "";
-	}
-	if (!state.installed_version.empty())
-	{
-		return "OpenCode 1.15.13 or newer is required for reliable ACP permission mediation (installed " + state.installed_version + "). Update it in Settings.";
-	}
-	return uam::strings::NonEmptyOrFallback(state.message, "OpenCode is not installed or its version could not be determined.") + " Open Settings to check or update it.";
-}
 
 std::string ProviderCliCompatibilityService::VersionProbeCommandForProvider(std::string_view provider_id) const
 {
-	return std::string(ResolveProviderCliPolicyOrDefault(provider_id).policy.version_probe_command);
+	return std::string(ResolveProviderCliPolicy(provider_id).policy.version_probe_command);
 }
 
 std::string ProviderCliCompatibilityService::InstallCommandForProviderVersion(std::string_view provider_id, std::string_view version) const
@@ -958,12 +997,19 @@ bool ProviderCliInstallBlockedByActiveRuntimeForTests(const uam::AppState& app, 
 
 std::string GetNpmPackageNameForProvider(std::string_view provider_id)
 {
-	for (const ProviderCliPolicy& policy : kProviderCliPolicies)
+	if (const ProviderCliPolicy* policy = FindProviderCliPolicy(provider_id))
 	{
-		if (policy.provider_id == provider_id)
-		{
-			return std::string(policy.npm_package);
-		}
+		return std::string(policy->npm_package);
 	}
 	return "";
+}
+
+bool ValidateRemoteCliInstallProbeForTests(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
+{
+	return ValidateRemoteInstallProbe(previous, current, platform, error);
+}
+
+std::string BuildInstallAwareCliProbeForTests(std::string_view provider_id, std::string_view platform)
+{
+	return BuildInstallAwareProbeCommand(ResolveProviderCliPolicy(provider_id).policy, platform);
 }

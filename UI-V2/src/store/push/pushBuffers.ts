@@ -11,7 +11,7 @@ export const CLI_TRANSCRIPT_FLUSH_DELAY_MS = 32
 // Stream tokens can arrive far faster than the UI needs to repaint; applying
 // each one individually re-parses the growing assistant message's markdown per
 // token. Coalescing keeps streaming smooth on long answers.
-export const pendingStreamTokensByChatId = new Map<string, string>()
+export const pendingStreamTokensByChatId = new Map<string, { token: string; messageIndex?: number }>()
 export const STREAM_TOKEN_FLUSH_DELAY_MS = 48
 
 // Flush timer handles. Held on a mutable object so callers can reassign across

@@ -59,26 +59,38 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   onActivate: (leafId: string, sessionId?: string) => void
   onClose: (leafId: string, sessionId: string) => void
 }) {
-  const [view, setView] = useState<'chat' | 'cli'>(session.importedReadOnly ? 'chat' : session.viewMode)
-  const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
-  const cliBinding = useAppStore((s) => s.cliBindingBySessionId[session.id])
+  const view = session.importedReadOnly ? 'chat' : session.viewMode
+  const setView = (requestedView: 'chat' | 'cli') => {
+    const nextView = session.importedReadOnly ? 'chat' : requestedView
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
+      current.id === session.id && current.viewMode !== nextView ? { ...current, viewMode: nextView } : current
+    ) }))
+    writeChatViewMode(session.id, nextView)
+  }
+  const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const cliSwitchLocked = useAppStore((s) => {
+    const acpBinding = s.acpBindingBySessionId[session.id]
+    const cliBinding = s.cliBindingBySessionId[session.id]
+    return Boolean(
+      cliBinding?.lifecycleState === 'shuttingDown' ||
+      (!cliBinding?.running &&
+        (acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'))
+    )
+  })
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
-  )
-  const cliSwitchLocked = Boolean(
-    acpBinding?.processing ||
-      acpBinding?.lifecycleState === 'waitingPermission' ||
-      cliBinding?.processing ||
-      cliBinding?.lifecycleState === 'busy' ||
-      cliBinding?.lifecycleState === 'shuttingDown'
   )
   const paneColor = chatPaneColors[paneIndex]
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
 
   useEffect(() => {
-    if (session.importedReadOnly) writeChatViewMode(session.id, 'chat')
-    setView(session.importedReadOnly ? 'chat' : session.viewMode)
+    if (session.importedReadOnly) {
+      writeChatViewMode(session.id, 'chat')
+      if (session.viewMode !== 'chat') useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
+        current.id === session.id ? { ...current, viewMode: 'chat' } : current
+      ) }))
+    }
   }, [session.id, session.importedReadOnly, session.viewMode])
 
   return (
@@ -129,7 +141,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             <button
               type="button"
               onClick={() => {
-                writeChatViewMode(session.id, 'chat')
+                if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
               }}
               aria-label="Chat view"
@@ -152,7 +164,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
               aria-pressed={view === 'cli'}
               onClick={() => {
                 if (!session.importedReadOnly && !cliSwitchLocked) {
-                  writeChatViewMode(session.id, 'cli')
                   setView('cli')
                 }
               }}
@@ -184,11 +195,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       {/* View content */}
       <div className="flex-1 overflow-hidden">
         {view === 'chat'
-          ? <ChatView session={session} onOpenTerminalFallback={() => {
-              if (session.importedReadOnly || cliSwitchLocked) return
-              writeChatViewMode(session.id, 'cli')
-              setView('cli')
-            }} />
+          ? <ChatView session={session} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}
       </div>
     </div>

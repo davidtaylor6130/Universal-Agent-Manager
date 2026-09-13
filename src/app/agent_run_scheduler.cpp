@@ -8,6 +8,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -124,6 +125,14 @@ namespace uam
 			if (root == nullptr || !root->agent_run_id.empty())
 			{
 				run.root_result_delivery_attempts = 3;
+				(void)AgentRunLedger::Save(app.data_root, run);
+				return true;
+			}
+
+			std::string warning;
+			if (!ChatRepository::HydrateChatMessages(app.data_root, *root, &warning))
+			{
+				diagnostics::Write("agent result: could not load parent chat " + root->id + ": " + warning);
 				(void)AgentRunLedger::Save(app.data_root, run);
 				return true;
 			}
@@ -406,6 +415,12 @@ namespace uam
 			return false;
 		}
 
+		std::string warning;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, *root_chat, &warning))
+		{
+			if (error_out != nullptr) *error_out = "Could not load the @agent parent chat: " + warning;
+			return false;
+		}
 		std::string run_id;
 		if (!Enqueue(app, root_chat->id, {}, agent_id, task, &run_id, error_out)) return false;
 		AgentRun* run = FindRun(app, run_id);

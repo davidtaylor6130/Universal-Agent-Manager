@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { createRequestId, isCefContext, sendToCEF } from '../ipc/cefBridge'
+import { createRequestId, isCefContext, sendToCEF, type CEFResponse } from '../ipc/cefBridge'
 import {
   UPDATE_CHECK_INTERVAL_MS,
   availableUpdates,
@@ -23,8 +23,11 @@ export function useUpdateMonitor() {
   const setUpdateSettings = useAppStore((state) => state.setUpdateSettings)
   const refreshCliProviderVersion = useAppStore((state) => state.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((state) => state.applyCliProviderVersion)
+  const providerStates = useMemo(() => [...versionManager.providers, ...(versionManager.remoteProviders ?? [])], [versionManager.providers, versionManager.remoteProviders])
   const [catalog, setCatalog] = useState<LatestUpdateCatalog | null>(() => readCachedUpdateCatalog())
-  const [checking, setChecking] = useState(false)
+  const [requestChecking, setChecking] = useState(false)
+  // Native refresh requests return on admission; pushed probe state tracks completion.
+  const checking = requestChecking || providerStates.some((provider) => provider.running && provider.status === 'checking')
   const [error, setError] = useState('')
   const [remoteHelperUpdatingId, setRemoteHelperUpdatingId] = useState('')
   const autoCheckAttemptedRef = useRef(false)
@@ -32,6 +35,8 @@ export function useUpdateMonitor() {
 
   const checkNow = useCallback(async () => {
     if (checkingRef.current) return
+    const currentManager = useAppStore.getState().cliVersionManager
+    if ([...currentManager.providers, ...(currentManager.remoteProviders ?? [])].some((provider) => provider.running && provider.status === 'checking')) return
     checkingRef.current = true
     setChecking(true)
     setError('')
@@ -45,7 +50,7 @@ export function useUpdateMonitor() {
         })
         if (!response.ok) throw new Error(response.error || 'Provider version refresh failed.')
       } else {
-        await Promise.all(versionManager.providers.map((provider) => refreshCliProviderVersion(provider.providerId)))
+        await Promise.all([...versionManager.providers, ...(versionManager.remoteProviders ?? [])].map((provider) => refreshCliProviderVersion(provider.providerId, ...provider.executionHostId ? [provider.executionHostId] : [])))
       }
       if (!await setUpdateSettings({ updateLastCheckedAt: nextCatalog.checkedAt })) {
         throw new Error('The update check completed, but its status could not be saved.')
@@ -56,7 +61,7 @@ export function useUpdateMonitor() {
       checkingRef.current = false
       setChecking(false)
     }
-  }, [refreshCliProviderVersion, setUpdateSettings, versionManager.providers])
+  }, [refreshCliProviderVersion, setUpdateSettings, versionManager.providers, versionManager.remoteProviders])
 
   useEffect(() => {
     if (isCefContext() && !cefStateHydrated) return
@@ -88,19 +93,54 @@ export function useUpdateMonitor() {
     ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
   ], [appVersion, catalog, dismissedVersions, executionHosts, providers, runnerProtocolVersion, versionManager])
 
-  const applyRemoteHelperUpdate = useCallback(async (hostId: string) => {
+  const applyRemoteHelperUpdate = useCallback(async (hostId: string): Promise<CEFResponse> => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)
-    if (!host || host.transport !== 'ssh' || remoteHelperUpdatingId) return false
+    if (!host || host.transport !== 'ssh' || remoteHelperUpdatingId) return { ok: false }
     setRemoteHelperUpdatingId(hostId)
     try {
-      const response = await sendToCEF({ action: 'installRemoteHost', payload: host })
-      return response.ok
-    } catch {
-      return false
+      return await sendToCEF({ action: 'installRemoteHost', payload: host })
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : undefined }
     } finally {
       setRemoteHelperUpdatingId('')
     }
   }, [executionHosts, remoteHelperUpdatingId])
+
+  const installCliProviderVersion = useCallback((providerId: string, version: string, executionHostId: string | undefined, signal: AbortSignal) => {
+    if (signal.aborted) return Promise.resolve(false)
+    return new Promise<boolean>((resolve) => {
+      let started = false
+      let admitted = false
+      let settled = false
+      const finish = (succeeded: boolean) => {
+        if (settled) return
+        settled = true
+        unsubscribe()
+        window.clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        resolve(succeeded)
+      }
+      const abort = () => finish(false)
+      const observe = () => {
+        const manager = useAppStore.getState().cliVersionManager
+        const state = [...manager.providers, ...(manager.remoteProviders ?? [])].find((entry) =>
+          entry.providerId === providerId && (entry.executionHostId || 'local') === (executionHostId || 'local'))
+        if (state?.status === 'installing' && state.selectedVersion === version && state.lastInstallStatus === 'running') started = true
+        if (!admitted || !started || state?.running) return
+        finish(state?.lastInstallStatus === 'succeeded' && !state.checkError &&
+          Boolean(state.installedVersion) && (version === 'latest' || state.installedVersion === version))
+      }
+      // Subscribe before admission: CEF can push both startup and completion before replying.
+      const unsubscribe = useAppStore.subscribe(observe)
+      // Native installation is bounded at 15 minutes, followed by a 30-second version probe.
+      const timer = window.setTimeout(() => finish(false), 16 * 60 * 1000)
+      signal.addEventListener('abort', abort, { once: true })
+      void applyCliProviderVersion(providerId, version, executionHostId).then((accepted) => {
+        if (!accepted) finish(false)
+        else { admitted = true; observe() }
+      }, () => finish(false))
+    })
+  }, [applyCliProviderVersion])
 
   const dismiss = useCallback((id: string, version: string) => {
     void setUpdateSettings({ dismissedUpdateVersions: { ...dismissedVersions, [id]: version } })
@@ -115,18 +155,30 @@ export function useUpdateMonitor() {
     })
   }, [dismissedVersions, setUpdateSettings, updates])
 
-  const providerUpdateResults = useMemo(() => versionManager.providers.flatMap((state) => {
+  const providerUpdateResults = useMemo(() => providerStates.flatMap((state) => {
     if (state.lastInstallStatus !== 'succeeded' && state.lastInstallStatus !== 'failed') return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
     return [{
       providerId: state.providerId,
-      name: provider?.shortName || provider?.name || state.providerId,
+      ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
+      name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
       status: state.lastInstallStatus,
       message: state.message,
       output: state.lastOutput,
       installedVersion: state.installedVersion,
     }]
-  }), [providers, versionManager.providers])
+  }), [providers, providerStates])
+  const providerCheckErrors = useMemo(() => (versionManager.remoteProviders ?? []).flatMap((state) => {
+    const host = executionHosts.find((candidate) => candidate.id === state.executionHostId && candidate.transport === 'ssh')
+    if (!host || state.running || !state.checkError) return []
+    const provider = providers.find((candidate) => candidate.id === state.providerId)
+    return [{
+      providerId: state.providerId,
+      executionHostId: host.id,
+      name: `${provider?.shortName || provider?.name || state.providerId} · ${host.label}`,
+      message: state.checkError,
+    }]
+  }), [executionHosts, providers, versionManager.remoteProviders])
 
   return {
     updates,
@@ -138,11 +190,14 @@ export function useUpdateMonitor() {
     dismiss,
     dismissAll,
     applyCliProviderVersion,
+    installCliProviderVersion,
     applyRemoteHelperUpdate,
     remoteHelperUpdatingId,
-    providerStates: versionManager.providers,
-    providerTaskRunning: versionManager.providers.some((provider) => provider.running),
+    providerStates,
+    providerTaskRunning: providerStates.some((provider) => provider.running),
     providerUpdateResults,
+    providerCheckErrors,
+    refreshCliProviderVersion,
   }
 }
 

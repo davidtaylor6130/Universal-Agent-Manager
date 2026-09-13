@@ -887,6 +887,20 @@ void StopTurnCheckpointTasks(AppState& app)
 	app.turn_checkpoint_tasks.clear();
 }
 
+bool RecordAcpTurnDuration(AcpSessionState& session, ChatSession& chat)
+{
+	const int assistant_index = session.current_assistant_message_index >= 0
+	    ? session.current_assistant_message_index : session.turn_assistant_message_index;
+	const double started = session.turn_started_time_s;
+	session.turn_started_time_s = 0.0;
+	const double now = GetAppTimeSeconds();
+	if (!(started > 0.0 && now >= started) || assistant_index < 0 ||
+	    assistant_index >= static_cast<int>(chat.messages.size()) ||
+	    chat.messages[assistant_index].role != MessageRole::Assistant) return false;
+	chat.messages[assistant_index].processing_time_ms = static_cast<int>(std::min((now - started) * 1000.0, 2147483647.0));
+	return true;
+}
+
 void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser, bool continue_goal_loop)
 {
 	const std::string completed_goal_turn_kind = session.goal_turn_kind;
@@ -903,12 +917,7 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	const bool checkpoint_eligible = session.turn_checkpoint_eligible;
 	session.turn_checkpoint_eligible = false;
 	session.turn_checkpoint_preflight_pending = false;
-	if (session.turn_started_time_s > 0.0 && assistant_index >= 0 && assistant_index < static_cast<int>(chat.messages.size()))
-	{
-		const double elapsed_ms = (GetAppTimeSeconds() - session.turn_started_time_s) * 1000.0;
-		chat.messages[assistant_index].processing_time_ms = static_cast<int>(std::max(0.0, std::min(elapsed_ms, 2147483647.0)));
-	}
-	session.turn_started_time_s = 0.0;
+	(void)RecordAcpTurnDuration(session, chat);
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
 	session.reconnect_attempts = 0;

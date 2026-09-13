@@ -51,6 +51,7 @@ namespace uam::computer_use
 		std::string application_title;
 		std::string input_mode;
 		std::vector<Element> elements;
+		bool elements_truncated = false;
 	};
 
 	struct Action
@@ -80,8 +81,13 @@ namespace uam::computer_use
 	Capture CaptureTarget(const std::string& kind, std::uint64_t id, int max_width, int max_height);
 	bool AcquireControllerLock(std::string* error_out = nullptr);
 	void ReleaseControllerLock();
+	bool EnsureCapturePermission(std::string* error_out = nullptr);
 	bool EnsureActionPermission(std::string* error_out = nullptr);
+	bool RequestCapturePermission(std::string* error_out = nullptr);
+	bool RequestActionPermission(std::string* error_out = nullptr);
+	ApplicationIdentity ApplicationIdentityForTarget(const std::string& kind, std::uint64_t id, std::uint64_t process_id = 0);
+	void ConfigureVirtualCursorIdentity(const std::string& label, const std::string& chat_id);
+	bool OpenPermissionSettings(const std::string& permission, std::string* error_out = nullptr);
 	bool ExecuteAction(const Action& action, const Capture& reference, const std::function<bool()>& cancelled, std::string* error_out = nullptr, bool* input_applied_out = nullptr);
-	bool ConfirmComputerUse(const std::string& message);
 	int RunWithUi(const std::function<int()>& work);
 } // namespace uam::computer_use

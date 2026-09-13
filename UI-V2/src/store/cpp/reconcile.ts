@@ -286,6 +286,7 @@ export function normalizeCliLifecycleState(
   processing?: boolean
 ): CliLifecycleState {
   if (
+    value === 'unknown' ||
     value === 'disabled' ||
     value === 'stopped' ||
     value === 'idle' ||
@@ -298,6 +299,8 @@ export function normalizeCliLifecycleState(
   if (!running) {
     return 'stopped'
   }
+
+  if (turnState === 'unknown') return 'unknown'
 
   if (turnState === 'busy' || processing) {
     return 'busy'
@@ -473,6 +476,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
     existing.processingStartedAtMs === next.processingStartedAtMs &&
+    existing.promptActionError === next.promptActionError &&
     existing.lastError === next.lastError &&
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
@@ -529,13 +533,13 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
     chat.cliTerminal.turnState,
     chat.cliTerminal.processing
   )
-  const processing = Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState)
+  const processing = lifecycleState !== 'unknown' && (Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState))
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
     running,
     lifecycleState,
-    turnState: processing ? 'busy' : 'idle',
+    turnState: lifecycleState === 'unknown' ? 'unknown' : processing ? 'busy' : 'idle',
     processing,
     readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
     active: lifecycleState === 'idle' && running,
@@ -569,10 +573,11 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing
-      ? previous?.processing
+      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0)
         ? previous.processingStartedAtMs ?? Date.now()
         : Date.now()
       : null,
+    promptActionError: previous?.promptActionError,
     lastError: acp?.lastError ?? '',
     recentStderr: acp?.recentStderr ?? '',
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
@@ -720,6 +725,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
+		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
     (existing.checkpointParentSha ?? '') === (next.checkpointParentSha ?? '') &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
@@ -745,6 +751,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
 		prioritySteer: Boolean(message.prioritySteer),
+		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,
     checkpointParentSha: message.checkpointParentSha,
     createdAt: new Date(createdAtMillis),
@@ -818,6 +825,7 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.status === other.status &&
       tool.content === other.content &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
+      (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
       (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')

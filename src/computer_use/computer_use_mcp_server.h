@@ -1,5 +1,6 @@
 #pragma once
 
+#include "computer_use/computer_use_platform.h"
 #include <nlohmann/json_fwd.hpp>
 
 #include <string>
@@ -11,6 +12,8 @@ namespace uam::computer_use
 	int RunMcpServer(const std::vector<std::string>& arguments);
 	nlohmann::json ToolDefinitionsForTests();
 	nlohmann::json ActionAppliedFailureForTests(std::string message, std::string frame_id);
-	nlohmann::json ObservationSuccessForTests(std::string frame_id);
+	nlohmann::json StaleFrameFailureForTests(std::string message, std::string frame_id);
+	nlohmann::json ObservationSuccessForTests(std::string frame_id, bool elements_truncated = false);
 	nlohmann::json WaitSuccessForTests(std::string frame_id);
+	bool ElementReferenceIsCurrentForTests(const Capture& reference, const Capture& current, int element_id);
 } // namespace uam::computer_use

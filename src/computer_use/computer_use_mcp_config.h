@@ -4,6 +4,7 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +25,8 @@ namespace uam::computer_use
 	bool IsPortableMcpChatId(std::string_view value);
 
 	std::vector<std::string> McpServerArguments(const ChatSession& chat);
+	std::string ResolveMcpExecutablePath(const std::filesystem::path& executable);
+	std::string McpExecutablePath();
 	nlohmann::json AcpMcpServers(const ChatSession& chat);
 	std::string ClaudeMcpConfig(const ChatSession& chat);
 	void AppendCodexMcpLaunchArguments(std::vector<std::string>& argv, const ChatSession& chat);

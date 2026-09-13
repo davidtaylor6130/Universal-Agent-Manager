@@ -209,29 +209,12 @@ namespace
 		}
 	}
 
-	void RemovePendingRuntimeCallsForDeletedChats(uam::AppState& app, const std::unordered_set<std::string>& deleted_chat_ids)
-	{
-		std::erase_if(app.pending_calls,
-		              [&](PendingRuntimeCall& call)
-		              {
-			              if (!ContainsDeletedChatId(deleted_chat_ids, call.chat_id))
-			              {
-				              return false;
-			              }
-
-			              ResetPendingRuntimeCall(call);
-			              return true;
-		              });
-	}
-
 	void ForgetDeletedChatReferences(uam::AppState& app, const std::unordered_set<std::string>& deleted_chat_ids)
 	{
 		if (deleted_chat_ids.empty())
 		{
 			return;
 		}
-
-		RemovePendingRuntimeCallsForDeletedChats(app, deleted_chat_ids);
 
 		for (const std::string& deleted_chat_id : deleted_chat_ids)
 		{
@@ -1111,6 +1094,7 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	}
 
 	std::erase_if(app.chats, [&branch_id](const ChatSession& chat) { return chat.id == branch_id; });
+	ChatDomainService().SelectChatById(app, previous_selected_chat_id);
 	app.status_line = retry_error;
 	if (error_out != nullptr)
 	{

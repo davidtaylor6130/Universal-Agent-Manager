@@ -42,6 +42,7 @@
 #include "common/config/settings_store.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 
 #include "cef/cef_push.h"
@@ -51,6 +52,8 @@
 #include "cef/uam_cef_app.h"
 #include "cef/uam_cef_client.h"
 #include "include/cef_path_util.h"
+#include "include/views/cef_browser_view.h"
+#include "include/views/cef_window.h"
 
 #include "include/cef_app.h"
 #include "include/cef_task.h"
@@ -61,7 +64,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
-#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -111,6 +113,8 @@ namespace
 	{
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
 		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
+		app.runtime_cli_pin_task.execution_host = ExecutionHost{};
 		app.runtime_cli_version_provider_id.clear();
 		app.runtime_cli_version_check_queue.clear();
 		app.runtime_cli_pin_provider_id.clear();
@@ -138,6 +142,16 @@ namespace
 			const uam::CliProviderVersionState& state = entry->second;
 			signature += provider_id;
 			signature.push_back('\0');
+			for (const std::string* field : {&state.provider_id, &state.execution_host.id, &state.execution_host.label,
+			     &state.execution_host.transport, &state.execution_host.ssh_alias, &state.execution_host.platform,
+			     &state.execution_host.architecture, &state.execution_host.runner_version, &state.execution_host.runner_directory,
+			     &state.install_method, &state.install_command, &state.last_install_status})
+			{
+				signature += *field;
+				signature.push_back('\0');
+			}
+			signature += std::to_string(state.execution_host.runner_protocol_version);
+			signature.push_back('\0');
 			signature += state.checked ? "1" : "0";
 			signature.push_back('\0');
 			signature += state.supported ? "1" : "0";
@@ -161,6 +175,10 @@ namespace
 	{
 		std::string runtime_cli_version_provider_id;
 		std::string runtime_cli_pin_provider_id;
+		std::string check_execution_host_id;
+		std::string install_execution_host_id;
+		bool check_running = false;
+		bool install_running = false;
 		std::string provider_state_signature;
 		std::string status_line;
 	};
@@ -170,6 +188,10 @@ namespace
 		RuntimeCliCompatibilitySnapshot snapshot;
 		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
 		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
+		snapshot.check_execution_host_id = app.runtime_cli_version_check_task.execution_host.id;
+		snapshot.install_execution_host_id = app.runtime_cli_pin_task.execution_host.id;
+		snapshot.check_running = app.runtime_cli_version_check_task.running;
+		snapshot.install_running = app.runtime_cli_pin_task.running;
 		snapshot.provider_state_signature = CalculateCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
 		snapshot.status_line = app.status_line;
 		return snapshot;
@@ -185,6 +207,12 @@ namespace
 		{
 			return true;
 		}
+		if (before.check_execution_host_id != after.check_execution_host_id ||
+		    before.install_execution_host_id != after.install_execution_host_id ||
+		    before.check_running != after.check_running || before.install_running != after.install_running)
+		{
+			return true;
+		}
 		if (before.provider_state_signature != after.provider_state_signature)
 		{
 			return true;
@@ -192,18 +220,25 @@ namespace
 		return before.status_line != after.status_line;
 	}
 
-	bool IsSelectedChatRunning(const uam::AppState& app)
+	bool TerminalUiVisible(CefRefPtr<CefBrowser> browser)
 	{
+		if (browser == nullptr) return true;
+		const CefRefPtr<CefBrowserView> view = CefBrowserView::GetForBrowser(browser);
+		const CefRefPtr<CefWindow> window = view != nullptr ? view->GetWindow() : nullptr;
+		return window == nullptr || (window->IsVisible() && !window->IsMinimized());
+	}
+
+	/// Keep terminal input responsive while a visible provider is waiting at its prompt.
+	bool NeedsInteractiveRuntimePolling(const uam::AppState& app, bool terminal_ui_visible)
+	{
+		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
+		{
+			if (terminal_ui_visible && terminal != nullptr && terminal->running && terminal->ui_attached) return true;
+		}
 		const ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
 		if (selected_chat == nullptr)
 		{
 			return false;
-		}
-
-		if (const uam::CliTerminalState* terminal = uam::FindCliTerminalForChat(app, *selected_chat);
-		    terminal != nullptr && terminal->running && uam::CliTerminalLifecycleIsProcessing(*terminal))
-		{
-			return true;
 		}
 
 		const uam::AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
@@ -225,18 +260,18 @@ namespace
 			}
 		}
 
-		return !app.pending_calls.empty() || !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
+		return !app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty();
 	}
 
-	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running)
+	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running, bool terminal_ui_visible)
 	{
+		if (NeedsInteractiveRuntimePolling(app, terminal_ui_visible))
+		{
+			return 16;
+		}
 		if (dictation_running)
 		{
 			return 50;
-		}
-		if (IsSelectedChatRunning(app))
-		{
-			return 16;
 		}
 		if (IsAnyRuntimeActive(app))
 		{
@@ -324,12 +359,11 @@ void Application::PollTick()
 	}
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
-	const bool pending_calls_changed = PollPendingRuntimeCall(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	uam::FlushPendingChatSaves(m_app);
-	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app);
+	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	const bool computer_use_changed = uam::ComputerUseService::Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
@@ -352,14 +386,15 @@ void Application::PollTick()
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
 
 	// Poll the provider model catalog service for async model refresh completion.
+	bool model_catalog_changed = false;
 	if (m_app.provider_model_catalog != nullptr)
 	{
-		m_app.provider_model_catalog->Poll();
+		model_catalog_changed = m_app.provider_model_catalog->Poll();
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = pending_calls_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
-	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || uam::HasDeferredStatePush();
+	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
+	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
 		uam::PushDictationEvent(m_browser, event);
@@ -381,11 +416,11 @@ void Application::PollTick()
 	if (poll_duration >= std::chrono::milliseconds(50) &&
 	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
 	{
-		std::cerr << "[performance] PollTick took " << poll_duration.count() << " ms.\n";
+		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms.");
 		last_slow_poll_report = poll_finished;
 	}
 
-	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning()));
+	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -422,7 +457,6 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
-	std::fprintf(stderr, "[storage] data_root=%s\n", uam::paths::Utf8PathString(m_app.data_root).c_str());
 	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 
 	std::string shell_action_error;
@@ -450,10 +484,14 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	std::string log_error;
+	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error))
+		uam::diagnostics::Write(log_error);
+	uam::diagnostics::Write("[storage] data_root=" + uam::paths::Utf8PathString(m_app.data_root));
 	std::string uam_control_error;
 	if (!uam::UamControlService::Initialize(m_app, &uam_control_error))
 	{
-		std::fprintf(stderr, "%s\n", uam_control_error.c_str());
+		uam::diagnostics::Write(uam_control_error);
 		m_exitCode = 1;
 		return false;
 	}
@@ -463,12 +501,12 @@ bool Application::InitializeState()
 	m_app.agent_runs = std::move(agent_runs.runs);
 	for (const std::string& error : agent_runs.errors)
 	{
-		std::fprintf(stderr, "[agent-runs] %s\n", error.c_str());
+		uam::diagnostics::Write("[agent-runs] " + error);
 	}
 
 	if (!PersistenceCoordinator().LoadSettings(m_app))
 	{
-		std::fprintf(stderr, "%s\n", m_app.status_line.c_str());
+		uam::diagnostics::Write(m_app.status_line);
 		m_exitCode = 1;
 		return false;
 	}
@@ -500,7 +538,7 @@ bool Application::InitializeState()
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	if (!uam::RecoverPendingDeletionTransaction(m_app))
 	{
-		std::fprintf(stderr, "%s\n", m_app.status_line.c_str());
+		uam::diagnostics::Write(m_app.status_line);
 		m_exitCode = 1;
 		return false;
 	}
@@ -619,7 +657,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp([this](const std::string& error)
 	{
-		std::fprintf(stderr, "[CEF] %s\n", error.c_str());
+		uam::diagnostics::Write("[CEF] " + error);
 		m_exitCode = 1;
 		CefQuitMessageLoop();
 	}));
@@ -642,7 +680,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
 	{
-		std::fprintf(stderr, "CefInitialize failed.\n");
+		uam::diagnostics::Write("CefInitialize failed.");
 		m_exitCode = 1;
 		return false;
 	}
@@ -674,12 +712,6 @@ void Application::Shutdown()
 		uam::FlushPendingChatSaves(m_app, true);
 	}
 
-	for (PendingRuntimeCall& call : m_app.pending_calls)
-	{
-		ResetPendingRuntimeCall(call);
-	}
-
-	m_app.pending_calls.clear();
 	m_app.resolved_native_sessions_by_chat_id.clear();
 	ResetRuntimeCliVersionState(m_app);
 	MemoryService::StopMemoryTasks(m_app);
@@ -708,5 +740,8 @@ void Application::Shutdown()
 		CefShutdown();
 		m_cefInitialized = false;
 	}
+	// Join the cache writer while this instance still owns the data-root lock.
+	m_app.provider_model_catalog.reset();
+	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
 	m_dataRootLock.reset();
 }

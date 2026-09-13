@@ -1,7 +1,8 @@
+file(READ "${SOURCE_ROOT}/src/computer_use/computer_use_mcp_server.cpp" mcp_server)
 file(READ "${SOURCE_ROOT}/src/computer_use/computer_use_platform_macos.mm" macos)
 
 foreach(token IN ITEMS "CGRequestScreenCaptureAccess(" "AXIsProcessTrustedWithOptions(")
-  string(FIND "${macos}" "${token}" interactive_request)
+  string(FIND "${mcp_server}" "${token}" interactive_request)
   if(NOT interactive_request EQUAL -1)
     message(FATAL_ERROR "Computer-use model tool calls must not request macOS permissions: ${token}")
   endif()
@@ -13,6 +14,15 @@ foreach(token IN ITEMS "CGPreflightScreenCaptureAccess()" "AXIsProcessTrusted()"
     message(FATAL_ERROR "Computer-use macOS permission preflight lost: ${token}")
   endif()
 endforeach()
+
+string(FIND "${mcp_server}" "EnsureCapturePermission(&permission_error)" capture_preflight)
+string(FIND "${mcp_server}" "EnsureActionPermission(&permission_error)" action_preflight)
+string(FIND "${mcp_server}" "{\"state\", \"running\"}" running_state)
+if(capture_preflight EQUAL -1 OR action_preflight EQUAL -1 OR running_state EQUAL -1 OR
+   capture_preflight GREATER running_state OR action_preflight GREATER running_state)
+  message(FATAL_ERROR "Computer-use target approval must preflight capture and input permissions before running state.")
+endif()
+
 
 file(READ "${SOURCE_ROOT}/assets/computer-use/gemini-policy.toml" gemini_policy)
 foreach(token IN ITEMS

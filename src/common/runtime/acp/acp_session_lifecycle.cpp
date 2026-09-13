@@ -12,7 +12,6 @@
 #include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -263,8 +262,9 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 	return WriteAcpMessage(session, msg, error_out);
 }
 
-void ResetAcpRuntimeState(AcpSessionState& session)
+void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	InterruptUnconfirmedAcpSteers(app, session, chat);
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;
@@ -294,7 +294,8 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.current_assistant_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
-	session.turn_serial = 0;
+	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
+	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
 	session.goal_turn_kind.clear();
 	session.goal_turn_model_id.clear();
@@ -328,9 +329,11 @@ void ResetAcpRuntimeState(AcpSessionState& session)
 	session.agent_name.clear();
 	session.agent_title.clear();
 	session.agent_version.clear();
+	session.codex_model_discovery = {};
 	session.available_commands.clear();
 	session.available_config_options.clear();
 	session.pending_request_methods.clear();
+	session.pending_steer_requests.clear();
 	ResetAcpTurnStreamState(session);
 	session.codex_turn_id.clear();
 	ResetAcpPendingInteractionState(session);
@@ -380,6 +383,52 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 	return true;
 }
 
+void RestoreRemoteAcpRequests(AcpSessionState& session, const ChatSession& chat)
+{
+	session.next_request_id = std::max(session.next_request_id, chat.remote_next_request_id);
+	session.turn_serial = std::max(session.turn_serial, chat.remote_turn_serial);
+	if (chat.remote_turn_reconnect_pending)
+		ProviderRuntimeRegistry::ResolveById(session.provider_id).RestoreAcpTurnIdentity(session, chat.remote_active_turn_id);
+	for (const AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+	{
+		session.next_request_id = std::max(session.next_request_id, request.request_id + 1);
+		if (request.response_consumed) continue;
+		session.pending_request_methods[request.request_id] = request.method;
+		if (request.user_message_index >= 0)
+		{
+			AcpPendingSteerState& steer = session.pending_steer_requests[std::to_string(request.request_id)];
+			steer.user_message_index = request.user_message_index;
+			steer.turn_serial = request.turn_serial;
+			steer.provider_turn_id = request.provider_turn_id;
+		}
+	}
+}
+
+void RetireRemoteAcpRequests(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	// Retain tombstones until the output cursor is saved, even if another event saves first.
+	bool changed = false;
+	for (AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+	{
+		if (request.response_consumed || session.pending_request_methods.contains(request.request_id)) continue;
+		request.response_consumed = true;
+		request.payload.clear();
+		changed = true;
+	}
+	if (changed) (void)SaveChatQuietly(app, chat);
+}
+
+bool WriteRemoteAcpRequest(AcpSessionState& session, const AcpRemotePendingRequestState& request)
+{
+	const std::string line = uam::remote::BuildRemoteInputDeliveryLine(
+	    session.remote_output_delivery_token, request.delivery_id, request.payload);
+	std::string error;
+	if (!line.empty() && PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+	        session, line.data(), line.size(), &error)) return true;
+	session.last_error = "Failed to deliver remote input: " + uam::strings::NonEmptyOrFallback(error, "transport unavailable");
+	return false;
+}
+
 AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 {
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -396,6 +445,13 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	session->provider_id = provider.id;
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	session->managed_agent_run_id = chat.agent_run_id;
+	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		session->next_request_id = chat.remote_next_request_id;
+		session->turn_serial = chat.remote_turn_serial;
+		if (chat.remote_turn_reconnect_pending)
+			ProviderRuntimeRegistry::ResolveById(session->provider_id).RestoreAcpTurnIdentity(*session, chat.remote_active_turn_id);
+	}
 	app.acp_sessions.push_back(std::move(session));
 	return *app.acp_sessions.back();
 }
@@ -413,6 +469,12 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
+	{
+		if (error_out != nullptr) *error_out = update_error;
+		return false;
+	}
 	if (session.running)
 	{
 		return true;
@@ -431,7 +493,6 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = "The previous remote stop was not confirmed.";
 		return false;
 	}
-	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	const ExecutionHost* execution_host =
 	    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 	const bool remote = execution_host != nullptr && execution_host->id != uam::execution_hosts::kLocalHostId;
@@ -453,12 +514,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = startup_error;
 		return false;
 	}
-	const bool copilot = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli);
-	const bool opencode = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli);
-	if (!remote && (copilot || opencode))
+	if (!remote)
 	{
 		ProviderCliCompatibilityService().Poll(app);
-		const std::string compatibility_error = copilot ? CopilotLaunchBlockReason(app) : OpenCodeLaunchBlockReason(app);
+		const std::string compatibility_error = ProviderRuntimeRegistry::Resolve(provider).LocalCliCompatibilityError(app);
 		if (!compatibility_error.empty())
 		{
 			session.provider_id = provider.id;
@@ -477,7 +536,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const bool retrying_undelivered_prompt = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty();
 	const bool recovering_remote_turn = session.recovering_remote_turn;
 	const bool recovering_remote_process = session.recovering_remote_process;
-	const bool recovering_remote_stop = session.remote_stop_unconfirmed && !session.processing;
+	const bool was_processing = session.processing;
 	const std::string pending_prompt = session.queued_prompt;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int current_assistant_message_index = session.current_assistant_message_index;
@@ -505,12 +564,12 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	else
 	{
-		ResetAcpRuntimeState(session);
+		ResetAcpRuntimeState(app, session, chat);
 	}
 	if (retrying_undelivered_prompt || recovering_remote_turn || recovering_remote_process)
 	{
 		if (retrying_undelivered_prompt) session.queued_prompt = pending_prompt;
-		session.processing = !recovering_remote_stop;
+		session.processing = was_processing;
 		session.recovering_remote_turn = recovering_remote_turn;
 		session.recovering_remote_process = recovering_remote_process;
 		session.turn_user_message_index = turn_user_message_index;
@@ -530,7 +589,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	session.provider_id = provider.id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? ValidCodexResumeId(chat) : std::string{};
+	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? runtime.OnAcpValidateResumeId(chat) : std::string{};
 	const std::string acp_resume_id = !session.goal_internal_session && codex_resume_id.empty() ? ResolvedAcpResumeIdForChat(app, chat) : std::string{};
 	session.session_id = codex_resume_id.empty() ? acp_resume_id : codex_resume_id;
 	session.codex_thread_id = codex_resume_id;
@@ -622,7 +681,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		else
 		{
 			process_working_directory = runner.parent_path();
-			process_argv = {runner.string(), "proxy", "--alias", execution_host->ssh_alias,
+			process_argv = {uam::paths::Utf8PathString(runner), "proxy", "--alias", execution_host->ssh_alias,
 			                "--platform", execution_host->platform,
 			                "--version", execution_host->runner_version,
 			                "--directory", uam::execution_hosts::RunnerDirectory(
@@ -690,6 +749,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			        session.last_error, "Remote UAM control relay disconnected."));
 			return false;
 		}
+		RestoreRemoteAcpRequests(session, chat);
 		session.initialized = true;
 		session.session_ready = true;
 		session.lifecycle_state = session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
@@ -706,6 +766,16 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			        session, delivery_line.data(), delivery_line.size(), &delivery_error))
 			{
 				session.last_error = "Remote prompt replay could not be queued for delivery.";
+				if (error_out != nullptr) *error_out = session.last_error;
+				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+				return false;
+			}
+		}
+		for (const AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+		{
+			if (request.payload.empty()) continue;
+			if (!WriteRemoteAcpRequest(session, request))
+			{
 				if (error_out != nullptr) *error_out = session.last_error;
 				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
 				return false;
@@ -736,16 +806,16 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string cwd = AcpWorkingDirectoryString(workspace_root);
-	const std::string resolved_resume_id = session.goal_internal_session ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 
 	const std::string raw_resume_id = session.goal_internal_session ? std::string{} : uam::strings::Trim(chat.native_session_id);
 	const std::string resume_id = session.goal_internal_session ? std::string{} : runtime.OnAcpValidateResumeId(chat);
 	if (!raw_resume_id.empty() && resume_id.empty())
 	{
 		AppendInvalidResumeDiagnostic(session, raw_resume_id);
-		chat.native_session_id.clear();
-		SaveChatQuietly(app, chat);
+		if (!ClearSavedAcpResumeId(app, session, chat)) return false;
 	}
+
+	const std::string resolved_resume_id = session.goal_internal_session ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 
 	ChatSession resume_chat = chat;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
@@ -803,22 +873,26 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	return written;
 }
 
-bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpInvalidLoadRetryDetails& details)
+bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details)
 {
-	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-	const bool is_session_load = details.failure.method == uam::acp_methods::kSessionLoad;
-	const bool copilot_session_not_found = std::strcmp(runtime.RuntimeId(), uam::provider_ids::kCopilotCli) == 0 && details.failure.has_code && details.failure.code == -32002;
-	const bool gemini_invalid_session = !runtime.IsGenericAcpSession() && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") != 0 && GeminiErrorLooksLikeInvalidSessionId(details.failure.message, details.error_data);
-	if (!is_session_load || session.acp_resume_fallback_attempted || (!copilot_session_not_found && !gemini_invalid_session))
+	if ((details.failure.method != uam::acp_methods::kSessionLoad &&
+	     details.failure.method != uam::acp_methods::kSessionResume) ||
+	    session.acp_resume_fallback_attempted)
+	{
+		return false;
+	}
+	const std::string failure_text = details.failure.message + "\n" + details.error_data;
+	if (!TextContainsAnyCaseInsensitive(failure_text,
+	        {"invalid session", "session not found", "session was not found", "unknown session", "session does not exist"}))
 	{
 		return false;
 	}
 
+	if (!ClearSavedAcpResumeId(app, session, chat)) return true;
 	session.acp_resume_fallback_attempted = true;
 	session.session_setup_request_id = 0;
 	session.session_id.clear();
-	chat.native_session_id.clear();
-	SaveChatQuietly(app, chat);
+	SyncResolvedNativeSessionIdForChat(app, chat, {});
 	const AcpFailureDetails& failure = details.failure;
 	const std::string retry_message = std::string(RuntimeDisplayName(session)) + " rejected the stored session id. Starting a new session instead.";
 	AppendAcpDiagnostic(session, "response", "invalid_resume_id_retry_new", failure.method, failure.request_id, failure.has_code, failure.code, retry_message, details.detail_text);
@@ -855,13 +929,8 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 {
-	if (session.active_uam_agent_execution_capability == "opencode-native-agent-config")
-	{
-		return false;
-	}
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-	const char* protocol = runtime.AcpProtocolKind();
-	if (!session.running || !session.session_ready || session.mode_change_request_id != 0 || session.session_id.empty() || std::strcmp(protocol, "codex-app-server") == 0 || std::strcmp(protocol, "claude-code-stream-json") == 0)
+	if (!session.running || !session.session_ready || session.mode_change_request_id != 0 || session.session_id.empty() || runtime.AcpModeChangeAction(session) != ProviderAcpSettingChangeAction::SendRequest)
 	{
 		return false;
 	}
@@ -905,6 +974,15 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 		ClearAcpStartupModelRequest(session);
 		return false;
 	}
+	const auto model_option = std::ranges::find_if(session.available_config_options, [](const AcpConfigOptionState& option) {
+		return option.category == "model" || option.id == "model";
+	});
+	if (model_option != session.available_config_options.end() &&
+	    std::ranges::none_of(model_option->choices, [&](const AcpConfigOptionChoiceState& choice) { return choice.value == model_id; }))
+	{
+		FailAcpTurnOrSession(session, nullptr, "The provider no longer offers the saved model '" + model_id + "'. Select an available model before retrying.");
+		return true;
+	}
 
 	const int id = NextAcpRequestId(session, uam::acp_methods::kSessionSetModel);
 	session.startup_model_request_id = id;
@@ -914,7 +992,7 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	session.model_change_previous_chat_id = session.current_model_id;
 	session.model_change_requested_id = model_id;
 	session.awaiting_model_config_options =
-	    uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kCopilotCli);
+	    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpModelChangeAction() == ProviderAcpSettingChangeAction::SendRequestAndAwaitConfigOptions;
 	if (!WriteAcpMessage(session, BuildSetModelRequest(id, session.session_id, model_id)))
 	{
 		session.pending_request_methods.erase(id);
@@ -938,6 +1016,10 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
+	if (!AcpSessionCanSendQueuedPrompt(session))
+	{
+		return false;
+	}
 	if (SendStartupModeIfNeeded(session, chat))
 	{
 		return false;
@@ -946,15 +1028,15 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
-	if (!AcpSessionCanSendQueuedPrompt(session))
-	{
-		return false;
-	}
-
 	const std::string prompt = session.queued_prompt;
 	session.lifecycle_state = kAcpLifecycleProcessing;
 
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (chat.remote_pending_requests.size() >= 64)
+	{
+		session.last_error = "Wait for pending remote requests to be confirmed before sending another prompt.";
+		return true;
+	}
 	const int id = session.next_request_id++;
 	std::string method;
 	ChatSession prompt_chat = chat;
@@ -975,6 +1057,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
 	if (remote)
 	{
+		AcpRemotePendingRequestState pending;
+		pending.request_id = id;
+		pending.method = method;
+		pending.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(std::move(pending));
 		// Persist intent before the transport write. A process write can succeed even
 		// when the manager dies before observing its result; the durable marker makes
 		// restart choose reattach rather than issuing the prompt a second time.
@@ -994,6 +1081,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		}
 		if (!SaveChatQuietly(app, chat))
 		{
+			chat.remote_pending_requests.pop_back();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
 			session.last_error =
@@ -1040,9 +1128,16 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		session.pending_request_methods.erase(id);
 		session.prompt_request_id = 0;
 		CompletePromptTurn(session, kAcpLifecycleError);
+		InvalidateAcpTransport(app, session, chat, session.last_error);
 		return true;
 	}
 
+	if (session.active_uam_agent_execution_capability == "uam-prompt-injected" &&
+	    !session.active_uam_agent_instructions.empty())
+	{
+		chat.last_prompt_agent_definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
 	session.queued_prompt.clear();
 	if (!remote && !SaveChatQuietly(app, chat))
 	{
@@ -1055,9 +1150,38 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	return true;
 }
 
+void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	bool changed = false;
+	for (const std::pair<const std::string, AcpPendingSteerState>& entry : session.pending_steer_requests)
+	{
+		const int index = entry.second.user_message_index;
+		if (index < 0 || index >= static_cast<int>(chat.messages.size())) continue;
+		Message& message = chat.messages[static_cast<std::size_t>(index)];
+		if (message.role != MessageRole::User) continue;
+		message.interrupted = true;
+		changed = true;
+	}
+	if (changed) (void)SaveChatQuietly(app, chat);
+}
+
 bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 {
+	// Discovery sessions are temporary and must not reappear as chats on the next launch.
+	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
+	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr && persisted->execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
+		{
+			persisted->remote_next_request_id = std::max(persisted->remote_next_request_id, active->next_request_id);
+			persisted->remote_turn_serial = std::max(persisted->remote_turn_serial, active->turn_serial);
+			persisted->remote_turn_user_message_index = uam::AcpSessionHasActiveTurn(*active)
+			    ? active->turn_user_message_index : -1;
+			persisted->remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(active->provider_id).AcpTurnIdentity(*active);
+		}
+	}
 	if (persisted != nullptr && persisted->remote_turn_reconnect_pending)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
@@ -1065,16 +1189,40 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 		    (!uam::AcpSessionHasActiveTurn(*session) && !session->reconnect_pending))
 		{
 			persisted->remote_turn_reconnect_pending = false;
-			persisted->remote_delivered_stdout_cursor = 0;
-			persisted->remote_delivered_stderr_cursor = 0;
+			if (!persisted->remote_process_exists)
+			{
+				persisted->remote_delivered_stdout_cursor = 0;
+				persisted->remote_delivered_stderr_cursor = 0;
+			}
 		}
 	}
-	if (persisted != nullptr && !persisted->remote_turn_reconnect_pending)
+	if (persisted != nullptr && !persisted->remote_turn_reconnect_pending && !persisted->remote_process_exists)
 	{
 		persisted->remote_delivered_stdout_cursor = 0;
 		persisted->remote_delivered_stderr_cursor = 0;
 	}
-	return ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
+	const bool saved = ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
+	if (saved)
+	{
+		app.pending_chat_save_at_by_chat_id.erase(chat.id);
+	}
+	else if (persisted != nullptr)
+	{
+		ScheduleChatSave(app, *persisted, 1.0);
+	}
+	return saved;
+}
+
+bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	const std::string previous_id = chat.native_session_id;
+	chat.native_session_id.clear();
+	if (SaveChatQuietly(app, chat)) return true;
+	chat.native_session_id = previous_id;
+	const std::string message = "Could not save session recovery data. Check disk space and folder access, then retry.";
+	AppendAcpDiagnostic(session, "persistence", "resume_identity_save_failed", "", "", false, 0, message);
+	InvalidateAcpTransport(app, session, chat, message);
+	return false;
 }
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
@@ -1141,6 +1289,8 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	// A completion notification can arrive before the prompt request's reply.
+	session.pending_request_methods.erase(session.prompt_request_id);
 	if (session.processing && session.turn_serial > 0)
 	{
 		session.last_settled_turn_serial = session.turn_serial;

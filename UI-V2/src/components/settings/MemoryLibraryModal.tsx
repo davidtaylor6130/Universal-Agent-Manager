@@ -213,7 +213,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [isAdding, setIsAdding] = useState(false)
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const [localError, setLocalError] = useState('')
-  const [dismissedError, setDismissedError] = useState('')
   const libraryRef = useRef<HTMLDivElement>(null)
   const openAllMemoryLibrary = useAppStore(s => s.openAllMemoryLibrary)
   useEffect(() => {
@@ -493,7 +492,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               />
               </label>
               {!isAllMemory && <IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/>}
-              <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => {setDismissedError(''); void refreshMemoryLibrary()}}/>
+              <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}/>
               <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => {setLocalError(''); setIsAdding(true)}}/>
               <IconButton
                 variant="danger"
@@ -504,9 +503,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               />
             </div>
 
-            {memoryLibraryError && memoryLibraryError !== dismissedError && (
+            {memoryLibraryError && (
               <div className="mb-4 rounded-md px-3 py-2 text-xs flex items-center justify-between gap-2" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-                <span>{memoryLibraryError}</span><IconButton icon={<X size={14}/>} label="Dismiss memory error" onClick={() => setDismissedError(memoryLibraryError)} />
+                <span>{memoryLibraryError}</span><IconButton icon={<X size={14}/>} label="Dismiss memory error" onClick={() => useAppStore.setState({ memoryLibraryError: '' })} />
               </div>
             )}
 

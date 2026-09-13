@@ -170,6 +170,7 @@ namespace uam::remote
 			                          {"processInputAcknowledgement", state != nullptr},
 			                          {"processOutputAcknowledgement", state != nullptr},
 			                          {"channelOutputAcknowledgement", state != nullptr},
+		                          {"leasedChannelTake", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

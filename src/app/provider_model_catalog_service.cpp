@@ -2,9 +2,8 @@
 
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/codex/cli/codex_session_index.h"
+#include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
-#include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/utils/env_utils.h"
@@ -21,6 +20,8 @@
 #include <optional>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -45,9 +46,9 @@ namespace
 		}
 	}
 
-	void PushModelIfNew(nlohmann::json& models_json, std::vector<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
+	void PushModelIfNew(nlohmann::json& models_json, std::unordered_set<std::string>& seen_model_ids, const std::string& id, const std::string& name, const std::string& description)
 	{
-		if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
+		if (id.empty() || !seen_model_ids.insert(id).second)
 		{
 			return;
 		}
@@ -196,20 +197,16 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root, const st
 	LoadPersistentCatalogs();
 
 	// Pre-load cached models at startup (no network).
-	m_cached_codex_models = ReadCachedCodexModels();
+	m_cached_codex_models = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).ReadLocalModelCatalog();
 
 	// Load cached zen free models.
 	m_open_code_zen_free_models = ReadOpenCodeZenFreeModelsCache();
-	if (m_open_code_zen_free_models.empty())
-	{
-		m_open_code_zen_free_models = BuiltInOpenCodeZenFreeModels();
-	}
 
 	// Read opencode config once at startup.
-	m_configured_open_code_models = ReadConfiguredOpenCodeModels();
-	m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
+	RefreshConfiguredOpenCodeModels();
 
 	m_open_code_config_fingerprint = OpenCodeConfigFingerprint();
+	m_next_open_code_config_check = std::chrono::steady_clock::now() + kOpenCodeConfigCheckInterval;
 }
 
 bool ProviderModelCatalogService::MaybeStartRefresh()
@@ -250,13 +247,17 @@ bool ProviderModelCatalogService::Poll()
 			updated = true;
 		}
 
-		const std::string current_fingerprint = OpenCodeConfigFingerprint();
-		if (current_fingerprint != m_open_code_config_fingerprint)
+		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		if (now >= m_next_open_code_config_check)
 		{
-			m_open_code_config_fingerprint = current_fingerprint;
-			m_configured_open_code_models = ReadConfiguredOpenCodeModels();
-			m_configured_open_code_default_model = ReadConfiguredOpenCodeDefaultModel();
-			updated = true;
+			m_next_open_code_config_check = now + kOpenCodeConfigCheckInterval;
+			const std::string current_fingerprint = OpenCodeConfigFingerprint();
+			if (current_fingerprint != m_open_code_config_fingerprint)
+			{
+				m_open_code_config_fingerprint = current_fingerprint;
+				RefreshConfiguredOpenCodeModels();
+				updated = true;
+			}
 		}
 	}
 
@@ -281,11 +282,6 @@ std::string ProviderModelCatalogService::GetConfiguredOpenCodeDefaultModel() con
 	return m_configured_open_code_default_model;
 }
 
-nlohmann::json ProviderModelCatalogService::GetCachedCodexModels() const
-{
-	std::lock_guard<std::mutex> lock(m_mutex);
-	return m_cached_codex_models;
-}
 
 std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
@@ -396,6 +392,29 @@ void ProviderModelCatalogService::RememberRefreshFailure(const std::string& prov
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
 }
 
+nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string& provider_id,
+	std::string_view workspace_directory, std::string_view execution_host_id) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
+	const std::string key = CatalogKey(provider_id, workspace_directory, host);
+	nlohmann::json models = nlohmann::json::array();
+	nlohmann::json options = nlohmann::json::array();
+	if (const nlohmann::json* catalog = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key))
+	{
+		if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "models")) models = *value;
+		if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "configOptions")) options = *value;
+	}
+	if (host == "local") models = MergeLocalModelFallbacksLocked(provider_id, std::move(models));
+	const std::map<std::string, std::string>::const_iterator error = m_refresh_error_by_provider_id.find(key);
+	return {
+	    {"availableModels", std::move(models)},
+	    {"configOptions", std::move(options)},
+	    {"modelsLoading", m_pending_discovery_provider_ids.contains(key)},
+	    {"modelRefreshError", error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second},
+	};
+}
+
 nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
@@ -501,7 +520,7 @@ void ProviderModelCatalogService::RememberDiscoveryCompatibilityBlocked(const st
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
 }
 
-nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models)
+nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models, bool prefer_runtime)
 {
 	if (!fallback_models.is_array())
 	{
@@ -512,12 +531,16 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 		return fallback_models;
 	}
 
-	std::vector<std::string> seen_model_ids;
-	for (const nlohmann::json& model : fallback_models)
+	std::unordered_set<std::string> seen_model_ids;
+	std::unordered_map<std::string, std::size_t> fallback_indices;
+	for (std::size_t index = 0; index < fallback_models.size(); ++index)
 	{
+		const nlohmann::json& model = fallback_models[index];
 		if (model.is_object())
 		{
-			uam::ranges::PushUniqueNonEmptyString(seen_model_ids, uam::nlohmann_json::TrimmedStringValue(model, {"id"}));
+			const std::string id = uam::nlohmann_json::TrimmedStringValue(model, {"id"});
+			if (uam::ranges::InsertTrimmedNonEmptyString(seen_model_ids, id) && prefer_runtime)
+				fallback_indices.emplace(id, index);
 		}
 	}
 	for (const nlohmann::json& model : runtime_models)
@@ -527,13 +550,20 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 			continue;
 		}
 		const std::string id = uam::nlohmann_json::TrimmedStringValue(model, {"id"});
-		if (!uam::ranges::PushUniqueNonEmptyString(seen_model_ids, id))
+		if (id.empty()) continue;
+		std::size_t target_index = fallback_models.size();
+		if (!uam::ranges::InsertTrimmedNonEmptyString(seen_model_ids, id))
 		{
-			continue;
+			const std::unordered_map<std::string, std::size_t>::iterator target = fallback_indices.find(id);
+			if (target == fallback_indices.end()) continue;
+			target_index = target->second;
+			// Only the first runtime entry replaces a fallback, including cleared capabilities.
+			fallback_indices.erase(target);
 		}
 		nlohmann::json normalized_model = model;
 		normalized_model["id"] = id;
-		fallback_models.push_back(std::move(normalized_model));
+		if (target_index == fallback_models.size()) fallback_models.push_back(std::move(normalized_model));
+		else fallback_models[target_index] = std::move(normalized_model);
 	}
 	return fallback_models;
 }
@@ -541,13 +571,22 @@ nlohmann::json ProviderModelCatalogService::MergeAcpModelArrays(nlohmann::json f
 nlohmann::json ProviderModelCatalogService::FallbackAcpModelsForChat(const std::string& provider_id, std::string_view workspace_directory) const
 {
 	nlohmann::json cached = GetCachedProviderModels(provider_id, workspace_directory);
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return MergeLocalModelFallbacksLocked(provider_id, std::move(cached));
+}
+
+nlohmann::json ProviderModelCatalogService::MergeLocalModelFallbacksLocked(const std::string& provider_id, nlohmann::json cached) const
+{
 	if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli))
 	{
-		return MergeAcpModelArrays(std::move(cached), GetCachedCodexModels());
+		return MergeAcpModelArrays(std::move(cached), m_cached_codex_models);
 	}
 	if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kOpenCodeCli))
 	{
-		return MergeAcpModelArrays(std::move(cached), MergeAcpModelArrays(GetConfiguredOpenCodeModels(), GetOpenCodeZenFreeModels()));
+		// Zen's public list is advisory only.  Runtime discovery and configured
+		// provider models are the selectable sources; the endpoint can advertise
+		// IDs that the installed OpenCode binary does not accept.
+		return MergeAcpModelArrays(std::move(cached), m_configured_open_code_models);
 	}
 	return cached;
 }
@@ -616,19 +655,6 @@ std::string ProviderModelCatalogService::OpenCodeConfigFingerprint() const
 	return fingerprint;
 }
 
-nlohmann::json ProviderModelCatalogService::BuiltInOpenCodeZenFreeModels() const
-{
-	auto models_json = nlohmann::json::array();
-	std::vector<std::string> seen_model_ids;
-	PushModelIfNew(models_json, seen_model_ids, "opencode/big-pickle", "Big Pickle", "OpenCode Zen limited-time stealth free model.");
-	PushModelIfNew(models_json, seen_model_ids, "opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash Free", "OpenCode Zen free model.");
-	PushModelIfNew(models_json, seen_model_ids, "opencode/mimo-v2.5-free", "MiMo V2.5 Free", "OpenCode Zen free model.");
-	PushModelIfNew(models_json, seen_model_ids, "opencode/qwen3.6-plus-free", "Qwen3.6 Plus Free", "OpenCode Zen free model.");
-	PushModelIfNew(models_json, seen_model_ids, "opencode/minimax-m3-free", "MiniMax M3 Free", "OpenCode Zen free model.");
-	PushModelIfNew(models_json, seen_model_ids, "opencode/nemotron-3-super-free", "Nemotron 3 Super Free", "OpenCode Zen free model.");
-	return models_json;
-}
-
 nlohmann::json ProviderModelCatalogService::ReadOpenCodeZenFreeModelsCache() const
 {
 	const nlohmann::json cache = ReadJsonFile(OpenCodeZenFreeModelsCachePath());
@@ -654,7 +680,7 @@ nlohmann::json ProviderModelCatalogService::ParseOpenCodeZenFreeModels(const nlo
 		return models_json;
 	}
 
-	std::vector<std::string> seen_model_ids;
+	std::unordered_set<std::string> seen_model_ids;
 	for (const nlohmann::json& model : *models)
 	{
 		if (!model.is_object())
@@ -677,15 +703,16 @@ nlohmann::json ProviderModelCatalogService::ParseOpenCodeZenFreeModels(const nlo
 	return models_json;
 }
 
-std::optional<nlohmann::json> ProviderModelCatalogService::FetchOpenCodeZenModels()
+std::optional<nlohmann::json> ProviderModelCatalogService::FetchOpenCodeZenModels(std::stop_token stop_token)
 {
+	if (stop_token.stop_requested()) return std::nullopt;
 	if (const std::optional<nlohmann::json> fixture_path = uam::env::GetTrimmedPath(kOpenCodeZenModelsFixtureEnv))
 	{
 		const nlohmann::json root = ReadJsonFile(*fixture_path);
 		return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
 	}
 
-	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(std::string("curl -s --max-time 4 ") + kOpenCodeZenModelsUrl, 6000);
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(std::string("curl -s --max-time 4 ") + kOpenCodeZenModelsUrl, 6000, stop_token);
 	if (!result.ok || result.timed_out || result.canceled || result.exit_code != 0 || result.output.empty())
 	{
 		return std::nullopt;
@@ -695,13 +722,16 @@ std::optional<nlohmann::json> ProviderModelCatalogService::FetchOpenCodeZenModel
 	return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
 }
 
-nlohmann::json ProviderModelCatalogService::ReadConfiguredOpenCodeModels()
+void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
 {
-	auto models_json = nlohmann::json::array();
-	std::vector<std::string> seen_model_ids;
+	nlohmann::json models_json = nlohmann::json::array();
+	std::string default_model_id;
+	std::unordered_set<std::string> seen_model_ids;
 	for (const fs::path& path : OpenCodeConfigPaths())
 	{
 		const nlohmann::json config = ReadJsonFile(path);
+		const std::string configured = uam::nlohmann_json::TrimmedStringValue(config, {"model"});
+		if (!configured.empty()) default_model_id = configured;
 		const nlohmann::json* providers = uam::nlohmann_json::FindObjectField(config, "provider");
 		if (providers == nullptr) continue;
 		for (const auto& provider_entry : providers->items())
@@ -720,59 +750,10 @@ nlohmann::json ProviderModelCatalogService::ReadConfiguredOpenCodeModels()
 		}
 	}
 
-	return models_json;
+	m_configured_open_code_models = std::move(models_json);
+	m_configured_open_code_default_model = std::move(default_model_id);
 }
 
-std::string ProviderModelCatalogService::ReadConfiguredOpenCodeDefaultModel()
-{
-	std::string model_id;
-	for (const fs::path& path : OpenCodeConfigPaths())
-	{
-		const std::string configured = uam::nlohmann_json::TrimmedStringValue(ReadJsonFile(path), {"model"});
-		if (!configured.empty()) model_id = configured;
-	}
-	return model_id;
-}
-
-nlohmann::json ProviderModelCatalogService::ReadCachedCodexModels()
-{
-	auto models_json = nlohmann::json::array();
-	const nlohmann::json cache = ReadJsonFile(uam::codex::CodexHomePath() / "models_cache.json");
-	if (!cache.is_object())
-	{
-		return models_json;
-	}
-
-	const nlohmann::json* models = uam::nlohmann_json::FindArrayField(cache, "models");
-	if (models == nullptr)
-	{
-		return models_json;
-	}
-
-	std::vector<std::string> seen_model_ids;
-	uam::acp_models::CodexModelParseOptions parse_options;
-	parse_options.skip_hidden_field = false;
-	parse_options.allow_default_non_list_visibility = false;
-	for (const nlohmann::json& model : *models)
-	{
-		const auto parsed = uam::acp_models::ParseCodexModelEntry(model, parse_options);
-		if (!parsed || !uam::ranges::PushUniqueNonEmptyString(seen_model_ids, parsed->model.id))
-		{
-			continue;
-		}
-
-		models_json.push_back({
-		    {"id", parsed->model.id},
-		    {"name", parsed->model.name},
-		    {"description", parsed->model.description},
-		    {"defaultReasoningEffort", parsed->model.default_reasoning_effort},
-		    {"supportedReasoningEfforts", parsed->model.supported_reasoning_efforts},
-		    {"additionalSpeedTiers", parsed->model.additional_speed_tiers},
-		});
-	}
-
-	return models_json;
-}
 
 void ProviderModelCatalogService::StartRefreshTask()
 {
@@ -783,10 +764,7 @@ void ProviderModelCatalogService::StartRefreshTask()
 	m_refresh_task->worker = std::make_unique<std::jthread>(
 	    [state, this](std::stop_token stop_token)
 	    {
-		    const std::optional<nlohmann::json> result = [this]() -> std::optional<nlohmann::json>
-		    {
-			    return FetchOpenCodeZenModels();
-		    }();
+		    const std::optional<nlohmann::json> result = FetchOpenCodeZenModels(stop_token);
 
 		    if (!result.has_value())
 		    {
@@ -795,7 +773,7 @@ void ProviderModelCatalogService::StartRefreshTask()
 		    }
 
 		    const nlohmann::json models = ParseOpenCodeZenFreeModels(*result);
-		    if (models.is_array() && !models.empty())
+		    if (!stop_token.stop_requested() && models.is_array() && !models.empty())
 		    {
 			    WriteOpenCodeZenFreeModelsCache(models);
 

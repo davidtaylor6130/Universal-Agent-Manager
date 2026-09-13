@@ -26,6 +26,7 @@ void ResetAcpTurnStreamState(AcpSessionState& session)
 {
 	session.pending_assistant_thoughts.clear();
 	session.tool_calls.clear();
+	session.tool_call_message_indices.clear();
 	session.plan_entries.clear();
 	session.plan_summary.clear();
 	session.codex_agent_message_text_by_item_id.clear();

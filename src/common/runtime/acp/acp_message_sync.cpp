@@ -135,23 +135,31 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 		return false;
 	}
 
-	Message* message = CurrentAssistantMessage(chat, session);
-	if (message == nullptr)
-	{
-		if (!create_if_missing)
-		{
-			return false;
-		}
-
-		message = &EnsureAssistantMessage(chat, session);
-	}
-
 	bool changed = false;
 	for (const AcpToolCallState& tool_call : session.tool_calls)
 	{
+		if (tool_call.id.empty()) continue;
+		Message* message = nullptr;
+		const std::unordered_map<std::string, int>::const_iterator owner = session.tool_call_message_indices.find(tool_call.id);
+		if (owner != session.tool_call_message_indices.end())
+		{
+			const int index = owner->second;
+			if (index < 0 || index >= static_cast<int>(chat.messages.size()) ||
+			    chat.messages[static_cast<std::size_t>(index)].role != MessageRole::Assistant) continue;
+			message = &chat.messages[static_cast<std::size_t>(index)];
+		}
+		else
+		{
+			message = CurrentAssistantMessage(chat, session);
+			if (message == nullptr && create_if_missing) message = &EnsureAssistantMessage(chat, session);
+			if (message == nullptr) continue;
+			session.tool_call_message_indices.emplace(tool_call.id, session.current_assistant_message_index);
+		}
 		changed |= UpsertPersistedToolCall(message->tool_calls, tool_call);
 	}
-	changed |= SyncMessageBlocksFromTurnEvents(*message, session);
+	// Earlier segments retain their own blocks when a late tool result arrives after a steer.
+	if (Message* message = CurrentAssistantMessage(chat, session))
+		changed |= SyncMessageBlocksFromTurnEvents(*message, session);
 	if (changed)
 	{
 		chat.updated_at = AcpTimestampNow();
@@ -172,7 +180,8 @@ namespace
 				changed = true;
 			}
 		}
-		return SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
+		// Completed tools retained after a turn must not create another assistant on stop.
+		return SyncAcpToolCallsToAssistantMessage(chat, session, changed) || changed;
 	}
 }
 

@@ -24,10 +24,9 @@ export function ConversationTurn({
   return <article className={`conversation-turn conversation-turn--${role}`} aria-label={role === 'user' ? 'You' : goalReview ? 'Goal Reviewer' : assistantLabel} data-streaming={streaming || undefined}>
     <div className="conversation-turn__body">{children}</div>
     <footer className="conversation-turn__footer">
-      {role === 'assistant' && <span className="conversation-turn__attribution">{goalReview ? 'Goal Reviewer' : assistantLabel}</span>}
       {branchLabel && <span>{branchLabel}</span>}
       <div className="conversation-turn__actions">
-        {copyText.trim() && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
+        {!streaming && copyText.trim() && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
         {onEdit && <IconButton icon={<Pencil size={13} aria-hidden />} label="Edit message in new branch" size="sm" disabled={actionsDisabled} onClick={onEdit} />}
         {onRevert && <IconButton icon={<RotateCcw size={13} aria-hidden />} label="Revert to message in new branch" size="sm" disabled={actionsDisabled} onClick={onRevert} />}
       </div>

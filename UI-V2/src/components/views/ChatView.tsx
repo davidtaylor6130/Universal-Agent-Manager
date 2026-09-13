@@ -1,107 +1,24 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
-import { MarkdownContent } from '../markdown/Markdown'
-import {
-  useAppStore,
-  type AcpBinding,
-  type AcpModel,
-  type AcpPendingPermission,
-  type AcpPermissionOption,
-  type AcpPendingUserInput,
-  type AcpPlanEntry,
-  type AcpToolCall,
-  type AcpTurnEvent,
-  type AcpUserInputAnswers,
-  type ChatAttachmentInput,
-  type DictationPushMessage,
-  type VcsChangedFile,
-  type VcsCommitStatus,
-  type VcsType,
-  type UamAgentCycleShortcut,
-  type UamAgentSummary,
-} from '../../store/useAppStore'
-import type { Attachment, Message, MessageBlock } from '../../types/message'
+import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type VcsChangedFile, type VcsCommitStatus, type VcsType, type UamAgentCycleShortcut, type UamAgentSummary } from '../../store/useAppStore'
+import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
-import type { Goal, GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import { GoalBanner } from '../shared/GoalBanner'
-import { copyTextToClipboard } from '../../utils/copySelection'
-import {
-  DEFAULT_PROVIDER_ID,
-  fallbackProviderForId,
-  isClaudeProvider,
-  isCodexProvider,
-  isCopilotProvider,
-  isOpenCodeProvider,
-  providerCapabilities,
-  providerRuntimeKindLabel,
-  providerShortName,
-} from '../../utils/providerMetadata'
-import {
-  type ModelOption,
-  buildCodexReasoningOptions,
-  buildCodexSpeedOptions,
-  CODEX_SPEED_INHERIT_ID,
-  buildModelOptions,
-  FRIENDLY_MODEL_LABELS,
-  labeledOption,
-  modelOptionFor,
-  providerRuntimeLabel,
-  selectedRuntimeModel,
-} from '../chat/modelOptions'
-import {
-  buildAcpErrorCopyText,
-  CopyTextButton,
-  diagnosticTail,
-  formatDiagnosticLine,
-  roleAccent,
-  roleLabel,
-  statusColor,
-  statusLabel,
-  toolDisplayKind,
-  toolDisplayTitle,
-} from '../chat/StatusHelpers'
-import {
-  isCancelPermissionOption,
-  MessageFrame,
-  normalizePermissionOptions,
-  PermissionInlineCard,
-  SubAgentRunningPanel,
-  ToolCallInlineRows,
-  ToolCallModal,
-  UserInputInlineCard,
-} from '../chat/ToolCallViews'
-import {
-  AttachmentList,
-  GoalReviewBlock,
-  PersistedMessageContent,
-  PlanBlock,
-  ThinkingBlock,
-  TurnTimelineContent,
-  attachmentLabel,
-  goalReviewForMessage,
-  hasCompactWorkingSummary,
-  type WorkingDisplayMode,
-} from '../chat/MessageBlocks'
-import {
-  acpRuntimeBlocksControlChanges,
-  PERMISSION_MODES,
-  type ComposerIconName,
-  ComposerIcon,
-  ComposerToolbar,
-  ComposerAgentSelector,
-  permissionModeIcon,
-  permissionModeForTier,
-  providerConfigVariantOptions,
-  type DictationState,
-} from '../chat/Composer'
-import { ComputerUseModal } from '../chat/ComputerUseModal'
+import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
+import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
+import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
+import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
-import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
+import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { preferredBranch, setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
@@ -109,7 +26,6 @@ import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/compo
 interface ChatViewProps {
   session: Session
   accentColor?: string
-  onOpenTerminalFallback?: () => void
 }
 
 type SlashCommand = {
@@ -132,7 +48,6 @@ const INITIAL_RENDERED_MESSAGES = 200
 const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
-const STEERING_TIMEOUT_MS = 5000
 
 export function uamAgentDisplayName(id: string) {
   if (id === 'build') return 'Build'
@@ -461,6 +376,7 @@ type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planA
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
   message,
+  disclosureState,
   index,
   assistantLabel,
   sessionId,
@@ -475,8 +391,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching,
   planActions,
   workingMode,
-  prioritySteerText,
-  prioritySteerAttachments,
   onBeginEdit,
   onCancelEdit,
   onEditingTextChange,
@@ -485,6 +399,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectTool,
 }: {
   message: Message
+  disclosureState: WorkTraceDisclosureState
   index: number
   assistantLabel: string
   sessionId: string
@@ -499,8 +414,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching: boolean
   planActions?: PersistedPlanActions
   workingMode: WorkingDisplayMode
-  prioritySteerText?: string
-  prioritySteerAttachments?: Attachment[]
   onBeginEdit: (index: number, content: string) => void
   onCancelEdit: () => void
   onEditingTextChange: (content: string) => void
@@ -540,15 +453,10 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       } : undefined}
       goalReview={Boolean(goalReview)}
       actionsDisabled={actionsDisabled}
-      onEdit={isUserMessage ? () => onBeginEdit(index, message.content) : undefined}
-      onRevert={isUserMessage ? () => void onCreateBranch(index) : undefined}
+      onEdit={isUserMessage && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
+      onRevert={isUserMessage && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
     >
-			{message.prioritySteer && (
-				<div className="mb-2 text-xs font-semibold" style={{ color: 'var(--accent)' }}>
-					Steered during this response
-				</div>
-			)}
-			{message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{isUserMessage ? 'Message was not sent' : 'Response interrupted'}</div>}
+			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{isUserMessage ? 'Message was not sent' : 'Response interrupted'}</div>}
 			{isEditing ? (
         <div className="space-y-2">
           <textarea
@@ -579,32 +487,32 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       ) : (
         <PersistedMessageContent
           message={message}
+          disclosureState={disclosureState}
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sessionId}
           workingMode={workingMode}
-          prioritySteerText={prioritySteerText}
-          prioritySteerAttachments={prioritySteerAttachments}
         />
       )}
+      {!isUserMessage && message.interrupted && <div className="conversation-interrupted">Response interrupted</div>}
 		</MessageFrame>
 		</>
   )
 })
 
-export const ChatView = memo(function ChatView({ session, accentColor, onOpenTerminalFallback }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
   const slashListboxId = useId()
   const workspaceMenuId = useId()
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
   const [dictationState, setDictationState] = useState<DictationState>('idle')
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
-  const [computerUseModalOpen, setComputerUseModalOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
@@ -632,12 +540,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
-  const steerTurnSerialRef = useRef(0)
-  const steeringTimeoutRef = useRef<number | null>(null)
   const goalMutationInFlightRef = useRef(false)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
-    computerUseModalOpen ||
     s.isNewChatModalOpen ||
     s.isSettingsOpen ||
     s.memoryLibraryScope !== null ||
@@ -645,13 +550,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     s.isMarkdownStoreOpen
   )
 
-  useEffect(() => {
-    return () => {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-      }
-    }
-  }, [])
+  useEffect(() => setSteering(false), [session.id])
 
   useEffect(() => setMemoryChipExplicit(false), [session.id])
   const composerDraftRef = useRef({ text: draft, attachments: [] as Attachment[] })
@@ -679,6 +578,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const retryChatHistory = useCallback(async (chatId: string) => {
+    setChatHistoryRetryingIds((ids) => new Set(ids).add(chatId))
+    try {
+      await loadSessionMessages(chatId, true)
+    } finally {
+      setChatHistoryRetryingIds((ids) => {
+        const next = new Set(ids)
+        next.delete(chatId)
+        return next
+      })
+    }
+  }, [loadSessionMessages])
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
@@ -703,6 +616,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
   useEffect(() => {
+    if (branchSessions.length < 2) return
     for (let index = 0; index < messages.length; index += 1) {
       if (messages[index]?.role !== 'user') continue
       const parentId = session.parentChatId && session.branchFromMessageIndex === index ? session.parentChatId : session.id
@@ -735,9 +649,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
-  const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
-  const computerUseEffectiveBackend = session.computerUseEffectiveBackend ?? 'uam'
   const computerUseMode = Boolean(session.computerUseEnabled)
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
@@ -748,10 +660,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   useEffect(() => {
     void refreshUamAgents(session.id)
   }, [refreshUamAgents, session.id, workspaceDirectory])
+  useEffect(() => {
+    if (isCompanionContext() && !session.importedReadOnly) {
+      void discoverProviderModels(session.id)
+    }
+  }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
+
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
-  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const openSubAgentSession = useAppStore((s) => s.openSubAgentSession)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
@@ -787,6 +704,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
+  const dictationIdRef = useRef('')
   const dictationBaseDraftRef = useRef('')
   const dictationFinalTextRef = useRef('')
   const dictationInterimTextRef = useRef('')
@@ -835,9 +753,34 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
   const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
   const turnSerial = acp?.turnSerial ?? 0
+  const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => ({}), [session.id, turnSerial])
+  const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
+  const expandWorkTraces = useAppStore((state) => state.expandWorkTraces)
+  const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>({ sessionId: session.id, expanded: {} })
+  const workSections = useMemo(() => {
+    let section = { id: '', firstIndex: 0, workedSeconds: 0, hasAssistant: false }
+    return messages.map((message, index) => {
+      if (index === 0 || (message.role === 'user' && !message.continuesTurn))
+        section = { id: message.id, firstIndex: index, workedSeconds: 0, hasAssistant: false }
+      section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
+      section.hasAssistant ||= message.role === 'assistant'
+      return section
+    })
+  }, [messages])
+  const sectionControls = useMemo(() => {
+    const controls = new Map<string, { expanded: boolean; toggle: () => void }>()
+    return (id: string) => {
+      if (!controls.has(id)) {
+        const expanded = (sectionChoices.sessionId === session.id ? sectionChoices.expanded[id] : undefined) ?? expandWorkTraces
+        controls.set(id, { expanded, toggle: () => setSectionChoices((previous) => ({ sessionId: session.id, expanded: { ...(previous.sessionId === session.id ? previous.expanded : {}), [id]: !expanded } })) })
+      }
+      return controls.get(id)!
+    }
+  }, [session.id, sectionChoices, expandWorkTraces])
   const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
   const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
   const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const activeWorkSection = workSections[turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex]
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
     messages[messages.length - 1]?.isStreaming &&
@@ -854,11 +797,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  const turnUserMessageIsEmbeddedSteer =
-    workingDisplayMode === 'compact' &&
-    turnUserMessageIndex > earliestRenderedMessageIndex &&
-    messages[turnUserMessageIndex]?.prioritySteer &&
-    hasCompactWorkingSummary(messages[turnUserMessageIndex - 1])
   const completedTurnAssistantText = useMemo(() => acp?.processing
     ? ''
     : turnEvents.reduce(
@@ -870,15 +808,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     completedTurnAssistantText.length > 0 &&
     latestAssistantMessageIndex > latestUserMessageIndex &&
     messages[latestAssistantMessageIndex]?.content.trim() === completedTurnAssistantText
+  // Bind only a confirmed assistant; steering can put user messages between turn rows.
+  const disclosureAssistant = turnAssistantMessageMatches
+    ? messages[turnAssistantMessageIndex]
+    : completedFallbackAlreadyPersisted ? messages[latestAssistantMessageIndex] : undefined
+  if (disclosureAssistant) savedWorkDisclosures.set(disclosureAssistant.id, liveWorkDisclosure)
+  const turnClockStart = useMemo(() => acp?.processingStartedAtMs || Date.now(), [session.id, turnSerial, acp?.processingStartedAtMs, acp?.processing])
   const turnWorkedSeconds = acp?.processing
-    ? acp.processingStartedAtMs ? (Date.now() - acp.processingStartedAtMs) / 1000 : undefined
+    ? Math.max(0, (Date.now() - turnClockStart) / 1000)
     : turnAssistantMessageIndex >= 0
       ? (messages[turnAssistantMessageIndex]?.processingTimeMs ?? 0) / 1000
       : undefined
   const renderTimelineAfterUser =
     turnEvents.length > 0 &&
     turnUserMessageMatches &&
-    !turnUserMessageIsEmbeddedSteer &&
     (!turnAssistantMessageMatches || firstTurnEvent?.type !== 'assistant_text')
   const renderTimelineAtAssistant =
     turnEvents.length > 0 &&
@@ -962,8 +905,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [session.id])
 
   useEffect(() => {
-    if (!acp?.lastError) setDismissedAcpErrorKey('')
-  }, [acp?.lastError])
+    if (!acp?.lastError && !acp?.promptActionError) setDismissedAcpErrorKey('')
+  }, [acp?.lastError, acp?.promptActionError])
 
   useEffect(() => {
     if (dictationState !== 'listening') { setDictationElapsedSeconds(0); return }
@@ -977,24 +920,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       setWorkspaceFeedback(null)
     }
   }, [session.workspaceIsolationKind])
-
-  useEffect(() => {
-    if (!steering) return
-    const nextTurnStarted = (acp?.turnSerial ?? 0) > steerTurnSerialRef.current
-    const queuedSteerStillPending = Boolean(acp?.queuedPrompts?.[0]?.prioritySteer)
-    if (nextTurnStarted || (!acp?.processing && !queuedSteerStillPending)) {
-      setSteering(false)
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      return
-    }
-    if (steeringTimeoutRef.current !== null) {
-      window.clearTimeout(steeringTimeoutRef.current)
-    }
-    steeringTimeoutRef.current = window.setTimeout(() => setSteering(false), STEERING_TIMEOUT_MS)
-  }, [acp?.turnSerial, acp?.processing, acp?.queuedPrompts, steering])
 
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
@@ -1041,6 +966,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [modelOpen, workspaceMenuOpen])
 
   const stageFiles = async (files: File[]) => {
+    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
     const stagingSessionId = session.id
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
     if (realFiles.length === 0) return
@@ -1325,14 +1251,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     const submittedSessionId = session.id
     submitInFlightRef.current = true
     setSubmitting(true)
-    if (steerNow) {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      steerTurnSerialRef.current = acp?.turnSerial ?? 0
-      setSteering(true)
-    }
+    if (steerNow) setSteering(true)
     let ok = false
     try {
       ok = await (steerNow
@@ -1344,13 +1263,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (currentSessionIdRef.current === submittedSessionId) {
       submitInFlightRef.current = false
       setSubmitting(false)
-    }
-    if (!ok) {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      setSteering(false)
+      if (steerNow) setSteering(false)
     }
     if (ok && currentSessionIdRef.current === submittedSessionId) {
       setDraft('')
@@ -1369,7 +1282,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     : ''
   useEffect(() => {
     let cancelled = false
-    if (remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
+    if (isCompanionContext() || remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
 
     void getVcsCommitStatus(session.id, 'git', {
       includeLineStats: true,
@@ -1481,6 +1394,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     [currentProviderId, providers]
   )
   const providerAcp = acp?.providerId === currentProviderId ? acp : undefined
+  const providerRuntime = cli?.running ? cli : providerAcp
   const providerVariants = useMemo(
     () => providerConfigVariantOptions(providerAcp, currentProviderId),
     [providerAcp, currentProviderId]
@@ -1504,7 +1418,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
-  const currentAcpErrorKey = acp?.lastError ? `${session.id}:${acp.lastError}` : ''
+  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
+  const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
     : /working|unavailable|provider-managed/i.test(slashMessage)
@@ -1552,6 +1467,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 
   const startDictation = async () => {
     if (!dictationAvailable || dictationActiveRef.current) return
+    const dictationId = createRequestId('dictation')
+    dictationIdRef.current = dictationId
     dictationActiveRef.current = true
     dictationBaseDraftRef.current = draft
     dictationFinalTextRef.current = ''
@@ -1563,9 +1480,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 
     const response = await sendToCEF<{ started: boolean }>({
       action: 'startDictation',
-      payload: { locale: navigator.language || '' },
+      payload: { locale: navigator.language || '', dictationId },
     })
-    if (!dictationActiveRef.current) return
+    if (!dictationActiveRef.current || dictationIdRef.current !== dictationId) return
     if (!response.ok) {
       dictationActiveRef.current = false
       setDictationState('idle')
@@ -1579,8 +1496,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (!dictationActiveRef.current) return
 	dictationSubmitAfterStopRef.current = submitAfterStop
     setDictationState('stopping')
-    const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation' })
-    if (!response.ok && dictationActiveRef.current) {
+    const dictationId = dictationIdRef.current
+    const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
+    if (!response.ok && dictationActiveRef.current && dictationIdRef.current === dictationId) {
 	  dictationSubmitAfterStopRef.current = false
       setDictationState('listening')
       setDictationError(response.error || 'Failed to stop dictation.')
@@ -1593,14 +1511,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     dictationSubmitAfterStopRef.current = false
     setDictationState('idle')
     setDictationError('')
-    if (wasActive) void sendToCEF({ action: 'stopDictation' })
+    if (wasActive) void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0)
   }
 
   useEffect(() => {
     const onDictation = (event: Event) => {
       const message = (event as CustomEvent<DictationPushMessage>).detail
-      if (!dictationActiveRef.current || !message || message.type !== 'dictation') return
+      if (!dictationActiveRef.current || !message || message.type !== 'dictation' || message.dictationId !== dictationIdRef.current) return
 
       if (message.event === 'interim') {
         dictationInterimTextRef.current = message.text
@@ -1642,7 +1560,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       window.removeEventListener('uam-dictation', onDictation)
       if (dictationActiveRef.current) {
         dictationActiveRef.current = false
-        void sendToCEF({ action: 'stopDictation' })
+        void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
       }
     }
   }, [session.id])
@@ -1804,15 +1722,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     const changed = await setAcpConfigOption(session.id, configId, value)
     setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
   }
-  const latestPlanMessageIndex = useMemo(() => messages.reduce((latest, message, index) => {
+  const supportsPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan'
+  const latestPlanMessageIndex = useMemo(() => supportsPlanActions ? messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
     return hasPlan ? index : latest
-  }, -1), [messages])
+  }, -1) : -1, [messages, supportsPlanActions])
   const latestPlanHasLaterUser = useMemo(
     () => latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user'),
     [latestPlanMessageIndex, messages]
   )
-  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan' && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
+  const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
   const planActionsDisabledTitle = planActionBlockedByRuntime
@@ -1911,7 +1830,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
-    return setSessionComputerUseEnabled(session.id, active)
+    const result = await setSessionComputerUseEnabled(session.id, active)
+    if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
+    return result
   }
 
   // Slash command palette: typing "/" at the start of an empty-ish draft opens
@@ -1970,7 +1891,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
-        { id: 'computer', label: '/computer', hint: `Configure computer use · ${computerUseEffectiveBackend === 'provider' ? 'Provider built-in' : 'UAM controlled'}`, icon: <MousePointer2 size={15} />, run: () => setComputerUseModalOpen(true) },
+        { id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) },
         {
           id: 'memory',
           label: '/memory',
@@ -1998,7 +1919,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, computerUseEffectiveBackend, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -2255,6 +2176,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         <ToolCallModal
           tool={selectedToolCall}
           chatId={session.id}
+          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) : undefined}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
@@ -2274,6 +2196,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         <div className="relative flex-1 min-h-0">
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div className="uam-chat-content w-full py-4">
+              {chatHistoryError && (
+                <Notice
+                  key={`chat-history:${session.id}:${chatHistoryError}`}
+                  tone="error"
+                  title="Chat history unavailable"
+                  dismissLabel="Dismiss chat history error"
+                  actions={(
+                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                      Retry
+                    </Button>
+                  )}
+                >
+                  {chatHistoryError}
+                </Notice>
+              )}
+              <SubAgentDisclosureProvider key={session.id}>
               <div className="uam-message-list space-y-1.5">
               {earliestRenderedMessageIndex > 0 && (
                 <div className="flex justify-center">
@@ -2291,25 +2229,41 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 if (index === redundantStreamingMessageIndex) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const previousMessage = messages[index - 1]
-                const nextMessage = messages[index + 1]
-                const steerIsEmbedded = workingDisplayMode === 'compact' && message.prioritySteer &&
-                  index - 1 >= earliestRenderedMessageIndex && hasCompactWorkingSummary(previousMessage)
-                const messageProviderId = message.providerId?.trim() || currentProviderId
+                const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
+                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
                   messageProviderId
                 )
 
-                if (shouldSkipAssistantMessage || steerIsEmbedded) return null
+                if (shouldSkipAssistantMessage) return null
+                let disclosureState = savedWorkDisclosures.get(message.id)
+                if (!disclosureState) {
+                  disclosureState = {}
+                  savedWorkDisclosures.set(message.id, disclosureState)
+                }
 
-				const nextSteerIsEmbedded = workingDisplayMode === 'compact' &&
-				  nextMessage?.prioritySteer && hasCompactWorkingSummary(message)
-				const prioritySteerText = nextSteerIsEmbedded ? nextMessage.content : undefined
-				const prioritySteerAttachments = nextSteerIsEmbedded ? nextMessage.attachments : undefined
-
+                const section = workSections[index]
+                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex)
+                const sectionStart = messages[section.firstIndex]
+                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
+                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
+                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
+                const sectionActive = Boolean(acp?.processing && section === activeWorkSection)
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
+                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]}
+                  onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                /></div> : null
                 return (
-                  <div key={message.id} className="space-y-1">
+                  <WorkSectionContext.Provider key={message.id} value={sectionControls(section.id)}>
+                  <div className="space-y-1">
+                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
+                      sectionProviderName,
+                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section === activeWorkSection ? acp?.currentModelId || session.modelId : ''),
+                      sectionStart.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
+                    ].filter(Boolean).join(' · ')}</time>}
+                    {message.role !== 'user' && heading}
                     {shouldRenderTimelineAtAssistant ? (
                       <MessageFrame
                         role={message.role}
@@ -2320,7 +2274,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                       >
                         <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
                           key={`turn-${turnSerial}-assistant`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2345,6 +2302,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     ) : (
                       <PersistedMessageRow
                         message={message}
+                        disclosureState={disclosureState}
                         index={index}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         sessionId={session.id}
@@ -2359,8 +2317,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         branching={branchingMessageIndex === index}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
-                        prioritySteerText={prioritySteerText}
-                        prioritySteerAttachments={prioritySteerAttachments}
                         onBeginEdit={beginEditingMessage}
                         onCancelEdit={cancelEditingMessage}
                         onEditingTextChange={setEditingMessageText}
@@ -2369,6 +2325,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         onSelectTool={selectPersistedTool}
                       />
                     )}
+                    {message.role === 'user' && heading}
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
                       <MessageFrame
                         key={`turn-${turnSerial}-after-user`}
@@ -2377,7 +2334,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         streaming={Boolean(acp?.processing)}
                       >
                         <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
                           key={`turn-${turnSerial}-after-user-content`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2401,17 +2361,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       </MessageFrame>
                     )}
                   </div>
+                  </WorkSectionContext.Provider>
                 )
               })}
-              {acp?.processing && turnEvents.length === 0 && (
+              {acp?.processing && turnEvents.length === 0 && !activeWorkSection && (
                 <div
                   data-testid="turn-starting"
                   role="status"
-                  className="uam-turn-starting flex items-center gap-2 px-4 py-2 text-xs"
+                  className="uam-turn-starting px-4 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}
                 >
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} aria-hidden />
-                  Starting…
+                  <ConversationWork
+                    headerOnly active startedAt={turnClockStart} duration="0s"
+                    disclosureState={liveWorkDisclosure} events={[]} tools={[]}
+                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                  />
                 </div>
               )}
               {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && !completedFallbackAlreadyPersisted && (
@@ -2421,9 +2385,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                   assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                   streaming={Boolean(acp?.processing)}
                 >
+                  <WorkSectionContext.Provider value={activeWorkSection ? sectionControls(activeWorkSection.id) : null}>
                   <TurnTimelineContent
+                    disclosureState={liveWorkDisclosure}
                     key={`turn-${turnSerial}-fallback-content`}
-                    events={turnEvents}
+                    startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          events={turnEvents}
                       tools={acp?.toolCalls ?? []}
                       planSummary={acp?.planSummary ?? ''}
                       planEntries={acp?.planEntries ?? []}
@@ -2443,6 +2411,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     workingMode={workingDisplayMode}
                     workedSeconds={turnWorkedSeconds}
                   />
+                  </WorkSectionContext.Provider>
                 </MessageFrame>
               )}
               {(repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
@@ -2460,7 +2429,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         </span>
                       )}
                     </div>
-                    <Button type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
+                    <Button style={isCompanionContext() ? { display: 'none' } : undefined} type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
                       Open commit panel
                     </Button>
                   </div>
@@ -2499,6 +2468,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               )}
               <div ref={bottomRef} />
               </div>
+              </SubAgentDisclosureProvider>
             </div>
           </div>
           {showScrollToBottom && (
@@ -2602,7 +2572,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use the CLI fallback when a turn needs interaction.
               </Notice>
             )}
-            {acp?.lastError && currentAcpErrorKey !== dismissedAcpErrorKey && (
+            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 role="alert"
                 className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
@@ -2612,9 +2582,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                   color: 'var(--red)',
                 }}
               >
-                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {acp.lastError}</span>
+                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {currentAcpError}</span>
                 <span className="flex shrink-0 items-center gap-1">
-                  <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
                   <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
                 </span>
               </div>
@@ -2692,18 +2662,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       label="Steer with this prompt now"
                       disabled={steering}
                       onClick={() => {
-                        steerTurnSerialRef.current = acp?.turnSerial ?? 0
+                        const submittedSessionId = session.id
                         setSteering(true)
-                        if (steeringTimeoutRef.current !== null) {
-                          window.clearTimeout(steeringTimeoutRef.current)
-                          steeringTimeoutRef.current = null
-                        }
-                        void steerQueuedAcpPrompt(session.id, index)
-                          .then((ok) => {
-                            if (!ok) setSteering(false)
-                          })
-                          .catch(() => {
-                            setSteering(false)
+                        void steerQueuedAcpPrompt(submittedSessionId, index)
+                          .catch(() => false)
+                          .finally(() => {
+                            if (currentSessionIdRef.current === submittedSessionId) setSteering(false)
                           })
                       }}
                     />
@@ -2943,12 +2907,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
               canSend={canSend}
-              runtimeStatusLabel={statusLabel(providerAcp)}
-              runtimeStatusColor={statusColor(providerAcp)}
+              runtimeStatusLabel={statusLabel(providerRuntime)}
+              runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}
               reviewerModelId={session.smallModelMode ? activeGoal?.reviewerModelId || currentReviewerModelId : currentReviewerModelId}
               includeDefaultModel={showUnresolvedDefaultModel}
-              session={session}
               reasoningEffort={session.reasoningEffort ?? ''}
               serviceTier={session.serviceTier ?? ''}
               serviceTierExplicit={serviceTierExplicit}
@@ -2962,6 +2925,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               providerModes={providerModes}
               uamAgents={uamAgents}
               computerUseMode={computerUseMode}
+              computerUseAwaitingTarget={computerUseMode && !session.computerUseTargetId}
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
               memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
@@ -2969,7 +2933,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               modelOpen={modelOpen}
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
-				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerVariants.some((option) => option.id.toLowerCase() === 'effort' || option.id.toLowerCase() === 'thought_level')) {
+				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
 				  void discoverProviderModels('', currentProviderId, workspaceDirectory)
 				}
                 setModelOpen((value) => !value)
@@ -2994,8 +2958,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               onSelectProviderMode={(modeId) => void setSessionApprovalMode(session.id, modeId)}
               onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
-              onToggleComputerUseMode={() => void setComputerUseActive(false)}
-              onOpenComputerUse={() => setComputerUseModalOpen(true)}
+              onToggleComputerUseMode={() => void setComputerUseActive(!computerUseMode)}
               onSelectMemoryLevel={(level) => {
                 setMemoryChipExplicit(true)
                 void setSessionMemoryLevel(session.id, level)
@@ -3011,10 +2974,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
               onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
-              onStopRuntime={() => void stopAcpSession(session.id)}
+              onCancelTurn={() => void cancelAcpTurn(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
-              workspaceControl={(
+              workspaceControl={!isCompanionContext() && (
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
@@ -3076,7 +3039,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
-              dictationAvailable={dictationAvailable}
+              dictationAvailable={!isCompanionContext() && dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()
                 else void startDictation()
@@ -3086,27 +3049,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
           </div>
         </form>
       </div>
-      {computerUseModalOpen && (
-        <ComputerUseModal
-          active={computerUseMode}
-          enabled={session.computerUseEnabled ?? false}
-          disabled={runtimeBlocksControlChanges || remoteComputerUseDisabled}
-          remoteDisabled={remoteComputerUseDisabled}
-          backend={session.computerUseBackend ?? 'auto'}
-          effectiveBackend={computerUseEffectiveBackend}
-          providerAvailable={session.computerUseProviderAvailable ?? false}
-          providerName={currentProviderName}
-          modelLabel={currentModel.label}
-          targetKind={session.computerUseTargetKind ?? 'window'}
-          targetTitle={session.computerUseTargetTitle ?? ''}
-          targetInputMode={session.computerUseTargetInputMode ?? 'foreground'}
-          state={session.computerUse?.state ?? (session.computerUseEnabled ? 'running' : 'stopped')}
-          onClose={() => setComputerUseModalOpen(false)}
-          onSetActive={setComputerUseActive}
-          onSetBackend={(backend) => setSessionComputerUseBackend(session.id, backend)}
-          onSetControl={(state) => setSessionComputerUseControl(session.id, state)}
-        />
-      )}
     </div>
   )
 })

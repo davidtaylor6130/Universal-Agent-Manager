@@ -1,6 +1,4 @@
 #include "common/runtime/acp/acp_polling.h"
-#include "common/runtime/acp/acp_claude_message_handlers.h"
-#include "common/runtime/acp/acp_codex_message_handlers.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_update_handler.h"
@@ -10,13 +8,13 @@
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/config/settings_normalization.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
 
 #include <charconv>
-#include <cstring>
 
 #include <algorithm>
 #include <array>
@@ -63,11 +61,12 @@ namespace uam::acp_detail
 			}
 		}
 
+		/// <summary>Preserves failure text even when it aliases fields cleared during recovery.</summary>
 		void InvalidateAcpTransportImpl(
 		    AppState& app,
 		    AcpSessionState& session,
 		    ChatSession& chat,
-		    const std::string& message,
+		    std::string message,
 		    bool recover_remote_disconnect = false)
 		{
 			const bool remote_helper_owned =
@@ -93,6 +92,7 @@ namespace uam::acp_detail
 				return;
 			}
 			const bool undelivered_prompt = session.prompt_request_id == 0 && !session.queued_prompt.empty();
+			const bool model_discovery_only = session.model_discovery_only;
 			std::string queued_prompt = undelivered_prompt ? session.queued_prompt : std::string{};
 			std::deque<AcpQueuedUserPromptState> queued_prompts = std::move(session.queued_user_prompts);
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
@@ -116,7 +116,18 @@ namespace uam::acp_detail
 				return;
 			}
 			session.running = false;
-			ResetAcpRuntimeState(session);
+			ResetAcpRuntimeState(app, session, chat);
+			if (model_discovery_only)
+			{
+				session.model_discovery_only = false;
+				session.session_id.clear();
+				session.codex_thread_id.clear();
+				if (app.provider_model_catalog != nullptr)
+				{
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
+					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+				}
+			}
 			session.queued_user_prompts = std::move(queued_prompts);
 			if (undelivered_prompt)
 			{
@@ -298,6 +309,14 @@ namespace uam::acp_detail
 				if (const std::optional<std::string> input_receipt =
 				        ParseRemoteInputReceipt(session, line))
 				{
+					for (AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+					{
+						if (request.delivery_id != *input_receipt) continue;
+						// Provider correlation survives the helper's transport acknowledgment.
+						request.payload.clear();
+						(void)SaveChatQuietly(app, chat);
+						break;
+					}
 					session.pending_remote_input_receipt_id = *input_receipt;
 					result.changed = true;
 					continue;
@@ -404,6 +423,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 	if (JsonDiagnosticStringValue(message, "method") == kRemoteAttachedMethod)
 	{
 		if (!session.recovering_remote_turn && !session.recovering_remote_process) return true;
+		const bool remote_process_attach_pending = session.recovering_remote_process;
 		AppendAcpDiagnostic(session, "reconnect", "remote_attached", std::string(kRemoteAttachedMethod),
 		                    "", false, 0, "Reattached to the existing remote turn.");
 		if (session.remote_stop_unconfirmed)
@@ -413,6 +433,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 			(void)uam::StopAcpSession(app, chat.id);
 			return true;
 		}
+		if (remote_process_attach_pending) session.last_error.clear();
 		session.recovering_remote_process = false;
 		ReactivateConfirmedRemoteGoal(app, chat);
 		session.reconnect_attempts = 0;
@@ -421,61 +442,34 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 
 	{
 		const IProviderRuntime& poll_runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-		const char* protocol_kind = poll_runtime.AcpProtocolKind();
-		if (std::strcmp(protocol_kind, "claude-code-stream-json") == 0)
+		if (poll_runtime.OnAcpHandleMessage(app, session, chat, message, browser))
 		{
-			try
-			{
-				HandleClaudeMessage(app, session, chat, message, browser);
-				MarkAcpRuntimeActivity(session);
-			}
-			catch (const std::exception& ex)
-			{
-				const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
-				AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-				InvalidateAcpTransport(app, session, chat, error_message);
-			}
+			RetireRemoteAcpRequests(app, session, chat);
 			return true;
 		}
 
 		if (uam::nlohmann_json::FindField(message, "method") != nullptr)
 		{
 			const std::string method = JsonDiagnosticStringValue(message, "method");
-			if (std::strcmp(protocol_kind, "codex-app-server") == 0)
+			try
 			{
-				try
+				if (method == uam::acp_methods::kSessionUpdate)
 				{
-					HandleCodexMessage(app, session, chat, message, browser);
-					MarkAcpRuntimeActivity(session);
+					HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"), browser);
 				}
-				catch (const std::exception& ex)
+				else
 				{
-					const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
-					AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0, error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-					InvalidateAcpTransport(app, session, chat, error_message);
+					HandleAcpRequest(app, session, chat, message);
 				}
+				RetireRemoteAcpRequests(app, session, chat);
+				MarkAcpRuntimeActivity(session);
 			}
-			else
+			catch (const std::exception& ex)
 			{
-				try
-				{
-					if (method == uam::acp_methods::kSessionUpdate)
-					{
-						HandleSessionUpdate(app, session, chat, JsonObjectValue(message, "params"), browser);
-					}
-					else
-					{
-						HandleAcpRequest(app, session, chat, message);
-					}
-					MarkAcpRuntimeActivity(session);
-				}
-				catch (const std::exception& ex)
-				{
-					const std::string error_message = std::string("ACP protocol message handling failed: ") + ex.what();
-					AppendAcpDiagnostic(session, "parse", "protocol_message_error", method, "", false, 0,
-					                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-					InvalidateAcpTransport(app, session, chat, error_message);
-				}
+				const std::string error_message = std::string("ACP protocol message handling failed: ") + ex.what();
+				AppendAcpDiagnostic(session, "parse", "protocol_message_error", method, "", false, 0,
+				                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+				InvalidateAcpTransport(app, session, chat, error_message);
 			}
 			return true;
 		}
@@ -485,6 +479,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 			try
 			{
 				HandleAcpResponse(app, session, chat, message);
+				RetireRemoteAcpRequests(app, session, chat);
 				MarkAcpRuntimeActivity(session);
 			}
 			catch (const std::exception& ex)
@@ -605,6 +600,9 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		const std::uintmax_t old_stderr_cursor = chat.remote_delivered_stderr_cursor;
 		const std::vector<uam::AcpRemoteInteractionResponseState> old_responses =
 		    chat.remote_interaction_responses;
+		const std::vector<AcpRemotePendingRequestState> old_requests = chat.remote_pending_requests;
+		std::erase_if(chat.remote_pending_requests, [](const AcpRemotePendingRequestState& request)
+		    { return request.response_consumed; });
 		chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
 		chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
 		chat.remote_interaction_responses.clear();
@@ -613,6 +611,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			chat.remote_delivered_stdout_cursor = old_stdout_cursor;
 			chat.remote_delivered_stderr_cursor = old_stderr_cursor;
 			chat.remote_interaction_responses = old_responses;
+			chat.remote_pending_requests = old_requests;
 			app.status_line = "Remote output is waiting for a successful local save.";
 			return true;
 		}

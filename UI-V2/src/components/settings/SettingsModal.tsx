@@ -13,6 +13,7 @@ import {
     type ProviderChatDefaults,
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
+  type ComputerUseAllowedApplication,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
 import { sendToCEF } from '../../ipc/cefBridge'
@@ -27,7 +28,7 @@ import {
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
-import type { ExecutionHost, Session } from '../../types/session'
+import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
@@ -62,9 +63,9 @@ function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
 }
 
-function latestProviderSession(sessions: Session[], providerId: string) {
+function latestLocalProviderSession(sessions: Session[], providerId: string) {
   return sessions.reduce<Session | undefined>((latest, session) => {
-    if (session.providerId !== providerId) return latest
+    if (session.providerId !== providerId || (session.executionHostId || 'local') !== 'local') return latest
     if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
     return latest
   }, undefined)
@@ -119,7 +120,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -152,6 +153,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'markdown-store', label: 'Skills', icon: BookOpen },
   { id: 'goal-loops', label: 'Goal Loops', icon: Target },
   { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
+  { id: 'computer-use', label: 'Computer Use', icon: MousePointerClick },
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
@@ -161,6 +163,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
   { label: 'Providers', sections: ['cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
+  { label: 'Security', sections: ['computer-use'] },
   { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
@@ -178,6 +181,7 @@ const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
   'mcp-servers': 'mcp computer browser control setup server config json',
+  'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
   editors: 'editors extensions associations groups default vscode clion',
   'shell-actions': 'finder explorer context menus shell actions groups save',
   'chat-data': 'chat data history storage import export backup',
@@ -305,6 +309,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const acpBindings = useAppStore(useShallow((s) => s.acpBindingBySessionId))
   const providerModelCatalogs = useAppStore(useShallow((s) => s.providerModelCatalogs))
   const folders = useAppStore(useShallow((s) => s.folders))
+  const localWorkspace = folders.find((folder) => (folder.executionHostId || 'local') === 'local')?.directory || ''
   const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
   const memoryLevelDefault = useAppStore((s) => s.memoryLevelDefault)
@@ -314,6 +319,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
+  const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
+  const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const setWorkingDisplayMode = useAppStore((s) => s.setWorkingDisplayMode)
   const showProviderIconsInSidebar = useAppStore((s) => s.showProviderIconsInSidebar)
@@ -331,7 +338,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const memoryActivity = useAppStore(useShallow((s) => s.memoryActivity))
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
-  const markdownStoreError = useAppStore((s) => s.markdownStoreError)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
@@ -341,11 +347,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const favoriteUamAgentIds = useAppStore(useShallow((s) => s.favoriteUamAgentIds))
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
+  const computerUseAllowlistEnabled = useAppStore((s) => s.computerUseAllowlistEnabled)
+  const computerUseAllowedApplications = useAppStore(useShallow((s) => s.computerUseAllowedApplications))
   const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const setMcpServers = useAppStore((s) => s.setMcpServers)
+  const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
   const setUamAgentPreferences = useAppStore((s) => s.setUamAgentPreferences)
   const refreshUamAgents = useAppStore((s) => s.refreshUamAgents)
   const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
@@ -384,6 +393,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [mcpExecutable, setMcpExecutable] = useState('')
   const [mcpSaving, setMcpSaving] = useState(false)
   const [mcpMessage, setMcpMessage] = useState('')
+  const [computerUseStatus, setComputerUseStatus] = useState<{ screenRecording: { available: boolean; error: string }; accessibility: { available: boolean; error: string } } | null>(null)
+  const [computerUseApps, setComputerUseApps] = useState<Array<{ identityKind: ComputerUseAllowedApplication['identityKind']; identity: string; name: string }>>([])
+  const [computerUseMessage, setComputerUseMessage] = useState('')
+  const [computerUseBusy, setComputerUseBusy] = useState(false)
+  const [computerUseSaveBusy, setComputerUseSaveBusy] = useState(false)
+  const [companionSettings, setCompanionSettings] = useState<{ configured: boolean; enabled: boolean; url: string; restartRequired?: boolean } | null>(null)
+  const [companionBusy, setCompanionBusy] = useState(false)
+  const [companionMessage, setCompanionMessage] = useState('')
+  const computerUseSaveInFlight = useRef(false)
+  const computerUseOsLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? 'macOS' : 'your operating system'
   const [remoteLabel, setRemoteLabel] = useState('')
   const [remoteAlias, setRemoteAlias] = useState('')
   const [remoteBusy, setRemoteBusy] = useState(false)
@@ -402,6 +421,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
   const [agentImportBusy, setAgentImportBusy] = useState(false)
   const [agentImportMessage, setAgentImportMessage] = useState('')
+  const agentImportRequest = useRef(0)
+  const invalidateAgentImport = () => {
+    agentImportRequest.current += 1
+    setAgentImportPreview(null)
+    setAgentImportAcknowledged(false)
+    setAgentImportMessage('')
+    setAgentImportBusy(false)
+  }
+  useEffect(() => () => { agentImportRequest.current += 1 }, [])
   const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
@@ -1072,7 +1100,202 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
   ) : null
 
+  const checkComputerUsePermissions = async () => {
+    setComputerUseBusy(true)
+    setComputerUseMessage(`Checking ${computerUseOsLabel} permissions…`)
+    const response = await sendToCEF<{ screenRecording?: { available?: boolean; error?: string }; accessibility?: { available?: boolean; error?: string } }>({ action: 'checkComputerUsePermissions' })
+    setComputerUseBusy(false)
+    if (!response.ok) { setComputerUseMessage(response.error || `Could not check ${computerUseOsLabel} permissions.`); return }
+    setComputerUseStatus({
+      screenRecording: { available: Boolean(response.data?.screenRecording?.available), error: response.data?.screenRecording?.error || '' },
+      accessibility: { available: Boolean(response.data?.accessibility?.available), error: response.data?.accessibility?.error || '' },
+    })
+    setComputerUseMessage('Permission check complete.')
+  }
+  const requestComputerUsePermission = async (permission: 'screenRecording' | 'accessibility') => {
+    setComputerUseBusy(true)
+    const response = await sendToCEF<{ granted?: boolean; openSettingsRequired?: boolean }>({ action: 'requestComputerUsePermission', payload: { permission } })
+    if (!response.ok) {
+      setComputerUseBusy(false)
+      setComputerUseMessage(response.error || 'Could not request this permission.')
+      return
+    }
+    if (response.data?.granted) {
+      setComputerUseBusy(false)
+      setComputerUseMessage(`${permission === 'screenRecording' ? 'Screen Recording' : 'Accessibility'} permission is already granted.`)
+      return
+    }
+    const settingsResponse = await sendToCEF<{ opened?: boolean; error?: string }>({ action: 'openComputerUseSystemSettings', payload: { permission } })
+    setComputerUseBusy(false)
+    setComputerUseMessage(settingsResponse.ok && settingsResponse.data?.opened !== false
+      ? `Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`
+      : settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`)
+  }
+  const openComputerUseSystemSettings = async (permission: 'screenRecording' | 'accessibility') => {
+    const response = await sendToCEF({ action: 'openComputerUseSystemSettings', payload: { permission } })
+    if (!response.ok) setComputerUseMessage(response.error || `Could not open ${computerUseOsLabel} settings.`)
+  }
+  const loadComputerUseApplications = async () => {
+    const response = await sendToCEF<{ applications?: Array<{ identityKind?: string; identity?: string; name?: string }> }>({ action: 'listComputerUseApplications' })
+    if (!response.ok) { setComputerUseMessage(response.error || 'Could not list applications.'); return }
+    setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
+  }
+  const loadCompanionSettings = async () => {
+    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean }>({ action: 'getCompanionSettings' })
+    if (!response.ok) { setCompanionMessage(response.error || 'Could not load phone access settings.'); return }
+    setCompanionSettings({
+      configured: Boolean(response.data?.configured),
+      enabled: Boolean(response.data?.enabled),
+      url: response.data?.url || '',
+      restartRequired: response.data?.restartRequired,
+    })
+  }
+  const setCompanionEnabled = async (enabled: boolean) => {
+    setCompanionBusy(true)
+    setCompanionMessage('')
+    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean }>({ action: 'setCompanionEnabled', payload: { enabled } })
+    setCompanionBusy(false)
+    if (!response.ok) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
+    setCompanionSettings({
+      configured: Boolean(response.data?.configured),
+      enabled: Boolean(response.data?.enabled),
+      url: response.data?.url || '',
+      restartRequired: response.data?.restartRequired,
+    })
+    setCompanionMessage('Restart UAM to apply this change.')
+  }
+  const copyCompanionToken = async () => {
+    setCompanionBusy(true)
+    setCompanionMessage('')
+    const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
+    if (!response.ok || !response.data?.token) {
+      setCompanionBusy(false)
+      setCompanionMessage(response.error || 'Phone access token is unavailable.')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(response.data.token)
+      setCompanionMessage('Phone access token copied.')
+    } catch {
+      setCompanionMessage('Could not copy the phone access token.')
+    }
+    setCompanionBusy(false)
+  }
+  useEffect(() => {
+    if (selectedSection === 'defaults') void loadCompanionSettings()
+  }, [selectedSection])
+  const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
+    if (computerUseSaveInFlight.current) return
+    const previous = { computerUseAllowlistEnabled, computerUseAllowedApplications }
+    computerUseSaveInFlight.current = true
+    setComputerUseSaveBusy(true)
+    useAppStore.setState({ computerUseAllowlistEnabled: allowlistEnabled, computerUseAllowedApplications: allowedApplications })
+    try {
+      const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { allowlistEnabled, allowedApplications } })
+      if (!response.ok) {
+        useAppStore.setState(previous)
+        setComputerUseMessage(response.error || 'Could not save Computer Use settings.')
+      }
+    } finally {
+      computerUseSaveInFlight.current = false
+      setComputerUseSaveBusy(false)
+    }
+  }
+  const renderPhoneAccess = () => <SectionCard title="Phone Access">
+    <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
+      <Switch
+        label="Enable phone access"
+        checked={Boolean(companionSettings?.enabled)}
+        disabled={!companionSettings?.configured || companionBusy}
+        onChange={(event) => void setCompanionEnabled(event.target.checked)}
+      />
+      <p style={{ color: 'var(--text-3)' }}>
+        {companionSettings?.configured ? 'Use the companion URL from another device on your network.' : 'Phone access is not configured.'}
+      </p>
+      {companionSettings?.url && <div className="flex flex-wrap items-center justify-between gap-2 border-b py-2" style={{ borderColor: 'var(--border)' }}><span>URL</span><code className="break-all">{companionSettings.url}</code></div>}
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button size="sm" variant="secondary" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanionToken()}><Copy size={14}/> Copy token</Button>
+        <span style={{ color: 'var(--text-3)' }}>Restart UAM after changing access.</span>
+      </div>
+      {companionMessage && <div role="status" style={{ color: 'var(--text-2)' }}>{companionMessage}</div>}
+    </div>
+  </SectionCard>
+
+  const renderComputerUse = () => {
+    const activeSession = sessions.find((session) => session.id === activeSessionId)
+    const activeComputerUseBackend: ComputerUseBackend = activeSession?.computerUseBackend ?? 'auto'
+    const activeComputerUseProviderAvailable = activeSession?.computerUseProviderAvailable ?? false
+    const statusRows = [
+      ['Screen Recording', 'screenRecording', computerUseStatus?.screenRecording],
+      ['Accessibility', 'accessibility', computerUseStatus?.accessibility],
+    ] as const
+    return <div className="space-y-4">
+      <SectionCard title="Control method">
+        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
+          <label htmlFor="computer-use-backend-settings" className="font-medium" style={{ color: 'var(--text)' }}>Computer Use backend</label>
+          <select
+            id="computer-use-backend-settings"
+            value={activeComputerUseBackend}
+            disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
+            onChange={(event) => {
+              if (!activeSession) return
+              setComputerUseBusy(true)
+              setComputerUseMessage('')
+              void setSessionComputerUseBackend(activeSession.id, event.target.value as ComputerUseBackend).then((result) => {
+                if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
+              }).finally(() => setComputerUseBusy(false))
+            }}
+            className="w-full rounded-md px-3 py-2"
+            style={{ border: '1px solid var(--border)', background: 'var(--surface-up)', color: 'var(--text)' }}
+          >
+            <option value="auto">Automatic (recommended)</option>
+            <option value="provider" disabled={!activeComputerUseProviderAvailable}>Provider built-in</option>
+            <option value="uam">UAM controlled</option>
+          </select>
+          <p style={{ color: 'var(--text-3)' }}>
+            {activeSession
+              ? activeSession.computerUseEnabled
+                ? 'Turn Computer Use off in the active chat before changing its backend.'
+                : 'This applies to the active local chat. Target approval still appears only when the AI requests a target.'
+              : 'Open a local chat to choose its Computer Use backend.'}
+          </p>
+        </div>
+      </SectionCard>
+      <SectionCard title="Readiness">
+        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
+          <p>UAM checks {computerUseOsLabel} permissions here. The allowlist below only narrows which applications UAM may target.</p>
+          {statusRows.map(([label, permission, state]) => <div key={permission} className="flex items-center justify-between gap-3 border-b py-2" style={{ borderColor: 'var(--border)' }}>
+            <span>{label}</span><span className="flex items-center gap-2" style={{ color: state ? (state.available ? 'var(--green)' : 'var(--red)') : 'var(--text-3)' }}>{state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}<Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button></span>
+          </div>)}
+          <div className="flex flex-wrap gap-2 pt-2">
+            <Button size="sm" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Check permissions</Button>
+            {statusRows.map(([label, permission, state]) => <Button key={permission} size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void requestComputerUsePermission(permission)}>{state?.available ? 'Re-request' : 'Request'} {label}</Button>)}
+          </div>
+        </div>
+      </SectionCard>
+      <SectionCard title="Allowed targets">
+        <div className="space-y-3 text-xs">
+          <Switch label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />
+          <p style={{ color: 'var(--text-3)' }}>{computerUseAllowlistEnabled ? `Only applications listed here can be selected. ${computerUseOsLabel} permissions are still required.` : 'With no application list restriction, each chat still asks for explicit target consent.'}</p>
+          <Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>
+          {computerUseApps.map((app) => {
+            const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
+            return <label key={`${app.identityKind}:${app.identity}`} className="flex items-center justify-between gap-3 border-b py-2" style={{ borderColor: 'var(--border)' }}><span>{app.name}</span><input type="checkbox" disabled={computerUseSaveBusy} checked={allowed} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} /></label>
+          })}
+        </div>
+      </SectionCard>
+      <SectionCard title="Recovery">
+        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
+          <p>When a check fails, Computer Use remains stopped. Change the {computerUseOsLabel} permission, then check again.</p>
+          {computerUseMessage && <div role="status" style={{ color: 'var(--text-2)' }}>{computerUseMessage}</div>}
+          <Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Re-check OS permissions</Button>
+        </div>
+      </SectionCard>
+    </div>
+  }
+
   const renderSectionContent = () => {
+    if (selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
         ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
@@ -1140,6 +1363,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               checked={workingDisplayMode === 'compact'}
               onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')}
             />
+            <Switch
+              label="Expand work traces"
+              checked={expandWorkTraces}
+              onChange={(event) => setExpandWorkTraces(event.target.checked)}
+            />
           </SectionCard>
         </div>
       )
@@ -1147,11 +1375,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
-      const reviewerSession = reviewerProvider ? latestProviderSession(sessions, reviewerProvider.id) : undefined
-      const reviewerWorkspace = reviewerSession?.workspaceDirectory || folders[0]?.directory || ''
+      const reviewerSession = reviewerProvider ? latestLocalProviderSession(sessions, reviewerProvider.id) : undefined
+      const reviewerWorkspace = reviewerSession?.workspaceDirectory || localWorkspace
       const reviewerAcp = reviewerProvider
         ? (reviewerSession ? acpBindings[reviewerSession.id] : undefined)
-          ?? providerModelCatalogs.find((catalog) => catalog.providerId === reviewerProvider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(reviewerWorkspace))
+          ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === reviewerProvider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(reviewerWorkspace))
         : undefined
       const reviewerModels = reviewerProvider
         ? memoryModelOptions(reviewerProvider, reviewerProvider.id, permissionReviewerModelId, reviewerAcp?.availableModels)
@@ -1213,10 +1441,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
-                  const providerSession = latestProviderSession(sessions, provider.id)
-				  const providerWorkspace = providerSession?.workspaceDirectory || folders[0]?.directory || ''
+                  const providerSession = latestLocalProviderSession(sessions, provider.id)
+				  const providerWorkspace = providerSession?.workspaceDirectory || localWorkspace
 				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
-				    ?? providerModelCatalogs.find((catalog) => catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
+				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
@@ -1393,11 +1621,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         </div>
                           </div>
                         </details>
-                        <div className="flex items-center gap-2">
-                          <span role="status" className="text-xs" style={{ color: modelRefreshError ? 'var(--red)' : 'var(--text-3)' }}>
-							{modelsLoading ? 'Refreshing models…' : modelRefreshError || (!providerWorkspace ? 'Add a workspace to refresh models' : providerAcp?.availableModels?.length ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')}
+                        {modelRefreshError && !modelsLoading ? (
+                          <Notice
+                            key={`${provider.id}:${providerWorkspace}:${modelRefreshError}`}
+                            tone="error"
+                            title="Model refresh failed"
+                            dismissLabel={`Dismiss ${providerName} model refresh error`}
+                          >
+                            {modelRefreshError}
+                          </Notice>
+                        ) : (
+                          <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
+                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : providerAcp?.availableModels?.length ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
                           </span>
-                        </div>
+                        )}
                       </div>
                     </ProviderDisclosureCard>
                   )
@@ -1405,6 +1642,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             </div>
           </SectionCard>
+          {renderPhoneAccess()}
         </div>
       )
     }
@@ -1427,10 +1665,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         updatePreferences(next)
       }
       const previewImport = async () => {
-        if (!agentImportPath.trim()) return
+        if (agentImportBusy || !agentImportPath.trim()) return
+        const requestId = ++agentImportRequest.current
+        setAgentImportPreview(null)
         setAgentImportBusy(true)
         setAgentImportMessage('')
         const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
+        if (requestId !== agentImportRequest.current) return
         setAgentImportPreview(preview)
         setAgentImportId(preview?.suggestedId ?? '')
         setAgentImportAcknowledged(false)
@@ -1438,7 +1679,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportBusy(false)
       }
       const runImport = async () => {
-        if (!activeSessionId || !agentImportPreview?.supported) return
+        if (agentImportBusy || !activeSessionId || !agentImportPreview?.supported) return
+        const requestId = ++agentImportRequest.current
         setAgentImportBusy(true)
         const imported = await importProviderAgent({
           chatId: activeSessionId,
@@ -1449,6 +1691,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           workspaceScope: agentImportWorkspaceScope,
           acknowledgeIgnoredFields: agentImportAcknowledged,
         })
+        if (requestId !== agentImportRequest.current) return
         setAgentImportMessage(imported ? `Imported ${agentImportId.trim()}.` : 'Import failed. The source or target may have changed; preview it again.')
         if (imported) setAgentImportPreview(null)
         setAgentImportBusy(false)
@@ -1529,8 +1772,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 ]}
                 onChange={(value) => {
                   setAgentImportProvider(value)
-                  setAgentImportPreview(null)
-                  setAgentImportMessage('')
+                  invalidateAgentImport()
                 }}
               />
               <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -1541,18 +1783,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     value={agentImportPath}
                     onChange={(event) => {
                       setAgentImportPath(event.target.value)
-                      setAgentImportPreview(null)
-                      setAgentImportMessage('')
+                      invalidateAgentImport()
                     }}
                     className="min-w-0 flex-1 rounded px-2 py-1.5 focus:outline-none"
                     style={{ border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
                   />
-                  <Button size="sm" onClick={() => void browseProviderAgentImport(agentImportPath).then((path) => {
-                    if (!path) return
-                    setAgentImportPath(path)
-                    setAgentImportPreview(null)
-                    setAgentImportMessage('')
-                  })}>Browse</Button>
+                  <Button size="sm" onClick={() => {
+                    invalidateAgentImport()
+                    const requestId = agentImportRequest.current
+                    void browseProviderAgentImport(agentImportPath).then((path) => {
+                      if (!path || requestId !== agentImportRequest.current) return
+                      setAgentImportPath(path)
+                    })
+                  }}>Browse</Button>
                   <Button size="sm" aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
                 </span>
               </label>
@@ -1866,10 +2109,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {providers.map((provider) => {
                 const binding = memoryWorkerBindings[provider.id] ?? { workerProviderId: provider.id, workerModelId: '' }
                 const workerProvider = providers.find((candidate) => candidate.id === binding.workerProviderId) ?? provider
-                const workerSession = latestProviderSession(sessions, binding.workerProviderId)
-                const workerWorkspace = workerSession?.workspaceDirectory || folders[0]?.directory || ''
+                const workerSession = latestLocalProviderSession(sessions, binding.workerProviderId)
+                const workerWorkspace = workerSession?.workspaceDirectory || localWorkspace
                 const workerAcp = (workerSession ? acpBindings[workerSession.id] : undefined)
-                  ?? providerModelCatalogs.find((catalog) => catalog.providerId === binding.workerProviderId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(workerWorkspace))
+                  ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === binding.workerProviderId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(workerWorkspace))
                 const providerMenuId = `${provider.id}:provider`
                 const modelMenuId = `${provider.id}:model`
                 const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId, workerAcp?.availableModels)

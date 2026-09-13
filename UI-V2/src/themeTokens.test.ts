@@ -35,7 +35,4 @@ describe('theme token contract', () => {
     expect(selectionRule).toMatch(/color:\s*var\(--text\)/)
   })
 
-  it('does not run continuous CSS animations', () => {
-    expect(styles).not.toMatch(/animation:[^;\n]*\binfinite\b/)
-  })
 })

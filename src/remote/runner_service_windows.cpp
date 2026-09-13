@@ -300,16 +300,8 @@ namespace uam::remote
 					if (ReadPipeFrame(client.Get(), request, stop_event.Get()) != FrameReadResult::Ok) break;
 					if (request.value("type", "") == "service.shutdown")
 					{
-						bool busy = false;
-						{
-							std::scoped_lock dispatch_lock(dispatch_mutex);
-							busy = state.HasManagedProcesses();
-							if (!busy)
-							{
-								stopping.store(true, std::memory_order_release);
-								(void)SetEvent(stop_event.Get());
-							}
-						}
+						std::scoped_lock dispatch_lock(dispatch_mutex);
+						const bool busy = state.HasManagedProcesses();
 						if (busy)
 						{
 							(void)WritePipeFrame(client.Get(),
@@ -322,11 +314,15 @@ namespace uam::remote
 						(void)WritePipeFrame(client.Get(), {{"id", request.value("id", "")},
 						    {"type", "service.shutdown"}, {"ok", true},
 						    {"result", nlohmann::json::object()}});
+						// Publish shutdown only after its reply is written; the stop event cancels clients.
+						stopping.store(true, std::memory_order_release);
+						(void)SetEvent(stop_event.Get());
 						(void)WakeServer(runner_version);
 						break;
 					}
 					nlohmann::json response;
-					if (request.value("type", "") == "process.start")
+					if (request.value("type", "") == "process.start" ||
+					    request.value("type", "") == "channel.open")
 					{
 						std::scoped_lock dispatch_lock(dispatch_mutex);
 						response = stopping.load(std::memory_order_acquire)
@@ -359,8 +355,10 @@ namespace uam::remote
 		STARTUPINFOW startup{};
 		startup.cb = sizeof(startup);
 		PROCESS_INFORMATION process{};
+		// Detaching the console does not escape the SSH session's process job.
 		if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-		                    CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+		                    CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+		                        CREATE_BREAKAWAY_FROM_JOB,
 		                    nullptr, nullptr, &startup, &process)) return 2;
 		CloseHandle(process.hThread);
 		CloseHandle(process.hProcess);

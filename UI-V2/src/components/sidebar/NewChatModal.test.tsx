@@ -519,7 +519,7 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
-  it('surfaces failed model discovery and lets the user retry', async () => {
+  it('dismisses model discovery errors without hiding a new failure or losing retry', async () => {
     let discoveryCalls = 0
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       if (JSON.parse(request).action !== 'discoverProviderModels') {
@@ -583,6 +583,16 @@ describe('NewChatModal', () => {
     })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model discovery failed.')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss model refresh error"]')!.click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(useAppStore.getState().acpBindingBySessionId['gemini-existing'].modelRefreshError).toBe('Model discovery failed.')
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'gemini-existing': { ...state.acpBindingBySessionId['gemini-existing'], modelRefreshError: 'Provider disconnected.' },
+      },
+    })))
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Provider disconnected.')
     const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')
     await act(async () => {
       retry?.click()

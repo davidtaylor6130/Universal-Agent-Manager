@@ -5,6 +5,7 @@
 #include "app/provider_worker_command.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "common/chat/chat_repository.h"
 #include "common/memory/memory_categories.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
@@ -15,6 +16,7 @@
 #include "common/runtime/app_time.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/parse_utils.h"
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -46,6 +49,7 @@ namespace
 	constexpr const char* kMemoryWorkerCompletedStatus = "Memory worker completed.";
 	constexpr const char* kMemoryWorkerFailedStatus = "Memory worker failed.";
 	constexpr const char* kMemoryWorkerOutputDiscardedStatus = "Memory worker output was discarded.";
+	constexpr const char* kMemoryScanStoppedStatus = "Memory scan stopped for this chat.";
 	constexpr const char* kLowSignalMemoryDeltaSkippedStatus = "Memory gate skipped low-signal chat delta.";
 
 	std::string MemoryLevel(const ChatSession& chat)
@@ -225,7 +229,14 @@ namespace
 
 	int MessageCount(const ChatSession& chat)
 	{
-		return static_cast<int>(chat.messages.size());
+		const std::size_t count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		return static_cast<int>(std::min(count, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+	}
+
+	bool MemoryScanEligible(const ChatSession& chat)
+	{
+		return uam::paths::IsControllerLocalWorkspace(chat) && !chat.imported_read_only &&
+		       MemoryEnabled(chat) && MessageCount(chat) > 0;
 	}
 
 	bool HasUnprocessedMessages(const ChatSession& chat)
@@ -233,31 +244,38 @@ namespace
 		return MessageCount(chat) > chat.memory_last_processed_message_count;
 	}
 
-	void MarkMemoryProcessedThroughMessageCount(ChatSession& chat, int processed_message_count)
+	bool SaveMemoryProgress(uam::AppState& app, ChatSession& chat, int processed_message_count)
 	{
+		const int previous_count = chat.memory_last_processed_message_count;
+		const std::string previous_timestamp = chat.memory_last_processed_at;
 		chat.memory_last_processed_message_count = processed_message_count >= 0 ? std::min(processed_message_count, MessageCount(chat)) : MessageCount(chat);
 		chat.memory_last_processed_at = uam::time::TimestampNow();
+		if (ChatRepository::SaveChat(app.data_root, chat))
+		{
+			return true;
+		}
+		chat.memory_last_processed_message_count = previous_count;
+		chat.memory_last_processed_at = previous_timestamp;
+		return false;
 	}
 
-	void MarkMemoryProcessedThroughCurrentMessages(ChatSession& chat)
+	bool MarkLowSignalMemoryDeltaSkipped(uam::AppState& app, ChatSession& chat)
 	{
-		MarkMemoryProcessedThroughMessageCount(chat, MessageCount(chat));
-	}
-
-	void MarkLowSignalMemoryDeltaSkipped(uam::AppState& app, ChatSession& chat)
-	{
-		MarkMemoryProcessedThroughCurrentMessages(chat);
+		if (!SaveMemoryProgress(app, chat, MessageCount(chat)))
+		{
+			return false;
+		}
 		app.memory_last_status = kLowSignalMemoryDeltaSkippedStatus;
-		ChatHistorySyncService().SaveChatWithStatus(app, chat, "", "");
+		return true;
 	}
 
 	std::string TranscriptDeltaText(const ChatSession& chat)
 	{
 		const int start = std::max(0, chat.memory_last_processed_message_count);
 		std::string transcript;
-		for (int i = start; i < MessageCount(chat); ++i)
+		for (std::size_t i = static_cast<std::size_t>(start); i < chat.messages.size(); ++i)
 		{
-			const Message& message = chat.messages[static_cast<std::size_t>(i)];
+			const Message& message = chat.messages[i];
 			transcript += RoleToString(message.role);
 			transcript += ": ";
 			transcript += uam::strings::Trim(message.content);
@@ -266,24 +284,7 @@ namespace
 		return transcript;
 	}
 
-	bool ChatHasKnownContinuation(const uam::AppState& app, const ChatSession& source)
-	{
-		return std::ranges::any_of(app.chats,
-		                           [&source](const ChatSession& candidate)
-		                           {
-			                           if (candidate.id.empty() || candidate.id == source.id)
-			                           {
-				                           return false;
-			                           }
-			                           const int fork_size = std::max(0, candidate.branch_from_message_index + 1);
-			                           const bool is_direct_continuation = candidate.parent_chat_id == source.id && static_cast<int>(candidate.messages.size()) > fork_size;
-			                           const bool same_branch_root = !source.branch_root_chat_id.empty() && candidate.branch_root_chat_id == source.branch_root_chat_id && !candidate.parent_chat_id.empty();
-			                           const bool is_newer_branch_continuation = same_branch_root && candidate.updated_at > source.updated_at && candidate.messages.size() > source.messages.size();
-			                           return is_direct_continuation || is_newer_branch_continuation;
-		                           });
-	}
-
-	bool ShouldQueueAutomaticMemoryScan(const uam::AppState& app, const ChatSession& chat)
+	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat)
 	{
 		const std::string lowered = uam::strings::ToLowerAscii(TranscriptDeltaText(chat));
 		if (lowered.empty())
@@ -297,10 +298,6 @@ namespace
 		}
 		const bool has_progress_signal = ContainsProgressOnlySignal(lowered);
 		if (has_progress_signal && !HasDurableNonProgressSignal(lowered))
-		{
-			return false;
-		}
-		if (ChatHasKnownContinuation(app, chat) && has_progress_signal && !HasDurableNonProgressSignal(lowered))
 		{
 			return false;
 		}
@@ -796,7 +793,7 @@ namespace
 
 	bool QueuedMemoryWorkNoLongerEligible(const uam::QueuedMemoryExtractionTask& queued, const ChatSession& chat)
 	{
-		return !MemoryEnabled(chat) || chat.messages.empty() || (!queued.manual && !HasUnprocessedMessages(chat));
+		return !MemoryScanEligible(chat) || (!queued.manual && !HasUnprocessedMessages(chat));
 	}
 
 	void RequeueMemoryWork(uam::AppState& app, uam::QueuedMemoryExtractionTask queued)
@@ -822,14 +819,14 @@ namespace
 
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		return !uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
+		return !MemoryScanEligible(chat) ||
 		       !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) ||
 		       !MemoryRetryDue(app, chat.id, now);
 	}
 
-	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat, const uam::QueuedMemoryExtractionTask& queued)
+	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat)
 	{
-		return ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || (!queued.manual && !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds()));
+		return ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds());
 	}
 
 	bool CopilotWorkerVersionCheckPending(const uam::AppState& app, const ChatSession& chat)
@@ -861,6 +858,7 @@ namespace
 		app.memory_activity.last_created_count = 0;
 		app.memory_activity.last_status = app.memory_last_status;
 		app.memory_activity.last_worker_status = app.memory_last_status;
+		uam::diagnostics::Write("memory: chat=" + chat_id + " " + app.memory_last_status);
 	}
 
 	void RecordMemorySuccess(uam::AppState& app, const std::string& chat_id)
@@ -914,14 +912,14 @@ namespace
 		return kMemoryWorkerFailedStatus;
 	}
 
-	void ApplyCompletedMemoryWorkerResult(uam::AppState& app, ChatSession& chat, const uam::AsyncMemoryExtractionTask& task)
+	bool ApplyCompletedMemoryWorkerResult(uam::AppState& app, ChatSession& chat, const uam::AsyncMemoryExtractionTask& task)
 	{
 		if (!task.state->result.ok)
 		{
 			const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
 			RecordMemoryWorkerResult(app, task, failure_status);
 			RecordMemoryFailure(app, task.chat_id, failure_status);
-			return;
+			return false;
 		}
 
 		RecordMemoryWorkerResult(app, task, kMemoryWorkerCompletedStatus);
@@ -929,12 +927,13 @@ namespace
 		if (MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, task.state->result.output, task.message_count, &error))
 		{
 			RecordMemorySuccess(app, task.chat_id);
-			return;
+			return true;
 		}
 
 		const std::string failure_reason = uam::strings::NonEmptyOrFallback(error, kMemoryWorkerOutputDiscardedStatus);
 		RecordMemoryWorkerResult(app, task, failure_reason);
 		RecordMemoryFailure(app, task.chat_id, failure_reason);
+		return false;
 	}
 
 	std::string SupportedCategoriesForPrompt()
@@ -974,9 +973,9 @@ namespace
 		out << "Use scope \"local\" for project-specific lessons, repository conventions, implementation details, app facts, or failures tied to the current workspace. ";
 		out << "Only classify failures when the transcript clearly proves responsibility. Otherwise write lessons. Do not store secrets, credentials, personal data, or long code snippets.\n\n";
 		out << "<transcript>\n";
-		for (int i = start; i < MessageCount(chat); ++i)
+		for (std::size_t i = static_cast<std::size_t>(start); i < chat.messages.size(); ++i)
 		{
-			const Message& message = chat.messages[static_cast<std::size_t>(i)];
+			const Message& message = chat.messages[i];
 			out << RoleToString(message.role) << ": " << uam::strings::Trim(message.content) << "\n\n";
 		}
 		out << "</transcript>\n";
@@ -1042,7 +1041,7 @@ namespace
 		}
 	}
 
-	bool StartWorkerTask(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, int start_message_index = -1)
+	bool StartWorkerTask(uam::AppState& app, const ChatSession& chat, const fs::path& workspace_root, int start_message_index = -1)
 	{
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
@@ -1397,11 +1396,15 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 		}
 	}
 
-	MarkMemoryProcessedThroughMessageCount(chat, processed_message_count);
+	if (!SaveMemoryProgress(app, chat, processed_message_count))
+	{
+		SetError(error_out, "Memory scan could not save chat progress.");
+		return false;
+	}
 	app.memory_activity.last_created_count = wrote_count;
 	app.memory_last_status = wrote_count > 0 ? "Memory updated." : "Memory worker found no durable memories.";
 	RefreshMemoryActivity(app);
-	return ChatHistorySyncService().SaveChatWithStatus(app, chat, "", "");
+	return true;
 }
 
 uam::MemoryActivityState MemoryService::BuildMemoryActivity(const uam::AppState& app)
@@ -1459,8 +1462,7 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
-		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		if (!MemoryScanEligible(chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
 		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
@@ -1505,8 +1507,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!uam::paths::IsControllerLocalWorkspace(chat) || !MemoryEnabled(chat) ||
-		    chat.messages.empty() || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!MemoryScanEligible(chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1553,13 +1554,24 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		if (chat_ptr != nullptr)
 		{
 			ChatSession& chat = *chat_ptr;
-			ApplyCompletedMemoryWorkerResult(app, chat, task);
+			if (!MemoryScanEligible(chat))
+			{
+				RecordMemorySuccess(app, chat.id);
+				app.memory_last_status = kMemoryScanStoppedStatus;
+			}
+			else if (!ApplyCompletedMemoryWorkerResult(app, chat, task) &&
+			         task.scan_start_message_index >= 0 && !task.state->result.canceled)
+			{
+				// Manual scans carry an explicit start index; automatic scans use -1.
+				QueueMemoryWork(app, chat.id, task.scan_start_message_index, true);
+			}
 			changed = true;
 		}
 		it = app.memory_extraction_tasks.erase(it);
 		changed = true;
 	}
 
+	bool read_cold_transcript = false;
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
 		const std::size_t attempts = app.memory_extraction_queue.size();
@@ -1579,32 +1591,72 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			ChatSession& chat = *chat_ptr;
 			if (QueuedMemoryWorkNoLongerEligible(queued, chat))
 			{
+				RecordMemorySuccess(app, chat.id);
+				app.memory_last_status = kMemoryScanStoppedStatus;
 				changed = true;
 				continue;
 			}
 
-			if (!queued.manual && !ShouldQueueAutomaticMemoryScan(app, chat))
-			{
-				MarkLowSignalMemoryDeltaSkipped(app, chat);
-				changed = true;
-				continue;
-			}
-
-			if (QueuedMemoryWorkTemporarilyBlocked(app, chat, queued))
+			if (QueuedMemoryWorkTemporarilyBlocked(app, chat))
 			{
 				RequeueMemoryWork(app, std::move(queued));
 				continue;
 			}
 			if (CopilotWorkerVersionCheckPending(app, chat))
 			{
-				const std::string pending_status = CopilotLaunchBlockReason(app);
+				const std::string pending_status = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app);
 				changed = changed || app.memory_last_status != pending_status;
 				app.memory_last_status = pending_status;
 				RequeueMemoryWork(app, std::move(queued));
 				continue;
 			}
 
-			if (StartWorkerTask(app, chat, uam::paths::ResolveControllerWorkspaceRootPath(app, chat), queued.scan_start_message_index))
+			std::optional<ChatSession> loaded_transcript;
+			if (!chat.messages_loaded)
+			{
+				// ponytail: one cold candidate per poll; move hydration off-thread if a single history stalls the UI.
+				if (read_cold_transcript)
+				{
+					RequeueMemoryWork(app, std::move(queued));
+					continue;
+				}
+				read_cold_transcript = true;
+				loaded_transcript = chat;
+				std::string error;
+				if (!ChatRepository::HydrateChatMessages(app.data_root, *loaded_transcript, &error))
+				{
+					RecordMemoryFailure(app, chat.id, "Memory scan could not load chat history: " + error);
+					RequeueMemoryWork(app, std::move(queued));
+					changed = true;
+					continue;
+				}
+				chat.persisted_message_count = loaded_transcript->messages.size();
+				chat.persisted_messages_digest = loaded_transcript->persisted_messages_digest;
+			}
+			const ChatSession& scan_chat = loaded_transcript ? *loaded_transcript : chat;
+			if (QueuedMemoryWorkNoLongerEligible(queued, scan_chat))
+			{
+				RecordMemorySuccess(app, chat.id);
+				app.memory_last_status = "No messages need memory extraction.";
+				changed = true;
+				continue;
+			}
+			if (!queued.manual && !ShouldQueueAutomaticMemoryScan(scan_chat))
+			{
+				if (MarkLowSignalMemoryDeltaSkipped(app, chat))
+				{
+					RecordMemorySuccess(app, chat.id);
+				}
+				else
+				{
+					RecordMemoryFailure(app, chat.id, "Memory scan could not save chat progress.");
+					RequeueMemoryWork(app, std::move(queued));
+				}
+				changed = true;
+				continue;
+			}
+
+			if (StartWorkerTask(app, scan_chat, uam::paths::ResolveControllerWorkspaceRootPath(app, scan_chat), queued.scan_start_message_index))
 			{
 				started = true;
 				changed = true;
@@ -1612,6 +1664,10 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			else
 			{
 				RecordMemoryFailure(app, chat.id, app.memory_last_status);
+				if (queued.manual)
+				{
+					RequeueMemoryWork(app, std::move(queued));
+				}
 				changed = true;
 			}
 		}
@@ -1631,9 +1687,16 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
-		if (!ShouldQueueAutomaticMemoryScan(app, chat))
+		if (chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat))
 		{
-			MarkLowSignalMemoryDeltaSkipped(app, chat);
+			if (MarkLowSignalMemoryDeltaSkipped(app, chat))
+			{
+				RecordMemorySuccess(app, chat.id);
+			}
+			else
+			{
+				RecordMemoryFailure(app, chat.id, "Memory scan could not save chat progress.");
+			}
 			app.memory_idle_started_at_by_chat_id.erase(chat.id);
 			changed = true;
 			continue;

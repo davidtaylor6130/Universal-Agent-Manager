@@ -7,12 +7,12 @@ import { SelectionGrid } from '../shared/SelectionGrid'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, Notice } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
-export function NewChatModal() {
+export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
@@ -159,10 +159,10 @@ export function NewChatModal() {
   const availability = providerAvailability(selectedProvider)
   const structuredCreationBlocked = Boolean(hostIssue) || availability.structuredBlocked
   const terminalCreationBlocked = Boolean(hostIssue) || availability.terminalBlocked
-  const terminalFallback = structuredCreationBlocked && !terminalCreationBlocked
+  const terminalFallback = !companion && structuredCreationBlocked && !terminalCreationBlocked
 
   const handleCreate = async () => {
-    if (creatingChatRef.current || !canCreate || (structuredCreationBlocked && terminalCreationBlocked)) return
+    if (creatingChatRef.current || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)) return
     creatingChatRef.current = true
     setCreatingChat(true)
     setChatError('')
@@ -172,7 +172,10 @@ export function NewChatModal() {
       const created = isRemote
         ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
         : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
-      if (created) return // The store closes the modal only after successful creation.
+      if (created) {
+        onCreated?.()
+        return // The store closes the modal only after successful creation.
+      }
       setChatError('The chat could not be created. Check the workspace and provider, then try again.')
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'The chat could not be created. Try again.')
@@ -392,7 +395,7 @@ export function NewChatModal() {
             </div>
           )}
 
-          {!selectedFolder && !isRemote && <div className="flex items-center gap-2">
+          {!companion && !selectedFolder && !isRemote && <div className="flex items-center gap-2">
             <Button className="flex-1" variant="secondary" size="sm" leadingIcon={<FolderPlus size={14} />} disabled={creatingWorkspace} onClick={() => void createWorkspace()}>
               {creatingWorkspace ? 'Choosing…' : 'Choose workspace'}
             </Button>
@@ -444,13 +447,18 @@ export function NewChatModal() {
 			  </Button>
 			)}
             {cachedAcp?.modelRefreshError && (
-              <div role="alert" className="mt-2 flex items-center justify-between gap-2 text-xs" style={{ color: 'var(--red)' }}>
-                <span>{cachedAcp.modelRefreshError}</span>
-                <Button variant="secondary" size="sm" onClick={() => {
+              <Notice
+                key={`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}\n${cachedAcp.modelRefreshError}`}
+                tone="error"
+                title="Model refresh failed"
+                dismissLabel="Dismiss model refresh error"
+                actions={<Button variant="secondary" size="sm" onClick={() => {
 				  discoveryRequestedRef.current.delete(`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`)
                   requestModelDiscovery()
-                }}>Retry</Button>
-              </div>
+                }}>Retry</Button>}
+              >
+                {cachedAcp.modelRefreshError}
+              </Notice>
             )}
           </div>
 		  {reasoningOptions.length > 0 && (
@@ -490,7 +498,7 @@ export function NewChatModal() {
             variant="primary"
             size="md"
             onClick={() => void handleCreate()}
-            disabled={creatingChat || !canCreate || (structuredCreationBlocked && terminalCreationBlocked)}
+            disabled={creatingChat || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)}
             aria-busy={creatingChat || undefined}
           >
             {creatingChat ? 'Creating…' : 'Create'}

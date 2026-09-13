@@ -60,6 +60,7 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 	{
 		tool_call.is_sub_agent = true;
 	}
+	runtime.ApplyAcpToolMetadata(tool_call, update);
 }
 
 } // namespace uam::acp_detail

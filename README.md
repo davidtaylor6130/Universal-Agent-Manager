@@ -141,9 +141,14 @@ The main layout is:
   agents/
   agent-runs/
   computer-use/
+  uam.log
+  uam.log.1
+  cef.log
 ```
 
 Workspace-scoped memories are stored under `<workspace>/.UAM/`. Staged attachments use `<workspace>/.UAM/attachments/<chat-id>/`.
+
+Desktop runtime diagnostics go to `uam.log`, with one rotated file, `uam.log.1`. Each file is limited to 5 MiB and each entry to 16 KiB. Logging starts after UAM acquires the data-root lock; earlier startup failures use stderr. If file logging fails, diagnostics use stderr until restart. CEF writes its engine messages separately to `cef.log`.
 
 Set a disposable data root when testing a build without touching your normal UAM history:
 

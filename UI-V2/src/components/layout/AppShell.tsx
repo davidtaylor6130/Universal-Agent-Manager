@@ -1,5 +1,6 @@
+import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
 
@@ -26,13 +27,8 @@ function SvnLogo({ size = 17 }: { size?: number }) {
 }
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
-import { VcsCommitPanel } from './VcsCommitPanel'
 import { UpdatesPanel } from './UpdatesPanel'
-import { NewChatModal } from '../sidebar/NewChatModal'
-import { SettingsModal, type SettingsHandle } from '../settings/SettingsModal'
-import { MemoryLibraryModal } from '../settings/MemoryLibraryModal'
-import { MemoryScanModal } from '../settings/MemoryScanModal'
-import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
+import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
@@ -40,6 +36,13 @@ import { Button, IconButton, Notice, StatusDot } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
+
+const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
+const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
+const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
+const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
+const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
+const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
 const SIDEBAR_WIDTH_MIN = 260
 const SIDEBAR_WIDTH_MAX = 520
@@ -60,7 +63,7 @@ function statusLineNotificationId(detail: string): string {
 }
 
 function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResults'][number]): string {
-  return `provider-update-${result.providerId}-${result.installedVersion}-${result.message}`
+  return `provider-update-${result.executionHostId ? JSON.stringify([result.executionHostId, result.providerId]) : result.providerId}-${result.installedVersion}-${result.message}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -225,7 +228,7 @@ function NotificationsPanel({
   onClose: () => void
   onDismiss: (id: string) => void
 }) {
-  const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
+  const missingFolders = useAppStore(useShallow((s) => s.folders.filter((folder) => folder.missing)))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const statusLine = useAppStore((s) => s.statusLine)
   const sessions = useAppStore((s) => s.sessions)
@@ -659,12 +662,15 @@ export function AppShell() {
       <LeftActivityRail
         settingsOpen={isSettingsOpen}
         onToggleSettings={() => {
-          if (isSettingsOpen) settingsRef.current?.requestClose()
-          else setSettingsOpen(true)
+          if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
+          else setSettingsOpen(!isSettingsOpen)
         }}
         onOpenMemory={() => {
-          if (isSettingsOpen) settingsRef.current?.showMemory()
-          else void openAllMemoryLibrary()
+          if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
+          else {
+            if (isSettingsOpen) setSettingsOpen(false)
+            void openAllMemoryLibrary()
+          }
         }}
       />
 
@@ -699,7 +705,7 @@ export function AppShell() {
         <MainPanel />
       </main>
       </div>
-      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><SettingsModal ref={settingsRef}/></main>}
+      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></main>}
 
       {commitPanelOpen && (
         <>
@@ -720,7 +726,7 @@ export function AppShell() {
             data-testid="commit-panel"
             style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)' }}
           >
-            <VcsCommitPanel />
+            <Suspense fallback={null}><VcsCommitPanel /></Suspense>
           </aside>
         </>
       )}
@@ -782,10 +788,10 @@ export function AppShell() {
       )}
 
       {/* Modals */}
-      {isNewChatModalOpen && <NewChatModal />}
-      {memoryLibraryScope && !isSettingsOpen && <MemoryLibraryModal />}
-      {isMemoryScanModalOpen && <MemoryScanModal />}
-      {isMarkdownStoreOpen && <MarkdownStoreModal />}
+      {isNewChatModalOpen && <Suspense fallback={null}><NewChatModal /></Suspense>}
+      {memoryLibraryScope && !isSettingsOpen && <Suspense fallback={null}><MemoryLibraryModal /></Suspense>}
+      {isMemoryScanModalOpen && <Suspense fallback={null}><MemoryScanModal /></Suspense>}
+      {isMarkdownStoreOpen && <Suspense fallback={null}><MarkdownStoreModal /></Suspense>}
     </div>
   )
 }

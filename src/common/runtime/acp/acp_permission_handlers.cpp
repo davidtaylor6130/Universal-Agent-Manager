@@ -73,6 +73,7 @@ namespace
 	bool TryStartPermissionReview(AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
 		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission) ||
 		    session.pending_permission.request_id_json.empty() ||
 		    HasPermissionReviewTask(app, chat.id, session.pending_permission.request_id_json))
 		{
@@ -311,6 +312,10 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	bool approved = false;
 	while (!session.pending_permission.request_id_json.empty())
 	{
+		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission))
+		{
+			break;
+		}
 		if ((session.goal_review_turn || uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) ==
 		         uam::approval_modes::kPlanApprovalMode ||
 		     session.active_uam_agent_workspace_access == "read") &&

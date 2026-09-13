@@ -84,6 +84,35 @@ describe('RemoteDirectoryBrowser', () => {
     expect(onSelect).toHaveBeenCalledWith('/new')
   })
 
+  it('revalidates changed connection settings but ignores health-only updates', async () => {
+    let finish: (result: RemoteDirectoryBrowseResult) => void = () => {}
+    const listRemoteDirectories = vi.fn(() => new Promise<RemoteDirectoryBrowseResult>((resolve) => { finish = resolve }))
+    useAppStore.setState({ listRemoteDirectories })
+    const onSelect = vi.fn()
+    const renderHost = async (host: ExecutionHost) => {
+      await act(async () => { root.render(<RemoteDirectoryBrowser host={host} initialPath="/work" onCancel={() => {}} onSelect={onSelect} />) })
+    }
+    let host = remoteHost
+    await renderHost(host)
+    for (const change of [{ sshAlias: 'replacement' }, { runnerDirectory: 'new-runner' }, { runnerVersion: '2' }, { runnerProtocolVersion: 3 }]) {
+      const finishOld = finish
+      const calls = listRemoteDirectories.mock.calls.length
+      host = { ...host, ...change }
+      await renderHost(host)
+      expect(listRemoteDirectories).toHaveBeenCalledTimes(calls + 1)
+      await act(async () => { finishOld(listing('/old-computer')) })
+      expect(button('Use this directory').disabled).toBe(true)
+      expect(element.querySelector<HTMLInputElement>('input')!.value).toBe('/work')
+      await act(async () => { finish(listing('/work')) })
+      expect(button('Use this directory').disabled).toBe(false)
+    }
+    const calls = listRemoteDirectories.mock.calls.length
+    await renderHost({ ...host, lastSeenAt: 'newer', label: 'Renamed' })
+    expect(listRemoteDirectories).toHaveBeenCalledTimes(calls)
+    await click('Use this directory')
+    expect(onSelect).toHaveBeenCalledWith('/work')
+  })
+
   it('invalidates listings when the selected computer changes or goes offline', async () => {
     const onSelect = vi.fn()
     let finishOld: (result: RemoteDirectoryBrowseResult) => void = () => {}

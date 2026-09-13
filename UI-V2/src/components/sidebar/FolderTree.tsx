@@ -1,3 +1,4 @@
+import { isCompanionContext } from '../../ipc/cefBridge'
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
@@ -5,7 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, MenuSelect, Tooltip, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -17,7 +18,7 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
-import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
+import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
 interface FolderTreeProps {
@@ -309,7 +310,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!event.shiftKey) {
+    if (isCompanionContext() || !event.shiftKey) {
       selectionAnchorRowRef.current = event.currentTarget
       setSelectionAnchorId(sessionId)
       setSelectedSessionIds(new Set())
@@ -607,7 +608,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }
 
   return (
-    <div ref={treeRef} className="select-none">
+    <div ref={treeRef} className="select-none"
+      onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
+      onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
+      onKeyDownCapture={(event) => { if (isCompanionContext() && (event.shiftKey || ['F2', 'ContextMenu', 'ArrowUp', 'ArrowDown'].includes(event.key))) event.stopPropagation() }}
+    >
       {selectedSessionIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
@@ -776,7 +781,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 {searchModel.unfolderedSessionIds.length}
               </span>
             </button>
-            <Tooltip label="Unsorted actions">
+            {!isCompanionContext() && <Tooltip label="Unsorted actions">
               <button
                 ref={unsortedMenuTriggerRef}
                 type="button"
@@ -796,7 +801,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               >
                 <MoreHorizontal size={14} aria-hidden />
               </button>
-            </Tooltip>
+            </Tooltip>}
           </div>
           {unsortedMenuPoint && (
             <ViewportMenu
@@ -883,8 +888,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
 
       {/* Add folder */}
-      <div ref={addControlsRef} className="mt-1 px-2.5">
-        {actionError && <div role="alert" className="mb-2 text-xs" style={{ color: 'var(--red)' }}>{actionError}</div>}
+      <div ref={addControlsRef} className="mt-1 px-2.5" style={isCompanionContext() ? { display: 'none' } : undefined}>
+        {actionError && (
+          <Notice tone="error" title="Folder action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
+            {actionError}
+          </Notice>
+        )}
         {addingFolder ? (
           <div
             className="rounded-md p-2 space-y-2"
@@ -959,7 +968,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={newFolderIsRemote && newFolderExecutionHost?.runnerStatus !== 'ready'}
+                disabled={newFolderIsRemote && (!newFolderExecutionHost || !isRemoteDirectoryBrowseAvailable(newFolderExecutionHost))}
                 onClick={() => { void chooseNewFolderDirectory() }}
               >
                 Browse
@@ -1189,11 +1198,11 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
           </Tooltip>
         )}
         <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
-        <Tooltip label="Collection actions">
+        {!isCompanionContext() && <Tooltip label="Collection actions">
           <button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
           </button>
-        </Tooltip>
+        </Tooltip>}
       </div>
       {menuOpen && (
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
@@ -1333,7 +1342,7 @@ function WorkspaceFolderRecoveryModal({
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {loading && (
             <div role="status" className="flex items-center gap-2 rounded-md p-3 text-sm" style={{ color: 'var(--text-2)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-              <FolderSync size={16} className="animate-spin" aria-hidden />
+              <FolderSync size={16} aria-hidden />
               Checking saved workspace locations…
             </div>
           )}
@@ -1728,7 +1737,7 @@ const FolderRow = memo(function FolderRow({
           className={`absolute right-2 transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
           onClick={(e) => e.stopPropagation()}
         >
-          <Tooltip label="Folder actions" side="top">
+          {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
             <button
               ref={menuTriggerRef}
               type="button"
@@ -1746,7 +1755,7 @@ const FolderRow = memo(function FolderRow({
             >
               <MoreHorizontal size={14} aria-hidden />
             </button>
-          </Tooltip>
+          </Tooltip>}
         </div>
       </div>
 

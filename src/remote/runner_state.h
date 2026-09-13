@@ -74,6 +74,7 @@ namespace uam::remote
 		};
 		struct Channel
 		{
+			std::int64_t expires_at_ms = 0;
 			ChannelBuffer remote_to_desktop;
 			ChannelBuffer desktop_to_remote;
 		};

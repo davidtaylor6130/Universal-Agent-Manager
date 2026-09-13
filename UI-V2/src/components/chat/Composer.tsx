@@ -1,10 +1,9 @@
+import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
-
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, Shield, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, X, Check } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check } from 'lucide-react'
 import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
-import type { Goal } from '../../types/goal'
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
@@ -113,12 +112,17 @@ export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAg
     const element = agentRef.current
     const row = element?.parentElement
     if (!element || !row) return
+    const textarea = row.querySelector('textarea')
+    const followScroll = () => { element.style.transform = `translateY(${-(textarea?.scrollTop ?? 0)}px)` }
+    followScroll()
+    textarea?.addEventListener('scroll', followScroll, { passive: true })
     const measure = () => row.style.setProperty('--agent-prefix-width', `${element.getBoundingClientRect().width}px`)
     measure()
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     observer?.observe(element)
     return () => {
       observer?.disconnect()
+      textarea?.removeEventListener('scroll', followScroll)
       row.style.removeProperty('--agent-prefix-width')
     }
   }, [agentId, agents])
@@ -148,7 +152,6 @@ export function ComposerToolbar({
   modelId,
   reviewerModelId,
   includeDefaultModel,
-  session,
   reasoningEffort,
   serviceTier,
   serviceTierExplicit,
@@ -162,6 +165,7 @@ export function ComposerToolbar({
   providerModes,
   uamAgents,
   computerUseMode,
+  computerUseAwaitingTarget,
   memoryLevel,
   defaultMemoryLevel,
   memoryChipVisible,
@@ -179,7 +183,6 @@ export function ComposerToolbar({
   onSelectUamAgent,
   onSelectPermissionMode,
   onToggleComputerUseMode,
-  onOpenComputerUse,
   onSelectMemoryLevel,
   onClearMemoryLevel,
   onToggleSmallModelMode,
@@ -189,7 +192,7 @@ export function ComposerToolbar({
   defaultGoalTokenBudget,
   onToggleGoal,
   onSetDefaultGoalTokenBudget,
-  onStopRuntime,
+  onCancelTurn,
   onAttachFile,
   onOpenMarkdownStore,
   workspaceControl,
@@ -210,7 +213,6 @@ export function ComposerToolbar({
   modelId?: string
   reviewerModelId?: string
   includeDefaultModel?: boolean
-  session: { id: string }
   reasoningEffort?: string
   serviceTier?: string
   serviceTierExplicit?: boolean
@@ -224,6 +226,7 @@ export function ComposerToolbar({
   providerModes: Array<{ id: string; name: string; description?: string }>
   uamAgents: Array<{ id: string; name: string; description?: string }>
   computerUseMode: boolean
+  computerUseAwaitingTarget: boolean
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
   memoryChipVisible: boolean
@@ -241,7 +244,6 @@ export function ComposerToolbar({
   onSelectUamAgent: (agentId: string) => void
   onSelectPermissionMode: (modeId: string) => void
   onToggleComputerUseMode: () => void
-  onOpenComputerUse: () => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
   onClearMemoryLevel: () => void
   onToggleSmallModelMode: () => void
@@ -251,7 +253,7 @@ export function ComposerToolbar({
   defaultGoalTokenBudget: number
   onToggleGoal: () => void
   onSetDefaultGoalTokenBudget: (value: number) => void
-  onStopRuntime: () => void
+  onCancelTurn: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
   workspaceControl?: ReactNode
@@ -404,7 +406,7 @@ export function ComposerToolbar({
         color: 'var(--text-2)',
       }}
     >
-      <div ref={optionsRef} className="relative shrink-0">
+      <div ref={optionsRef} className="relative shrink-0" style={isCompanionContext() ? { display: 'none' } : undefined}>
         <button
           ref={optionsTriggerRef}
           type="button"
@@ -439,7 +441,7 @@ export function ComposerToolbar({
               background: 'var(--surface)', boxShadow: 'var(--elev-3)',
             }}
           >
-            <button
+            {!isCompanionContext() && <button
               type="button"
               role="menuitem"
               title="Attach files to the next message"
@@ -449,7 +451,7 @@ export function ComposerToolbar({
             >
               <Plus size={13} aria-hidden />
               <span>Attach files</span>
-            </button>
+            </button>}
             <button
               type="button"
               role="menuitem"
@@ -474,19 +476,18 @@ export function ComposerToolbar({
                 style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
               />
             </label>
-            <button
+            {!isCompanionContext() && <button
               type="button"
               role="menuitem"
-              title="Configure computer use"
-              aria-haspopup="dialog"
+              title={computerUseMode ? 'Turn off computer use' : 'Turn on computer use'}
               aria-pressed={computerUseMode}
-              onClick={() => { setOptionsOpen(false); onOpenComputerUse() }}
+              onClick={() => { setOptionsOpen(false); onToggleComputerUseMode() }}
               className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
               style={{ ...chipStyle, borderColor: computerUseMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: computerUseMode ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : chipStyle.background, color: computerUseMode ? 'var(--text)' : 'var(--text-2)' }}
             >
               <MousePointer2 size={13} aria-hidden style={{ color: computerUseMode ? 'var(--accent)' : 'var(--text-3)' }} />
               <span>Computer use…</span>
-            </button>
+            </button>}
             {(hasReasoningEffort || caps.hasServiceTier || variantOptions.length > 0) && (
               <>
                 <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
@@ -613,7 +614,7 @@ export function ComposerToolbar({
                 </div>
               </div>
             )}
-            <button
+            {!isCompanionContext() && <button
               type="button"
               role="menuitem"
               title="Open Skills"
@@ -623,7 +624,7 @@ export function ComposerToolbar({
             >
               <ComposerIcon name="markdown" />
               <span>Skills</span>
-            </button>
+            </button>}
           </ViewportMenu>
         )}
       </div>
@@ -652,9 +653,9 @@ export function ComposerToolbar({
           )}
         </button>
       ) : <>
-      <div className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+      <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
-        {computerUseMode && <ActiveModeChip label="Computer use" compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
+        {computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
         {featurePreference === 'provider' && providerPlanActive && <ComposerChoice label="Provider mode" chipLabel="Provider Plan" value={providerModeId ?? 'default'} icon={<ClipboardList size={12} aria-hidden />} options={providerModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description }))} onChange={onSelectProviderMode} disabled={modelDisabled} />}
         <ComposerChoice
           label="Permissions"
@@ -680,7 +681,7 @@ export function ComposerToolbar({
         {variantOptions.map((option) => <ComposerChoice key={option.id} label={option.name || option.id} value={option.currentValue} icon={<Cpu size={12} aria-hidden />} options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))} onChange={(value) => onSelectConfigOption(option.id, value)} disabled={modelDisabled} />)}
         {speedExplicit && <ComposerChoice label="Speed" chipLabel={`Speed: ${currentSpeed.label}`} value={currentSpeed.id} icon={<Sparkles size={12} aria-hidden />} options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectSpeed} disabled={modelDisabled} />}
 
-      </div>
+      </fieldset>
       <div className="flex shrink-0 items-center gap-2">
         <div ref={modelMenuRef} className="relative">
           <button
@@ -800,13 +801,13 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[30px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 px-2" style={{ borderRadius: 7, opacity: dictationAvailable ? 1 : 0.55 }}>
+        {!isCompanionContext() && <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[30px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 px-2" style={{ borderRadius: 7, opacity: dictationAvailable ? 1 : 0.55 }}>
           <Mic size={15} aria-hidden />
-        </button>
+        </button>}
       </div>
       </>}
         {running && !canSend ? (
-          <button type="button" title="Stop runtime" aria-label="Stop runtime" onClick={onStopRuntime} className="uam-composer-action h-[30px] w-[34px] shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
+          <button type="button" title="Cancel turn" aria-label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-[30px] w-[34px] shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
         ) : (
         <button
           type="submit"

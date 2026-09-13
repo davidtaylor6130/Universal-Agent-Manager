@@ -33,7 +33,7 @@
 #include <cstdint>
 #include <cctype>
 #include <filesystem>
-#include <unordered_map>
+#include <functional>
 #include <unordered_set>
 #include <vector>
 
@@ -48,17 +48,6 @@ namespace uam
 	{
 		namespace attachment_fields = uam::message_attachment_json;
 		namespace attachment_frontend_fields = uam::message_attachment_json::frontend;
-
-		struct MessageDigestCacheEntry
-		{
-			const Message* messages_data = nullptr;
-			std::size_t message_count = 0;
-			std::string updated_at;
-			std::string digest;
-		};
-
-		std::unordered_map<std::string, MessageDigestCacheEntry> g_background_message_digest_cache;
-		std::size_t g_fingerprint_message_digest_count = 0;
 
 		std::string RoleStr(MessageRole role)
 		{
@@ -126,22 +115,6 @@ namespace uam
 			return uam::strings::Trim(chat.native_session_id);
 		}
 
-		// Model-catalog reads (OpenCode config / Zen free models / Codex cache) live in
-		// ProviderModelCatalogService so that serialization performs zero file/network I/O.
-		// The service snapshot is refreshed asynchronously from the app polling loop.
-		nlohmann::json FallbackAcpModelsForChat(const AppState& app, const ChatSession& chat)
-		{
-			if (app.provider_model_catalog != nullptr)
-			{
-				if (!uam::strings::IsBlank(chat.execution_host_id) && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
-					return app.provider_model_catalog->GetCachedProviderModels(chat.provider_id,
-					    uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(),
-					    chat.execution_host_id);
-				return app.provider_model_catalog->FallbackAcpModelsForChat(chat.provider_id, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string());
-			}
-			return nlohmann::json::array();
-		}
-
 		std::string ModelCatalogWorkspace(const AppState& app, const ChatSession& chat)
 		{
 			return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
@@ -158,11 +131,12 @@ namespace uam
 			return uam::strings::IsBlank(chat.model_id) ? std::string{} : chat.model_id;
 		}
 
-		nlohmann::json FallbackAcpConfigOptionsForChat(const AppState& app, const ChatSession& chat)
+		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat)
 		{
-			if (app.provider_model_catalog == nullptr) return nlohmann::json::array();
-			return app.provider_model_catalog->GetCachedProviderConfigOptions(chat.provider_id,
-			    ModelCatalogWorkspace(app, chat), chat.execution_host_id);
+			if (app.provider_model_catalog != nullptr)
+				return app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, ModelCatalogWorkspace(app, chat), chat.execution_host_id);
+			return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
+			        {"modelsLoading", false}, {"modelRefreshError", ""}};
 		}
 
 		nlohmann::json SerializeProviderModelCatalogs(const AppState& app)
@@ -176,27 +150,18 @@ namespace uam
 			{
 				if (provider_id.empty() || workspace.empty()) return;
 				const std::string host = uam::strings::NonEmptyOrFallback(
-				    execution_host_id, std::string(uam::execution_hosts::kLocalHostId));
-				if (!seen.insert(provider_id + "\n" + host + "\n" + workspace).second) return;
+				    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
 				const bool remote = host != uam::execution_hosts::kLocalHostId;
-				catalogs.push_back({
-				    {"providerId", provider_id},
-				    {"workspaceDirectory", workspace},
-				    {"executionHostId", host},
-				    {"availableModels", remote
-				        ? app.provider_model_catalog->GetCachedProviderModels(
-				              provider_id, workspace, host)
-				        : app.provider_model_catalog->FallbackAcpModelsForChat(
-				              provider_id, workspace)},
-				    {"configOptions", app.provider_model_catalog->GetCachedProviderConfigOptions(
-				        provider_id, workspace, host)},
-				    {"currentModelId", remote ? std::string{}
-				        : app.provider_model_catalog->FallbackAcpCurrentModelForChat(provider_id, "")},
-				    {"modelsLoading", app.provider_model_catalog->IsDiscoveryPending(
-				        provider_id, workspace, host)},
-				    {"modelRefreshError", app.provider_model_catalog->GetProviderRefreshError(
-				        provider_id, workspace, host)},
-				});
+				const std::string scope_key = remote
+				    ? uam::paths::WorkspaceOwnershipKey(app, host, workspace)
+				    : host + "\n" + workspace;
+				if (!seen.insert(provider_id + "\n" + scope_key).second) return;
+				nlohmann::json catalog = app.provider_model_catalog->GetCatalogSnapshot(provider_id, workspace, host);
+				catalog["providerId"] = provider_id;
+				catalog["workspaceDirectory"] = workspace;
+				catalog["executionHostId"] = host;
+				catalog["currentModelId"] = remote ? std::string{} : app.provider_model_catalog->FallbackAcpCurrentModelForChat(provider_id, "");
+				catalogs.push_back(std::move(catalog));
 			};
 			for (const ProviderProfile& provider : app.provider_profiles)
 			{
@@ -205,9 +170,9 @@ namespace uam
 				{
 					ChatSession scope;
 					scope.workspace_directory = folder.directory;
+					scope.execution_host_id = folder.execution_host_id;
 					const std::string workspace = ModelCatalogWorkspace(app, scope);
-					append_catalog(provider.id, workspace,
-					    std::string(uam::execution_hosts::kLocalHostId));
+					append_catalog(provider.id, workspace, folder.execution_host_id);
 				}
 			}
 			for (const nlohmann::json& scope : app.provider_model_catalog->GetCatalogScopes())
@@ -221,7 +186,7 @@ namespace uam
 			return catalogs;
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session, bool allow_cached_digest = false);
+		std::string MessageDigestForFingerprint(const ChatSession& session);
 		std::size_t MessageCountForFrontend(const ChatSession& session);
 
 		void AddWorkspaceIsolationFields(nlohmann::json& chat_json, const ChatSession& chat)
@@ -233,7 +198,7 @@ namespace uam
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
 
-		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory, bool allow_cached_message_digest = false)
+		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory)
 		{
 			session_json["id"] = session.id;
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
@@ -274,7 +239,7 @@ namespace uam
 			session_json["updatedAt"] = session.updated_at;
 			session_json["lastOpenedAt"] = uam::strings::NonEmptyOrFallback(session.last_opened_at, session.updated_at);
 			session_json["messageCount"] = MessageCountForFrontend(session);
-			session_json["messagesDigest"] = MessageDigestForFingerprint(session, allow_cached_message_digest);
+			session_json["messagesDigest"] = MessageDigestForFingerprint(session);
 			session_json["activeGoalId"] = session.active_goal_id.empty() ? nullptr : nlohmann::json(session.active_goal_id);
 		}
 
@@ -313,6 +278,9 @@ namespace uam
 		                                      : 0);
 		const bool content_deferred = content_size > kInlineToolContentMaxBytes;
 		tool_json["contentDeferred"] = content_deferred;
+		if (content_deferred)
+			tool_json["contentDigest"] = std::to_string(std::hash<std::string>{}(tool_call.args_json)) + ":" +
+			                             std::to_string(std::hash<std::string>{}(tool_call.result_text));
 		if (!content_deferred)
 			tool_json["content"] = StateSerializer::ToolCallContentForFrontend(tool_call);
 		tool_json["isSubAgent"] = tool_call.is_sub_agent;
@@ -391,6 +359,7 @@ namespace uam
 			if (!message.model_id.empty()) message_json["modelId"] = message.model_id;
 			if (message.interrupted) message_json["interrupted"] = true;
 			if (message.priority_steer) message_json["prioritySteer"] = true;
+			if (message.continues_turn) message_json["continuesTurn"] = true;
 			if (message.processing_time_ms > 0)
 			{
 				message_json["processingTimeMs"] = message.processing_time_ms;
@@ -477,7 +446,10 @@ namespace uam
 
 		void FingerprintHashString(std::uint64_t& hash, const std::string& value)
 		{
-			uam::hashing::UpdateFnv1a64WithSeparator(hash, value);
+			// Process-local change tokens allow platform-native string hashing.
+			// ponytail: full strings are still scanned; mutation revisions would avoid large-history rehashing.
+			const std::uint64_t value_hash = std::hash<std::string>{}(value);
+			FingerprintHashBytes(hash, reinterpret_cast<const unsigned char*>(&value_hash), sizeof(value_hash));
 		}
 
 		void FingerprintHashBool(std::uint64_t& hash, bool value)
@@ -491,7 +463,7 @@ namespace uam
 			return uam::hashing::Hex64Padded(hash);
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session, bool allow_cached_digest)
+		std::string MessageDigestForFingerprint(const ChatSession& session)
 		{
 			if (!session.messages_loaded)
 			{
@@ -501,20 +473,6 @@ namespace uam
 				}
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
 			}
-
-			if (allow_cached_digest)
-			{
-				const auto cached = g_background_message_digest_cache.find(session.id);
-				if (cached != g_background_message_digest_cache.end() &&
-				    cached->second.messages_data == session.messages.data() &&
-				    cached->second.message_count == session.messages.size() &&
-				    cached->second.updated_at == session.updated_at)
-				{
-					return cached->second.digest;
-				}
-			}
-
-			++g_fingerprint_message_digest_count;
 
 			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
 
@@ -538,8 +496,9 @@ namespace uam
 					FingerprintHashString(hash, tool_call.id);
 					FingerprintHashString(hash, tool_call.name);
 					FingerprintHashString(hash, tool_call.status);
-					FingerprintHashString(hash, std::to_string(tool_call.args_json.size()));
-					FingerprintHashString(hash, std::to_string(tool_call.result_text.size()));
+					// The native refresh guard needs content changes even when output is deferred.
+					FingerprintHashString(hash, tool_call.args_json);
+					FingerprintHashString(hash, tool_call.result_text);
 					FingerprintHashBool(hash, tool_call.is_sub_agent);
 					FingerprintHashString(hash, tool_call.sub_agent_id);
 					FingerprintHashString(hash, tool_call.sub_agent_title);
@@ -584,13 +543,7 @@ namespace uam
 				FingerprintHashBool(hash, message.priority_steer);
 			}
 
-			const std::string digest = FingerprintHashHex(hash);
-			if (allow_cached_digest)
-			{
-				g_background_message_digest_cache[session.id] = {
-				    session.messages.data(), session.messages.size(), session.updated_at, digest};
-			}
-			return digest;
+			return FingerprintHashHex(hash);
 		}
 
 		std::size_t MessageCountForFrontend(const ChatSession& session)
@@ -606,20 +559,18 @@ namespace uam
 		nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSession& chat)
 		{
 			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
-			const bool has_pending_call = uam::HasPendingCallForChat(app, chat.id);
 
 			if (const CliTerminalState* terminal = FindTerminalForChat(app, chat); terminal != nullptr)
 			{
 				const bool terminal_processing = uam::CliTerminalLifecycleIsProcessing(*terminal);
-				const bool processing = has_pending_call || terminal_processing;
 				nlohmann::json terminal_json;
 				terminal_json["terminalId"] = terminal->terminal_id;
 				terminal_json["frontendChatId"] = terminal->frontend_chat_id;
 				terminal_json["sourceChatId"] = uam::CliTerminalPrimaryChatId(*terminal);
 				terminal_json["running"] = terminal->running;
 				terminal_json["lifecycleState"] = uam::CliTerminalLifecycleStateLabel(*terminal);
-				terminal_json["turnState"] = terminal_processing ? "busy" : "idle";
-				terminal_json["processing"] = processing;
+				terminal_json["turnState"] = uam::CliTurnStateLabel(*terminal);
+				terminal_json["processing"] = terminal_processing;
 				terminal_json["readySinceLastSelect"] = ready_since_last_select;
 				terminal_json["active"] = uam::CliTerminalLifecycleIsIdleLive(*terminal);
 				terminal_json["pendingSteer"] = !terminal->pending_steer_prompt.empty();
@@ -627,12 +578,11 @@ namespace uam
 				return terminal_json;
 			}
 
-			const bool processing = has_pending_call;
 			nlohmann::json terminal_json;
 			terminal_json["running"] = false;
 			terminal_json["lifecycleState"] = "stopped";
 			terminal_json["turnState"] = "idle";
-			terminal_json["processing"] = processing;
+			terminal_json["processing"] = false;
 			terminal_json["readySinceLastSelect"] = ready_since_last_select;
 			terminal_json["active"] = false;
 			terminal_json["pendingSteer"] = false;
@@ -678,6 +628,10 @@ namespace uam
 				};
 				if (tool_call.content.size() <= kInlineToolContentMaxBytes)
 					tool_call_json["content"] = tool_call.content;
+				else
+					tool_call_json["contentDigest"] = std::to_string(std::hash<std::string>{}(tool_call.content)) + ":" +
+					                                  std::to_string(std::hash<std::string>{}(tool_call.permission_review_decision)) + ":" +
+					                                  std::to_string(std::hash<std::string>{}(tool_call.permission_review_reason));
 				tool_calls_json.push_back(std::move(tool_call_json));
 			}
 			return tool_calls_json;
@@ -929,9 +883,9 @@ namespace uam
 			return input_json;
 		}
 
-		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat, const std::filesystem::path& data_root, bool ready_since_last_select)
+		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat, bool ready_since_last_select)
 		{
-			nlohmann::json acp_json;
+			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat);
 			const std::string session_id = ResolvedAcpSessionIdForChat(app, chat);
 			acp_json["sessionId"] = session_id;
 			acp_json["providerId"] = chat.provider_id;
@@ -954,16 +908,6 @@ namespace uam
 			acp_json["availableCommands"] = nlohmann::json::array();
 			acp_json["availableModes"] = nlohmann::json::array();
 			acp_json["currentModeId"] = chat.approval_mode;
-			acp_json["availableModels"] = FallbackAcpModelsForChat(app, chat);
-			acp_json["configOptions"] = FallbackAcpConfigOptionsForChat(app, chat);
-			const std::string workspace = ModelCatalogWorkspace(app, chat);
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr &&
-			    app.provider_model_catalog->IsDiscoveryPending(
-			        chat.provider_id, workspace, chat.execution_host_id);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr
-			    ? std::string{}
-			    : app.provider_model_catalog->GetProviderRefreshError(
-			          chat.provider_id, workspace, chat.execution_host_id);
 			acp_json["currentModelId"] = FallbackAcpCurrentModelForChat(app, chat);
 			acp_json["turnEvents"] = nlohmann::json::array();
 			acp_json["turnUserMessageIndex"] = -1;
@@ -981,14 +925,14 @@ namespace uam
 
 		nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession& chat)
 		{
-			nlohmann::json acp_json;
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
 			if (session == nullptr)
 			{
-				return SerializeStoppedAcpSessionSummary(app, chat, app.data_root, ready_since_last_select);
+				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select);
 			}
 
+			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat);
 			acp_json["sessionId"] = session->session_id;
 			acp_json["providerId"] = session->provider_id;
 			acp_json["uamAgentExecutionCapability"] =
@@ -1017,16 +961,11 @@ namespace uam
 			acp_json["availableCommands"] = SerializeAcpCommands(session->available_commands);
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
-			acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(FallbackAcpModelsForChat(app, chat), SerializeAcpModels(session->available_models));
-			acp_json["configOptions"] = session->available_config_options.empty() ? FallbackAcpConfigOptionsForChat(app, chat) : SerializeAcpConfigOptions(session->available_config_options);
-			const std::string workspace = ModelCatalogWorkspace(app, chat);
-			acp_json["modelsLoading"] = app.provider_model_catalog != nullptr &&
-			    app.provider_model_catalog->IsDiscoveryPending(
-			        chat.provider_id, workspace, chat.execution_host_id);
-			acp_json["modelRefreshError"] = app.provider_model_catalog == nullptr
-			    ? std::string{}
-			    : app.provider_model_catalog->GetProviderRefreshError(
-			          chat.provider_id, workspace, chat.execution_host_id);
+			if (session->session_ready && !session->available_models.empty())
+				acp_json["availableModels"] = SerializeAcpModels(session->available_models);
+			else
+				acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(std::move(acp_json["availableModels"]), SerializeAcpModels(session->available_models), true);
+			if (session->session_ready || !session->available_config_options.empty()) acp_json["configOptions"] = SerializeAcpConfigOptions(session->available_config_options);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
@@ -1049,25 +988,10 @@ namespace uam
 			return acp_json;
 		}
 
-		bool CanReuseBackgroundMessageDigest(const AppState& app, const ChatSession& chat, const std::string& selected_chat_id)
-		{
-			if (chat.id == selected_chat_id || uam::HasPendingCallForChat(app, chat.id))
-			{
-				return false;
-			}
-			if (const CliTerminalState* terminal = FindTerminalForChat(app, chat);
-			    terminal != nullptr && uam::CliTerminalLifecycleIsProcessing(*terminal))
-			{
-				return false;
-			}
-			const AcpSessionState* acp_session = FindAcpSessionForChat(app, chat.id);
-			return acp_session == nullptr || !acp_session->processing;
-		}
-
-		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat, bool allow_cached_message_digest = false)
+		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), allow_cached_message_digest);
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
 			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
@@ -1107,7 +1031,7 @@ namespace uam
 					goal_json["creatorRunId"] = goal.creator_run_id;
 					goals_arr.push_back(std::move(goal_json));
 				}
-				chat_json["goals"] = goals_arr;
+				chat_json["goals"] = std::move(goals_arr);
 			}
 
 			return chat_json;
@@ -1220,13 +1144,15 @@ namespace uam
 			return preferred_version;
 		}
 
-		nlohmann::json SerializeCliVersionEntry(const AppState& app, const ProviderCliCompatibilityService& service, const std::string& provider_id)
+		nlohmann::json SerializeCliVersionEntry(const AppState& app, const ProviderCliCompatibilityService& service, const std::string& provider_id, const ExecutionHost& execution_host = ExecutionHost{})
 		{
 			const bool check_running_for_provider = app.runtime_cli_version_check_task.running &&
-			                                        NormalizedCliVersionManagedProviderId(app.runtime_cli_version_provider_id) == provider_id;
+			                                        NormalizedCliVersionManagedProviderId(app.runtime_cli_version_provider_id) == provider_id &&
+			                                        app.runtime_cli_version_check_task.execution_host.id == execution_host.id;
 			const bool install_running_for_provider = app.runtime_cli_pin_task.running &&
-			                                          NormalizedCliVersionManagedProviderId(app.runtime_cli_pin_provider_id) == provider_id;
-			const auto state_it = app.runtime_cli_versions_by_provider_id.find(provider_id);
+			                                          NormalizedCliVersionManagedProviderId(app.runtime_cli_pin_provider_id) == provider_id &&
+			                                          app.runtime_cli_pin_task.execution_host.id == execution_host.id;
+			const auto state_it = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host.id));
 			const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end();
 			const CliProviderVersionState provider_state = has_provider_state ? state_it->second : CliProviderVersionState{};
 			const std::string preferred_version = service.PreferredVersionForProvider(provider_id);
@@ -1258,6 +1184,11 @@ namespace uam
 
 			nlohmann::json provider_json;
 			provider_json["providerId"] = provider_id;
+			if (execution_host.id != execution_hosts::kLocalHostId)
+			{
+				provider_json["executionHostId"] = execution_host.id;
+				provider_json["executionHostName"] = execution_host.label;
+			}
 			provider_json["installedVersion"] = provider_state.installed_version;
 			provider_json["selectedVersion"] = selected_version;
 			provider_json["availableVersions"] = std::move(versions);
@@ -1266,12 +1197,13 @@ namespace uam
 			provider_json["verifiedAt"] = service.VerifiedAtForProvider(provider_id);
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
+			provider_json["checkError"] = provider_state.check_error;
 			provider_json["running"] = check_running_for_provider || install_running_for_provider;
 			provider_json["installMethod"] = provider_state.install_method;
 			provider_json["lastInstallStatus"] = provider_state.last_install_status;
 			provider_json["lastCommand"] = install_running_for_provider
 			                                   ? app.runtime_cli_pin_task.command_preview
-			                                   : uam::strings::NonEmptyOrFallback(provider_state.install_command, app.runtime_cli_version_check_task.command_preview);
+			                                   : (check_running_for_provider ? app.runtime_cli_version_check_task.command_preview : provider_state.install_command);
 			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
 			return provider_json;
 		}
@@ -1291,8 +1223,25 @@ namespace uam
 				providers.push_back(SerializeCliVersionEntry(app, service, provider_id));
 			}
 
+			nlohmann::json remote_providers = nlohmann::json::array();
+			for (const std::pair<const std::string, CliProviderVersionState>& entry : app.runtime_cli_versions_by_provider_id)
+			{
+				const CliProviderVersionState& state = entry.second;
+				if (state.execution_host.id == execution_hosts::kLocalHostId || state.provider_id.empty()) continue;
+				const ExecutionHost* current_host = execution_hosts::Find(app.settings.execution_hosts, state.execution_host.id);
+				if (current_host == nullptr || !execution_hosts::SameConnection(*current_host, state.execution_host) ||
+				    NormalizedCliVersionManagedProviderId(state.provider_id).empty() ||
+				    ProviderRuntimeRegistry::ResolveById(state.provider_id).CliVersionPolicy() == nullptr) continue;
+				remote_providers.push_back(SerializeCliVersionEntry(app, service, state.provider_id, *current_host));
+			}
+			std::sort(remote_providers.begin(), remote_providers.end(), [](const nlohmann::json& left, const nlohmann::json& right)
+			{
+				return std::pair{left["executionHostId"].get<std::string>(), left["providerId"].get<std::string>()} <
+				       std::pair{right["executionHostId"].get<std::string>(), right["providerId"].get<std::string>()};
+			});
 			return {
 			    {"providers", std::move(providers)},
+			    {"remoteProviders", std::move(remote_providers)},
 			};
 		}
 
@@ -1401,17 +1350,22 @@ namespace uam
 		{
 			if (IsInternalChat(chat)) continue;
 			const bool selected_chat = !has_selected_chat || selected_chat_id == chat.id;
-			nlohmann::json chat_json = (selected_chat && chat.messages_loaded)
-			    ? SerializeSession(chat)
-			    : SerializeFingerprintSession(app, chat, CanReuseBackgroundMessageDigest(app, chat, selected_chat_id));
-			chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
-
-			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
-			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
-			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
+			nlohmann::json chat_json;
+			if (selected_chat && chat.messages_loaded)
+			{
+				chat_json = SerializeSession(chat);
+				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+				chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
+				chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
+				chat_json["computerUse"] = SerializeComputerUseState(app, chat);
+			}
+			else
+			{
+				chat_json = SerializeFingerprintSession(app, chat);
+			}
 			chats_arr.push_back(std::move(chat_json));
 		}
-		j["chats"] = chats_arr;
+		j["chats"] = std::move(chats_arr);
 		j["cliDebug"] = SerializeCliDebugState(app);
 		j["memoryActivity"] = SerializeMemoryActivity(app);
 		j["cliVersionManager"] = SerializeCliVersionManager(app);
@@ -1431,7 +1385,6 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 	{
-		g_fingerprint_message_digest_count = 0;
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
@@ -1442,19 +1395,14 @@ namespace uam
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		const std::string selected_chat_id = SelectedVisibleChatId(app);
-		std::unordered_set<std::string> current_chat_ids;
 		for (const auto& chat : app.chats)
 		{
 			if (IsInternalChat(chat)) continue;
-			current_chat_ids.insert(chat.id);
 			chats_arr.push_back(SerializeFingerprintSession(
-			    app, chat, CanReuseBackgroundMessageDigest(app, chat, selected_chat_id)));
+			    app, chat));
 		}
-		std::erase_if(g_background_message_digest_cache, [&current_chat_ids](const auto& entry)
-		{
-			return !current_chat_ids.contains(entry.first);
-		});
-		j["chats"] = chats_arr;
+
+		j["chats"] = std::move(chats_arr);
 
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
@@ -1470,11 +1418,6 @@ namespace uam
 		return j;
 	}
 
-	std::size_t StateSerializer::LastFingerprintMessageDigestCountForTests()
-	{
-		return g_fingerprint_message_digest_count;
-	}
-
 	nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
 	{
 		nlohmann::json j;
@@ -1485,7 +1428,7 @@ namespace uam
 		{
 			msgs.push_back(SerializeMessageForFrontend(message));
 		}
-		j["messages"] = msgs;
+		j["messages"] = std::move(msgs);
 
 		// Serialize goals
 		if (!session.goals.empty())
@@ -1522,7 +1465,7 @@ namespace uam
 				goal_json["creatorRunId"] = goal.creator_run_id;
 				goals_arr.push_back(std::move(goal_json));
 			}
-			j["goals"] = goals_arr;
+			j["goals"] = std::move(goals_arr);
 		}
 
 		return j;

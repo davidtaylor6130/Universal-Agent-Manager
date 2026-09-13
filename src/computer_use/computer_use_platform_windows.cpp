@@ -171,7 +171,18 @@ namespace uam::computer_use
 		}
 
 		std::wstring virtual_cursor_label;
+		COLORREF virtual_cursor_accent = RGB(20, 184, 166);
 		bool virtual_cursor_clicked = false;
+
+		void ConfigureVirtualCursorIdentityImpl(const std::string& label, const std::string& chat_id)
+		{
+			virtual_cursor_label = Wide(label.empty() ? "Chat" : label);
+			constexpr COLORREF colors[] = {RGB(249, 115, 22), RGB(14, 165, 233), RGB(124, 58, 237), RGB(20, 184, 166), RGB(34, 197, 94), RGB(225, 29, 72)};
+			std::uint32_t hash = 2166136261u;
+			for (const unsigned char value : chat_id)
+				hash = (hash ^ value) * 16777619u;
+			virtual_cursor_accent = colors[hash % (sizeof(colors) / sizeof(colors[0]))];
+		}
 
 		LRESULT CALLBACK VirtualCursorWindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 		{
@@ -185,7 +196,7 @@ namespace uam::computer_use
 			FillRect(context, &bounds, transparent);
 			DeleteObject(transparent);
 
-			HPEN accent_pen = CreatePen(PS_SOLID, 3, RGB(31, 209, 255));
+			HPEN accent_pen = CreatePen(PS_SOLID, 3, virtual_cursor_accent);
 			HPEN previous_pen = static_cast<HPEN>(SelectObject(context, accent_pen));
 			HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
 			HBRUSH previous_brush = static_cast<HBRUSH>(SelectObject(context, hollow));
@@ -237,8 +248,8 @@ namespace uam::computer_use
 					return;
 				SetLayeredWindowAttributes(window, RGB(255, 0, 255), 0, LWA_COLORKEY);
 			}
-			virtual_cursor_label = Wide(action.kind);
-			CharUpperBuffW(virtual_cursor_label.data(), static_cast<DWORD>(virtual_cursor_label.size()));
+			if (virtual_cursor_label.empty())
+				virtual_cursor_label = L"Chat";
 			virtual_cursor_clicked = action.kind == "click";
 			const POINT point = DesktopPoint(action, reference);
 			SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 160, 48, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -392,6 +403,11 @@ namespace uam::computer_use
 			return result;
 		}
 	} // namespace
+
+	void ConfigureVirtualCursorIdentity(const std::string& label, const std::string& chat_id)
+	{
+		ConfigureVirtualCursorIdentityImpl(label, chat_id);
+	}
 
 	bool AcquireControllerLock(std::string* error_out)
 	{
@@ -912,15 +928,21 @@ namespace uam::computer_use
 		return true;
 	}
 
-	bool ConfirmComputerUse(const std::string& message)
+	bool EnsureCapturePermission(std::string*)
 	{
-		HWND previous = GetForegroundWindow();
-		const std::wstring text = Wide(message);
-		const int result = MessageBoxW(nullptr, text.c_str(), L"Allow UAM computer control", MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2);
-		if (previous != nullptr)
-			SetForegroundWindow(previous);
-		return result == IDYES;
+		return true;
 	}
+
+	bool RequestCapturePermission(std::string*) { return true; }
+	bool RequestActionPermission(std::string*) { return true; }
+
+	ApplicationIdentity ApplicationIdentityForTarget(const std::string& kind, std::uint64_t id, std::uint64_t)
+	{
+		if (kind != "window") return {};
+		return ApplicationForWindow(reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id)));
+	}
+
+	bool OpenPermissionSettings(const std::string&, std::string*) { return false; }
 
 	int RunWithUi(const std::function<int()>& work)
 	{

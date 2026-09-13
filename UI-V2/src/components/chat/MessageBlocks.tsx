@@ -3,7 +3,7 @@
 // Extracted from ChatView.tsx (MO-3).
 
 import { MarkdownContent } from '../markdown/Markdown'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type {
   AcpPendingPermission,
@@ -14,9 +14,9 @@ import type {
   AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
-import { Tooltip } from '../ui'
+import { Button, Notice, Tooltip } from '../ui'
 import { BookOpen, Brain, ChevronRight } from 'lucide-react'
-import { ConversationWork } from './ConversationWork'
+import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
   ToolCallModal,
@@ -33,17 +33,22 @@ export function attachmentLabel(attachment: Attachment) {
 function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
   const [chatId, setChatId] = useState('')
   const [error, setError] = useState('')
-  const [selectedTool, setSelectedTool] = useState<AcpToolCall | null>(null)
+  const [refreshAttempt, setRefreshAttempt] = useState(0)
+  const [selectedToolRef, setSelectedToolRef] = useState<{ messageId: string; toolId: string } | null>(null)
   const openSubAgentSession = useAppStore((state) => state.openSubAgentSession)
   const loadSessionMessages = useAppStore((state) => state.loadSessionMessages)
   const workingDisplayMode = useAppStore((state) => state.workingDisplayMode)
-  const sourceSession = useAppStore((state) => state.sessions.find((candidate) => candidate.id === sourceChatId))
-  const sourceAcp = useAppStore((state) => state.acpBindingBySessionId[sourceChatId])
+  const providerId = useAppStore((state) =>
+    state.sessions.find((candidate) => candidate.id === sourceChatId)?.providerId ||
+    state.acpBindingBySessionId[sourceChatId]?.providerId || DEFAULT_PROVIDER_ID
+  )
   const providers = useAppStore((state) => state.providers)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
-  const messages = useAppStore((state) => state.messages[chatId] ?? [])
+  const messages = useAppStore((state) => state.messages[chatId]) ?? []
+  const selectedTool = messages.find((message) => message.id === selectedToolRef?.messageId)
+    ?.toolCalls?.find((candidate) => candidate.id === selectedToolRef?.toolId)
   const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
-  const providerId = sourceSession?.providerId || sourceAcp?.providerId || DEFAULT_PROVIDER_ID
+  const finalRefreshPending = useRef(isActive)
   const providerName = providerShortName(
     providers.find((candidate) => candidate.id === providerId) ?? fallbackProviderForId(providerId),
     providerId
@@ -71,20 +76,87 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
     return () => {
       mounted = false
     }
-  }, [openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
+  }, [openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle, refreshAttempt])
+
+  useEffect(() => {
+    if (isActive) finalRefreshPending.current = true
+    else if (chatId && tool.subAgentId && finalRefreshPending.current) {
+      finalRefreshPending.current = false
+      // Re-import the provider snapshot before loading the final child messages.
+      let canceled = false
+      void openSubAgentSession(sourceChatId, tool.subAgentId, tool.subAgentTitle, false)
+        .then((openedChatId) => {
+          if (canceled) return
+          setError(openedChatId ? '' : 'Could not refresh the sub-agent transcript.')
+          if (openedChatId) setChatId(openedChatId)
+        })
+        .catch(() => {
+          if (!canceled) setError('Could not refresh the sub-agent transcript.')
+        })
+      return () => { canceled = true }
+    }
+  }, [chatId, isActive, openSubAgentSession, sourceChatId, tool.subAgentId, tool.subAgentTitle])
+
+  useEffect(() => {
+    if (chatId || !error || !tool.subAgentId) return
+    // A child rollout may not exist yet. Retry only after the previous lookup settles.
+    if (!isActive) {
+      if (finalRefreshPending.current) {
+        finalRefreshPending.current = false
+        setRefreshAttempt((attempt) => attempt + 1)
+      }
+      return
+    }
+    const retryTimer = window.setTimeout(() => setRefreshAttempt((attempt) => attempt + 1), 5000)
+    return () => window.clearTimeout(retryTimer)
+  }, [chatId, error, isActive, tool.subAgentId])
+
+  const sessionId = session?.id ?? ''
+  const childSessionWasMissing = useRef(false)
+  const hydratedSessionId = useRef('')
+  useEffect(() => {
+    if (!chatId || isActive) return
+    if (!sessionId) {
+      childSessionWasMissing.current = true
+      return
+    }
+    if (!childSessionWasMissing.current || hydratedSessionId.current === sessionId) return
+    childSessionWasMissing.current = false
+    hydratedSessionId.current = sessionId
+    let canceled = false
+    void Promise.resolve(loadSessionMessages(sessionId, false))
+      .then((result) => {
+        if (!canceled && result === false) setError('Could not load the sub-agent transcript.')
+      })
+      .catch(() => {
+        if (!canceled) setError('Could not load the sub-agent transcript.')
+      })
+    return () => { canceled = true }
+  }, [isActive, loadSessionMessages, sessionId, chatId])
 
   useEffect(() => {
     if (!isActive || !chatId) return
     let refreshing = false
+    let canceled = false
+    // Native refresh exports a full transcript and may start remote provider processes.
     const refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
       if (refreshing) return
       refreshing = true
       void Promise.resolve()
-        .then(() => loadSessionMessages(chatId))
-        .catch(() => {})
-        .finally(() => { refreshing = false })
-    }, 1000)
-    return () => window.clearInterval(refreshTimer)
+        .then(() => loadSessionMessages(chatId, false, true))
+        .then((result) => {
+          if (!canceled) setError(result === false ? 'Could not refresh the sub-agent transcript.' : '')
+        })
+        .catch(() => {
+          if (!canceled) setError('Could not refresh the sub-agent transcript.')
+        })
+        .finally(() => { if (!canceled) refreshing = false })
+    }, 5000)
+    return () => {
+      canceled = true
+      window.clearInterval(refreshTimer)
+    }
   }, [chatId, isActive, loadSessionMessages])
 
   if (!tool.subAgentId) {
@@ -95,12 +167,18 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
       </section>
     )
   }
-  if (error) return <div role="alert" className="text-xs" style={{ color: 'var(--error)' }}>Transcript unavailable: {error}</div>
-  if (!chatId || !session) return <div role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>Loading subtask transcript from {providerName}…</div>
+  const errorNotice = error ? (
+    <Notice key={`${refreshAttempt}:${error}`} tone="error" title="Transcript unavailable" dismissLabel="Dismiss transcript error"
+      actions={<Button size="sm" onClick={() => setRefreshAttempt((attempt) => attempt + 1)}>Retry</Button>}>
+      {error}
+    </Notice>
+  ) : null
+  if (!chatId || !session) return errorNotice ?? <div role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>Loading subtask transcript from {providerName}…</div>
 
   return (
     <section className="space-y-3" aria-label={`Subtask transcript: ${session.name}`}>
-      {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} onClose={() => setSelectedTool(null)} />}
+      {errorNotice}
+      {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} messageIndex={messages.findIndex((message) => message.id === selectedToolRef?.messageId)} onClose={() => setSelectedToolRef(null)} />}
       <div>
         <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
         <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>{providerName} · Transcript available</div>
@@ -113,7 +191,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
             message={message}
             workingMode={workingDisplayMode}
             sourceChatId={chatId}
-            onSelectTool={(_, toolId) => setSelectedTool(message.toolCalls?.find((candidate) => candidate.id === toolId) ?? null)}
+            onSelectTool={(_, toolId) => setSelectedToolRef({ messageId: message.id, toolId })}
           />
         </article>
       ))}
@@ -125,11 +203,16 @@ export function ThinkingBlock({
   text,
   defaultOpen = false,
   active = false,
+  disclosureState,
+  thoughtIndex,
 }: {
   text: string
   defaultOpen?: boolean
+  disclosureState?: WorkTraceDisclosureState
+  thoughtIndex?: number
   active?: boolean
 }) {
+  const { open, toggle } = useThoughtDisclosure(disclosureState, thoughtIndex, defaultOpen)
   if (!text.trim()) return null
 
   return (
@@ -138,11 +221,11 @@ export function ThinkingBlock({
       data-testid="thinking-block"
       data-active={active}
       className="uam-thinking-block uam-thinking-row"
-      open={defaultOpen}
+      open={open}
     >
-      <summary className="uam-thinking-row__summary">
+      <summary className="uam-thinking-row__summary" onClick={(event) => { event.preventDefault(); toggle() }}>
         <Brain className="uam-thinking-row__icon" size={13} aria-hidden />
-        <span className="uam-thinking-row__kind">Thinking</span>
+        <span className="uam-thinking-row__kind">Thoughts</span>
         <span className="uam-thinking-row__preview">{text.split('\n').find((line) => line.trim())}</span>
         <ChevronRight className="uam-thinking-row__chevron" size={13} aria-hidden />
       </summary>
@@ -155,29 +238,13 @@ export function ThinkingBlock({
 
 export type WorkingDisplayMode = 'compact' | 'verbose'
 
-function formatWorkedDuration(seconds = 0) {
+export function formatWorkedDuration(seconds = 0) {
   const wholeSeconds = Math.max(0, Math.round(seconds))
   const minutes = Math.floor(wholeSeconds / 60)
   const remainder = wholeSeconds % 60
   if (minutes === 0) return `${remainder}s`
   if (remainder === 0) return `${minutes}m`
   return `${minutes}m ${remainder}s`
-}
-
-export function hasCompactWorkingSummary(message?: Message) {
-  if (message?.role !== 'assistant') return false
-  const blocks = message.blocks ?? []
-  if (blocks.length > 0) {
-    const lastText = blocks.reduce(
-      (latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest,
-      -1
-    )
-    return Boolean(message.toolCalls?.length) || blocks.some((block, index) =>
-      block.type === 'thought' || block.type === 'tool_call' ||
-      (block.type === 'assistant_text' && index !== lastText)
-    )
-  }
-  return Boolean(message.thoughts?.trim() || message.toolCalls?.length)
 }
 
 function CompactWorkingSummary({
@@ -187,34 +254,38 @@ function CompactWorkingSummary({
   workedSeconds,
   onSelectTool,
   renderSubAgentHistory,
-  prioritySteerText,
-  prioritySteerAttachments,
+  headerOnly = false,
+  startedAt,
+  expanded,
+  disclosureState,
+  onToggle,
 }: {
+  expanded?: boolean
+  disclosureState?: WorkTraceDisclosureState
+  onToggle?: () => void
+  startedAt?: number
+  headerOnly?: boolean
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
   active: boolean
   workedSeconds?: number
   onSelectTool: (toolId: string) => void
   renderSubAgentHistory?: (tool: AcpToolCall) => ReactNode
-  prioritySteerText?: string
-  prioritySteerAttachments?: Attachment[]
 }) {
-  const hasPrioritySteer = Boolean(prioritySteerText?.trim() || prioritySteerAttachments?.length)
   return (
     <ConversationWork
+      disclosureState={disclosureState}
+      startedAt={startedAt}
+      headerOnly={headerOnly}
+      expanded={expanded}
+      onToggle={onToggle}
       events={events}
       tools={tools}
       active={active}
       duration={formatWorkedDuration(workedSeconds)}
       onSelectTool={onSelectTool}
       renderSubAgentHistory={renderSubAgentHistory}
-      prioritySteer={hasPrioritySteer ? (
-        <div data-testid="priority-steer" className="conversation-work__steer">
-          <div className="conversation-work__steer-label">Steered during this response</div>
-          {prioritySteerText?.trim() && <MarkdownContent content={prioritySteerText} />}
-          <AttachmentList attachments={prioritySteerAttachments ?? []} />
-        </div>
-      ) : undefined}
+
     />
   )
 }
@@ -458,23 +529,21 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
 
 export function PersistedMessageBlocksContent({
   message,
+  disclosureState,
   blocks,
   onSelectTool,
   planActions,
   sourceChatId,
   workingMode = 'verbose',
   workedSeconds,
-  prioritySteerText,
-  prioritySteerAttachments,
 }: {
+  disclosureState?: WorkTraceDisclosureState
   message: Message
   blocks: MessageBlock[]
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
-  prioritySteerText?: string
-  prioritySteerAttachments?: Attachment[]
   planActions?: {
     show: boolean
     disabled: boolean
@@ -483,52 +552,48 @@ export function PersistedMessageBlocksContent({
     onDeny: () => void
   }
 }) {
+  const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
+  let thoughtIndex = 0
+  const lastAssistantBlockIndex = blocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
   const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
-  const lastAssistantTextIndex = blocks.reduce(
-    (latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest,
-    -1
-  )
-  const compactWorkingEvents: AcpTurnEvent[] = workingMode === 'compact'
-    ? blocks.flatMap<AcpTurnEvent>((block, index) => {
-        if (block.type === 'thought') return [{ type: 'thought' as const, text: block.text }]
-        if (block.type === 'tool_call') return [{ type: 'tool_call' as const, toolCallId: block.toolCallId }]
-        if (block.type === 'assistant_text' && index !== lastAssistantTextIndex) {
-          return [{ type: 'assistant_text' as const, text: block.text }]
-        }
-        return []
-      })
-    : []
 
   return (
     <div className="space-y-2">
-      {workingMode === 'compact' && (
+      {(
         <CompactWorkingSummary
-          events={compactWorkingEvents}
-          tools={message.toolCalls ?? []}
+          headerOnly
+          expanded={expanded}
+          disclosureState={traceDisclosure}
+          onToggle={toggle}
+          events={[]}
+          tools={[]}
           active={false}
           workedSeconds={workedSeconds}
-          prioritySteerText={prioritySteerText}
-          prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
       )}
+      <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {blocks.map((block, index) => {
         if (block.type === 'assistant_text') {
-          if (workingMode === 'compact' && index !== lastAssistantTextIndex) return null
+          if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
-          if (review) return <GoalReviewBlock key={`block-goal-review-${index}`} review={review} />
-          return <MarkdownContent key={`block-text-${index}`} content={block.text} />
+          if (review) return <div className="conversation-trace__text" key={`block-goal-review-${index}`}><GoalReviewBlock review={review} /></div>
+          return <div className="conversation-trace__text" key={`block-text-${index}`}><MarkdownContent content={block.text} /></div>
         }
 
         if (block.type === 'thought') {
-          if (workingMode === 'compact') return null
-          return <ThinkingBlock key={`block-thought-${index}`} text={block.text} />
+          if (!block.text.trim()) return null
+          const ordinal = thoughtIndex++
+          if (!expanded) return null
+          return workingMode === 'compact'
+            ? <div className="conversation-trace__internal" key={`block-thought-${index}`}><ConversationWorkRow text={block.text} disclosureState={traceDisclosure} thoughtIndex={ordinal} onSelectTool={(toolId) => onSelectTool(message.id, toolId)} /></div>
+            : <ThinkingBlock key={`block-thought-${index}`} text={block.text} disclosureState={traceDisclosure} thoughtIndex={ordinal} />
         }
 
         if (block.type === 'tool_call') {
-          if (workingMode === 'compact') return null
+          if (!expanded) return null
           const tool = toolById.get(block.toolCallId) ?? {
             id: block.toolCallId,
             title: block.toolCallId,
@@ -536,6 +601,10 @@ export function PersistedMessageBlocksContent({
             status: 'pending',
             content: '',
           }
+          if (workingMode === 'compact') return <div className="conversation-trace__internal" key={`block-tool-${block.toolCallId}-${index}`}><ConversationWorkRow
+            tool={tool}
+            onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
+            renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined} /></div>
           return (
             <ToolCallInlineRows
               key={`block-tool-${block.toolCallId}-${index}`}
@@ -563,25 +632,24 @@ export function PersistedMessageBlocksContent({
 
         return null
       })}
+      </div>
     </div>
   )
 }
 
 export function PersistedMessageContent({
   message,
+  disclosureState,
   onSelectTool,
   planActions,
   sourceChatId,
   workingMode = 'verbose',
-  prioritySteerText,
-  prioritySteerAttachments,
 }: {
+  disclosureState?: WorkTraceDisclosureState
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
-  prioritySteerText?: string
-  prioritySteerAttachments?: Attachment[]
   planActions?: {
     show: boolean
     disabled: boolean
@@ -590,6 +658,7 @@ export function PersistedMessageContent({
     onDeny: () => void
   }
 }) {
+  const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
   const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
   const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
@@ -604,14 +673,13 @@ export function PersistedMessageContent({
       <div className="space-y-2">
         <PersistedMessageBlocksContent
           message={message}
+          disclosureState={traceDisclosure}
           blocks={blocks}
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sourceChatId}
           workingMode={workingMode}
           workedSeconds={workedSeconds}
-          prioritySteerText={prioritySteerText}
-          prioritySteerAttachments={prioritySteerAttachments}
         />
         <AttachmentList attachments={attachments} />
       </div>
@@ -629,8 +697,12 @@ export function PersistedMessageContent({
 
   return (
     <div className="space-y-2">
-      {workingMode === 'compact' && (thoughts || toolCalls.length > 0) ? (
+      {(thoughts || toolCalls.length > 0) ? (
         <CompactWorkingSummary
+          headerOnly={workingMode !== 'compact'}
+          expanded={expanded}
+          disclosureState={traceDisclosure}
+          onToggle={toggle}
           events={[
             ...(thoughts ? [{ type: 'thought' as const, text: thoughts }] : []),
             ...toolCalls.map((tool) => ({ type: 'tool_call' as const, toolCallId: tool.id })),
@@ -638,16 +710,13 @@ export function PersistedMessageContent({
           tools={toolCalls}
           active={false}
           workedSeconds={workedSeconds}
-          prioritySteerText={prioritySteerText}
-          prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
       ) : null}
-      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
-      {workingMode !== 'compact' && (
+      {workingMode !== 'compact' && expanded && (
         <>
-          <ThinkingBlock text={thoughts} />
+          <ThinkingBlock text={thoughts} disclosureState={traceDisclosure} />
           <ToolCallInlineRows
             tools={toolCalls}
             onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
@@ -655,6 +724,7 @@ export function PersistedMessageContent({
           />
         </>
       )}
+      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
@@ -725,6 +795,9 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
 }
 
 export function TurnTimelineContent({
+  disclosureState,
+  interrupted = false,
+  startedAt,
   events,
   tools,
   planSummary,
@@ -744,9 +817,10 @@ export function TurnTimelineContent({
   active = false,
   workingMode = 'verbose',
   workedSeconds,
-	prioritySteerText,
-	prioritySteerAttachments,
 }: {
+  disclosureState?: WorkTraceDisclosureState
+  startedAt?: number
+  interrupted?: boolean
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
   planSummary?: string
@@ -772,9 +846,13 @@ export function TurnTimelineContent({
   active?: boolean
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
-	prioritySteerText?: string
-	prioritySteerAttachments?: Attachment[]
 }) {
+  const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
+  const traceExpanded = active ? true : expanded
+  const lastAssistantEventIndex = events.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
+  let thoughtIndex = 0
+  const activeEventIndex = active && !pendingPermission && !pendingUserInput ? events.reduce((latest, event, index) =>
+    (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = events.some((event) => event.type === 'plan')
   const lastPlanEventIndex = events.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
@@ -791,40 +869,38 @@ export function TurnTimelineContent({
       pendingUserInput.itemId &&
       events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingUserInput.itemId)
   )
-  const compactWorkingEvents = workingMode === 'compact'
-    ? events.filter((event, index) => {
-        if (event.type === 'thought' || event.type === 'tool_call') return true
-        if (event.type !== 'assistant_text') return false
-        return events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
-      })
-    : []
 
   return (
     <div className="space-y-2">
-      {workingMode === 'compact' && (
+      {(
         <CompactWorkingSummary
-          events={compactWorkingEvents}
-          tools={tools}
+          startedAt={startedAt}
+          headerOnly
+          expanded={traceExpanded}
+          disclosureState={traceDisclosure}
+          onToggle={toggle}
+          events={[]}
+          tools={[]}
           active={active}
           workedSeconds={workedSeconds}
-		  prioritySteerText={prioritySteerText}
-		  prioritySteerAttachments={prioritySteerAttachments}
           onSelectTool={onSelectTool}
           renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
         />
       )}
+      <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {events.map((event, index) => {
         if (event.type === 'assistant_text') {
-          if (
-            workingMode === 'compact' &&
-            events.slice(index + 1).some((candidate) => candidate.type === 'assistant_text' && candidate.text.trim())
-          ) return null
-          return <MarkdownContent key={`text-${index}`} content={event.text} />
+          if (!traceExpanded && index !== lastAssistantEventIndex) return null
+          return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} /></div>
         }
 
         if (event.type === 'thought') {
-		  if (workingMode === 'compact') return null
-          return <ThinkingBlock key={`thought-${index}`} text={event.text} active={active && index === events.length - 1} />
+          if (!event.text.trim()) return null
+          const ordinal = thoughtIndex++
+          if (!traceExpanded) return null
+          return workingMode === 'compact'
+            ? <div className="conversation-trace__internal" key={`thought-${index}`} data-processing-step={index === activeEventIndex || undefined}><ConversationWorkRow text={event.text} disclosureState={traceDisclosure} thoughtIndex={ordinal} onSelectTool={onSelectTool} /></div>
+            : <ThinkingBlock key={`thought-${index}`} text={event.text} active={index === activeEventIndex} disclosureState={traceDisclosure} thoughtIndex={ordinal} />
         }
 
         if (event.type === 'plan') {
@@ -859,43 +935,17 @@ export function TurnTimelineContent({
             !hasPendingUserInputEvent &&
             pendingUserInput.itemId === event.toolCallId
 
-		  if (workingMode === 'compact') {
-            if (!shouldRenderPendingPermission && !shouldRenderPendingUserInput) return null
-            return (
-              <div key={`tool-attention-${event.toolCallId}-${index}`} className="space-y-2">
-                {shouldRenderPendingPermission && (
-                  <PermissionInlineCard
-                    permission={pendingPermission}
-                    onResolve={onResolvePermission}
-                    waitIsStale={waitIsStale}
-                    waitStaleReason={waitStaleReason}
-                    waitSeconds={waitSeconds}
-                    onCancelTurn={onCancelTurn}
-                    onStopRuntime={onStopRuntime}
-                  />
-                )}
-                {shouldRenderPendingUserInput && (
-                  <UserInputInlineCard
-                    input={pendingUserInput}
-                    onResolve={onResolveUserInput}
-                    waitIsStale={waitIsStale}
-                    waitStaleReason={waitStaleReason}
-                    waitSeconds={waitSeconds}
-                    onCancelTurn={onCancelTurn}
-                    onStopRuntime={onStopRuntime}
-                  />
-                )}
-              </div>
-            )
-          }
 
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
-              <ToolCallInlineRows
-                tools={[tool]}
-                onSelectTool={onSelectTool}
-                renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined}
-              />
+              {traceExpanded && <div className="conversation-trace__internal" data-processing-step={index === activeEventIndex && ['pending', 'in_progress', 'running'].includes(tool.status) || undefined}>
+                {workingMode === 'compact' ? <ConversationWorkRow tool={tool} onSelectTool={onSelectTool}
+                  renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined} /> : <ToolCallInlineRows
+                  tools={[tool]}
+                  onSelectTool={onSelectTool}
+                  renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined}
+                />}
+              </div>}
               {shouldRenderPendingPermission && (
                 <PermissionInlineCard
                   permission={pendingPermission}
@@ -954,6 +1004,7 @@ export function TurnTimelineContent({
 
         return null
       })}
+      </div>
       {!hasPlanEvent && ((planSummary?.trim() ?? '') || (planEntries?.length ?? 0) > 0) && (
         <PlanBlock
           summary={planSummary}
@@ -976,6 +1027,7 @@ export function TurnTimelineContent({
           onStopRuntime={onStopRuntime}
         />
       )}
+      {interrupted && <div className="conversation-interrupted">Response interrupted</div>}
     </div>
   )
 }

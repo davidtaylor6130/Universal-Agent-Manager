@@ -1101,6 +1101,26 @@ describe('FolderTree', () => {
 	  host.remove()
 	})
 
+	it('keeps Browse enabled for an installed helper in error state', () => {
+	  useAppStore.setState({
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'error', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  const browse = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Browse')
+	  expect(browse?.disabled).toBe(false)
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
 	it('browses remote directories only after an explicit Browse action', async () => {
 	  const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
 		ok: true as const,
@@ -1221,6 +1241,17 @@ describe('FolderTree', () => {
     await act(async () => { rescan?.click(); await Promise.resolve() })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss folder action error"]')
+    expect(dismiss).not.toBeNull()
+    act(() => dismiss?.click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    await act(async () => { retry?.click(); await Promise.resolve() })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+
 
     act(() => root.unmount())
     host.remove()

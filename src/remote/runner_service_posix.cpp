@@ -246,12 +246,14 @@ namespace uam::remote
 			return true;
 		}
 
-		bool SocketIsReachable(const std::filesystem::path& socket_path)
+		bool SocketIsReachable(const std::filesystem::path& socket_path, bool nonblocking = false)
 		{
 			std::string error;
 			sockaddr_un address{};
 			if (!SocketAddress(socket_path, address, error)) return false;
 			Socket probe(socket(AF_UNIX, SOCK_STREAM, 0));
+			if (nonblocking && probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) != 0)
+				return false;
 			return probe.Get() >= 0 &&
 			       connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address),
 			               sizeof(address)) == 0;
@@ -351,6 +353,11 @@ namespace uam::remote
 				std::cerr << "Runner service could not accept a bridge.\n";
 				return 2;
 			}
+			if (shutdown_requested.load(std::memory_order_acquire))
+			{
+				(void)close(descriptor);
+				break;
+			}
 			std::erase_if(clients, [](const ClientThread& client)
 			{
 				return client.done->load(std::memory_order_acquire);
@@ -375,14 +382,8 @@ namespace uam::remote
 						    if (result != FrameReadResult::Ok) break;
 						    if (request.value("type", "") == "service.shutdown")
 						    {
-							    bool busy = false;
-							    {
-								    std::scoped_lock dispatch_lock(dispatch_mutex);
-								    busy = state.HasManagedProcesses();
-								    if (!busy)
-									    shutdown_requested.store(true,
-									                             std::memory_order_release);
-							    }
+							    std::scoped_lock dispatch_lock(dispatch_mutex);
+							    const bool busy = state.HasManagedProcesses();
 							    if (busy)
 							    {
 								    (void)WriteSocketFrame(client.Get(),
@@ -396,11 +397,15 @@ namespace uam::remote
 							        {{"id", request.value("id", "")},
 							         {"type", "service.shutdown"}, {"ok", true},
 							         {"result", nlohmann::json::object()}});
-							    (void)shutdown(listener.Get(), SHUT_RDWR);
+							    // Publish shutdown only after its reply is written; client cancellation closes sockets.
+							    shutdown_requested.store(true, std::memory_order_release);
+							    // Connecting wakes accept on macOS too; never wait for a full backlog.
+							    (void)SocketIsReachable(socket_path, true);
 							    break;
 						    }
 						    nlohmann::json response;
-						    if (request.value("type", "") == "process.start")
+						    if (request.value("type", "") == "process.start" ||
+						        request.value("type", "") == "channel.open")
 						    {
 							    std::scoped_lock dispatch_lock(dispatch_mutex);
 							    response = shutdown_requested.load(std::memory_order_acquire)

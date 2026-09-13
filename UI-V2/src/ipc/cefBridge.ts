@@ -1,11 +1,6 @@
 /**
- * CEF Bridge — Stage 1 STUB
- *
- * In production (Stage 2), this module will detect window.cefQuery
- * and delegate all calls to the C++ CefMessageRouter backend.
- *
- * For now it returns mock responses so the UI can be developed
- * and tested fully in the browser without a C++ backend.
+ * Routes requests through the C++ CefMessageRouter when hosted in CEF.
+ * Standalone browser previews receive mock responses.
  */
 
 declare global {
@@ -20,9 +15,13 @@ declare global {
   }
 }
 
-/** Returns true when running inside the CEF host. */
+/** Identifies the companion route sharing the desktop UI and store. */
+export function isCompanionContext(): boolean {
+  return typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
+}
+
 export function isCefContext(): boolean {
-  return typeof window !== 'undefined' && typeof window.cefQuery === 'function'
+  return isCompanionContext() || typeof window !== 'undefined' && typeof window.cefQuery === 'function'
 }
 
 export interface CEFRequest {
@@ -59,9 +58,65 @@ export async function sendToCEF<T = unknown>(
   const requestId = request.requestId ?? createRequestId()
   const envelope: CEFRequest = { ...request, requestId }
 
+  if (isCompanionContext()) {
+    // Selection belongs to this client; never move the desktop's current chat.
+    if (['selectSession', 'toggleFolder', 'toggleResourceCollection'].includes(request.action)) return { ok: true, data: {} as T, requestId }
+    const token = window.localStorage.getItem('uam-companion-token')
+    if (!token) return { ok: false, error: 'Connect to UAM first.', requestId }
+    try {
+      const response = await fetch('/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(envelope),
+        signal: AbortSignal.timeout(30000),
+        redirect: 'error',
+        cache: 'no-store',
+      })
+      let data = await response.json()
+      if (!response.ok) {
+        const error = data.error ?? `Request failed (${response.status}).`
+        if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
+        return { ok: false, error, requestId }
+      }
+      if (data?.uamTransfer) {
+        const { id, totalBytes } = data.uamTransfer
+        if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
+          throw new Error('Invalid response transfer.')
+        }
+        const bytes = new Uint8Array(totalBytes)
+        let offset = 0
+        while (offset < totalBytes) {
+          if (window.localStorage.getItem('uam-companion-token') !== token) throw new Error('Disconnected.')
+          const chunkResponse = await fetch('/api', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'getCompanionResponseChunk', payload: { id, offset } }),
+            signal: AbortSignal.timeout(30000),
+            redirect: 'error',
+            cache: 'no-store',
+          })
+          const chunk = await chunkResponse.json()
+          if (!chunkResponse.ok) return { ok: false, error: chunk.error || 'Could not load the rest of this response.', requestId }
+          if (typeof chunk.base64 !== 'string') throw new Error('Invalid response chunk.')
+          const decoded = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0))
+          if (!decoded.length || chunk.nextOffset !== offset + decoded.length || chunk.nextOffset > totalBytes
+            || chunk.done !== (chunk.nextOffset === totalBytes)) throw new Error('Incomplete response chunk.')
+          bytes.set(decoded, offset)
+          offset = chunk.nextOffset
+        }
+        data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+      }
+      return data && typeof data.ok === 'boolean'
+        ? { ...data as CEFResponse<T>, requestId }
+        : { ok: true, data: data as T, requestId }
+    } catch {
+      return { ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.', requestId }
+    }
+  }
+
   if (typeof window !== 'undefined' && typeof window.cefQuery === 'function') {
     // Production path — real CEF
-    return new Promise((resolve) => {
+    return new Promise<CEFResponse<T>>((resolve) => {
       window.cefQuery!({
         request: JSON.stringify(envelope),
         onSuccess: (response) => {
@@ -86,6 +141,10 @@ export async function sendToCEF<T = unknown>(
           resolve({ ok: false, error: message, requestId })
         },
       })
+    }).catch((cause: unknown) => {
+      const error = cause instanceof Error ? cause.message : 'The CEF request could not be sent.'
+      if (logFailures) console.error(`[CEF] Error: ${error}`)
+      return { ok: false, error, requestId }
     })
   }
 

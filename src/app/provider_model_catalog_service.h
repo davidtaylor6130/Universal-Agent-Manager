@@ -34,7 +34,7 @@ class ProviderModelCatalogService
 	/// Returns true if a refresh was started, false if skipped (throttled/disabled/fixture).
 	bool MaybeStartRefresh();
 
-	/// Poll for completed refresh task. Updates in-memory model list and disk cache.
+	/// Poll for completed refresh task; recheck OpenCode configuration at most once per second.
 	/// Returns true if models were updated.
 	bool Poll();
 
@@ -47,9 +47,6 @@ class ProviderModelCatalogService
 	/// Get the current default OpenCode model from ~/.config/opencode/opencode.json (cached, no disk I/O on repeated calls).
 	std::string GetConfiguredOpenCodeDefaultModel() const;
 
-	/// Get Codex models from cache file (cached).
-	nlohmann::json GetCachedCodexModels() const;
-
 	/// Persist a provider's latest successful runtime model discovery without replacing a valid cache on empty results.
 	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array(), std::string_view execution_host_id = "local");
 
@@ -60,6 +57,9 @@ class ProviderModelCatalogService
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// Read models, config and discovery state together, resolving the scope once.
+	nlohmann::json GetCatalogSnapshot(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+
 	nlohmann::json GetCatalogScopes() const;
 	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
 	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
@@ -70,8 +70,9 @@ class ProviderModelCatalogService
 	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 
-	/// Merge fallback models with runtime models (same logic as before).
-	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models);
+	/// Append unseen runtime models to the fallback list.
+	/// Live metadata can replace matching fallbacks without changing selector order.
+	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models, bool prefer_runtime = false);
 
 	/// Parse OpenCode Zen's model-list response into free model options (pure; for tests and refresh).
 	static nlohmann::json ParseOpenCodeZenFreeModels(const nlohmann::json& root);
@@ -89,6 +90,9 @@ class ProviderModelCatalogService
 	static bool HasOpenCodeZenModelsFixture();
 
   private:
+	// Caller holds m_mutex so cached models and local fallbacks share one snapshot.
+	nlohmann::json MergeLocalModelFallbacksLocked(const std::string& provider_id, nlohmann::json cached) const;
+
 	mutable std::mutex m_mutex;
 
 	// Data root for cache files.
@@ -114,6 +118,8 @@ class ProviderModelCatalogService
 
 	// Throttling.
 	std::chrono::steady_clock::time_point m_last_refresh_attempt;
+	std::chrono::steady_clock::time_point m_next_open_code_config_check;
+	static constexpr auto kOpenCodeConfigCheckInterval = std::chrono::seconds(1);
 	static constexpr auto kOpenCodeZenRefreshInterval = std::chrono::minutes(10);
 
 	// Fixture/env constants.
@@ -128,13 +134,10 @@ class ProviderModelCatalogService
 	std::filesystem::path OpenCodeZenFreeModelsCachePath() const;
 	std::vector<std::filesystem::path> OpenCodeConfigPaths() const;
 	std::string OpenCodeConfigFingerprint() const;
-	nlohmann::json BuiltInOpenCodeZenFreeModels() const;
 	nlohmann::json ReadOpenCodeZenFreeModelsCache() const;
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
-	std::optional<nlohmann::json> FetchOpenCodeZenModels();
-	nlohmann::json ReadConfiguredOpenCodeModels();
-	std::string ReadConfiguredOpenCodeDefaultModel();
-	nlohmann::json ReadCachedCodexModels();
+	std::optional<nlohmann::json> FetchOpenCodeZenModels(std::stop_token stop_token);
+	void RefreshConfiguredOpenCodeModels();
 	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	void LoadPersistentCatalogs();
 	bool WritePersistentCatalogs() const;

@@ -1,6 +1,54 @@
 #include "platform_services_macos_impl_internal.h"
 
+#include <cstdio>
+
 using namespace uam::platform_macos_impl;
+
+namespace
+{
+	constexpr const char* kMacTerminalChildArgument = "--uam-mac-terminal-child";
+}
+
+namespace uam::platform
+{
+	std::optional<int> RunMacTerminalChildIfRequested(int argc, char* argv[])
+	{
+		if (argc < 2 || std::string_view(argv[1]) != kMacTerminalChildArgument) return std::nullopt;
+		if (argc < 3 || argv[2][0] != '/')
+		{
+			std::fprintf(stderr, "Terminal startup requires an absolute provider executable.\n");
+			return 126;
+		}
+
+		// posix_spawn's session creation does not acquire the slave as a controlling tty
+		// on macOS. Do this after exec, without running fork-child code inside CEF.
+		struct sigaction default_action{};
+		default_action.sa_handler = SIG_DFL;
+		sigemptyset(&default_action.sa_mask);
+		for (int signal_number = 1; signal_number < NSIG; ++signal_number)
+		{
+			if (signal_number == SIGKILL || signal_number == SIGSTOP) continue;
+			if (sigaction(signal_number, &default_action, nullptr) != 0)
+			{
+				std::perror("Could not reset terminal signal disposition");
+				return 126;
+			}
+		}
+		sigset_t empty_mask;
+		sigemptyset(&empty_mask);
+		if (sigprocmask(SIG_SETMASK, &empty_mask, nullptr) != 0 ||
+		    ioctl(STDIN_FILENO, TIOCSCTTY, 0) != 0 ||
+		    tcsetpgrp(STDIN_FILENO, getpgrp()) != 0)
+		{
+			std::perror("Could not establish provider controlling terminal");
+			return 126;
+		}
+		execv(argv[2], argv + 2);
+		std::perror("Could not execute terminal provider");
+		return 127;
+	}
+}
+
 
 namespace uam::platform_macos_impl
 {
@@ -80,8 +128,19 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 
-		std::vector<std::string> resolved_argv = argv;
-		resolved_argv[0] = resolved_executable;
+		const std::string bootstrap_executable = uam::paths::Utf8PathString(
+		    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath());
+		if (bootstrap_executable.empty())
+		{
+			CloseFdIfOpen(master_fd);
+			CloseFdIfOpen(slave_fd);
+			if (error_out != nullptr) *error_out = "Failed to resolve terminal bootstrap executable.";
+			return false;
+		}
+		const std::string provider_executable = uam::paths::Utf8PathString(
+		    uam::paths::AbsolutePathNoThrow(uam::paths::PathFromUtf8(resolved_executable)));
+		std::vector<std::string> resolved_argv = {bootstrap_executable, kMacTerminalChildArgument, provider_executable};
+		resolved_argv.insert(resolved_argv.end(), argv.begin() + 1, argv.end());
 		std::vector<std::vector<char>> argv_storage;
 		std::vector<char*> argv_ptrs = BuildMutableArgv(resolved_argv, argv_storage);
 		std::vector<std::pair<std::string, std::string>> child_environment{{"TERM", "xterm-256color"}};
@@ -93,7 +152,7 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		pid_t pid = -1;
 		if (!SpawnSuspendedProcess(
 		        pid,
-		        resolved_executable,
+		        bootstrap_executable,
 		        argv_ptrs.data(),
 		        environment_ptrs.data(),
 		        working_directory,

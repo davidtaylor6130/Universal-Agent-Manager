@@ -8,7 +8,7 @@
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
-#include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
 #include "common/utils/io_utils.h"
@@ -57,6 +57,7 @@ namespace
 	constexpr std::string_view kMessageCheckpointParentShaField = "checkpoint_parent_sha";
 	constexpr std::string_view kMessageInterruptedField = "interrupted";
 	constexpr std::string_view kMessagePrioritySteerField = "priority_steer";
+	constexpr std::string_view kMessageContinuesTurnField = "continues_turn";
 	constexpr std::string_view kMessageThoughtsField = "thoughts";
 	constexpr std::string_view kMessagePlanSummaryField = "plan_summary";
 	constexpr std::string_view kMessagePlanEntriesField = "plan_entries";
@@ -110,6 +111,12 @@ namespace
 	constexpr std::size_t kMaxPersistedRemoteInteractionResponseBytes = 1024U * 1024U;
 	constexpr std::size_t kMaxPersistedRemoteInteractionResponses = 64;
 	constexpr std::size_t kMaxPersistedRemoteInteractionResponsesBytes = 2U * 1024U * 1024U;
+	constexpr std::string_view kChatRemotePendingRequestsField = "remote_pending_requests";
+	constexpr std::string_view kChatRemoteNextRequestIdField = "remote_next_request_id";
+	constexpr std::string_view kChatRemoteActiveTurnIdField = "remote_active_turn_id";
+	constexpr std::string_view kChatRemoteTurnSerialField = "remote_turn_serial";
+	constexpr std::string_view kChatRemoteTurnUserMessageIndexField = "remote_turn_user_message_index";
+	constexpr std::size_t kMaxPersistedRemotePendingRequests = 64;
 	constexpr std::size_t kMaxPersistedRemotePromptDeliveryBytes = 2U * 1024U * 1024U;
 	constexpr std::string_view kChatParentChatIdField = "parent_chat_id";
 	constexpr std::string_view kChatBranchRootChatIdField = "branch_root_chat_id";
@@ -131,6 +138,7 @@ namespace
 	constexpr std::string_view kChatImportedReadOnlyField = "imported_read_only";
 	constexpr std::string_view kChatApprovalModeField = "approval_mode";
 	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
+	constexpr std::string_view kChatLastPromptAgentDefinitionHashField = "last_prompt_agent_definition_hash";
 	constexpr std::string_view kChatAgentRunIdField = "agent_run_id";
 	constexpr std::string_view kChatGoalOwnerChatIdField = "goal_owner_chat_id";
 	constexpr std::string_view kChatGoalIterationGoalIdField = "goal_iteration_goal_id";
@@ -182,19 +190,6 @@ namespace
 		return lhs.updated_at > rhs.updated_at;
 	}
 
-	void NormalizeLoadedNativeSessionId(ChatSession& chat)
-	{
-		if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
-		{
-			chat.native_session_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
-			return;
-		}
-
-		if (chat.native_session_id.empty() && !chat.id.empty() && !uam::chat_ids::IsLocalDraftChatId(chat.id))
-		{
-			chat.native_session_id = chat.id;
-		}
-	}
 
 	JsonValue StringArrayToJson(const std::vector<std::string>& values);
 	std::vector<std::string> JsonStringArrayOrEmpty(const JsonValue* value);
@@ -331,6 +326,32 @@ namespace
 		return response;
 	}
 
+	bool ValidRemotePendingRequest(const uam::AcpRemotePendingRequestState& request,
+	                               std::size_t total_payload_bytes)
+	{
+		return request.request_id > 0 && request.request_id < std::numeric_limits<int>::max() &&
+		    !request.method.empty() &&
+		    request.method.size() <= 256 && request.delivery_id.size() <= 256 &&
+		    request.provider_turn_id.size() <= 256 && request.user_message_index >= -1 &&
+		    request.turn_serial >= 0 && request.payload.size() <=
+		        kMaxPersistedRemotePromptDeliveryBytes -
+		            std::min(total_payload_bytes, kMaxPersistedRemotePromptDeliveryBytes);
+	}
+
+	JsonValue RemotePendingRequestToJson(const uam::AcpRemotePendingRequestState& request)
+	{
+		JsonValue obj = uam::json::Object();
+		uam::json::SetNumber(obj, "request_id", request.request_id);
+		uam::json::SetString(obj, "method", request.method);
+		uam::json::SetString(obj, "delivery_id", request.delivery_id);
+		uam::json::SetString(obj, "payload", request.payload);
+		uam::json::SetNumber(obj, "user_message_index", request.user_message_index);
+		uam::json::SetNumber(obj, "turn_serial", request.turn_serial);
+		uam::json::SetString(obj, "provider_turn_id", request.provider_turn_id);
+		uam::json::SetBool(obj, "response_consumed", request.response_consumed);
+		return obj;
+	}
+
 	std::optional<uam::AcpQueuedUserPromptState> AcpQueuedPromptFromJson(
 	    const JsonValue& obj, std::size_t& total_text_bytes)
 	{
@@ -402,6 +423,7 @@ namespace
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
+		if (msg.continues_turn) uam::json::SetBool(obj, kMessageContinuesTurnField, true);
 		if (msg.priority_steer)
 		{
 			uam::json::SetBool(obj, kMessagePrioritySteerField, true);
@@ -519,6 +541,7 @@ namespace
 		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
 		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
+		msg.continues_turn = JsonBoolOrDefault(obj.Find(kMessageContinuesTurnField), false);
 		msg.checkpoint_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointShaField));
 		msg.checkpoint_parent_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointParentShaField));
 		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
@@ -733,7 +756,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -870,6 +893,7 @@ namespace
 	bool ChatProviderFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
 		if (lhs.approval_mode != rhs.approval_mode || lhs.uam_agent_id != rhs.uam_agent_id ||
+		    lhs.last_prompt_agent_definition_hash != rhs.last_prompt_agent_definition_hash ||
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
@@ -901,6 +925,11 @@ namespace
 		       lhs.remote_prompt_delivery_session_id == rhs.remote_prompt_delivery_session_id &&
 		       lhs.remote_prompt_delivery_id == rhs.remote_prompt_delivery_id &&
 		       lhs.remote_prompt_delivery_payload == rhs.remote_prompt_delivery_payload &&
+		       lhs.remote_pending_requests == rhs.remote_pending_requests &&
+		       lhs.remote_next_request_id == rhs.remote_next_request_id &&
+		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
+		       lhs.remote_turn_serial == rhs.remote_turn_serial &&
+		       lhs.remote_turn_user_message_index == rhs.remote_turn_user_message_index &&
 		       lhs.acp_dispatched_queued_prompt_count == rhs.acp_dispatched_queued_prompt_count &&
 		       AcpQueuedPromptsEquivalentForRecovery(lhs.acp_queued_prompts, rhs.acp_queued_prompts);
 	}
@@ -1069,6 +1098,53 @@ namespace
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
 		}
+		chat.remote_active_turn_id = JsonStringOrEmpty(root.Find(kChatRemoteActiveTurnIdField));
+		if (chat.remote_active_turn_id.size() > 256) chat.remote_active_turn_id.clear();
+		const double turn_serial = JsonNumberOrDefault(root.Find(kChatRemoteTurnSerialField), 0);
+		if (turn_serial >= 0 && turn_serial <= std::numeric_limits<int>::max() &&
+		    turn_serial == static_cast<int>(turn_serial))
+			chat.remote_turn_serial = static_cast<int>(turn_serial);
+		const double turn_user_index = JsonNumberOrDefault(root.Find(kChatRemoteTurnUserMessageIndexField), -1);
+		if (turn_user_index >= -1 && turn_user_index <= std::numeric_limits<int>::max() &&
+		    turn_user_index == static_cast<int>(turn_user_index))
+			chat.remote_turn_user_message_index = static_cast<int>(turn_user_index);
+		const double next_request_id = JsonNumberOrDefault(root.Find(kChatRemoteNextRequestIdField), 1);
+		if (next_request_id >= 1 && next_request_id < std::numeric_limits<int>::max() &&
+		    next_request_id == static_cast<int>(next_request_id))
+			chat.remote_next_request_id = static_cast<int>(next_request_id);
+		if (const JsonValue* requests = uam::json::ArrayOrNull(root.Find(kChatRemotePendingRequestsField)))
+		{
+			std::size_t payload_bytes = 0;
+			for (const JsonValue& item : requests->array_value)
+			{
+				if (chat.remote_pending_requests.size() >= kMaxPersistedRemotePendingRequests) break;
+				if (item.type != JsonValue::Type::Object) continue;
+				uam::AcpRemotePendingRequestState request;
+				const double request_id = JsonNumberOrDefault(item.Find("request_id"), 0);
+				if (!(request_id >= 1 && request_id < std::numeric_limits<int>::max()) ||
+				    request_id != static_cast<int>(request_id)) continue;
+				request.request_id = static_cast<int>(request_id);
+				request.method = JsonStringOrEmpty(item.Find("method"));
+				request.delivery_id = JsonStringOrEmpty(item.Find("delivery_id"));
+				request.payload = JsonStringOrEmpty(item.Find("payload"));
+				const double user_index = JsonNumberOrDefault(item.Find("user_message_index"), -1);
+				const double turn_serial = JsonNumberOrDefault(item.Find("turn_serial"), 0);
+				if (!(user_index >= -1 && user_index <= std::numeric_limits<int>::max()) ||
+				    !(turn_serial >= 0 && turn_serial <= std::numeric_limits<int>::max()) ||
+				    user_index != static_cast<int>(user_index) ||
+				    turn_serial != static_cast<int>(turn_serial)) continue;
+				request.user_message_index = static_cast<int>(user_index);
+				request.turn_serial = static_cast<int>(turn_serial);
+				request.provider_turn_id = JsonStringOrEmpty(item.Find("provider_turn_id"));
+				request.response_consumed = JsonBoolOrDefault(item.Find("response_consumed"), false);
+				if (!ValidRemotePendingRequest(request, payload_bytes) ||
+				    std::any_of(chat.remote_pending_requests.begin(), chat.remote_pending_requests.end(),
+				        [&request](const uam::AcpRemotePendingRequestState& saved)
+				        { return saved.request_id == request.request_id; })) continue;
+				payload_bytes += request.payload.size();
+				chat.remote_pending_requests.push_back(std::move(request));
+			}
+		}
 		if (const JsonValue* queued_prompts = uam::json::ArrayOrNull(
 		        root.Find(kChatAcpQueuedPromptsField)); queued_prompts != nullptr)
 		{
@@ -1120,11 +1196,17 @@ namespace
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			chat.remote_pending_requests.clear();
+			chat.remote_next_request_id = 1;
+			chat.remote_active_turn_id.clear();
+			chat.remote_turn_serial = 0;
+			chat.remote_turn_user_message_index = -1;
 			if (chat.imported_read_only) chat.acp_queued_prompts.clear();
 			if (chat.imported_read_only) chat.acp_dispatched_queued_prompt_count = 0;
 		}
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
 		chat.uam_agent_id = uam::strings::NonEmptyOrFallback(JsonStringOrEmpty(root.Find(kChatUamAgentIdField)), "build");
+		chat.last_prompt_agent_definition_hash = JsonStringOrEmpty(root.Find(kChatLastPromptAgentDefinitionHashField));
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
 		chat.goal_owner_chat_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
@@ -1232,7 +1314,7 @@ namespace
 		chat.active_goal_id = JsonStringOrEmpty(root.Find("activeGoalId"));
 
 		ApplyChatTimestampFallbacks(chat);
-		NormalizeLoadedNativeSessionId(chat);
+		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
 			chat.branch_root_chat_id = chat.id;
@@ -1418,7 +1500,7 @@ namespace
 
 } // namespace
 
-bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists)
+bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged)
 {
 	static std::mutex save_mutex;
 	std::lock_guard<std::mutex> lock(save_mutex);
@@ -1494,6 +1576,28 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	                     chat.remote_prompt_delivery_payload);
 	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
 	                     chat.remote_prompt_delivery_session_id);
+	if (chat.remote_active_turn_id.size() > 256 || chat.remote_turn_serial < 0 ||
+	    chat.remote_turn_user_message_index < -1) return false;
+	uam::json::SetString(root, kChatRemoteActiveTurnIdField, chat.remote_active_turn_id);
+	uam::json::SetNumber(root, kChatRemoteTurnSerialField, chat.remote_turn_serial);
+	uam::json::SetNumber(root, kChatRemoteTurnUserMessageIndexField, chat.remote_turn_user_message_index);
+	if (chat.remote_next_request_id < 1 ||
+	    chat.remote_next_request_id >= std::numeric_limits<int>::max()) return false;
+	uam::json::SetNumber(root, kChatRemoteNextRequestIdField, chat.remote_next_request_id);
+	JsonValue pending_requests = uam::json::Array();
+	std::size_t pending_payload_bytes = 0;
+	std::vector<int> pending_request_ids;
+	for (const uam::AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+	{
+		if (pending_requests.array_value.size() >= kMaxPersistedRemotePendingRequests) return false;
+		if (!ValidRemotePendingRequest(request, pending_payload_bytes) ||
+		    std::find(pending_request_ids.begin(), pending_request_ids.end(), request.request_id) !=
+		        pending_request_ids.end()) return false;
+		pending_payload_bytes += request.payload.size();
+		pending_request_ids.push_back(request.request_id);
+		uam::json::PushValue(pending_requests, RemotePendingRequestToJson(request));
+	}
+	uam::json::SetValue(root, kChatRemotePendingRequestsField, std::move(pending_requests));
 	JsonValue queued_prompts = uam::json::Array();
 	std::size_t queued_prompt_text_bytes = 0;
 	for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
@@ -1533,6 +1637,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetBool(root, kChatImportedReadOnlyField, chat.imported_read_only);
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
 	uam::json::SetString(root, kChatUamAgentIdField, uam::strings::NonEmptyOrFallback(chat.uam_agent_id, "build"));
+	uam::json::SetString(root, kChatLastPromptAgentDefinitionHashField, chat.last_prompt_agent_definition_hash);
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
@@ -1657,9 +1762,18 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	}
 
 	const std::string json = SerializeJson(root);
-	const bool chat_saved = preserve_existing_primary_as_backup
+	const auto matches_file = [](const fs::path& path, const std::string& content)
+	{
+		std::error_code error;
+		const fs::file_status status = fs::symlink_status(path, error);
+		std::string existing;
+		return !error && fs::is_regular_file(status) &&
+		       uam::io::TryReadTextFile(path, existing, content.size()) && existing == content;
+	};
+	const bool primary_unchanged = skip_unchanged && matches_file(file_path, json);
+	const bool chat_saved = primary_unchanged || (preserve_existing_primary_as_backup
 	    ? uam::io::WriteTextFileWithBackup(file_path, json)
-	    : uam::io::WriteTextFile(file_path, json);
+	    : uam::io::WriteTextFile(file_path, json));
 	if (!chat_saved)
 	{
 		return false;
@@ -1670,13 +1784,18 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatPersistedMessagesDigestField,
 	                     persisted_messages_digest.empty() ? SummaryDigest(chat, persisted_message_count) : persisted_messages_digest);
 	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
-	(void)uam::io::WriteTextFile(AppPaths::UamChatSummaryFilePath(data_root, chat.id), SerializeJson(root));
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+	const std::string summary_json = SerializeJson(root);
+	if (!primary_unchanged || !SummaryCacheIsCurrent(file_path, summary_path) || !matches_file(summary_path, summary_json))
+	{
+		(void)uam::io::WriteTextFile(summary_path, summary_json);
+	}
 	return true;
 }
 
-bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat)
+bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
 {
-	return SaveChatImpl(data_root, chat, false);
+	return SaveChatImpl(data_root, chat, false, skip_unchanged);
 }
 
 bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat)
@@ -1735,7 +1854,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	}
 
 	ApplyChatTimestampFallbacks(chat);
-	NormalizeLoadedNativeSessionId(chat);
+	ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
 	{
@@ -1846,6 +1965,7 @@ namespace
 		hydrated.imported_read_only = summary.imported_read_only;
 		hydrated.approval_mode = summary.approval_mode;
 		hydrated.uam_agent_id = summary.uam_agent_id;
+		hydrated.last_prompt_agent_definition_hash = summary.last_prompt_agent_definition_hash;
 		hydrated.agent_run_id = summary.agent_run_id;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
@@ -1865,6 +1985,11 @@ namespace
 		hydrated.remote_prompt_delivery_session_id = summary.remote_prompt_delivery_session_id;
 		hydrated.remote_prompt_delivery_id = summary.remote_prompt_delivery_id;
 		hydrated.remote_prompt_delivery_payload = summary.remote_prompt_delivery_payload;
+		hydrated.remote_pending_requests = summary.remote_pending_requests;
+		hydrated.remote_next_request_id = summary.remote_next_request_id;
+		hydrated.remote_active_turn_id = summary.remote_active_turn_id;
+		hydrated.remote_turn_serial = summary.remote_turn_serial;
+		hydrated.remote_turn_user_message_index = summary.remote_turn_user_message_index;
 		hydrated.acp_queued_prompts = summary.acp_queued_prompts;
 		hydrated.acp_dispatched_queued_prompt_count =
 		    summary.acp_dispatched_queued_prompt_count;
@@ -1902,7 +2027,7 @@ namespace
 
 		const std::string previous_id = backup_chat.chat->id;
 		recovered.id = recovered_id;
-		NormalizeLoadedNativeSessionId(recovered);
+		ProviderRuntimeRegistry::ResolveById(recovered.provider_id).NormalizeLoadedNativeSessionId(recovered);
 
 		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 		{

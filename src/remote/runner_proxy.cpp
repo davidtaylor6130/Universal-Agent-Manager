@@ -1,6 +1,7 @@
 #include "remote/runner_proxy.h"
 
 #include "common/config/execution_host_config.h"
+#include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
@@ -148,7 +149,7 @@ namespace uam::remote
 			try
 			{
 				result.session_id = spec["sessionId"].get<std::string>();
-				result.working_directory = spec["cwd"].get<std::string>();
+				result.working_directory = uam::paths::PathFromUtf8(spec["cwd"].get<std::string>());
 				result.argv = spec["argv"].get<std::vector<std::string>>();
 				for (const auto& [name, value] : spec["environment"].items())
 					result.environment.emplace_back(name, value.get<std::string>());
@@ -225,8 +226,9 @@ namespace uam::remote
 				return;
 			}
 			std::array<char, 16 * 1024> buffer{};
+			std::optional<std::uintmax_t> pending_input_cursor;
 			bool running = true;
-			while (!stop_token.stop_requested() && running)
+			while (!stop_token.stop_requested())
 			{
 				const std::ptrdiff_t output = process_service.ReadStdioProcessStdout(
 				    process, buffer.data(), buffer.size(), &error);
@@ -242,6 +244,29 @@ namespace uam::remote
 					std::cerr.write(buffer.data(), static_cast<std::streamsize>(diagnostics));
 					std::cerr.flush();
 				}
+				if (process.stdin_writer != nullptr && process.stdin_writer->FailureOrStall(&error))
+				{
+					std::cerr << error << '\n';
+					break;
+				}
+				if (pending_input_cursor &&
+				    (process.stdin_writer == nullptr || process.stdin_writer->PendingBytes() == 0))
+				{
+					if (!channel.AcknowledgeChannel(spec.session_id, "remoteToDesktop",
+					                                *pending_input_cursor, &error)) break;
+					pending_input_cursor.reset();
+				}
+				// Exit can precede pipe EOF. Drain once more after observing it.
+				if (!running && output <= 0 && diagnostics <= 0) break;
+				int exit_code = -1;
+				if (running) running = !process_service.PollStdioProcessExited(process, &exit_code);
+				if (!running) continue;
+				if (pending_input_cursor)
+				{
+					// Keep draining output while input is backpressured, without replaying it.
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					continue;
+				}
 				std::string input;
 				std::uintmax_t input_cursor = 0;
 				if (!channel.PollChannel(spec.session_id, "remoteToDesktop", input, &error,
@@ -254,11 +279,7 @@ namespace uam::remote
 				if (!input.empty() && !process_service.WriteToStdioProcess(
 				                          process, input.data(), input.size(), &error))
 					break;
-				if (!input.empty() && !channel.AcknowledgeChannel(
-				                          spec.session_id, "remoteToDesktop", input_cursor, &error))
-					break;
-				int exit_code = -1;
-				running = !process_service.PollStdioProcessExited(process, &exit_code);
+				if (!input.empty()) pending_input_cursor = input_cursor;
 				if (output <= 0 && input.empty())
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
@@ -304,7 +325,7 @@ namespace uam::remote
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
 		return uam::base64::Encode(nlohmann::json{
-		    {"sessionId", session_id}, {"cwd", working_directory.string()}, {"argv", argv},
+		    {"sessionId", session_id}, {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
 		    {"environment", std::move(environment_json)}, {"attachOnly", attach_only},
 		    {"deliveryToken", delivery_token},
 		    {"deliveredStdoutCursor", delivered_stdout_cursor},
@@ -315,11 +336,13 @@ namespace uam::remote
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,
-	    const std::vector<std::string>& argv, const std::string& runner_directory)
+	    const std::vector<std::string>& argv, const std::string& runner_directory,
+	    const std::string& launch_channel_id)
 	{
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || argv.empty() ||
+		    (!launch_channel_id.empty() && !IsControlField(launch_channel_id, 128)) ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(platform,
-		        working_directory.string()))
+		        uam::paths::Utf8PathString(working_directory)))
 			return {};
 		if (SshBridgeArgv(ssh_alias, platform, version, runner_directory).empty()) return {};
 		std::string command;
@@ -328,16 +351,20 @@ namespace uam::remote
 		{
 			const std::string runner = "~/" + uam::execution_hosts::RunnerDirectory(
 			    platform, runner_directory) + "/" + version + "/uam-runner";
-			command = runner + " terminal " +
-			          BuildProcessProxySpec("terminal", working_directory, argv, {});
+			command = runner + " terminal " + (launch_channel_id.empty()
+			    ? BuildProcessProxySpec("terminal", working_directory, argv, {})
+			    : "--channel " + launch_channel_id + " --socket ~/" +
+			      uam::execution_hosts::RunnerDirectory(platform, runner_directory) + "/" +
+			      RunnerEndpointName(version) + ".sock");
 		}
 		else if (platform == "windows" || platform == "Windows")
 		{
 			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
 			          "-Command \"& (Join-Path $HOME '" + uam::execution_hosts::RunnerDirectory(
 			              platform, runner_directory) + "/" + version +
-			          "/uam-runner.exe') terminal '" +
-			          BuildProcessProxySpec("terminal", working_directory, argv, {}) + "'\"";
+			          "/uam-runner.exe') terminal " + (launch_channel_id.empty()
+			              ? "'" + BuildProcessProxySpec("terminal", working_directory, argv, {}) + "'"
+			              : "--channel " + launch_channel_id) + "\"";
 		}
 		else return {};
 		return {"ssh", "-tt", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
@@ -366,82 +393,104 @@ namespace uam::remote
 		       std::string(delivery_id) + " " + uam::base64::Encode(payload) + "\n";
 	}
 
+	namespace
+	{
+		int RunTerminalProcessInternal(const std::string& encoded_spec, bool private_launch)
+		{
+			std::optional<DecodedProxySpec> spec = DecodeProxySpec(encoded_spec);
+			if (!spec || (!private_launch && !spec->environment.empty()) ||
+			    !spec->working_directory.is_absolute() ||
+			    uam::paths::Utf8PathString(spec->working_directory).find('\0') != std::string::npos ||
+			    spec->argv.front().empty()) return 2;
+			for (const std::string& argument : spec->argv)
+				if (argument.find('\0') != std::string::npos) return 2;
+			for (const std::pair<std::string, std::string>& entry : spec->environment)
+				if (entry.first.empty() || entry.first.find_first_of("=\0", 0, 2) != std::string::npos ||
+				    entry.second.find('\0') != std::string::npos) return 2;
+#if defined(_WIN32)
+			const uam::platform_windows_impl::WindowsLaunchCommand launch =
+			    uam::platform_windows_impl::BuildWindowsLaunchCommand(spec->argv);
+			std::wstring command = uam::platform_windows_impl::WideFromUtf8(launch.command_line);
+			std::vector<wchar_t> environment;
+			if (!uam::platform_windows_impl::BuildEnvironmentBlock(spec->environment, environment, nullptr))
+				return 2;
+			STARTUPINFOW startup{};
+			startup.cb = sizeof(startup);
+			startup.dwFlags = STARTF_USESTDHANDLES;
+			startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+			startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+			startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+			PROCESS_INFORMATION process{};
+			if (command.empty() || !CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+			    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+			    environment.empty() ? nullptr : environment.data(), spec->working_directory.c_str(),
+			    &startup, &process)) return 70;
+			HANDLE job = nullptr;
+			std::string job_error;
+			if (!uam::platform_windows_impl::CreateKillOnCloseJobForProcess(
+			        process.hProcess, &job, &job_error))
+			{
+				TerminateProcess(process.hProcess, 70);
+				CloseHandle(process.hThread);
+				CloseHandle(process.hProcess);
+				return 70;
+			}
+			(void)ResumeThread(process.hThread);
+			CloseHandle(process.hThread);
+			(void)WaitForSingleObject(process.hProcess, INFINITE);
+			DWORD exit_code = 70;
+			(void)GetExitCodeProcess(process.hProcess, &exit_code);
+			CloseHandle(process.hProcess);
+			CloseHandle(job);
+			return static_cast<int>(exit_code);
+#elif !defined(__APPLE__) && !defined(__linux__)
+			(void)encoded_spec;
+			std::cerr << "Remote terminal execution is not yet available on this platform.\n";
+			return 70;
+#else
+			if (chdir(spec->working_directory.c_str()) != 0) return 2;
+			for (const std::pair<std::string, std::string>& entry : spec->environment)
+				if (setenv(entry.first.c_str(), entry.second.c_str(), 1) != 0) return 70;
+			std::vector<char*> native_arguments;
+			native_arguments.reserve(spec->argv.size() + 1);
+			for (std::string& argument : spec->argv) native_arguments.push_back(argument.data());
+			native_arguments.push_back(nullptr);
+			execvp(native_arguments.front(), native_arguments.data());
+			return 70;
+#endif
+		}
+	}
+
 	int RunTerminalProcess(const std::string& encoded_spec)
 	{
-#if defined(_WIN32)
-		std::string decoded;
-		if (!uam::base64::Decode(encoded_spec, decoded)) return 2;
-		const nlohmann::json spec = nlohmann::json::parse(decoded, nullptr, false);
-		if (!spec.is_object() || !spec.contains("cwd") || !spec["cwd"].is_string() ||
-		    !spec.contains("argv") || !spec["argv"].is_array() ||
-		    !spec.contains("environment") || !spec["environment"].is_object() ||
-		    !spec["environment"].empty()) return 2;
-		std::vector<std::string> arguments;
-		try { arguments = spec["argv"].get<std::vector<std::string>>(); }
-		catch (...) { return 2; }
-		if (arguments.empty()) return 2;
-		const std::filesystem::path cwd = spec["cwd"].get<std::string>();
-		if (!cwd.is_absolute()) return 2;
-		const auto launch = uam::platform_windows_impl::BuildWindowsLaunchCommand(arguments);
-		std::wstring command = uam::platform_windows_impl::WideFromUtf8(launch.command_line);
-		STARTUPINFOW startup{};
-		startup.cb = sizeof(startup);
-		startup.dwFlags = STARTF_USESTDHANDLES;
-		startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-		startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-		startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-		PROCESS_INFORMATION process{};
-		if (command.empty() || !CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-		    CREATE_SUSPENDED, nullptr, cwd.c_str(), &startup, &process)) return 70;
-		HANDLE job = nullptr;
-		std::string job_error;
-		if (!uam::platform_windows_impl::CreateKillOnCloseJobForProcess(
-		        process.hProcess, &job, &job_error))
+		return RunTerminalProcessInternal(encoded_spec, false);
+	}
+
+	int RunTerminalProcessFromChannel(const std::string& channel_id,
+	                                  const std::filesystem::path& socket_path)
+	{
+		if (!IsControlField(channel_id, 128)) return 2;
+		IPlatformProcessService& service = ProxyProcessService();
+		std::vector<std::string> bridge = {
+		    uam::paths::Utf8PathString(service.ResolveCurrentExecutablePath()), "bridge"};
+#if defined(__APPLE__) || defined(__linux__)
+		if (socket_path.empty()) return 2;
+		bridge.insert(bridge.end(), {"--socket", uam::paths::Utf8PathString(socket_path)});
+#else
+		if (!socket_path.empty()) return 2;
+#endif
+		RunnerClient client(service, std::move(bridge), UAM_REMOTE_RUNNER_VERSION);
+		std::string encoded_spec;
+		std::string error;
+		const bool claimed = client.TakeChannel(channel_id, "desktopToRemote", encoded_spec, &error);
+		client.Disconnect();
+		if (!claimed)
 		{
-			TerminateProcess(process.hProcess, 70);
-			CloseHandle(process.hThread);
-			CloseHandle(process.hProcess);
+			// Never echo the private launch payload or retry a possibly consumed handoff.
+			std::cerr << "Remote terminal launch could not be claimed. Start the terminal again.\n";
 			return 70;
 		}
-		(void)ResumeThread(process.hThread);
-		CloseHandle(process.hThread);
-		(void)WaitForSingleObject(process.hProcess, INFINITE);
-		DWORD exit_code = 70;
-		(void)GetExitCodeProcess(process.hProcess, &exit_code);
-		CloseHandle(process.hProcess);
-		CloseHandle(job);
-		return static_cast<int>(exit_code);
-#elif !defined(__APPLE__) && !defined(__linux__)
-		(void)encoded_spec;
-		std::cerr << "Remote terminal execution is not yet available on this platform.\n";
-		return 70;
-#else
-		std::string decoded;
-		if (!uam::base64::Decode(encoded_spec, decoded)) return 2;
-		const nlohmann::json spec = nlohmann::json::parse(decoded, nullptr, false);
-		if (!spec.is_object() || !spec.contains("cwd") || !spec["cwd"].is_string() ||
-		    !spec.contains("argv") || !spec["argv"].is_array() ||
-		    !spec.contains("environment") || !spec["environment"].is_object() ||
-		    !spec["environment"].empty())
-			return 2;
-		std::vector<std::string> arguments;
-		try
-		{
-			arguments = spec["argv"].get<std::vector<std::string>>();
-		}
-		catch (...)
-		{
-			return 2;
-		}
-		const std::filesystem::path cwd = spec["cwd"].get<std::string>();
-		if (arguments.empty() || !cwd.is_absolute() || chdir(cwd.c_str()) != 0) return 2;
-		std::vector<char*> native_arguments;
-		native_arguments.reserve(arguments.size() + 1);
-		for (std::string& argument : arguments) native_arguments.push_back(argument.data());
-		native_arguments.push_back(nullptr);
-		execvp(native_arguments.front(), native_arguments.data());
-		return 70;
-#endif
+		return RunTerminalProcessInternal(encoded_spec, true);
 	}
 
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
@@ -974,11 +1023,8 @@ namespace uam::remote
 			                     std::string_view(input.data(), static_cast<std::size_t>(count)),
 			                     &error))
 			{
-				channel.Disconnect();
-				if (!channel.OpenChannel(channel_id, &error, true) ||
-				    !channel.WriteChannel(channel_id, "remoteToDesktop",
-				        std::string_view(input.data(), static_cast<std::size_t>(count)), &error))
-					break;
+				// WriteChannel already retries the same sequence; reopening could replay accepted bytes.
+				break;
 			}
 			if (count == 0)
 			{
@@ -1022,7 +1068,7 @@ namespace uam::remote
 #else
 		auto& process_service = uam::platform_windows_impl::GetWindowsProcessService();
 		const std::filesystem::path executable = process_service.ResolveCurrentExecutablePath();
-		RunnerClient channel(process_service, {executable.string(), "bridge"},
+		RunnerClient channel(process_service, {uam::paths::Utf8PathString(executable), "bridge"},
 		                     UAM_REMOTE_RUNNER_VERSION);
 		std::string error;
 		if (!channel.OpenChannel(channel_id, &error, true)) return 70;
@@ -1040,13 +1086,9 @@ namespace uam::remote
 			if (!pending.empty() && !channel.WriteChannel(
 			        channel_id, "remoteToDesktop", pending, &error))
 			{
-				channel.Disconnect();
-				if (!channel.OpenChannel(channel_id, &error, true) ||
-				    !channel.WriteChannel(channel_id, "remoteToDesktop", pending, &error))
-				{
-					input_failed = true;
-					break;
-				}
+				// WriteChannel already retries the same sequence; reopening could replay accepted bytes.
+				input_failed = true;
+				break;
 			}
 			pending.clear();
 			std::string output;

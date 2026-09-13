@@ -20,7 +20,8 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [validatedDirectory, setValidatedDirectory] = useState('')
-  const directoryKey = `${host.id}\n${host.platform}\n${path}`
+  const hostKey = JSON.stringify([host.id, host.platform, host.sshAlias, host.runnerDirectory, host.runnerVersion, host.runnerProtocolVersion])
+  const directoryKey = `${hostKey}\n${path}`
   const canConfirm = !loading && Boolean(listing) && validatedDirectory === directoryKey &&
     path === listing?.directory && host.runnerStatus === 'ready'
   const requestRef = useRef(0)
@@ -51,19 +52,19 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
       }
       setListing(result.listing)
       setPath(result.listing.directory)
-      setValidatedDirectory(`${host.id}\n${host.platform}\n${result.listing.directory}`)
+      setValidatedDirectory(`${hostKey}\n${result.listing.directory}`)
     } catch (error) {
       if (request === requestRef.current) setError(error instanceof Error ? error.message : 'The remote directory could not be listed. Try again.')
     } finally {
       if (request === requestRef.current) setLoading(false)
     }
-  }, [host.id, host.platform, listRemoteDirectories])
+  }, [hostKey, host.id, host.platform, listRemoteDirectories])
 
   useEffect(() => {
     pathRef.current?.focus()
     void load(initialPath.trim() || defaultRemoteBrowsePath(host.platform))
     return () => { requestRef.current++ }
-  }, [load, host.platform]) // Browse is an explicit read; reload only when the target computer changes.
+  }, [load, host.platform]) // Reload for connection changes, not routine health updates.
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {

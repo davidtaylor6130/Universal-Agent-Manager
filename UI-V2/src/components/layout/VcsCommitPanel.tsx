@@ -145,7 +145,7 @@ export function VcsCommitPanel() {
           <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{status.workspaceDirectory || 'No workspace selected'}</div>
         </div>
         <IconButton
-          icon={<RotateCw size={16} className={loading ? 'animate-spin' : undefined} />}
+          icon={<RotateCw size={16} />}
           label="Refresh VCS status"
           disabled={loading}
           onClick={() => { void refresh(selectedVcsType, true) }}
@@ -203,7 +203,7 @@ export function VcsCommitPanel() {
               {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
             </button>
             <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
-            {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" className="animate-spin" />}
+            {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" />}
             <span>{selectedFiles.length} selected</span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -247,7 +247,7 @@ export function VcsCommitPanel() {
             onChange={(event) => setTitle(event.target.value)}
           />
           <IconButton
-            icon={generating ? <LoaderCircle size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            icon={generating ? <LoaderCircle size={16} /> : <Sparkles size={16} />}
             label="Generate commit message"
             disabled={generateDisabled}
             onClick={() => { void generateMessage() }}
@@ -262,7 +262,7 @@ export function VcsCommitPanel() {
         />
         <Button variant="primary" block disabled={commitDisabled} onClick={() => { void commit() }}>
           <span className="inline-flex items-center justify-center gap-2">
-            {committing ? <LoaderCircle size={15} className="animate-spin" /> : <GitCommitHorizontal size={15} />}
+            {committing ? <LoaderCircle size={15} /> : <GitCommitHorizontal size={15} />}
             {committing ? 'Committing…' : 'Commit selected files'}
           </span>
         </Button>

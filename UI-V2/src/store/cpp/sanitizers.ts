@@ -31,6 +31,7 @@ import type {
   CppMessage,
   CppProvider,
   CppSettings,
+  ComputerUseAllowedApplication,
   McpServerConfiguration,
   CppStatePatch,
   EditorFileAssociation,
@@ -250,6 +251,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     status: stringOr(value.status),
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
+    contentDigest: stringOr(value.contentDigest),
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
     subAgentTitle: stringOr(value.subAgentTitle),
@@ -333,7 +335,7 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
   }
 }
 
-export function messageAttachments(message: CppMessage): Attachment[] {
+export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles' | 'attachments'>): Attachment[] {
   const markdownStoreFiles = message.markdownStoreFiles ?? []
   if (markdownStoreFiles.length === 0) return message.attachments ?? []
   const markdownAttachments = markdownStoreFiles.map((filePath) => ({
@@ -412,6 +414,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
 		interrupted: booleanOr(value.interrupted),
 		prioritySteer: booleanOr(value.prioritySteer),
+		continuesTurn: booleanOr(value.continuesTurn),
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
     createdAt: stringOr(value.createdAt),
@@ -870,7 +873,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     computerUse: isRecord(value.computerUse)
       ? {
           enabled: booleanOr(value.computerUse.enabled),
-          state: value.computerUse.state === 'paused' || value.computerUse.state === 'stopped' ? value.computerUse.state : 'running',
+          state: value.computerUse.state === 'armed' || value.computerUse.state === 'paused' || value.computerUse.state === 'stopped' ? value.computerUse.state : 'running',
           history: Array.isArray(value.computerUse.history)
             ? value.computerUse.history.flatMap((entry) => isRecord(entry) ? [{
                 time: stringOr(entry.time),
@@ -1111,7 +1114,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
       : 'unknown'
   const installMethod = stringOr(value.installMethod)
   const normalizedInstallMethod: NonNullable<CliVersionProviderState['installMethod']> =
-    installMethod === 'homebrew-formula' || installMethod === 'homebrew-cask' || installMethod === 'winget'
+    installMethod === 'homebrew-formula' || installMethod === 'homebrew-cask' || installMethod === 'winget' || installMethod === 'unknown'
       ? installMethod
       : 'npm'
   const lastInstallStatus = stringOr(value.lastInstallStatus)
@@ -1124,6 +1127,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
 
   return {
     providerId,
+    ...(stringOr(value.executionHostId).trim() ? { executionHostId: stringOr(value.executionHostId).trim(), executionHostName: stringOr(value.executionHostName).trim() } : {}),
     installedVersion: stringOr(value.installedVersion),
     selectedVersion: stringOr(value.selectedVersion),
     availableVersions: Array.isArray(value.availableVersions)
@@ -1138,6 +1142,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
     verifiedAt: stringOr(value.verifiedAt),
     status: normalizedStatus,
     message: stringOr(value.message),
+    checkError: stringOr(value.checkError),
     running: booleanOr(value.running),
     installMethod: normalizedInstallMethod,
     lastInstallStatus: normalizedLastInstallStatus,
@@ -1154,8 +1159,15 @@ export function sanitizeCliVersionManager(value: unknown): CliVersionManager | u
         return sanitized ? [sanitized] : []
       })
     : []
-  if (providers.length > 0) {
-    return { providers }
+  const remoteProviders = Array.isArray(value.remoteProviders)
+    ? value.remoteProviders.flatMap((provider) => {
+        if (!isRecord(provider) || !stringOr(provider.providerId).trim() || !stringOr(provider.executionHostId).trim()) return []
+        const sanitized = sanitizeCliVersionProviderState(provider)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  if (Array.isArray(value.providers) || remoteProviders.length > 0) {
+    return { providers, remoteProviders }
   }
 
   const legacy = sanitizeCliVersionProviderState(value)
@@ -1405,6 +1417,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       }],
       favoriteUamAgentIds: [],
       uamAgentCycleShortcut: 'shift+tab',
+      computerUseAllowlistEnabled: false,
+      computerUseAllowedApplications: [],
     }
   }
 
@@ -1521,6 +1535,21 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     executionHosts,
     favoriteUamAgentIds,
     uamAgentCycleShortcut,
+    computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
+    computerUseAllowedApplications: Array.isArray(value.computerUseAllowedApplications)
+      ? value.computerUseAllowedApplications.flatMap((entry): ComputerUseAllowedApplication[] => {
+          if (!isRecord(entry)) return []
+          const identityKindValue = stringOr(entry.identityKind).trim().toLowerCase()
+          const identityKind = identityKindValue === 'bundleid'
+            ? 'bundleId'
+            : identityKindValue === 'executablepath'
+              ? 'executablePath'
+              : null
+          if (!identityKind) return []
+          const identity = stringOr(entry.identity).trim()
+          return identity ? [{ identityKind, identity }] : []
+        })
+      : [],
   }
 }
 

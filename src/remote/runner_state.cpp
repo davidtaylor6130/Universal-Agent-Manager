@@ -156,7 +156,7 @@ namespace uam::remote
 				return false;
 			}
 			const std::string cwd = request["cwd"].get<std::string>();
-			working_directory = std::filesystem::path(cwd);
+			working_directory = uam::paths::PathFromUtf8(cwd);
 			if (!IsBoundedText(cwd, kMaxWorkingDirectoryBytes) || !working_directory.is_absolute())
 			{
 				error = "The working directory must be an absolute bounded path.";
@@ -392,7 +392,8 @@ namespace uam::remote
 	{
 		SweepExpiredTransientProcesses();
 		std::scoped_lock lock(m_stateMutex);
-		return !m_processes.empty();
+		return !m_processes.empty() || std::any_of(m_channels.begin(), m_channels.end(),
+		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
 	void RunnerState::SweepExpiredTransientProcesses()
@@ -401,6 +402,10 @@ namespace uam::remote
 		const std::int64_t now = LeaseClockMilliseconds();
 		{
 			std::scoped_lock lock(m_stateMutex);
+			std::erase_if(m_channels, [now](const std::pair<const std::string, Channel>& entry)
+			{
+				return entry.second.expires_at_ms != 0 && now >= entry.second.expires_at_ms;
+			});
 			for (auto iterator = m_processes.begin(); iterator != m_processes.end();)
 			{
 				const std::shared_ptr<Process>& process = iterator->second;
@@ -430,7 +435,7 @@ namespace uam::remote
 			if (!request.contains("path") || !request["path"].is_string())
 				return ProcessError(request, "invalid_request", "An absolute directory path is required.");
 			const std::string path_text = request["path"].get<std::string>();
-			const std::filesystem::path requested(path_text);
+			const std::filesystem::path requested = uam::paths::PathFromUtf8(path_text);
 			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !requested.is_absolute())
 				return ProcessError(request, "invalid_request", "An absolute bounded directory path is required.");
 
@@ -497,8 +502,8 @@ namespace uam::remote
 					return ProcessError(request, "invalid_request", "Source and target file paths are required.");
 				const std::string source_text = request["sourcePath"].get<std::string>();
 				const std::string target_text = request["targetPath"].get<std::string>();
-				const std::filesystem::path source(source_text);
-				const std::filesystem::path target(target_text);
+				const std::filesystem::path source = uam::paths::PathFromUtf8(source_text);
+				const std::filesystem::path target = uam::paths::PathFromUtf8(target_text);
 				if (!IsBoundedText(source_text, kMaxWorkingDirectoryBytes) ||
 				    !IsBoundedText(target_text, kMaxWorkingDirectoryBytes) ||
 				    !source.is_absolute() || !target.is_absolute())
@@ -519,7 +524,7 @@ namespace uam::remote
 				if (!request.contains("path") || !request["path"].is_string())
 					return ProcessError(request, "invalid_request", "A file path is required.");
 				const std::string path_text = request["path"].get<std::string>();
-				const std::filesystem::path path(path_text);
+				const std::filesystem::path path = uam::paths::PathFromUtf8(path_text);
 				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
 					return ProcessError(request, "invalid_request", "The file path is invalid.");
 				state_lock.unlock();
@@ -547,7 +552,7 @@ namespace uam::remote
 				    ? request["size"].get<std::uintmax_t>()
 				    : static_cast<std::uintmax_t>(request["size"].get<std::int64_t>());
 				const std::string digest = request["digest"].get<std::string>();
-				const std::filesystem::path target(path_text);
+				const std::filesystem::path target = uam::paths::PathFromUtf8(path_text);
 				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !target.is_absolute() ||
 				    size > kMaxUploadBytes || digest.size() != 16 ||
 				    !std::ranges::all_of(digest, [](unsigned char character)
@@ -643,7 +648,7 @@ namespace uam::remote
 					upload.state = Upload::State::Active;
 					return ProcessError(request, "commit_failed", "Upload could not be committed.");
 				}
-				const std::string path = upload.target.string();
+				const std::string path = uam::paths::Utf8PathString(upload.target);
 				finish_upload();
 				return ProcessSuccess(request, {{"path", path}});
 			}
@@ -677,12 +682,24 @@ namespace uam::remote
 			const std::string channel_id = request["channelId"].get<std::string>();
 			if (type == "channel.open")
 			{
+				if (request.contains("leaseMs") && !request["leaseMs"].is_number_integer())
+					return ProcessError(request, "invalid_request", "The channel lease must be an integer.");
+				const std::int64_t lease_ms = request.value("leaseMs", std::int64_t{0});
+				if (lease_ms < 0 || lease_ms > 60000)
+					return ProcessError(request, "invalid_request", "The channel lease must be between 0 and 60000 milliseconds.");
 				const bool attached = m_channels.contains(channel_id);
+				if ((lease_ms != 0 && request.value("attachIfExists", false)) ||
+				    (attached && (lease_ms != 0 || m_channels.at(channel_id).expires_at_ms != 0)))
+					return ProcessError(request, "channel_exists", "Leased channel IDs cannot be attached or reopened.");
+				if (lease_ms != 0 && std::count_if(m_channels.begin(), m_channels.end(),
+				    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; }) >= 64)
+					return ProcessError(request, "channel_full", "The leased channel limit was reached.");
 				if (attached && !request.value("attachIfExists", false))
 					return ProcessError(request, "channel_exists",
 					                    "A runner channel already uses this channelId.");
-				auto [channel, inserted] = m_channels.try_emplace(channel_id);
-				(void)inserted;
+				const std::pair<std::unordered_map<std::string, Channel>::iterator, bool> opened = m_channels.try_emplace(channel_id);
+				const std::unordered_map<std::string, Channel>::iterator channel = opened.first;
+				if (lease_ms != 0) channel->second.expires_at_ms = LeaseClockMilliseconds() + lease_ms;
 				return ProcessSuccess(request, {{"channelId", channel_id}, {"attached", attached},
 				    {"remoteToDesktopCursor", channel->second.remote_to_desktop.base_cursor},
 				    {"desktopToRemoteCursor", channel->second.desktop_to_remote.base_cursor},
@@ -692,6 +709,11 @@ namespace uam::remote
 			const auto found = m_channels.find(channel_id);
 			if (found == m_channels.end())
 				return ProcessError(request, "channel_not_found", "The runner channel does not exist.");
+			if (found->second.expires_at_ms != 0 && LeaseClockMilliseconds() >= found->second.expires_at_ms)
+			{
+				m_channels.erase(found);
+				return ProcessError(request, "channel_not_found", "The leased channel has expired.");
+			}
 			if (type == "channel.close")
 			{
 				m_channels.erase(found);
@@ -707,6 +729,16 @@ namespace uam::remote
 			                              : nullptr;
 			if (buffer == nullptr)
 				return ProcessError(request, "invalid_request", "The channel direction is invalid.");
+			if (type == "channel.take")
+			{
+				if (found->second.expires_at_ms == 0)
+					return ProcessError(request, "invalid_request", "Only leased channels support one-shot handoff.");
+				const std::string encoded = uam::base64::Encode(buffer->bytes);
+				m_channels.erase(found);
+				return ProcessSuccess(request, {{"dataBase64", encoded}});
+			}
+			if (found->second.expires_at_ms != 0 && type != "channel.write")
+				return ProcessError(request, "invalid_request", "Leased channel bytes must be consumed with channel.take.");
 			if (type == "channel.write")
 			{
 				if (!request.contains("dataBase64") || !request["dataBase64"].is_string())
@@ -734,6 +766,9 @@ namespace uam::remote
 					if (write_sequence != buffer->write_sequence + 1)
 						return ProcessError(request, "input_sequence_gap", "The channel write sequence is not contiguous.");
 				}
+				if (found->second.expires_at_ms != 0 &&
+				    decoded.size() > 65536 - found->second.remote_to_desktop.bytes.size() - found->second.desktop_to_remote.bytes.size())
+					return ProcessError(request, "channel_full", "The leased channel payload limit is 64 KiB.");
 				if (decoded.size() > kMaxWriteBytes ||
 				    decoded.size() > kMaxChannelBytes - buffer->bytes.size())
 					return ProcessError(request, "channel_full", "The channel buffer limit was reached.");

@@ -940,7 +940,8 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   box-shadow: -2px 0 0 var(--blue);
 }
 
-.uam-message-frame__actions {
+.uam-message-frame__actions,
+.conversation-turn__actions {
   opacity: 0;
   transform: translateY(2px);
   pointer-events: none;
@@ -956,7 +957,9 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-message-frame:hover .uam-message-frame__actions,
-.uam-message-frame:focus-within .uam-message-frame__actions {
+.uam-message-frame:focus-within .uam-message-frame__actions,
+.conversation-turn:hover .conversation-turn__actions,
+.conversation-turn:focus-within .conversation-turn__actions {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
@@ -984,7 +987,8 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 @media (hover: none) {
-  .uam-message-frame__actions {
+  .uam-message-frame__actions,
+  .conversation-turn__actions {
     opacity: 1;
     transform: none;
     pointer-events: auto;
@@ -1244,6 +1248,11 @@ summary,
   border-radius: 999px;
   border: 1.5px solid color-mix(in srgb, var(--text-3) 45%, transparent);
   border-top-color: var(--text);
+  animation: uam-status-spin 1s linear infinite;
+}
+
+@keyframes uam-status-spin {
+  to { transform: rotate(360deg); }
 }
 
 .session-status--idle > span {

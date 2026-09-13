@@ -1,6 +1,7 @@
 /* Keep the existing toolbar and native textarea; only compact their own controls. */
 .uam-composer-input-row {
   position: relative;
+  overflow: hidden;
 }
 
 .uam-composer-input-row > textarea {

@@ -8,6 +8,8 @@ namespace uam::platform
 {
 	inline constexpr const char* kMacParentDeathWatchdogArgument = "--uam-mac-parent-death-watchdog";
 	std::optional<int> RunMacParentDeathWatchdogIfRequested(int argc, char* argv[]);
+	/// Establish terminal ownership in a fresh process before executing the provider.
+	std::optional<int> RunMacTerminalChildIfRequested(int argc, char* argv[]);
 	bool InitializeMacApplication();
 	bool BrowsePath(bool choose_directory, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr);
 	bool OpenExternalUrl(const std::string& url, std::string* error_out = nullptr);

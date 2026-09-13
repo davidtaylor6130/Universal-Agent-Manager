@@ -2,14 +2,14 @@
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
 // store re-exports everything here so existing imports keep working.
 
-import type { Attachment, MessageBlock } from '../../types/message'
+import type { Attachment, MessageBlock, MessageToolCall } from '../../types/message'
 import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
-export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown'
+export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
 export type AcpLifecycleState =
   | 'stopped'
   | 'starting'
@@ -44,6 +44,7 @@ export interface CppMessage {
   processingTimeMs?: number
 	interrupted?: boolean
 	prioritySteer?: boolean
+	continuesTurn?: boolean
   checkpointSha?: string
   checkpointParentSha?: string
   createdAt: string
@@ -180,17 +181,7 @@ export interface GitTurnCheckpointResult {
   parentSha: string
 }
 
-export interface AcpToolCall {
-  id: string
-  title: string
-  kind: string
-  status: string
-  content: string
-  contentDeferred?: boolean
-  isSubAgent?: boolean
-  subAgentId?: string
-  subAgentTitle?: string
-}
+export type AcpToolCall = MessageToolCall
 
 export interface AcpPlanEntry {
   content: string
@@ -513,6 +504,8 @@ export interface CliVersionOption {
 
 export interface CliVersionProviderState {
   providerId: string
+  executionHostId?: string
+  executionHostName?: string
   installedVersion: string
   selectedVersion: string
   availableVersions: CliVersionOption[]
@@ -521,8 +514,9 @@ export interface CliVersionProviderState {
   verifiedAt?: string
   status: 'unknown' | 'checking' | 'installing' | 'verified' | 'untested' | 'untested-newer' | 'known-incompatible' | 'unavailable' | 'provider-managed'
   message: string
+  checkError?: string
   running: boolean
-  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget'
+  installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget' | 'unknown'
   lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
@@ -530,6 +524,7 @@ export interface CliVersionProviderState {
 
 export interface CliVersionManager {
   providers: CliVersionProviderState[]
+  remoteProviders?: CliVersionProviderState[]
 }
 
 export interface ShellAction {
@@ -573,6 +568,13 @@ export interface CppSettings {
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
+  computerUseAllowlistEnabled?: boolean
+  computerUseAllowedApplications?: ComputerUseAllowedApplication[]
+}
+
+export interface ComputerUseAllowedApplication {
+  identityKind: 'bundleId' | 'executablePath'
+  identity: string
 }
 
 export type UamAgentCycleShortcut = 'shift+tab' | 'control+shift+tab' | 'alt+shift+tab' | 'meta+shift+tab' | 'disabled'
@@ -719,7 +721,7 @@ export interface CliBinding {
   boundChatId: string
   running: boolean
   lifecycleState: CliLifecycleState
-  turnState: 'idle' | 'busy'
+  turnState: 'idle' | 'busy' | 'unknown'
   processing: boolean
   readySinceLastSelect: boolean
   active: boolean
@@ -738,6 +740,8 @@ export interface AcpBinding {
   readySinceLastSelect: boolean
   attentionKind?: AcpAttentionKind | null
   processingStartedAtMs: number | null
+  /** Local explicit-action failure; native snapshots do not own this value. */
+  promptActionError?: { id: string; message: string }
   lastError: string
   recentStderr: string
   lastExitCode: number | null
@@ -775,9 +779,9 @@ export interface CliTranscript {
 export type PushChannelStatus = 'no-push-yet' | 'connected' | 'parse-error' | 'invalid-message'
 
 export type DictationPushMessage =
-  | { type: 'dictation'; event: 'interim' | 'final'; text: string }
-  | { type: 'dictation'; event: 'error'; message: string }
-  | { type: 'dictation'; event: 'end' }
+  | { type: 'dictation'; dictationId: string; event: 'interim' | 'final'; text: string }
+  | { type: 'dictation'; dictationId: string; event: 'error'; message: string }
+  | { type: 'dictation'; dictationId: string; event: 'end' }
 
 export type ParsedPushMessage =
   | { type: 'stateUpdate'; data: CppAppState }
@@ -789,7 +793,7 @@ export type ParsedPushMessage =
       sourceChatId?: string
       terminalId?: string
     }
-  | { type: 'streamToken'; chatId: string; token: string }
+  | { type: 'streamToken'; chatId: string; token: string; messageIndex?: number }
   | { type: 'streamDone'; chatId: string }
   | DictationPushMessage
 

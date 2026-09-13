@@ -59,6 +59,11 @@ namespace uam::remote
 		             std::string& error,
 		             std::stop_token stop_token)
 		{
+			if (stop_token.stop_requested())
+			{
+				error = "Remote setup was canceled.";
+				return false;
+			}
 			auto& service = PlatformServicesFactory::Instance().process_service;
 			uam::platform::StdioProcessPlatformFields process;
 			if (!service.StartStdioProcess(process, std::filesystem::current_path(), step.argv,
@@ -207,11 +212,17 @@ namespace uam::remote
 		bool unix_probe = RunStep(plan.steps[0], output, diagnostic, probe_error, stop_token);
 		if (!unix_probe)
 		{
+			if (stop_token.stop_requested())
+			{
+				result.error = "Remote setup was canceled.";
+				return result;
+			}
 			output.clear();
 			diagnostic.clear();
 			if (!RunStep(plan.steps[1], output, diagnostic, result.error, stop_token))
 			{
-				result.error = "Remote host is not a supported Ubuntu/Linux or Windows OpenSSH host.";
+				if (!stop_token.stop_requested())
+					result.error = "Remote host is not a supported Ubuntu/Linux or Windows OpenSSH host.";
 				return result;
 			}
 		}

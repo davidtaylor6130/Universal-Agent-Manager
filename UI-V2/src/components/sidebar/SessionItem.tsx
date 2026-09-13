@@ -1,3 +1,4 @@
+import { isCompanionContext } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
@@ -244,6 +245,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (!isActive) setActiveSession(sessionId)
         }}
         onDoubleClick={() => {
+          if (isCompanionContext()) return
           setEditing(true)
           setEditValue(sessionName)
         }}
@@ -252,11 +254,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             if (!isActive) setActiveSession(sessionId)
-          } else if (event.key === 'F2') {
+          } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
             setEditValue(sessionName)
-          } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          } else if (!isCompanionContext() && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
             event.preventDefault()
             const rect = event.currentTarget.getBoundingClientRect()
             menuReturnFocusRef.current = event.currentTarget
@@ -271,6 +273,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
         onContextMenu={(e) => {
           e.preventDefault()
+          if (isCompanionContext()) return
           menuReturnFocusRef.current = e.currentTarget
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
@@ -369,6 +372,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             </div>
             <div
               data-testid={`session-actions-${sessionId}`}
+              style={isCompanionContext() ? { display: 'none' } : undefined}
               className={`absolute right-2.5 flex items-center gap-0.5 transition-opacity duration-100 ${
                 menuPos
                   ? 'opacity-100 pointer-events-auto'
