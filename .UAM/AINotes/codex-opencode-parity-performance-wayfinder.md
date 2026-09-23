@@ -31,6 +31,9 @@ reattached the held remote OpenCode turn. Native CTest 8/8, frontend Vitest
 and packaged companion startup/restart/icon/chunking checks passed. The installed
 companion rejected a missing token with HTTP 401. Remote installed helpers were
 not changed. This does not validate the still-held remote turn's completion.
+Open branch decision: branching a Git-worktree chat currently switches the new
+chat to the source repository. Copying the parent's worktree ownership would be
+unsafe; assess independent worktree creation and rollback before changing it.
 
 2026-09-23 beta8 was installed at the usual Applications path, with the previous beta7
 bundle at `~/Applications/universal_agent_manager-4.9.0-beta-7.app.backup` and
