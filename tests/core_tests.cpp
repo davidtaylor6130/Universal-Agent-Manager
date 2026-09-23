@@ -8757,6 +8757,36 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
 
+UAM_TEST(StateSerializerSummaryOnlyOmitsSelectedMessagesPreservingRuntimeMetadata)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-summary-only";
+	chat.title = "Summary chat";
+	chat.provider_id = "opencode-cli";
+	chat.messages_loaded = true;
+	chat.messages.push_back(Message{MessageRole::User, "Keep this out of the startup payload."});
+	chat.messages.push_back(Message{MessageRole::Assistant, "The transcript loads on demand."});
+	chat.computer_use_enabled = true;
+	chat.model_id = "opencode/normal";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+
+	const nlohmann::json full = uam::StateSerializer::Serialize(app);
+	const nlohmann::json summary = uam::StateSerializer::Serialize(app, true);
+	const nlohmann::json& full_chat = full["chats"][0];
+	const nlohmann::json& summary_chat = summary["chats"][0];
+
+	UAM_ASSERT_EQ(full_chat["messages"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(!summary_chat.contains("messages"));
+	UAM_ASSERT_EQ(summary_chat["messageCount"].get<std::size_t>(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(summary_chat["messagesDigest"], full_chat["messagesDigest"]);
+	UAM_ASSERT_EQ(summary_chat["modelId"], full_chat["modelId"]);
+	UAM_ASSERT_EQ(summary_chat["computerUseEnabled"], full_chat["computerUseEnabled"]);
+	UAM_ASSERT(summary_chat.contains("acpSession"));
+	UAM_ASSERT(summary_chat.contains("cliTerminal"));
+}
+
 UAM_TEST(StateSerializerCachesCatalogsPerScopeAndRefreshesBetweenSerializations)
 {
 	TempDir temp("uam-serializer-catalog-cache");

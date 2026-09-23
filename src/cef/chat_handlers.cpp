@@ -83,9 +83,9 @@ namespace
 // Pure chat domain — no cross-dependencies with other handler groups
 // ---------------------------------------------------------------------------
 
-void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	nlohmann::json state = uam::StateSerializer::Serialize(m_app);
+	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", false));
 	cb->Success(state.dump());
 }
 

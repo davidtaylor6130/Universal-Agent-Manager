@@ -454,6 +454,8 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 	}
 	nlohmann::json envelope = {{"action", parsed.request.action}, {"payload", parsed.request.payload}};
 	const std::string& action = parsed.request.action;
+	if (action == "getInitialState")
+		envelope["payload"]["summaryOnly"] = true;
 	if (action == "openNativeSessionChat" || action == "createSession")
 		envelope["payload"]["selectChat"] = false;
 	if (action != "getInitialState" && action != "getChatMessages" && action != "getToolCallContent" &&

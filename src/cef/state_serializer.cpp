@@ -1354,7 +1354,7 @@ namespace uam
 	// StateSerializer implementation
 	// ---------------------------------------------------------------------------
 
-	nlohmann::json StateSerializer::Serialize(const AppState& app)
+	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
 	{
 		CatalogSnapshotCache catalog_cache;
 		nlohmann::json j;
@@ -1377,7 +1377,7 @@ namespace uam
 			if (IsInternalChat(chat)) continue;
 			const bool selected_chat = !has_selected_chat || selected_chat_id == chat.id;
 			nlohmann::json chat_json;
-			if (selected_chat && chat.messages_loaded)
+			if (selected_chat && chat.messages_loaded && !summary_only)
 			{
 				chat_json = SerializeSession(chat);
 				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));

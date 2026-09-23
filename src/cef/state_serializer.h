@@ -20,8 +20,8 @@ namespace uam
 class StateSerializer
 {
   public:
-	/// Serialise the full application state.
-	static nlohmann::json Serialize(const AppState& app);
+	/// Serialise the application state, optionally omitting loaded chat messages.
+	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
 	/// Serialise a compact state summary for push fingerprinting.
 	static nlohmann::json SerializeFingerprint(const AppState& app);
