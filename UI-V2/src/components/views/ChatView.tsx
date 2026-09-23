@@ -49,6 +49,31 @@ const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
 
+type WorkSection = { id: string; firstIndex: number; workedSeconds: number; hasAssistant: boolean }
+
+function findWorkSectionStartIndex(messages: Message[], index: number) {
+  let start = Math.min(index, messages.length - 1)
+  while (start > 0 && !(messages[start].role === 'user' && !messages[start].continuesTurn)) start -= 1
+  return Math.max(0, start)
+}
+
+export function buildVisibleWorkSections(messages: Message[], firstVisibleIndex: number) {
+  const sections = new Map<number, WorkSection>()
+  if (messages.length === 0) return sections
+
+  const startIndex = findWorkSectionStartIndex(messages, firstVisibleIndex)
+  let section: WorkSection = { id: '', firstIndex: startIndex, workedSeconds: 0, hasAssistant: false }
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (index === 0 || (message.role === 'user' && !message.continuesTurn))
+      section = { id: message.id, firstIndex: index, workedSeconds: 0, hasAssistant: false }
+    section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
+    section.hasAssistant ||= message.role === 'assistant'
+    sections.set(index, section)
+  }
+  return sections
+}
+
 export function uamAgentDisplayName(id: string) {
   if (id === 'build') return 'Build'
   if (id === 'plan') return 'Plan'
@@ -742,16 +767,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
   const expandWorkTraces = useAppStore((state) => state.expandWorkTraces)
   const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>({ sessionId: session.id, expanded: {} })
-  const workSections = useMemo(() => {
-    let section = { id: '', firstIndex: 0, workedSeconds: 0, hasAssistant: false }
-    return messages.map((message, index) => {
-      if (index === 0 || (message.role === 'user' && !message.continuesTurn))
-        section = { id: message.id, firstIndex: index, workedSeconds: 0, hasAssistant: false }
-      section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
-      section.hasAssistant ||= message.role === 'assistant'
-      return section
-    })
-  }, [messages])
+  const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
+  const workSections = useMemo(
+    () => buildVisibleWorkSections(messages, earliestRenderedMessageIndex),
+    [earliestRenderedMessageIndex, messages]
+  )
   const sectionControls = useMemo(() => {
     const controls = new Map<string, { expanded: boolean; toggle: () => void }>()
     return (id: string) => {
@@ -762,10 +782,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return controls.get(id)!
     }
   }, [session.id, sectionChoices, expandWorkTraces])
-  const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
   const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
   const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
-  const activeWorkSection = workSections[turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex]
+  const activeWorkMessageIndex = turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex
+  const activeWorkSectionFirstIndex = activeWorkMessageIndex >= 0 && activeWorkMessageIndex < messages.length
+    ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
+    : -1
+  const activeWorkSectionId = messages[activeWorkSectionFirstIndex]?.id
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
     messages[messages.length - 1]?.isStreaming &&
@@ -2242,13 +2265,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   savedWorkDisclosures.set(message.id, disclosureState)
                 }
 
-                const section = workSections[index]
+                const section = workSections.get(index)!
                 const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex)
                 const sectionStart = messages[section.firstIndex]
                 const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
                 const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
                 const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
-                const sectionActive = Boolean(acp?.processing && section === activeWorkSection)
+                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
                 const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
                   duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]}
@@ -2259,7 +2282,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   <div className="space-y-1">
                     {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
                       sectionProviderName,
-                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section === activeWorkSection ? acp?.currentModelId || session.modelId : ''),
+                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : ''),
                       sectionStart.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
                     ].filter(Boolean).join(' · ')}</time>}
                     {message.role !== 'user' && heading}
@@ -2363,7 +2386,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 )
               })}
-              {acp?.processing && turnEvents.length === 0 && !activeWorkSection && (
+              {acp?.processing && turnEvents.length === 0 && activeWorkMessageIndex < 0 && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -2384,7 +2407,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                   streaming={Boolean(acp?.processing)}
                 >
-                  <WorkSectionContext.Provider value={activeWorkSection ? sectionControls(activeWorkSection.id) : null}>
+                  <WorkSectionContext.Provider value={activeWorkSectionId ? sectionControls(activeWorkSectionId) : null}>
                   <TurnTimelineContent
                     disclosureState={liveWorkDisclosure}
                     key={`turn-${turnSerial}-fallback-content`}

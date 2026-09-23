@@ -2,8 +2,9 @@ import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
+import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
+import type { Message } from '../../types/message'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -26,6 +27,27 @@ function openWorkspaceActions(host: HTMLElement) {
 }
 
 describe('ChatView', () => {
+  it('builds work metadata from the visible turn boundary and preserves its full summary', () => {
+    const messages: Message[] = Array.from({ length: 400 }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: 'chat-1',
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: '',
+      processingTimeMs: index === 200 ? 7000 : index === 201 ? 3000 : 0,
+      createdAt: new Date(index),
+    }))
+
+    const sections = buildVisibleWorkSections(messages, 201)
+    const firstVisibleSection = sections.get(201)!
+
+    expect(sections.size).toBe(200)
+    expect(sections.has(0)).toBe(false)
+    expect(firstVisibleSection.firstIndex).toBe(200)
+    expect(firstVisibleSection.id).toBe('message-200')
+    expect(firstVisibleSection.workedSeconds).toBe(7)
+    expect(firstVisibleSection.hasAssistant).toBe(true)
+  })
+
   beforeEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
