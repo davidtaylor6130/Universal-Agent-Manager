@@ -372,7 +372,9 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 #else
 		const std::filesystem::path root = executable.parent_path() / "UI-V2/dist";
 #endif
-		const std::string relative = path == "/companion" || path == "/companion/" ? "index.html" : path.substr(path.starts_with("/companion/") ? 11 : 1);
+		const std::string relative = path == "/companion" || path == "/companion/" ? "index.html" :
+		                             path == "/apple-touch-icon.png" ? "app_icon-180.png" :
+		                             path.substr(path.starts_with("/companion/") ? 11 : 1);
 		std::error_code error;
 		const std::filesystem::path canonical_root = std::filesystem::weakly_canonical(root, error);
 		if (error) { reply->Failure(404, "Companion UI unavailable."); return; }

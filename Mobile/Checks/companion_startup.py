@@ -3,16 +3,73 @@
 import argparse
 import base64
 import gzip
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
 import secrets
+import struct
 import socket
 import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urljoin
+
+
+class PwaLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.touch_icon = ''
+        self.manifest = ''
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'link':
+            return
+        link = dict(attrs)
+        if link.get('rel') == 'apple-touch-icon':
+            self.touch_icon = link.get('href', '')
+        elif link.get('rel') == 'manifest':
+            self.manifest = link.get('href', '')
+
+
+def verify_png(url, expected_size):
+    with urllib.request.urlopen(url, timeout=5) as response:
+        assert response.headers.get_content_type() == 'image/png', (url, response.headers.get('Content-Type'))
+        image = response.read()
+    assert image[:8] == b'\x89PNG\r\n\x1a\n', f'Invalid PNG signature: {url}'
+    assert image[12:16] == b'IHDR', f'Missing PNG IHDR: {url}'
+    dimensions = struct.unpack('>II', image[16:24])
+    assert dimensions == expected_size, (url, dimensions, expected_size)
+
+
+def verify_served_pwa(document_url):
+    with urllib.request.urlopen(document_url, timeout=5) as response:
+        assert response.headers.get_content_type() == 'text/html'
+        document = response.read().decode('utf-8')
+        page_url = response.geturl()
+    links = PwaLinks()
+    links.feed(document)
+    assert links.touch_icon, 'Served /companion document has no apple-touch-icon link'
+    assert links.manifest, 'Served /companion document has no manifest link'
+    icon_url = urljoin(page_url, links.touch_icon)
+    assert icon_url.endswith('/apple-touch-icon.png'), icon_url
+    verify_png(icon_url, (180, 180))
+
+    manifest_url = urljoin(page_url, links.manifest)
+    with urllib.request.urlopen(manifest_url, timeout=5) as response:
+        assert response.headers.get_content_type() == 'application/manifest+json', (manifest_url, response.headers.get('Content-Type'))
+        manifest = json.load(response)
+        manifest_url = response.geturl()
+    assert manifest.get('start_url') == '/companion', manifest
+    icons = manifest.get('icons', [])
+    assert icons, 'Served manifest declares no icons'
+    for item in icons:
+        assert item.get('type') == 'image/png', item
+        size = tuple(int(value) for value in item.get('sizes', '').split('x'))
+        assert len(size) == 2, item
+        verify_png(urljoin(manifest_url, item['src']), size)
 
 
 def free_port():
@@ -70,6 +127,7 @@ def main():
                         if process.poll() is not None or time.monotonic() >= deadline:
                             raise AssertionError((root / 'launch.log').read_text()[-3000:])
                         time.sleep(0.2)
+                verify_served_pwa(url + '/companion')
                 for action, expected in [('getInitialState', 200), ('getChatMessages', 200), ('getCompanionToken', 403),
                                          ('setCompanionEnabled', 403)]:
                     request = urllib.request.Request(url + '/api',
