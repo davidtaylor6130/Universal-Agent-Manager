@@ -160,7 +160,7 @@ export function CompanionShell() {
             ))
           // Stream tokens can change without changing the chat-list revision.
           if (selectedTranscriptNeedsRefresh && selectedId) {
-            if (await current.loadSessionMessages(selectedId) === false) {
+            if (await current.loadSessionMessages(selectedId, false, explicit) === false) {
               throw new Error(useAppStore.getState().statusLine || 'Could not refresh chat history.')
             }
           }
@@ -206,7 +206,7 @@ export function CompanionShell() {
             selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
           ))
         if (selectedTranscriptNeedsRefresh && selectedId) {
-          if (await current.loadSessionMessages(selectedId) === false) {
+          if (await current.loadSessionMessages(selectedId, false, explicit) === false) {
             throw new Error(useAppStore.getState().statusLine || 'Could not refresh chat history.')
           }
         }

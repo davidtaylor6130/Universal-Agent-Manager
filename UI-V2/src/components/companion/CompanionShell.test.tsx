@@ -148,6 +148,15 @@ it('refreshes an unchanged selected transcript while processing or streaming', a
     await act(async () => root.render(<CompanionShell />))
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(loadSessionMessages).toHaveBeenCalledTimes(2)
+    expect(loadSessionMessages.mock.calls).toEqual([
+      ['phone-chat', false, false],
+      ['phone-chat', false, false],
+    ])
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[aria-label="Refresh activity"]')?.click()
+    })
+    expect(loadSessionMessages).toHaveBeenCalledTimes(3)
+    expect(loadSessionMessages).toHaveBeenLastCalledWith('phone-chat', false, true)
   } finally {
     await act(async () => root.unmount())
     host.remove()
