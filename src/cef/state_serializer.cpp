@@ -120,6 +120,17 @@ namespace uam
 			return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
 		}
 
+		using CatalogSnapshotCache = std::unordered_map<std::string, nlohmann::json>;
+
+		std::string CatalogSnapshotKey(const std::string& provider_id,
+		                              std::string_view workspace,
+		                              std::string_view execution_host_id)
+		{
+			const std::string host = uam::strings::NonEmptyOrFallback(
+			    uam::strings::Trim(std::string(execution_host_id)), std::string(uam::execution_hosts::kLocalHostId));
+			return provider_id + "\n" + std::string(workspace) + "\n" + host;
+		}
+
 		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
 		{
 			if (!uam::strings::IsBlank(chat.execution_host_id) && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
@@ -131,15 +142,20 @@ namespace uam
 			return uam::strings::IsBlank(chat.model_id) ? std::string{} : chat.model_id;
 		}
 
-		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat)
+		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
+		                                     CatalogSnapshotCache& cache)
 		{
+			const std::string workspace = ModelCatalogWorkspace(app, chat);
+			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
+			if (const auto found = cache.find(key); found != cache.end()) return found->second;
 			if (app.provider_model_catalog != nullptr)
-				return app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, ModelCatalogWorkspace(app, chat), chat.execution_host_id);
+				return cache.emplace(key, app.provider_model_catalog->GetCatalogSnapshot(
+				    chat.provider_id, workspace, chat.execution_host_id)).first->second;
 			return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
 			        {"modelsLoading", false}, {"modelRefreshError", ""}};
 		}
 
-		nlohmann::json SerializeProviderModelCatalogs(const AppState& app)
+		nlohmann::json SerializeProviderModelCatalogs(const AppState& app, CatalogSnapshotCache& cache)
 		{
 			nlohmann::json catalogs = nlohmann::json::array();
 			if (app.provider_model_catalog == nullptr) return catalogs;
@@ -156,7 +172,11 @@ namespace uam
 				    ? uam::paths::WorkspaceOwnershipKey(app, host, workspace)
 				    : host + "\n" + workspace;
 				if (!seen.insert(provider_id + "\n" + scope_key).second) return;
-				nlohmann::json catalog = app.provider_model_catalog->GetCatalogSnapshot(provider_id, workspace, host);
+				ChatSession scope;
+				scope.provider_id = provider_id;
+				scope.workspace_directory = workspace;
+				scope.execution_host_id = host;
+				nlohmann::json catalog = CatalogSnapshotForChat(app, scope, cache);
 				catalog["providerId"] = provider_id;
 				catalog["workspaceDirectory"] = workspace;
 				catalog["executionHostId"] = host;
@@ -885,9 +905,10 @@ namespace uam
 			return input_json;
 		}
 
-		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat, bool ready_since_last_select)
+		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat,
+		                                                 bool ready_since_last_select, CatalogSnapshotCache& cache)
 		{
-			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat);
+			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat, cache);
 			const std::string session_id = ResolvedAcpSessionIdForChat(app, chat);
 			acp_json["sessionId"] = session_id;
 			acp_json["providerId"] = chat.provider_id;
@@ -925,16 +946,17 @@ namespace uam
 			return acp_json;
 		}
 
-		nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession& chat)
+		nlohmann::json SerializeAcpSessionSummary(const AppState& app, const ChatSession& chat,
+		                                          CatalogSnapshotCache& cache)
 		{
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
 			if (session == nullptr)
 			{
-				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select);
+				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select, cache);
 			}
 
-			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat);
+			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat, cache);
 			acp_json["sessionId"] = session->session_id;
 			acp_json["providerId"] = session->provider_id;
 			acp_json["uamAgentExecutionCapability"] =
@@ -990,12 +1012,13 @@ namespace uam
 			return acp_json;
 		}
 
-		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat)
+		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat,
+		                                           CatalogSnapshotCache& cache)
 		{
 			nlohmann::json chat_json;
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
-			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
+			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, cache);
 			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
 
 			// Serialize goals for fingerprint
@@ -1333,6 +1356,7 @@ namespace uam
 
 	nlohmann::json StateSerializer::Serialize(const AppState& app)
 	{
+		CatalogSnapshotCache catalog_cache;
 		nlohmann::json j;
 		j["stateRevision"] = app.state_revision;
 		j["appVersion"] = uam::constants::kAppVersion;
@@ -1358,12 +1382,12 @@ namespace uam
 				chat_json = SerializeSession(chat);
 				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 				chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
-				chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat);
+				chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, catalog_cache);
 				chat_json["computerUse"] = SerializeComputerUseState(app, chat);
 			}
 			else
 			{
-				chat_json = SerializeFingerprintSession(app, chat);
+				chat_json = SerializeFingerprintSession(app, chat, catalog_cache);
 			}
 			chats_arr.push_back(std::move(chat_json));
 		}
@@ -1375,7 +1399,7 @@ namespace uam
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
-		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app);
+		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app, catalog_cache);
 
 		// Settings slice that the UI cares about
 		{
@@ -1387,6 +1411,7 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeFingerprint(const AppState& app)
 	{
+		CatalogSnapshotCache catalog_cache;
 		nlohmann::json j;
 
 		j["folders"] = SerializeFoldersForFrontend(app.folders);
@@ -1400,8 +1425,7 @@ namespace uam
 		for (const auto& chat : app.chats)
 		{
 			if (IsInternalChat(chat)) continue;
-			chats_arr.push_back(SerializeFingerprintSession(
-			    app, chat));
+			chats_arr.push_back(SerializeFingerprintSession(app, chat, catalog_cache));
 		}
 
 		j["chats"] = std::move(chats_arr);
@@ -1409,7 +1433,7 @@ namespace uam
 		j["selectedChatId"] = uam::nlohmann_json::StringOrNull(selected_chat_id);
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
-		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app);
+		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app, catalog_cache);
 		j["memoryActivity"] = SerializeMemoryActivity(app);
 		j["cliVersionManager"] = SerializeCliVersionManager(app);
 

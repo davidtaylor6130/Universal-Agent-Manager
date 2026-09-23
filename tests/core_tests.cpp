@@ -8737,6 +8737,41 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	UAM_ASSERT_EQ(fingerprint["chats"][0].value("approvalMode", ""), std::string("plan"));
 }
 
+UAM_TEST(StateSerializerCachesCatalogsPerScopeAndRefreshesBetweenSerializations)
+{
+	TempDir temp("uam-serializer-catalog-cache");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	const std::string provider = uam::provider_ids::kOpenCodeCli;
+	const std::string workspace = (temp.root / "workspace").generic_string();
+	const nlohmann::json first_models = nlohmann::json::array({{{"id", "first/model"}}});
+	const nlohmann::json second_models = nlohmann::json::array({{{"id", "second/model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(provider, first_models, workspace, {}, "host-a"));
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(provider, second_models, workspace, {}, "host-b"));
+
+	ChatSession first;
+	first.id = "chat-host-a";
+	first.provider_id = provider;
+	first.workspace_directory = workspace;
+	first.execution_host_id = "host-a";
+	ChatSession second = first;
+	second.id = "chat-host-b";
+	second.execution_host_id = "host-b";
+	app.chats = {first, second};
+
+	const nlohmann::json initial = uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(initial["chats"][0]["acpSession"]["availableModels"], first_models);
+	UAM_ASSERT_EQ(initial["chats"][1]["acpSession"]["availableModels"], second_models);
+
+	const nlohmann::json refreshed_models = nlohmann::json::array({{{"id", "refreshed/model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(provider, refreshed_models, workspace, {}, "host-a"));
+	const nlohmann::json refreshed = uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(refreshed["chats"][0]["acpSession"]["availableModels"], refreshed_models);
+	UAM_ASSERT_EQ(refreshed["chats"][1]["acpSession"]["availableModels"], second_models);
+}
+
 UAM_TEST(InternalAgentChatsStayInRuntimeStateButNeverEnterTheSidebarPayload)
 {
 	uam::AppState app;
@@ -9059,6 +9094,28 @@ UAM_TEST(StatePatchSendsChatOrderOnlyWhenOrderChanges)
 	UAM_ASSERT(!order_patch.contains("chats"));
 	UAM_ASSERT_EQ(order_patch["chatOrder"][0].get<std::string>(), std::string("second"));
 	UAM_ASSERT_EQ(order_patch["chatOrder"][1].get<std::string>(), std::string("first"));
+}
+
+UAM_TEST(StatePatchIncludesOnlyChangedChatAndOmitsUnchangedChatPatch)
+{
+	uam::AppState before;
+	ChatSession first;
+	first.id = "first";
+	first.title = "Stable";
+	ChatSession second;
+	second.id = "second";
+	second.title = "Before";
+	before.chats = {first, second};
+
+	uam::AppState changed;
+	changed.chats = before.chats;
+	changed.chats[1].title = "After";
+	const nlohmann::json changed_patch = nlohmann::json::parse(uam::StatePatchForTests(before, changed))["data"];
+	UAM_ASSERT_EQ(changed_patch["chats"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(changed_patch["chats"][0].value("id", ""), std::string("second"));
+
+	const nlohmann::json unchanged_patch = nlohmann::json::parse(uam::StatePatchForTests(changed, changed))["data"];
+	UAM_ASSERT(!unchanged_patch.contains("chats"));
 }
 
 UAM_TEST(StatePatchKeepsLargeLiveChatUpdatesBelowTheCefScriptLimit)
