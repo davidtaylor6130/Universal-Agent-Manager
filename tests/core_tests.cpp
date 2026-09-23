@@ -9138,6 +9138,33 @@ UAM_TEST(StatePatchIncludesOnlyChangedChatAndOmitsUnchangedChatPatch)
 	UAM_ASSERT(!unchanged_patch.contains("chats"));
 }
 
+UAM_TEST(StatePushRetainsUnchangedChatBaselinesAcrossUpdatesAndRemoval)
+{
+	uam::AppState app;
+	for (int index = 0; index < 128; ++index)
+	{
+		ChatSession chat;
+		chat.id = "chat-" + std::to_string(index);
+		chat.title = "Original";
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	uam::PushStateUpdate(nullptr, app);
+
+	app.chats.back().title = "Updated";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	ChatSession removed = app.chats[1];
+	app.chats.erase(app.chats.begin() + 1);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	app.chats.insert(app.chats.begin() + 1, std::move(removed));
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+}
+
 UAM_TEST(StatePatchKeepsLargeLiveChatUpdatesBelowTheCefScriptLimit)
 {
 	uam::AppState before;

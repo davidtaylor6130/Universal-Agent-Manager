@@ -164,7 +164,6 @@ namespace
 	{
 		nlohmann::json changed_chats = nlohmann::json::array();
 		nlohmann::json removed_chat_ids = nlohmann::json::array();
-		std::unordered_map<std::string, nlohmann::json> next_chat_summaries;
 	};
 
 	bool ChatSummaryHasPendingInteraction(const nlohmann::json& chat)
@@ -215,8 +214,6 @@ namespace
 
 			current_chat_ids.insert(chat_id);
 
-			diff.next_chat_summaries[chat_id] = chat;
-
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
 			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat)
 			{
@@ -230,14 +227,6 @@ namespace
 				{
 					// Keep the previous summary baseline so the deferred change is
 					// retried on a later tick instead of silently dropped.
-					if (previous_chat_it != g_last_pushed_chat_summaries_by_chat_id.end())
-					{
-						diff.next_chat_summaries[chat_id] = previous_chat_it->second;
-					}
-					else
-					{
-						diff.next_chat_summaries.erase(chat_id);
-					}
 					g_state_push_deferred = true;
 				}
 				else
@@ -263,13 +252,21 @@ namespace
 	{
 		if (!diff.changed_chats.empty())
 		{
+			for (const nlohmann::json& chat : diff.changed_chats)
+			{
+				const std::string chat_id = uam::nlohmann_json::TrimmedStringValue(chat, {"id"});
+				g_last_pushed_chat_summaries_by_chat_id[chat_id] = chat;
+			}
 			data["chats"] = std::move(diff.changed_chats);
 		}
 		if (!diff.removed_chat_ids.empty())
 		{
+			for (const nlohmann::json& chat_id : diff.removed_chat_ids)
+			{
+				g_last_pushed_chat_summaries_by_chat_id.erase(chat_id.get<std::string>());
+			}
 			data["removedChatIds"] = std::move(diff.removed_chat_ids);
 		}
-		g_last_pushed_chat_summaries_by_chat_id = std::move(diff.next_chat_summaries);
 	}
 
 	std::string BuildStatePatchMessage(const uam::AppState& app, const nlohmann::json& fingerprint_state, bool* has_payload = nullptr)
