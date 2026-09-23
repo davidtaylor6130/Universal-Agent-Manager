@@ -1,13 +1,14 @@
-import { useEffect } from 'react'
-import { CompanionShell } from './components/companion/CompanionShell'
+import { lazy, Suspense, useEffect } from 'react'
 import { isCompanionContext } from './ipc/cefBridge'
-import { AppShell } from './components/layout/AppShell'
 import { TooltipProvider } from './components/ui'
 import { useAppStore } from './store/useAppStore'
 import { installCopySelectionFallback } from './utils/copySelection'
 import { trapModalTab } from './utils/modalFocus'
 import { useResolvedTheme } from './hooks/useTheme'
 import { applyDocumentTheme } from './utils/themeStorage'
+
+const CompanionShell = lazy(() => import('./components/companion/CompanionShell').then(({ CompanionShell }) => ({ default: CompanionShell })))
+const AppShell = lazy(() => import('./components/layout/AppShell').then(({ AppShell }) => ({ default: AppShell })))
 
 export default function App() {
   const theme = useAppStore((s) => s.theme)
@@ -29,7 +30,9 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      {isCompanionContext() ? <CompanionShell /> : <AppShell />}
+      <Suspense fallback={<div role="status" className="p-4 text-sm">Loading Universal Agent Manager…</div>}>
+        {isCompanionContext() ? <CompanionShell /> : <AppShell />}
+      </Suspense>
     </TooltipProvider>
   )
 }
