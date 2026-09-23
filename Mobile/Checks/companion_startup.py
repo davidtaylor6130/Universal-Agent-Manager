@@ -54,7 +54,7 @@ def verify_served_pwa(document_url):
     assert links.touch_icon, 'Served /companion document has no apple-touch-icon link'
     assert links.manifest, 'Served /companion document has no manifest link'
     icon_url = urljoin(page_url, links.touch_icon)
-    assert icon_url.endswith('/apple-touch-icon.png'), icon_url
+    assert icon_url.endswith('/app_icon-180.png'), icon_url
     verify_png(icon_url, (180, 180))
 
     manifest_url = urljoin(page_url, links.manifest)
