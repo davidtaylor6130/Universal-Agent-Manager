@@ -1248,6 +1248,10 @@ if(UAM_BUILD_TESTS)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+  if(APPLE)
+    # macOS Unix sockets have a 104-byte path limit; the default TMPDIR can exceed it.
+    set_tests_properties(uam_core_tests PROPERTIES ENVIRONMENT "TMPDIR=/tmp")
+  endif()
   add_test(NAME uam_remote_runner_validation
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
       -P ${CMAKE_SOURCE_DIR}/cmake/check_remote_runner_validation.cmake)
