@@ -299,7 +299,9 @@ UAM_TEST(GoalServicePersistsBlockerKind)
 
 UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 {
+	TempDir temp("uam-clear-active-goal");
 	uam::AppState app;
+	app.data_root = temp.root;
 	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
 	chat.id = "chat-clear-active";
 	app.chats.push_back(chat);
@@ -309,13 +311,17 @@ UAM_TEST(GoalServiceUpdateStatusAndClearActiveGoalWork)
 	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
 	UAM_ASSERT(uam::GoalService::ClearActiveGoal(app, chat.id));
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
-	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(
-	    app, chat.id, goal_id, GoalStatus::Paused));
 	UAM_ASSERT(!uam::GoalService::UpdateGoalStatus(
 	    app, chat.id, goal_id, GoalStatus::Active));
-	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Paused);
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const std::optional<ChatSession> reloaded =
+	    ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(reloaded.has_value());
+	UAM_ASSERT(reloaded->active_goal_id.empty());
+	UAM_ASSERT_EQ(reloaded->goals.front().status, GoalStatus::Paused);
 
 	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
 	Goal& goal = app.chats.front().goals.front();

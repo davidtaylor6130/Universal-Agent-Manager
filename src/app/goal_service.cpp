@@ -456,8 +456,19 @@ bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id)
 		return false;
 	}
 
+	const std::string updated_at = uam::time::TimestampNow();
+	if (!chat->active_goal_id.empty())
+	{
+		if (Goal* active_goal = FindGoalById(app, chat_id, chat->active_goal_id);
+			active_goal != nullptr && active_goal->status == GoalStatus::Active)
+		{
+			active_goal->status = GoalStatus::Paused;
+			active_goal->updated_at = updated_at;
+		}
+	}
+
 	chat->active_goal_id.clear();
-	chat->updated_at = uam::time::TimestampNow();
+	chat->updated_at = updated_at;
 	MarkDirty(app, chat_id);
 	return true;
 }
