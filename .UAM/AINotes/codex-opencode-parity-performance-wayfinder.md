@@ -8,16 +8,52 @@ and native CLI passthrough. A clear route is not proof that the product goal is 
 
 ## Constraints
 
-- Preserve all five providers and the existing dirty worktree. No commits or releases requested.
+- Preserve all five providers and the existing dirty worktree. Local commits only; no push or public release.
 - Native CLI means the provider's actual tool, without added UAM terminal controls.
 - Use Luna for bounded parallel work; the parent owns major decisions and assigns file ownership.
 - Substantial UI changes require distinct mocks and a user pick. Routine bug fixes are authorized.
-- Protect daily-driver channels and user-used audit apps. Use Builds/audit-gui and isolated data.
+- Preserve a verified rollback before replacing the authorized daily-driver app. Use isolated data for probes.
 - Queue incidental user bug flags for a later batch; do not interrupt active work unless explicitly urgent.
 - Preserve feedback and progress in the existing numbered checkpoint and backlog below.
-- Input Audit replacement still awaits the existing restart approval; elapsed time is not approval.
+- User authorized installing and restarting new builds without repeated approval. Do not alter InferDeck.
 
 ## Current frontier
+
+2026-09-23 beta8 installed at the usual Applications path, with the previous beta7
+bundle at `~/Applications/universal_agent_manager-4.9.0-beta-7.app.backup` and
+its ZIP retained. Duplicate SSH runner session exits now attach to the existing
+process with bounded retry (`f1f521db`). Failed automatic memory workers now
+share a capped cooldown instead of storming across old chats; manual scans can
+still run (`2c8dbd66`). Native CTest 8/8, frontend Vitest 825/825, deep app
+signature, all three embedded helper checksums, ZIP integrity, and packaged
+companion startup/restart/icon/chunking checks passed. Installed beta8 reattached
+the held remote OpenCode turn, listened on `127.0.0.1:58949`, rejected a missing
+companion token with HTTP 401, and sampled 2.7% main-process CPU after 3.5 minutes.
+Live memory failures are now about 30 seconds apart rather than dozens per minute.
+Computer Use showed the running two-pane UI, switched a chat successfully, and
+restored the original branch through its message-branch control. InferDeck remains
+down by user instruction, so model-backed memory failures and live remote-helper
+upgrade remain unverified.
+
+2026-09-23 UAM beta7 installed at the usual Applications path; beta6 and beta3
+app bundles remain as rollback copies, and their prior ZIPs are intact. Output-free retries stay in their chat and retain its
+goal; missing SSH helper turns terminate instead of reconnecting forever. Terminal output
+no longer triggers a full state scan for each byte batch. Bundled Markdown seeding and
+first-run shell-action discovery run after browser startup on a blocking worker. The
+iPhone icon path is verified from the served page, and expanded phone folders show all
+chats. Native 8/8, frontend 825/825, and isolated companion startup/restart 2/2 pass.
+Beta5 and beta3 both blocked at synchronous Markdown Store startup with this locked Mac;
+beta6 reaches CEF renderers and reattaches remote sessions. Mac lock prevents visual inspection.
+Live beta6 sampled ~100ms repeated full state scans during a held SSH permission wait. The
+ACP false-positive changed return and a confirmed runner missing-cwd SIGABRT are fixed in
+`f67c78aa` and `5136ea1d`; native 8/8 passes after a matching beta6 runner rebuild.
+Beta7 package/signature and three fresh remote helpers passed, as did packaged companion
+startup/restart/icon/chunking checks. The installed app reattached the held remote OpenCode
+turn; main-process CPU fell from ~55% on beta6 to 5.9% after 74 seconds on beta7.
+The 48-byte no-change patch flood stopped for 56 seconds while the same permission wait
+remained; later patches carried memory activity. The companion endpoint returned HTTP 401
+as expected without a token. Visual QA remains: macOS Computer Use cannot inspect the UI
+while the Mac is locked.
 
 2026-09-12 latest: Alpha33 candidate built and signed, bundled4helper versions/hashes verified. BUG072 Windows SSH loss reproduced RED installed30/GREEN isolated breakaway candidate. BUG073 direct Computer Use toggle/settings/armed mode implemented, native16 tests pass and focused UI/build pass. Alpha33 installed on explicit restart approval; PID51358/version/signature verified. Alpha32 rollback retained. Remote configured helpers unchanged. Visual and actual MCP consent/question verification remain outstanding.
 
