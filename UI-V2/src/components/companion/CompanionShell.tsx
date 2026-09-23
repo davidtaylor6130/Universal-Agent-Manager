@@ -46,7 +46,8 @@ export function CompanionShell() {
   const polling = useRef(false)
   const refreshQueued = useRef(false)
   const queuedForceFull = useRef(false)
-  const refreshNow = useRef<((forceFull?: boolean) => Promise<void>) | null>(null)
+  const queuedExplicitRefresh = useRef(false)
+  const refreshNow = useRef<((forceFull?: boolean, explicit?: boolean) => Promise<void>) | null>(null)
   const companionBootId = useRef('')
   const companionStateRevision = useRef<number | null>(null)
   const automaticPollCount = useRef(0)
@@ -66,7 +67,7 @@ export function CompanionShell() {
   ) : null
   const refreshManually = async () => {
     setRefreshing(true)
-    try { await refreshNow.current?.(true) } finally { setRefreshing(false) }
+    try { await refreshNow.current?.(true, true) } finally { setRefreshing(false) }
   }
   const togglePin = async () => {
     if (!session || pinning) return
@@ -123,11 +124,12 @@ export function CompanionShell() {
     initialTabDecided.current = false
     manualTabChoice.current = false
     let cancelled = false
-    const refresh = async (forceFull = false) => {
+    const refresh = async (forceFull = false, explicit = false) => {
       if (cancelled || document.visibilityState === 'hidden') return
       if (polling.current) {
         refreshQueued.current = true
         queuedForceFull.current = queuedForceFull.current || forceFull
+        queuedExplicitRefresh.current = queuedExplicitRefresh.current || explicit
         return
       }
       polling.current = true
@@ -149,8 +151,15 @@ export function CompanionShell() {
           companionStateRevision.current = state.stateRevision
           const current = useAppStore.getState()
           const selectedId = current.activeSessionId
+          const selectedMessages = selectedId ? current.messages?.[selectedId] : undefined
+          const selectedAcpBinding = selectedId ? current.acpBindingBySessionId?.[selectedId] : undefined
+          const selectedCliBinding = selectedId ? current.cliBindingBySessionId?.[selectedId] : undefined
+          const selectedTranscriptNeedsRefresh = selectedId && current.sessions.some((candidate) => candidate.id === selectedId) &&
+            (explicit || selectedMessages === undefined || Boolean(
+              selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
+            ))
           // Stream tokens can change without changing the chat-list revision.
-          if (selectedId && current.sessions.some((candidate) => candidate.id === selectedId)) {
+          if (selectedTranscriptNeedsRefresh && selectedId) {
             if (await current.loadSessionMessages(selectedId) === false) {
               throw new Error(useAppStore.getState().statusLine || 'Could not refresh chat history.')
             }
@@ -189,7 +198,14 @@ export function CompanionShell() {
           }),
         })
         const current = useAppStore.getState()
-        if (selectedId && current.sessions.some((candidate) => candidate.id === selectedId)) {
+        const selectedMessages = selectedId ? current.messages?.[selectedId] : undefined
+        const selectedAcpBinding = selectedId ? current.acpBindingBySessionId?.[selectedId] : undefined
+        const selectedCliBinding = selectedId ? current.cliBindingBySessionId?.[selectedId] : undefined
+        const selectedTranscriptNeedsRefresh = selectedId && current.sessions.some((candidate) => candidate.id === selectedId) &&
+          (explicit || selectedMessages === undefined || Boolean(
+            selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
+          ))
+        if (selectedTranscriptNeedsRefresh && selectedId) {
           if (await current.loadSessionMessages(selectedId) === false) {
             throw new Error(useAppStore.getState().statusLine || 'Could not refresh chat history.')
           }
@@ -213,9 +229,11 @@ export function CompanionShell() {
         polling.current = false
         if (refreshQueued.current && !cancelled) {
           const forceQueuedRefresh = queuedForceFull.current
+          const explicitQueuedRefresh = queuedExplicitRefresh.current
           refreshQueued.current = false
           queuedForceFull.current = false
-          await refresh(forceQueuedRefresh)
+          queuedExplicitRefresh.current = false
+          await refresh(forceQueuedRefresh, explicitQueuedRefresh)
         }
       }
     }
@@ -228,6 +246,7 @@ export function CompanionShell() {
       cancelled = true
       refreshQueued.current = false
       queuedForceFull.current = false
+      queuedExplicitRefresh.current = false
       refreshNow.current = null
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -311,7 +330,7 @@ export function CompanionShell() {
           </>}
         </div>}
       </main>
-      {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true) }} /></Suspense>}
+      {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense>}
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
       <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>

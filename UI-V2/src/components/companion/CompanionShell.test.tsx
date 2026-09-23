@@ -47,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   useAppStore.setState({
     sessions: [], folders: [], resourceCollections: [], activeSessionId: null,
+    messages: {},
     acpBindingBySessionId: {}, cliBindingBySessionId: {}, statusLine: '',
     isNewChatModalOpen: false, setNewChatModalOpen: vi.fn(), setSessionPinned: vi.fn().mockResolvedValue(true),
   })
@@ -97,6 +98,7 @@ it('skips unchanged poll snapshots and reloads changed or restarted boots', asyn
   useAppStore.setState({
     activeSessionId: 'phone-chat',
     sessions: [{ id: 'phone-chat', name: 'Phone chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number]],
+    loadSessionMessages: vi.fn(async (id: string) => { useAppStore.setState({ messages: { [id]: [] } }) }),
   })
   vi.mocked(sendToCEF)
     .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
@@ -112,11 +114,40 @@ it('skips unchanged poll snapshots and reloads changed or restarted boots', asyn
     expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(1)
-    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(2)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(2)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(3)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  }
+})
+
+it('refreshes an unchanged selected transcript while processing or streaming', async () => {
+  vi.useFakeTimers()
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const loadSessionMessages = vi.fn(async (id: string) => { useAppStore.setState({ messages: { [id]: [] } }) })
+  useAppStore.setState({
+    activeSessionId: 'phone-chat',
+    sessions: [{ id: 'phone-chat', name: 'Phone chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number]],
+    loadSessionMessages,
+    acpBindingBySessionId: { 'phone-chat': { processing: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] },
+  })
+  vi.mocked(sendToCEF)
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValue({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(loadSessionMessages).toHaveBeenCalledTimes(2)
   } finally {
     await act(async () => root.unmount())
     host.remove()
