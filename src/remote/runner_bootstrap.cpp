@@ -3,6 +3,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/paths/path_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
@@ -13,6 +14,7 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -35,6 +37,9 @@ namespace uam::remote
 			return value.size() == 64 && std::ranges::all_of(value, [](unsigned char character)
 			{ return std::isxdigit(character) != 0 && !std::isupper(character); });
 		}
+
+		constexpr std::string_view kUnavailableWorkingDirectoryError =
+		    "The remote setup working directory is unavailable.";
 
 		std::vector<std::string> SshCommand(const std::string& alias, std::string command)
 		{
@@ -66,8 +71,15 @@ namespace uam::remote
 			}
 			auto& service = PlatformServicesFactory::Instance().process_service;
 			uam::platform::StdioProcessPlatformFields process;
-			if (!service.StartStdioProcess(process, std::filesystem::current_path(), step.argv,
-			                               &error))
+			std::error_code current_path_error;
+			const std::optional<std::filesystem::path> current_path =
+			    uam::paths::CurrentPathNoThrow(&current_path_error);
+			if (!current_path)
+			{
+				error = std::string(kUnavailableWorkingDirectoryError);
+				return false;
+			}
+			if (!service.StartStdioProcess(process, *current_path, step.argv, &error))
 				return false;
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 			std::array<char, 16 * 1024> buffer{};
@@ -221,7 +233,8 @@ namespace uam::remote
 			diagnostic.clear();
 			if (!RunStep(plan.steps[1], output, diagnostic, result.error, stop_token))
 			{
-				if (!stop_token.stop_requested())
+				if (!stop_token.stop_requested() &&
+				    result.error != kUnavailableWorkingDirectoryError)
 					result.error = "Remote host is not a supported Ubuntu/Linux or Windows OpenSSH host.";
 				return result;
 			}

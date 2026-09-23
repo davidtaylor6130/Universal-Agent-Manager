@@ -999,6 +999,47 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 }
 
 #if defined(__APPLE__)
+UAM_TEST(RemoteRunnerPathsFailRecoverablyWhenProcessWorkingDirectoryDisappears)
+{
+	TempDir temp("uam-missing-runner-cwd");
+	const fs::path original_path = fs::current_path();
+	struct CurrentPathGuard
+	{
+		fs::path path;
+		~CurrentPathGuard()
+		{
+			std::error_code error;
+			fs::current_path(path, error);
+		}
+	} restore_path{original_path};
+	const fs::path missing_path = temp.root / "gone";
+	fs::create_directories(missing_path);
+	fs::current_path(missing_path);
+	fs::remove_all(missing_path);
+
+	std::string error;
+	uam::remote::RunnerClient client(
+	    PlatformServicesFactory::Instance().process_service,
+	    {PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string()});
+	UAM_ASSERT(!client.Connect(&error));
+	UAM_ASSERT_EQ(error, std::string("The remote runner bridge working directory is unavailable."));
+
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "missing-cwd";
+	plan.runner_directory = {};
+	plan.steps = {{"probe", {"ssh", "missing-cwd"}, ""},
+	              {"fallback", {"ssh", "missing-cwd"}, ""}};
+	uam::remote::RunnerArtifact artifact;
+	artifact.platform = "linux";
+	artifact.architecture = "x86_64";
+	artifact.sha256 = std::string(64, 'a');
+	plan.artifacts.push_back(std::move(artifact));
+	const uam::remote::BootstrapResult bootstrap = uam::remote::ExecuteBootstrapPlan(plan);
+	UAM_ASSERT(!bootstrap.ok);
+	UAM_ASSERT_EQ(bootstrap.error,
+	              std::string("The remote setup working directory is unavailable."));
+}
+
 UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
 {
 	TempDir temp("uam-runner-canceled-bootstrap");

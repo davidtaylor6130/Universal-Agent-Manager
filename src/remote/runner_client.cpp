@@ -145,8 +145,16 @@ namespace uam::remote
 			return false;
 		}
 		std::string error;
-		if (!m_processService.StartStdioProcess(m_bridge, std::filesystem::current_path(),
-		                                        m_bridgeArgv, &error))
+		std::error_code current_path_error;
+		const std::optional<std::filesystem::path> current_path =
+		    uam::paths::CurrentPathNoThrow(&current_path_error);
+		if (!current_path)
+		{
+			if (error_out != nullptr)
+				*error_out = "The remote runner bridge working directory is unavailable.";
+			return false;
+		}
+		if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner bridge could not start." : error;
