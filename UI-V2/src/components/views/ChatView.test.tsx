@@ -896,6 +896,57 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('lets a ready idle ACP runtime be stopped from the composer', async () => {
+    const stopAcpSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      stopAcpSession,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: true, processing: false, lifecycleState: 'ready' },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((candidate) => candidate.textContent === 'Stop runtime')
+    expect(button).toBeTruthy()
+    await act(async () => {
+      button?.click()
+      await Promise.resolve()
+    })
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides the idle runtime stop control when stopped or processing', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const session = useAppStore.getState().sessions[0]
+
+    for (const binding of [
+      { running: false, processing: false, lifecycleState: 'stopped' as const },
+      { running: true, processing: true, lifecycleState: 'processing' as const },
+    ]) {
+      act(() => useAppStore.setState((state) => ({
+        acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          'chat-1': { ...state.acpBindingBySessionId['chat-1'], ...binding },
+        },
+      })))
+      act(() => root.render(<ChatView session={session} />))
+      expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Stop runtime')).toBe(false)
+    }
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
     vi.useFakeTimers()
     useAppStore.setState((state) => ({

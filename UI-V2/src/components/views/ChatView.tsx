@@ -559,6 +559,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
+  const [stopRuntimeError, setStopRuntimeError] = useState('')
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
@@ -2598,6 +2599,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {workspaceFeedback.message}
               </Notice>
             )}
+            {stopRuntimeError && (
+              <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
+                {stopRuntimeError}
+              </Notice>
+            )}
             {!providerSupported && (
               <Notice key={`unsupported:${currentProviderId}`} tone="warning" title="Provider unavailable" dismissLabel="Dismiss unsupported provider warning">
                 {unsupportedProviderMessage}
@@ -3019,6 +3025,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               workspaceControl={!isCompanionContext() && (
+                <>
+                {acp?.running && !acp.processing && <button
+                  type="button"
+                  title="Stop runtime"
+                  onClick={() => {
+                    setStopRuntimeError('')
+                    void stopAcpSession(session.id).then((ok) => {
+                      if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+                    }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+                  }}
+                  className="uam-composer-action h-[30px] shrink-0 px-2 text-xs font-semibold"
+                  style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', color: 'var(--red)' }}
+                >Stop runtime</button>}
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
@@ -3076,6 +3095,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     </ViewportMenu>
                   )}
                 </div>
+                </>
               )}
               dictationState={dictationState}
               dictationError={dictationError}
