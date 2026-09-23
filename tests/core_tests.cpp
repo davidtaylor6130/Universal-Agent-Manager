@@ -9778,6 +9778,12 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	UAM_ASSERT(script.find("npm.cmd prefix -g") != std::string::npos);
 	UAM_ASSERT(script.find("package.json") != std::string::npos);
 	UAM_ASSERT(script.find("node_modules\\@openai\\codex\\") != std::string::npos);
+	const std::string copilot_probe = BuildInstallAwareCliProbeForTests("copilot-cli", "windows");
+	UAM_ASSERT(uam::base64::Decode(copilot_probe.substr(copilot_probe.find("-EncodedCommand ") + 16), encoded_script));
+	script.clear();
+	for (std::size_t index = 0; index < encoded_script.size(); index += 2) script.push_back(encoded_script[index]);
+	UAM_ASSERT(script.find("if(-not $p)") < script.find("Get-Command 'pwsh'"));
+	UAM_ASSERT(script.find("Write-Output '[UAM CLI PATH] |'") != std::string::npos);
 
 	for (const bool missing : {false, true})
 	{
@@ -9893,6 +9899,23 @@ UAM_TEST(CopilotVersionProbeReportsMissingWindowsPowerShellPrerequisite)
 
 	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
 	UAM_ASSERT_EQ(state.message, std::string("GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows."));
+}
+
+UAM_TEST(CopilotVersionProbeReportsMissingCliBeforePowerShellPrerequisite)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_version_provider_id = uam::provider_ids::kCopilotCli;
+	app.runtime_cli_version_check_task.running = true;
+	app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.runtime_cli_version_check_task.state->result.output = "[UAM CLI PATH] |\ncopilot was not found on PATH\n";
+	app.runtime_cli_version_check_task.state->completed.store(true);
+
+	ProviderCliCompatibilityService().Poll(app);
+
+	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
+	UAM_ASSERT_EQ(state.message, std::string("GitHub Copilot CLI is not installed or not on PATH."));
+	UAM_ASSERT(state.check_error.empty());
 }
 
 UAM_TEST(CliProviderInstallTreatsLaunchAndTimeoutFailuresAsFailures)

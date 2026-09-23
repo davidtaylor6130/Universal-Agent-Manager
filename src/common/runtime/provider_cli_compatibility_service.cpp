@@ -510,10 +510,16 @@ namespace
 			std::string package_path(policy.npm_package);
 			std::ranges::replace(package_path, '/', '\\');
 			// Only npm's real global shim plus its installed package identifies npm ownership.
-			const std::string script =
+			std::string script =
 			    "$ErrorActionPreference='Stop';$p=(Get-Command '" + std::string(policy.executable_name) +
-			    "' -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1).Source;"
-			    "$t='';try{if($p -and [IO.Path]::GetExtension($p) -eq '.cmd'){"
+			    "' -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1).Source;";
+			if (policy.provider_id == uam::provider_ids::kCopilotCli)
+			{
+				script += "if(-not $p){Write-Output '[UAM CLI PATH] |';Write-Output 'copilot was not found on PATH';exit 0};"
+				           "if(-not(Get-Command 'pwsh' -ErrorAction SilentlyContinue)){"
+				           "Write-Output 'GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found.';exit 1};";
+			}
+			script += "$t='';try{if($p -and [IO.Path]::GetExtension($p) -eq '.cmd'){"
 			    "$prefix=(& npm.cmd prefix -g 2>$null|Select-Object -Last 1);"
 			    "if($LASTEXITCODE -eq 0 -and $prefix -and "
 			    "[IO.Path]::GetDirectoryName($p).TrimEnd('\\') -eq $prefix.Trim().TrimEnd('\\')){"
@@ -529,12 +535,7 @@ namespace
 				utf16_le.push_back(character);
 				utf16_le.push_back('\0');
 			}
-			std::string command;
-			if (policy.provider_id == uam::provider_ids::kCopilotCli)
-			{
-				command = "where pwsh >nul 2>nul || (echo GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found. & exit /b 1) & ";
-			}
-			return command + "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + uam::base64::Encode(utf16_le);
+			return "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + uam::base64::Encode(utf16_le);
 		}
 	}
 
