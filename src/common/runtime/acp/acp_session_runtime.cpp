@@ -3146,10 +3146,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const bool remote_turn_recovery = turn_was_active &&
 				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 				    !remote_source_exit;
+				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_process_missing =
 				    session.recent_stderr.find("The remote process does not exist.") != std::string::npos ||
 				    session.recent_stderr.find("The remote process is no longer available.") != std::string::npos ||
 				    session.recent_stderr.find("The remote process has exited.") != std::string::npos;
+				const bool remote_process_duplicate =
+				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+				    exit_code == 70 &&
+				    session.recent_stderr.find("A remote process already uses this sessionId.") !=
+				        std::string::npos;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
 				const bool remote_stop_cleanup_missing =
 				    session.remote_stop_unconfirmed && remote_process_missing;
@@ -3178,6 +3184,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (remote_process_missing)
 				{
 					chat.remote_process_exists = false;
+					if (!remote_turn_recovery) session.recovering_remote_process = false;
+				}
+				if (remote_process_duplicate)
+				{
+					// The runner rejected a fresh proxy because its helper-owned process
+					// survived the bridge. Reattach before any further fresh launch.
+					chat.remote_process_exists = true;
+					session.processing = remote_turn_recovery;
+					session.recovering_remote_turn = remote_turn_recovery;
+					session.recovering_remote_process = true;
+					ScheduleAcpReconnect(session, GetAppTimeSeconds());
+					(void)SaveChatQuietly(app, chat);
+					changed = true;
+					continue;
 				}
 				if ((turn_was_active && !remote_turn_recovery) || remote_source_exit)
 					SaveChatQuietly(app, chat);
@@ -3273,6 +3293,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 					{
 						session.reconnect_pending = false;
 						session.reconnect_not_before_time_s = 0.0;
+					}
+					else if (recovering_remote_process)
+					{
+						RecordAcpReconnectFailure(app, session, chat, GetAppTimeSeconds(),
+						                          session.last_error);
 					}
 					else
 					{

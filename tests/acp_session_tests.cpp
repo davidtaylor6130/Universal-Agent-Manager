@@ -8292,6 +8292,91 @@ UAM_TEST(AcpTransportRecoveryPreservesAliasedFailureReason)
 	}
 }
 
+UAM_TEST(AcpRemoteDuplicateProcessExitSchedulesAttachRecovery)
+{
+	TempDir temp("uam-acp-duplicate-process-recovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "duplicate-process-recovery";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = chat.provider_id;
+	owned_session->running = true;
+	uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+		                                      "echo A remote process already uses this sessionId. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c",
+	                                      "echo 'A remote process already uses this sessionId.' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	for (int attempt = 0; attempt < 100 && !session->recovering_remote_process; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	UAM_ASSERT(session->recovering_remote_process);
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT(app.chats.front().remote_process_exists);
+	UAM_ASSERT_EQ(session->reconnect_attempts, 0);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+}
+
+UAM_TEST(AcpFailedRemoteAttachExitUsesBoundedReconnectBackoff)
+{
+	TempDir temp("uam-acp-failed-attach-recovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "failed-attach-recovery";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = chat.provider_id;
+	owned_session->running = true;
+	owned_session->recovering_remote_process = true;
+	uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+	                                      "echo The remote process is no longer available. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c",
+	                                      "echo 'The remote process is no longer available.' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	for (int attempt = 0; attempt < 100 && session->reconnect_attempts == 0; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	UAM_ASSERT_EQ(session->reconnect_attempts, 1);
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT(session->reconnect_not_before_time_s > uam::GetAppTimeSeconds());
+	UAM_ASSERT(!session->recovering_remote_process);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+}
+
 UAM_TEST(AcpRemoteTransportFailurePreservesHelperOwnedTurnAndSchedulesReconnect)
 {
 	TempDir temp("uam-acp-remote-transport-recovery");
