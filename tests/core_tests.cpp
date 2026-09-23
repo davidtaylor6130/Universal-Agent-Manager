@@ -6676,6 +6676,200 @@ UAM_TEST(MessageBranchRetryFailureRollsBackBranchAndRuntimeState)
 	UAM_ASSERT_EQ(reloaded.settings.last_selected_chat_id, std::string("chat-source"));
 }
 
+UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-message-branch-git-history");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "baseline\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = repo.string();
+	app.folders.push_back(folder);
+	ChatSession source = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	source.id = "chat-history-source";
+	source.workspace_directory = repo.string();
+	source.messages = {
+	    Message{MessageRole::User, "Make the first change."},
+	    Message{MessageRole::Assistant, "First change complete."},
+	    Message{MessageRole::User, "Continue from the first change."},
+	};
+	app.chats.push_back(std::move(source));
+
+	uam::GitWorktreeService worktrees;
+	UAM_ASSERT(worktrees.CreateForChat(app, app.chats.front()).ok);
+	ChatSession& isolated = app.chats.front();
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(isolated));
+	const fs::path source_worktree = isolated.workspace_worktree_directory;
+	UAM_ASSERT(uam::io::WriteTextFile(source_worktree / "app.txt", "first change\n"));
+	const uam::GitTurnCheckpointResult checkpoint = worktrees.CreateTurnCheckpoint(app, isolated, 1);
+	UAM_ASSERT(checkpoint.ok && checkpoint.changed);
+	UAM_ASSERT_EQ(isolated.messages[1].checkpoint_sha, checkpoint.checkpoint_sha);
+	isolated.messages.push_back(Message{MessageRole::Assistant, "Later change complete."});
+	UAM_ASSERT(uam::io::WriteTextFile(source_worktree / "app.txt", "later change\n"));
+	const uam::GitTurnCheckpointResult later_checkpoint = worktrees.CreateTurnCheckpoint(app, isolated, 3);
+	UAM_ASSERT(later_checkpoint.ok && later_checkpoint.changed);
+	UAM_ASSERT_EQ(isolated.messages[3].checkpoint_sha, later_checkpoint.checkpoint_sha);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, isolated));
+	const std::string source_head = uam::strings::Trim(
+	    PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+	        "git -C " + ShellQuoteForTest(repo.string()) + " rev-parse HEAD", 120000).output);
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, isolated.id, 2));
+	const ChatSession* branch = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(branch != nullptr);
+	UAM_ASSERT(branch->workspace_isolation_kind == uam::paths::kGitWorktreeIsolationKind);
+	UAM_ASSERT(uam::paths::HasGitWorktreeSource(*branch));
+	UAM_ASSERT(uam::paths::HasGitWorktreeDirectory(*branch));
+	const fs::path branch_worktree = branch->workspace_worktree_directory;
+	UAM_ASSERT(branch_worktree != source_worktree);
+	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, *branch), uam::paths::AbsolutePathNoThrow(branch_worktree));
+	UAM_ASSERT_EQ(ReadFile(branch_worktree / "app.txt"), std::string("first change\n"));
+	UAM_ASSERT(ReadFile(branch_worktree / "app.txt").find("later change") == std::string::npos);
+	const ProcessExecutionResult branch_head = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+	    "git -C " + ShellQuoteForTest(branch_worktree.string()) + " rev-parse HEAD", 120000);
+	UAM_ASSERT(branch_head.ok);
+	UAM_ASSERT_EQ(uam::strings::Trim(branch_head.output), checkpoint.checkpoint_sha);
+	UAM_ASSERT_EQ(ReadFile(repo / "app.txt"), std::string("baseline\n"));
+	const ProcessExecutionResult unchanged_source_head = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+	    "git -C " + ShellQuoteForTest(repo.string()) + " rev-parse HEAD", 120000);
+	UAM_ASSERT(unchanged_source_head.ok);
+	UAM_ASSERT_EQ(uam::strings::Trim(unchanged_source_head.output), source_head);
+}
+
+UAM_TEST(MessageBranchFromManagedWorkspaceCreatesIndependentManagedRepository)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-message-branch-managed");
+	const fs::path source_root = temp.root / "workspace";
+	fs::create_directories(source_root / ".UAM");
+	UAM_ASSERT(uam::io::WriteTextFile(source_root / "app.txt", "source\n"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = source_root.string();
+	app.folders.push_back(folder);
+	ChatSession source = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	source.id = "chat-managed-source";
+	source.workspace_directory = source_root.string();
+	source.messages.push_back(Message{MessageRole::User, "Branch this managed workspace."});
+	app.chats.push_back(std::move(source));
+
+	uam::GitWorktreeService worktrees;
+	UAM_ASSERT(worktrees.CreateForChat(app, app.chats.front()).ok);
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(app.chats.front()));
+	const fs::path source_worktree = app.chats.front().workspace_worktree_directory;
+	UAM_ASSERT(uam::io::WriteTextFile(source_worktree / "app.txt", "source branch baseline\n"));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, app.chats.front().id, 0));
+	const ChatSession* branch = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(branch != nullptr);
+	UAM_ASSERT(branch->workspace_isolation_kind == uam::paths::kGitWorktreeIsolationKind);
+	UAM_ASSERT(uam::paths::HasGitWorktreeDirectory(*branch));
+	const fs::path branch_worktree = branch->workspace_worktree_directory;
+	UAM_ASSERT(branch_worktree != source_worktree);
+	UAM_ASSERT_EQ(ReadFile(branch_worktree / "app.txt"), std::string("source\n"));
+	UAM_ASSERT_EQ(ReadFile(source_worktree / "app.txt"), std::string("source branch baseline\n"));
+	const fs::path branch_repository = branch_worktree.parent_path() /
+	    ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(branch->id)));
+	UAM_ASSERT(fs::is_directory(branch_repository));
+	UAM_ASSERT_EQ(ReadFile(source_root / "app.txt"), std::string("source\n"));
+}
+
+UAM_TEST(MessageBranchRejectsMalformedOrMissingGitCheckpoint)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-message-branch-invalid-checkpoint");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "baseline\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder", "codex-cli");
+	source.id = "chat-invalid-checkpoint";
+	source.workspace_directory = repo.string();
+	source.messages = {
+	    Message{MessageRole::User, "First"},
+	    Message{MessageRole::Assistant, "Done"},
+	    Message{MessageRole::User, "Continue"},
+	};
+	source.messages[1].checkpoint_sha = "not-a-commit";
+	app.chats.push_back(std::move(source));
+	uam::GitWorktreeService worktrees;
+	UAM_ASSERT(worktrees.CreateForChat(app, app.chats.front()).ok);
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(app.chats.front()));
+	app.chats.front().workspace_base_ref.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, "chat-invalid-checkpoint", 2));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.status_line.find("checkpoint") != std::string::npos);
+}
+
+UAM_TEST(MessageBranchRetryFailureCleansUpNewIsolatedWorktree)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-message-branch-retry-worktree-cleanup");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "baseline\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder", "gemini-cli");
+	source.id = "chat-retry-worktree-source";
+	source.workspace_directory = repo.string();
+	source.uam_agent_id = "missing-agent-for-retry";
+	source.messages.push_back(Message{MessageRole::User, "Retry this request."});
+	app.chats.push_back(std::move(source));
+	uam::GitWorktreeService worktrees;
+	UAM_ASSERT(worktrees.CreateForChat(app, app.chats.front()).ok);
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(app.chats.front()));
+	const fs::path source_worktree = app.chats.front().workspace_worktree_directory;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	std::string branch_id;
+	std::string error;
+	UAM_ASSERT(!uam::BranchFromMessageAndRetry(app, "chat-retry-worktree-source", 0, std::nullopt, &branch_id, &error));
+	UAM_ASSERT(!branch_id.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(fs::exists(source_worktree));
+	const fs::path worktree_parent = source_worktree.parent_path();
+	UAM_ASSERT(!fs::exists(worktree_parent / branch_id));
+	UAM_ASSERT(!fs::exists(worktree_parent / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(branch_id)))));
+}
+
 UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
 {
 	ChatSession oldest;

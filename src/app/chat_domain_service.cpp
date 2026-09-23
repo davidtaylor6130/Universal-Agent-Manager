@@ -1,6 +1,7 @@
 #include "chat_domain_service.h"
 
 #include "app/goal_service.h"
+#include "app/git_worktree_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_branching.h"
@@ -659,6 +660,11 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		app.status_line = "Wait for the active turn to finish before branching.";
 		return false;
 	}
+	if (app.worktree_operation_chat_ids.contains(source.id))
+	{
+		app.status_line = "Wait for the source chat's worktree operation to finish before branching.";
+		return false;
+	}
 
 	if (replacement_content.has_value() && uam::strings::IsBlank(*replacement_content))
 	{
@@ -721,7 +727,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			branch.goals.push_back(std::move(branch_goal));
 		}
 	}
-	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
+	const bool branch_from_git_worktree = uam::paths::IsGitWorktreeIsolated(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
 	if (replacement_content.has_value())
@@ -731,11 +737,36 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.updated_at = uam::time::TimestampNow();
 	branch.last_opened_at = branch.updated_at;
 	branch.title = BranchTitleFromMessage(branch.messages.back().content);
+	if (branch_from_git_worktree)
+	{
+		std::string checkpoint_sha = source.workspace_base_ref;
+		for (int previous = message_index - 1; previous >= 0; --previous)
+		{
+			if (source.messages[previous].role == MessageRole::Assistant &&
+			    !source.messages[previous].checkpoint_sha.empty())
+			{
+				checkpoint_sha = source.messages[previous].checkpoint_sha;
+				break;
+			}
+		}
+		const uam::GitWorktreeOperationResult created =
+		    uam::GitWorktreeService().CreateBranchForChat(app, source, branch, checkpoint_sha);
+		if (!created.ok)
+		{
+			app.status_line = created.message;
+			return false;
+		}
+	}
 
 	const ProviderProfile& branch_provider = ProviderResolutionService().ProviderForChatOrDefault(app, branch);
 	if (!ProviderRuntime::SaveHistory(branch_provider, app.data_root, branch))
 	{
-		app.status_line = "Failed to save branch chat.";
+		std::string cleanup_error;
+		if (branch_from_git_worktree && !uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch, &cleanup_error))
+		{
+			app.status_line = "Failed to save branch chat; its isolated worktree was preserved: " + cleanup_error;
+		}
+		else app.status_line = "Failed to save branch chat.";
 		return false;
 	}
 
@@ -746,6 +777,12 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	SelectChatById(app, branch.id);
 	if (!PersistenceCoordinator().SaveSettings(app))
 	{
+		std::string cleanup_error;
+		if (branch_from_git_worktree && !uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch, &cleanup_error))
+		{
+			app.status_line = "Failed to persist branch selection; the branch was kept because its worktree could not be removed: " + cleanup_error;
+			return false;
+		}
 		std::erase_if(app.chats, [&branch](const ChatSession& chat) { return chat.id == branch.id; });
 		SelectChatById(app, previous_selected_chat_id);
 		(void)ChatRepository::DeleteChatStorageFiles(app.data_root, branch.id);

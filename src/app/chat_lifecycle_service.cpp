@@ -2,6 +2,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
+#include "app/git_worktree_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -1090,6 +1091,17 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 		{
 			*error_out = app.status_line;
 		}
+		return false;
+	}
+	std::string worktree_cleanup_error;
+	if (!uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch_snapshot, &worktree_cleanup_error))
+	{
+		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
+		ChatDomainService().SelectChatById(app, branch_id);
+		(void)PersistenceCoordinator().SaveSettings(app);
+		app.status_line = retry_error + " Branch worktree contains changes or could not be removed, so the branch was kept: " +
+		                  worktree_cleanup_error + (history_restored ? "" : " Its local history could not be restored.");
+		if (error_out != nullptr) *error_out = app.status_line;
 		return false;
 	}
 

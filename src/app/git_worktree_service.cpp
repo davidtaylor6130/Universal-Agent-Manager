@@ -727,6 +727,142 @@ namespace uam
 		return result;
 	}
 
+	GitWorktreeOperationResult GitWorktreeService::CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const
+	{
+		GitWorktreeOperationResult result;
+		if (!uam::paths::IsControllerLocalWorkspace(source) || !uam::paths::IsControllerLocalWorkspace(branch))
+		{
+			result.message = std::string(kRemoteWorkspaceUnsupported);
+			return result;
+		}
+		if (!uam::paths::HasGitWorktreeSource(source) || !uam::paths::HasGitWorktreeDirectory(source) ||
+		    !uam::paths::IsDirectoryNoThrow(uam::paths::PathFromUtf8(source.workspace_worktree_directory)))
+		{
+			result.message = "The source chat's isolated worktree is unavailable.";
+			return result;
+		}
+		if (!IsCommitId(checkpoint_sha))
+		{
+			result.message = "The branch checkpoint is missing or invalid.";
+			return result;
+		}
+
+		const std::filesystem::path source_root = uam::paths::PathFromUtf8(source.workspace_source_directory);
+		const std::filesystem::path parent_managed_repository = ManagedRepositoryRoot(app, source_root, source.id);
+		const bool managed_repository = uam::paths::IsDirectoryNoThrow(parent_managed_repository);
+		const std::filesystem::path parent_repository = managed_repository ? parent_managed_repository : source_root;
+		if (!GitCommand(parent_repository, "cat-file -e " + uam::shell::EscapeArg(checkpoint_sha + "^{commit}"), &result.message))
+		{
+			result.message = "The branch checkpoint is no longer available in the source repository.";
+			return result;
+		}
+
+		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, branch.id) : parent_repository;
+		const std::filesystem::path worktree = WorktreeRootForChat(app, source_root, branch.id);
+		if (uam::paths::PathExistsNoThrow(repository) && managed_repository)
+		{
+			result.message = "The branch's managed repository path already exists.";
+			return result;
+		}
+		if (uam::paths::PathExistsNoThrow(worktree))
+		{
+			result.message = "The branch worktree path already exists.";
+			return result;
+		}
+		std::error_code ec;
+		if (!uam::paths::CreateDirectoriesNoThrow(worktree.parent_path(), &ec))
+		{
+			result.message = "Failed to create the branch worktree directory: " + ec.message();
+			return result;
+		}
+		if (managed_repository)
+		{
+			const ProcessExecutionResult clone = RunCommand("git clone --no-hardlinks --quiet " +
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(parent_repository)) + " " +
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository)));
+			if (!CommandSucceeded(clone) || !GitCommand(repository, "remote remove origin", &result.message))
+			{
+				if (!CommandSucceeded(clone)) result.message = CommandOutputOrFallback(clone, "Failed to clone the source chat's managed repository.");
+				(void)uam::paths::RemoveAllNoThrow(repository, &ec);
+				return result;
+			}
+		}
+
+		const std::string branch_name = BranchNameForChat(branch.id);
+		const ProcessExecutionResult add = RunCommand(BuildGitCommandInDirectory(repository,
+		    "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " +
+		    uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)) + " " +
+		    uam::shell::EscapeArg(checkpoint_sha)));
+		if (!CommandSucceeded(add))
+		{
+			result.message = CommandOutputOrFallback(add, "Failed to create the branch worktree.");
+			(void)GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)));
+			(void)GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch_name));
+			if (managed_repository) (void)uam::paths::RemoveAllNoThrow(repository, &ec);
+			return result;
+		}
+
+		branch.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+		branch.workspace_source_directory = uam::paths::Utf8PathString(source_root);
+		branch.workspace_worktree_directory = uam::paths::Utf8PathString(worktree);
+		branch.workspace_branch_name = branch_name;
+		branch.workspace_base_ref = checkpoint_sha;
+		CompleteSuccessfulResult(result, Status(app, branch), "Created an isolated branch at the selected message's checkpoint.");
+		return result;
+	}
+
+	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const
+	{
+		if (error_out != nullptr) error_out->clear();
+		if (!uam::paths::IsGitWorktreeIsolated(branch)) return true;
+		if (!uam::paths::IsControllerLocalWorkspace(branch) ||
+		    uam::strings::IsBlank(branch.workspace_source_directory) ||
+		    uam::strings::IsBlank(branch.workspace_worktree_directory) ||
+		    branch.workspace_branch_name != BranchNameForChat(branch.id) || !IsCommitId(branch.workspace_base_ref))
+		{
+			if (error_out != nullptr) *error_out = "Branch worktree metadata is incomplete; it was left untouched.";
+			return false;
+		}
+		const std::filesystem::path source_root = uam::paths::PathFromUtf8(branch.workspace_source_directory);
+		const std::filesystem::path worktree = uam::paths::PathFromUtf8(branch.workspace_worktree_directory);
+		if (uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
+		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.id)).lexically_normal() ||
+		    !uam::paths::IsDirectoryNoThrow(worktree) || uam::paths::IsLinkOrReparsePointNoThrow(worktree))
+		{
+			if (error_out != nullptr) *error_out = "Branch worktree path is unavailable or unexpected; it was left untouched.";
+			return false;
+		}
+		bool dirty = false;
+		std::string error;
+		std::string head;
+		if (!IsDirty(worktree, &dirty, &error) || !GitOutput(worktree, "rev-parse HEAD", &head, &error))
+		{
+			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(error, "Could not inspect branch worktree.");
+			return false;
+		}
+		if (dirty || head != branch.workspace_base_ref)
+		{
+			if (error_out != nullptr) *error_out = "Branch worktree contains changes; it was left untouched.";
+			return false;
+		}
+		const std::filesystem::path managed_repository = ManagedRepositoryRoot(app, source_root, branch.id);
+		const bool managed = uam::paths::IsDirectoryNoThrow(managed_repository);
+		const std::filesystem::path repository = managed ? managed_repository : source_root;
+		if (!GitCommand(repository, "worktree remove " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)), &error))
+		{
+			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(error, "Failed to remove unused branch worktree.");
+			return false;
+		}
+		(void)GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch.workspace_branch_name));
+		std::error_code ec;
+		if (managed && !uam::paths::RemoveAllNoThrow(repository, &ec))
+		{
+			if (error_out != nullptr) *error_out = "Failed to remove the unused branch's managed repository: " + ec.message();
+			return false;
+		}
+		return true;
+	}
+
 	GitWorktreeOperationResult GitWorktreeService::DiscardChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
