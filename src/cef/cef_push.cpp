@@ -39,7 +39,7 @@ namespace
 
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
 	bool g_state_push_deferred = false;
-	std::unordered_map<std::string, std::string> g_last_pushed_chat_summaries_by_chat_id;
+	std::unordered_map<std::string, nlohmann::json> g_last_pushed_chat_summaries_by_chat_id;
 	std::string g_last_pushed_folders_fingerprint;
 	std::string g_last_pushed_resource_collections_fingerprint;
 	std::string g_last_pushed_providers_fingerprint;
@@ -122,7 +122,7 @@ namespace
 				continue;
 			}
 
-			g_last_pushed_chat_summaries_by_chat_id[chat_id] = DumpFrontendJson(chat);
+			g_last_pushed_chat_summaries_by_chat_id[chat_id] = chat;
 		}
 	}
 
@@ -164,7 +164,7 @@ namespace
 	{
 		nlohmann::json changed_chats = nlohmann::json::array();
 		nlohmann::json removed_chat_ids = nlohmann::json::array();
-		std::unordered_map<std::string, std::string> next_chat_summaries;
+		std::unordered_map<std::string, nlohmann::json> next_chat_summaries;
 	};
 
 	bool ChatSummaryHasPendingInteraction(const nlohmann::json& chat)
@@ -215,11 +215,10 @@ namespace
 
 			current_chat_ids.insert(chat_id);
 
-			const std::string chat_fingerprint = DumpFrontendJson(chat);
-			diff.next_chat_summaries[chat_id] = chat_fingerprint;
+			diff.next_chat_summaries[chat_id] = chat;
 
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
-			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat_fingerprint)
+			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat)
 			{
 				const auto now = std::chrono::steady_clock::now();
 				const auto last_summary_push_it = g_last_summary_push_time_by_chat_id.find(chat_id);
