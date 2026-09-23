@@ -3,6 +3,7 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
+#include "common/utils/env_utils.h"
 #include "common/utils/hash_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -531,8 +532,12 @@ namespace uam::remote
 			if (!request.contains("path") || !request["path"].is_string())
 				return ProcessError(request, "invalid_request", "An absolute directory path is required.");
 			const std::string path_text = request["path"].get<std::string>();
-			const std::filesystem::path requested = uam::paths::PathFromUtf8(path_text);
-			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !requested.is_absolute())
+			const std::filesystem::path requested = path_text.empty()
+			    ? uam::env::GetUserHomePath().value_or(std::filesystem::path{})
+			    : uam::paths::PathFromUtf8(path_text);
+			const std::string resolved_path = uam::paths::Utf8PathString(requested);
+			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes, true) ||
+			    !IsBoundedText(resolved_path, kMaxWorkingDirectoryBytes) || !requested.is_absolute())
 				return ProcessError(request, "invalid_request", "An absolute bounded directory path is required.");
 
 			std::error_code error;

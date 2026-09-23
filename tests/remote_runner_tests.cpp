@@ -517,6 +517,14 @@ UAM_TEST(RemoteRunnerListsOnlyBoundedDirectChildDirectories)
 	    "test-version", &state);
 	UAM_ASSERT(hello["capabilities"].value("directoryBrowsing", false));
 	UAM_ASSERT(hello["capabilities"].value("fileCopy", false));
+	const std::filesystem::path home = uam::env::GetUserHomePath().value_or(std::filesystem::path{});
+	UAM_ASSERT(home.is_absolute());
+	const nlohmann::json listed_home = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-home"}, {"type", "directory.list"}, {"path", ""}},
+	    "test-version", &state);
+	UAM_ASSERT(listed_home.value("ok", false));
+	UAM_ASSERT_EQ(listed_home["result"].value("directory", ""),
+	              uam::paths::Utf8PathString(home.lexically_normal()));
 
 	const nlohmann::json listed = uam::remote::HandleRunnerRequest(
 	    {{"id", "list-1"}, {"type", "directory.list"}, {"path", temp.root.string()}},
