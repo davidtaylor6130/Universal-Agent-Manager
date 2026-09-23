@@ -102,6 +102,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
             tone="error"
             title={`${result.name} version check failed`}
             dismissLabel={`Dismiss ${result.name} version check error`}
+            onDismiss={() => monitor.dismissProviderCheckError(result)}
             actions={<Button size="sm" variant="ghost" leadingIcon={<RefreshCw size={14} aria-hidden />}
               aria-label={`Retry ${result.name} version check`} disabled={monitor.checking || monitor.providerTaskRunning}
               onClick={async () => {
@@ -145,7 +146,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
             <RefreshCw size={24} />
             <div className="text-sm" style={{ color: 'var(--text-2)' }}>Checking for updates…</div>
           </div>
-        ) : checkFailure || monitor.providerCheckErrors.length > 0 ? (
+        ) : checkFailure || monitor.hasProviderCheckErrors ? (
           <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
             <ArrowUpCircle size={24} />
             <div className="text-sm" style={{ color: 'var(--text-2)' }}>Could not confirm update status</div>

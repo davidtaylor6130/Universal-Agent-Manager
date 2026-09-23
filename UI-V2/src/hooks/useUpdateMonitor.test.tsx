@@ -171,6 +171,46 @@ describe('useUpdateMonitor', () => {
     act(() => root.unmount())
   })
 
+  it('persists dismissal of a remote check error across panel remounts and shows a changed failure', async () => {
+    const previous = useAppStore.getState()
+    const failurePrefix = 'SSH connection timed out while checking remote CLI version; verify SSH transport and runner status. '.repeat(5)
+    const firstFailure = `${failurePrefix}certificate detail A`
+    const nextFailure = `${failurePrefix}certificate detail B`
+    const provider = { providerId: 'codex-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'unavailable' as const, message: 'Could not check Codex version.', checkError: firstFailure, running: false, lastCommand: '', lastOutput: '' }
+    const remoteHost = { id: 'alpha', label: 'Alpha server', transport: 'ssh' as const, sshAlias: 'alpha', runnerStatus: 'ready' as const, runnerVersion: '4.9.0', platform: 'windows', architecture: 'x64', lastSeenAt: '' }
+    useAppStore.setState({ updateChecksEnabled: false, dismissedUpdateVersions: {}, executionHosts: [remoteHost], providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '', description: '' }], setUpdateSettings: async (settings) => {
+      const dismissedUpdateVersions = settings.dismissedUpdateVersions ?? useAppStore.getState().dismissedUpdateVersions
+      useAppStore.setState({ dismissedUpdateVersions: Object.fromEntries(Object.entries(dismissedUpdateVersions).map(([key, value]) => [key, value.slice(0, 128)])) })
+      return true
+    }, cliVersionManager: {
+      providers: [], remoteProviders: [{ ...provider, executionHostId: 'alpha' }],
+    } })
+    function Panel() { return <UpdatesPanel monitor={useUpdateMonitor()} onClose={() => {}} /> }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<Panel />))
+      expect(host.textContent).toContain('Codex · Alpha server version check failed')
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss Codex · Alpha server version check error"]')!.click())
+      const persistedIdentity = useAppStore.getState().dismissedUpdateVersions['["alpha","codex-cli"]']
+      expect(firstFailure.length).toBeGreaterThan(128)
+      expect(persistedIdentity).toMatch(/^error:[a-f0-9]{16}$/)
+      expect(persistedIdentity.length).toBeLessThanOrEqual(128)
+      await act(async () => root.render(null))
+      await act(async () => root.render(<Panel />))
+      expect(host.textContent).not.toContain('Codex · Alpha server version check failed')
+      expect(host.textContent).toContain('Could not confirm update status')
+      expect(host.textContent).not.toContain('Everything is up to date')
+
+      act(() => useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, executionHostId: 'alpha', checkError: nextFailure }] } }))
+      expect(host.textContent).toContain('Codex · Alpha server version check failed')
+      expect(host.textContent).toContain('certificate detail B')
+    } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
   it('waits for persisted CEF settings before attempting an automatic check', async () => {
     window.cefQuery = vi.fn()
     vi.stubGlobal('fetch', vi.fn())

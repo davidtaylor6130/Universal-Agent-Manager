@@ -10,6 +10,15 @@ import {
   type LatestUpdateCatalog,
 } from '../services/updateCatalog'
 
+function updateCheckErrorIdentity(message: string): string {
+  // ponytail: 64-bit FNV-1a keeps settings bounded; collisions are negligible for UI dismissal state.
+  let hash = 0xcbf29ce484222325n
+  for (let index = 0; index < message.length; index += 1) {
+    hash = BigInt.asUintN(64, (hash ^ BigInt(message.charCodeAt(index))) * 0x100000001b3n)
+  }
+  return `error:${hash.toString(16).padStart(16, '0')}`
+}
+
 export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
   const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
@@ -146,6 +155,10 @@ export function useUpdateMonitor() {
     void setUpdateSettings({ dismissedUpdateVersions: { ...dismissedVersions, [id]: version } })
   }, [dismissedVersions, setUpdateSettings])
 
+  const dismissProviderCheckError = useCallback((error: { providerId: string; executionHostId: string; message: string }) => {
+    dismiss(JSON.stringify([error.executionHostId, error.providerId]), updateCheckErrorIdentity(error.message))
+  }, [dismiss])
+
   const dismissAll = useCallback(() => {
     void setUpdateSettings({
       dismissedUpdateVersions: {
@@ -168,7 +181,7 @@ export function useUpdateMonitor() {
       installedVersion: state.installedVersion,
     }]
   }), [providers, providerStates])
-  const providerCheckErrors = useMemo(() => (versionManager.remoteProviders ?? []).flatMap((state) => {
+  const allProviderCheckErrors = useMemo(() => (versionManager.remoteProviders ?? []).flatMap((state) => {
     const host = executionHosts.find((candidate) => candidate.id === state.executionHostId && candidate.transport === 'ssh')
     if (!host || state.running || !state.checkError) return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
@@ -179,6 +192,9 @@ export function useUpdateMonitor() {
       message: state.checkError,
     }]
   }), [executionHosts, providers, versionManager.remoteProviders])
+  const providerCheckErrors = useMemo(() => allProviderCheckErrors.filter((result) =>
+    dismissedVersions[JSON.stringify([result.executionHostId, result.providerId])] !== updateCheckErrorIdentity(result.message)
+  ), [allProviderCheckErrors, dismissedVersions])
 
   return {
     updates,
@@ -197,6 +213,8 @@ export function useUpdateMonitor() {
     providerTaskRunning: providerStates.some((provider) => provider.running),
     providerUpdateResults,
     providerCheckErrors,
+    hasProviderCheckErrors: allProviderCheckErrors.length > 0,
+    dismissProviderCheckError,
     refreshCliProviderVersion,
   }
 }

@@ -32,8 +32,10 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
     providerTaskRunning: false,
     providerUpdateResults: [],
     providerCheckErrors: [],
+    dismissProviderCheckError: vi.fn(),
     refreshCliProviderVersion: vi.fn(async () => true),
     ...overrides,
+    hasProviderCheckErrors: overrides.hasProviderCheckErrors ?? (overrides.providerCheckErrors?.length ?? 0) > 0,
   }
 }
 
@@ -297,7 +299,7 @@ describe('UpdatesPanel', () => {
     expect(host.textContent).not.toContain('Everything is up to date')
     await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerCheckErrors: [], checking: true }} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Checking for updates')
-    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerCheckErrors: [] }} onClose={vi.fn()} />))
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerCheckErrors: [], hasProviderCheckErrors: false }} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Everything is up to date')
     act(() => root.unmount())
   })
