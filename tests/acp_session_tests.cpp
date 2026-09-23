@@ -591,6 +591,123 @@ UAM_TEST(AcpRetryFailedPromptRestoresAffordanceWhenChatSaveFails)
 	UAM_ASSERT(raw_session->last_error.find("chat history could not be saved") != std::string::npos);
 }
 
+UAM_TEST(AcpRetryFailedPromptAcceptsTrailingEmptyAssistantPlaceholder)
+{
+	TempDir temp("uam-acp-retry-empty-placeholder");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-empty-placeholder";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-session";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
+	                         .interrupted = true, .acp_prompt_not_sent = false});
+	chat.messages.push_back({.role = MessageRole::Assistant});
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = app.chats.front().native_session_id;
+	session->running = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+	UAM_ASSERT(error.find("no longer the latest") == std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
+	UAM_ASSERT(app.chats.front().messages.front().interrupted);
+	UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
+	UAM_ASSERT(!raw_session->processing);
+}
+
+UAM_TEST(AcpRetryFailedPromptRejectsAssistantOutputAfterFailedUser)
+{
+	for (const int kind : {0, 1, 2, 3, 4, 5})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "retry-substantive-output-" + std::to_string(kind);
+		chat.provider_id = uam::provider_ids::kGeminiCli;
+		chat.messages_loaded = true;
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
+		                         .interrupted = true, .acp_prompt_not_sent = true});
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		if (kind == 0) assistant.content = "text";
+		if (kind == 1) assistant.thoughts = "thought";
+		if (kind == 2) assistant.plan_summary = "plan";
+		if (kind == 3) assistant.plan_entries.push_back({.content = "plan entry"});
+		if (kind == 4) assistant.tool_calls.push_back({.id = "tool", .status = "completed"});
+		if (kind == 5) assistant.attachments.push_back({.id = "image", .kind = "image", .path = "screen.png"});
+		chat.messages.push_back(std::move(assistant));
+		app.chats.push_back(std::move(chat));
+
+		std::string error;
+		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+		UAM_ASSERT(error.find("no longer the latest") != std::string::npos);
+	}
+}
+
+UAM_TEST(AcpRetryEmptyCompletedTurnKeepsChatAndGoalContext)
+{
+	TempDir temp("uam-acp-retry-empty-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-empty-goal";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-session";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Keep going."});
+	chat.messages.push_back({.role = MessageRole::Assistant});
+	app.chats.push_back(std::move(chat));
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(app, app.chats.front().id,
+	                                        "Finish the current UAM task.", 0, &goal_id));
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = app.chats.front().native_session_id;
+	session->running = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	auto& process = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
+	UAM_ASSERT(uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
+	process.CloseStdioProcessInput(*raw_session);
+	std::string output;
+	char buffer[4096];
+	for (int attempt = 0; attempt < 200; ++attempt)
+	{
+		const std::ptrdiff_t read = process.ReadStdioProcessStdout(*raw_session, buffer, sizeof(buffer), &error);
+		if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+		if (process.PollStdioProcessExited(*raw_session) && read <= 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	process.StopStdioProcess(*raw_session, true);
+	process.CloseStdioProcessHandles(*raw_session);
+	UAM_ASSERT(output.find("Continue working toward the active thread goal.") != std::string::npos);
+	UAM_ASSERT(output.find("Finish the current UAM task.") != std::string::npos);
+}
+
 UAM_TEST(AcpPromptMarkerSaveFailurePreservesRetryAffordanceBeforeWrite)
 {
 	TempDir temp("uam-acp-prompt-marker-save-failure");
@@ -7940,10 +8057,10 @@ UAM_TEST(AcpMissingRemoteProcessClearsDeadTurnDeliveryOutbox)
 #if defined(_WIN32)
 	const std::vector<std::string> argv = {
 	    "cmd.exe", "/d", "/s", "/c",
-	    "echo The remote process does not exist. 1>&2 & exit /b 70"};
+	    "echo The remote process has exited. 1>&2 & exit /b 70"};
 #else
 	const std::vector<std::string> argv = {
-	    "/bin/sh", "-c", "printf 'The remote process does not exist.\\n' >&2; exit 70"};
+	    "/bin/sh", "-c", "printf 'The remote process has exited.\\n' >&2; exit 70"};
 #endif
 	std::string error;
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(

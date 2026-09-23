@@ -161,6 +161,21 @@ function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
   return -1
 }
 
+function hasSubstantiveOutput(message: Message) {
+  return Boolean(message.content.trim() || message.thoughts?.trim() || message.planSummary?.trim() ||
+    message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
+}
+
+function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
+  const message = messages[messageIndex]
+  if (message?.role !== 'user') return false
+  for (let index = messages.length - 1; index > messageIndex; index -= 1) {
+    const trailing = messages[index]
+    if (trailing.role !== 'assistant' || hasSubstantiveOutput(trailing)) return false
+  }
+  return true
+}
+
 function setRepositoryReview(sessionId: string, review: VcsCommitStatus | null) {
   useAppStore.setState((state) => {
     const repositoryReviewBySessionId = { ...state.repositoryReviewBySessionId }
@@ -416,6 +431,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching,
   planActions,
   workingMode,
+  retryInPlace,
   onBeginEdit,
   onCancelEdit,
   onEditingTextChange,
@@ -439,6 +455,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching: boolean
   planActions?: PersistedPlanActions
   workingMode: WorkingDisplayMode
+  retryInPlace: boolean
   onBeginEdit: (index: number, content: string) => void
   onCancelEdit: () => void
   onEditingTextChange: (content: string) => void
@@ -480,8 +497,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       actionsDisabled={actionsDisabled}
       onEdit={isUserMessage && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
       onRevert={isUserMessage && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
+      revertLabel={retryInPlace ? 'Retry message' : undefined}
     >
-			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{isUserMessage ? 'Message was not sent' : 'Response interrupted'}</div>}
+			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
 			{isEditing ? (
         <div className="space-y-2">
           <textarea
@@ -783,6 +801,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
   }, [session.id, sectionChoices, expandWorkTraces])
   const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
+  const retryInPlaceMessageIndex = canRetryMessageInPlace(messages, latestUserMessageIndex)
+    ? latestUserMessageIndex : -1
   const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
   const activeWorkMessageIndex = turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex
   const activeWorkSectionFirstIndex = activeWorkMessageIndex >= 0 && activeWorkMessageIndex < messages.length
@@ -1441,9 +1461,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
-    const failedMessage = chatMessages[messageIndex]
-    if (content === undefined && messageIndex === chatMessages.length - 1 &&
-      failedMessage?.interrupted && failedMessage.acpPromptNotSent) {
+    if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex)) {
       try {
         const result = await retryFailedMessage(session.id, messageIndex)
         if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
@@ -2339,6 +2357,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         branching={branchingMessageIndex === index}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
+                        retryInPlace={index === retryInPlaceMessageIndex}
                         onBeginEdit={beginEditingMessage}
                         onCancelEdit={cancelEditingMessage}
                         onEditingTextChange={setEditingMessageText}

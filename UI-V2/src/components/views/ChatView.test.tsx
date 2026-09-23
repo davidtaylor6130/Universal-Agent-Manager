@@ -1249,9 +1249,10 @@ describe('ChatView', () => {
   })
 
   it.each([
-    { notSent: true, expectedRetry: true },
-    { notSent: false, expectedRetry: false },
-  ])('retries only a confirmed undelivered last message (notSent=$notSent)', async ({ notSent, expectedRetry }) => {
+    { notSent: true, interrupted: true, expectedRetry: true },
+    { notSent: false, interrupted: true, expectedRetry: true },
+    { notSent: false, interrupted: false, expectedRetry: true },
+  ])('retries a latest user message without substantive output (notSent=$notSent, interrupted=$interrupted)', async ({ notSent, interrupted, expectedRetry }) => {
     const retryFailedMessage = vi.fn(async () => ({ ok: true }))
     const branchFromMessage = vi.fn(async () => 'branch-1')
     useAppStore.setState((state) => ({
@@ -1259,7 +1260,7 @@ describe('ChatView', () => {
       branchFromMessage,
       messages: {
         ...state.messages,
-        'chat-1': [{ ...state.messages['chat-1'][0], interrupted: true, acpPromptNotSent: notSent }],
+        'chat-1': [{ ...state.messages['chat-1'][0], interrupted, acpPromptNotSent: notSent }],
       },
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1272,8 +1273,10 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
+    const actionLabel = expectedRetry ? 'Retry message' : 'Revert to message in new branch'
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)).toBeTruthy()
     await act(async () => {
-      host.querySelector<HTMLButtonElement>('button[aria-label="Revert to message in new branch"]')!.click()
+      host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)!.click()
     })
     if (expectedRetry) {
       expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
@@ -1283,6 +1286,101 @@ describe('ChatView', () => {
       expect(retryFailedMessage).not.toHaveBeenCalled()
     }
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    { name: 'delivered empty assistant placeholder', assistant: {}, notSent: false, expectedRetry: true },
+    { name: 'empty assistant placeholder', assistant: {}, notSent: true, expectedRetry: true },
+    { name: 'assistant text', assistant: { content: 'Partial response' }, notSent: true, expectedRetry: false },
+    { name: 'assistant thought', assistant: { thoughts: 'Partial thought' }, notSent: true, expectedRetry: false },
+    { name: 'assistant tool call', assistant: { toolCalls: [{ id: 'tool-1', title: 'Read', kind: 'read', status: 'completed', content: '' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant plan', assistant: { planEntries: [{ content: 'Inspect', priority: 'high', status: 'pending' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant block', assistant: { blocks: [{ type: 'assistant_text' as const, text: 'Partial response' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant attachment', assistant: { attachments: [{ id: 'attachment-1', name: 'image.png', type: 'image/png', size: 1 }] }, notSent: true, expectedRetry: false },
+  ])('retries in place only when trailing output is empty ($name)', async ({ assistant, notSent, expectedRetry }) => {
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    useAppStore.setState((state) => ({
+      retryFailedMessage,
+      branchFromMessage,
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { ...state.messages['chat-1'][0], interrupted: true, acpPromptNotSent: notSent },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+            ...assistant,
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const actionLabel = expectedRetry ? 'Retry message' : 'Revert to message in new branch'
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)).toBeTruthy()
+    expect(host.textContent).toContain(notSent ? 'Message was not sent' : 'Response interrupted')
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)!.click()
+    })
+    if (expectedRetry) {
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+      expect(branchFromMessage).not.toHaveBeenCalled()
+    } else {
+      expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+    }
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('branches an edited message even when its response is empty', async () => {
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    useAppStore.setState((state) => ({
+      branchFromMessage,
+      retryFailedMessage,
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { ...state.messages['chat-1'][0], interrupted: true, acpPromptNotSent: false },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: '', createdAt: new Date('2026-01-01T00:00:01.000Z') },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const editButton = host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!
+    act(() => editButton.click())
+    const editTextarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Edited prompt')
+      editTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')?.click()
+    })
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt')
+    expect(retryFailedMessage).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })

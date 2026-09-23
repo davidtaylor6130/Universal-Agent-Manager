@@ -102,7 +102,8 @@ namespace uam
 			if (separator != std::string_view::npos) line.remove_prefix(separator + 1);
 			line = uam::strings::TrimAsciiView(line);
 			return line == "The remote process does not exist." ||
-			       line == "The remote process is no longer available.";
+			       line == "The remote process is no longer available." ||
+			       line == "The remote process has exited.";
 		}
 
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
@@ -1986,11 +1987,24 @@ For desktop observation and input, use only the provider's built-in controller; 
 		};
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat == nullptr || !chat->messages_loaded || message_index < 0 ||
-		    static_cast<std::size_t>(message_index) + 1 != chat->messages.size())
+		    static_cast<std::size_t>(message_index) >= chat->messages.size())
 			return reject("The failed message is no longer the latest message.");
-		Message& message = chat->messages.back();
-		if (message.role != MessageRole::User || !message.interrupted || !message.acp_prompt_not_sent)
-			return reject("Retry requires a failed user message with confirmed non-delivery.");
+		const auto is_empty_assistant_placeholder = [](const Message& candidate)
+		{
+			return candidate.role == MessageRole::Assistant && candidate.content.empty() &&
+			       candidate.thoughts.empty() && candidate.plan_summary.empty() &&
+			       candidate.plan_entries.empty() && candidate.tool_calls.empty() &&
+			       candidate.blocks.empty() && candidate.attachments.empty();
+		};
+		const std::size_t user_index = static_cast<std::size_t>(message_index);
+		for (std::size_t index = user_index + 1; index < chat->messages.size(); ++index)
+		{
+			if (!is_empty_assistant_placeholder(chat->messages[index]))
+				return reject("The failed message is no longer the latest message.");
+		}
+		const Message message = chat->messages[user_index];
+		if (message.role != MessageRole::User)
+			return reject("Retry requires a user message with no assistant output.");
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr || !session->running || !session->session_ready || session->session_id.empty() ||
 		    session->session_id != chat->native_session_id || session->provider_id != chat->provider_id ||
@@ -2015,6 +2029,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		queued.attachments = message.attachments;
 		queued.append_user_message = false;
 		queued.computer_use_mode = chat->computer_use_enabled;
+		if (const Goal* active_goal = GoalService::FindActiveGoal(app, chat_id); active_goal != nullptr)
+		{
+			queued.goal_mode = true;
+			queued.goal_id = active_goal->id;
+		}
 		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
 		if ((queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
 		     queued.uam_agent_execution_capability == "copilot-native-agent-plugin" ||
@@ -2024,13 +2043,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 		     session->active_uam_agent_definition_hash != queued.uam_agent_definition_hash ||
 		     session->active_uam_agent_execution_capability != queued.uam_agent_execution_capability))
 			return reject("Restore the original native agent before retrying.");
-		message.interrupted = false;
+		const std::vector<Message> trailing_placeholders(
+			chat->messages.begin() + static_cast<std::ptrdiff_t>(user_index + 1),
+			chat->messages.end());
+		chat->messages.erase(chat->messages.begin() + static_cast<std::ptrdiff_t>(user_index + 1), chat->messages.end());
+		chat->messages[user_index].interrupted = false;
 		session->turn_user_message_index = message_index;
 		const bool started = StartAcpUserPrompt(app, *session, *chat, queued, error_out);
-		if (!started || message.acp_prompt_not_sent)
+		if (!started)
 		{
-			message.interrupted = true;
-			message.acp_prompt_not_sent = true;
+			if (static_cast<std::size_t>(message_index) < chat->messages.size())
+			{
+				chat->messages[static_cast<std::size_t>(message_index)].interrupted = message.interrupted;
+				chat->messages[static_cast<std::size_t>(message_index)].acp_prompt_not_sent =
+				    message.acp_prompt_not_sent;
+			}
+			chat->messages.insert(chat->messages.end(), trailing_placeholders.begin(), trailing_placeholders.end());
 			if (!SaveChatQuietly(app, *chat)) ScheduleChatSave(app, *chat, 0.0);
 			if (error_out != nullptr && error_out->empty())
 			{
@@ -3120,7 +3148,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    !remote_source_exit;
 				const bool remote_process_missing =
 				    session.recent_stderr.find("The remote process does not exist.") != std::string::npos ||
-				    session.recent_stderr.find("The remote process is no longer available.") != std::string::npos;
+				    session.recent_stderr.find("The remote process is no longer available.") != std::string::npos ||
+				    session.recent_stderr.find("The remote process has exited.") != std::string::npos;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
 				const bool remote_stop_cleanup_missing =
 				    session.remote_stop_unconfirmed && remote_process_missing;

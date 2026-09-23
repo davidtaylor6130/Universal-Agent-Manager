@@ -687,6 +687,7 @@ export function MessageFrame({
   branchNavigation,
   onEdit,
   onRevert,
+  revertLabel,
   actionsDisabled = false,
   streaming = false,
   goalReview = false,
@@ -704,6 +705,7 @@ export function MessageFrame({
   }
   onEdit?: () => void
   onRevert?: () => void
+  revertLabel?: string
   actionsDisabled?: boolean
   streaming?: boolean
   goalReview?: boolean
@@ -711,6 +713,7 @@ export function MessageFrame({
   if (role === 'user' || role === 'assistant') {
     return <ConversationTurn role={role} assistantLabel={assistantLabel} copyText={copyText}
       branchLabel={branchLabel} branchNavigation={branchNavigation} onEdit={onEdit} onRevert={onRevert}
+      revertLabel={revertLabel}
       actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}>{children}</ConversationTurn>
   }
   const accent = goalReview ? 'var(--purple)' : roleAccent(role)
