@@ -3537,6 +3537,26 @@ UAM_TEST(ApplicationLifecycleGuardsSettingsAndCefTeardown)
 	UAM_ASSERT(cef_app.find("FailStartup(\"Failed to create the application browser view.\")") != std::string::npos);
 }
 
+UAM_TEST(ApplicationDefersMarkdownSeedingOffStartupUiThread)
+{
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string application = ReadFile(source_root / "src/app/application.cpp");
+	const std::size_t initialize = application.find("bool Application::InitializeState()");
+	const std::size_t cef_initialize = application.find("bool Application::InitializeCef", initialize);
+	const std::size_t browser_ready = application.find("void Application::OnBrowserReady");
+
+	UAM_ASSERT(initialize != std::string::npos);
+	UAM_ASSERT(cef_initialize != std::string::npos);
+	UAM_ASSERT(browser_ready != std::string::npos);
+	const std::string startup = application.substr(initialize, cef_initialize - initialize);
+	UAM_ASSERT(startup.find("SeedBundledEntries") == std::string::npos);
+	UAM_ASSERT(startup.find("MarkdownStoreService::NormalizeRoot") == std::string::npos);
+	UAM_ASSERT(startup.find("ShellActionService::Load(m_app.data_root, {})") != std::string::npos);
+	const std::string browser_setup = application.substr(browser_ready);
+	UAM_ASSERT(browser_setup.find("TID_FILE_USER_BLOCKING") != std::string::npos);
+	UAM_ASSERT(browser_setup.find("ApplyBundledMarkdownStoreSeed") != std::string::npos);
+}
+
 UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();

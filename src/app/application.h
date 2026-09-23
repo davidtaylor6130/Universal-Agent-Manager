@@ -4,6 +4,7 @@
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -34,11 +35,13 @@ class Application
 	/// Polls runtime state and pushes updates to the React frontend.
 	/// </summary>
 	void PollTick();
+	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
 
   private:
 	uam::AppState m_app;
 	PlatformServices* m_platformServices = nullptr;
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
+	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);
 	CefRefPtr<CefBrowser> m_browser;
 	bool m_done = false;
 	bool m_settingsLoaded = false;
@@ -46,6 +49,8 @@ class Application
 	bool m_shutdownComplete = false;
 	bool m_shellActionInvocation = false;
 	std::string m_workspaceFolderAvailabilityFingerprint;
+	std::filesystem::path m_pendingBundledMarkdownRoot;
+	std::string m_pendingMarkdownStoreDirectory;
 	std::vector<std::string> m_launchArguments;
 	int m_exitCode = 0;
 

@@ -302,6 +302,59 @@ namespace
 		IMPLEMENT_REFCOUNTING(AppPollTask);
 	};
 
+	class AppApplySeedMarkdownTask : public CefTask
+	{
+	  public:
+		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, std::string destination_directory)
+		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_destination_directory(std::move(destination_directory))
+		{
+		}
+		void Execute() override
+		{
+			if (m_app != nullptr && m_lifetime_token != nullptr && m_lifetime_token->load())
+			{
+				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_destination_directory);
+			}
+		}
+
+	  private:
+		Application* m_app;
+		std::shared_ptr<std::atomic_bool> m_lifetime_token;
+		bool m_seeded;
+		std::string m_error;
+		std::vector<ShellAction> m_shell_actions;
+		std::string m_destination_directory;
+		IMPLEMENT_REFCOUNTING(AppApplySeedMarkdownTask);
+	};
+
+	class AppSeedMarkdownTask : public CefTask
+	{
+	  public:
+		AppSeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, std::filesystem::path data_root, std::filesystem::path bundled_root, std::string destination_directory)
+		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_data_root(std::move(data_root)), m_bundled_root(std::move(bundled_root)), m_destination_directory(std::move(destination_directory))
+		{
+		}
+		void Execute() override
+		{
+			if (m_lifetime_token != nullptr && m_lifetime_token->load())
+			{
+				std::string error;
+				const std::filesystem::path destination_root = MarkdownStoreService::NormalizeRoot(m_destination_directory);
+				const bool seeded = MarkdownStoreService::SeedBundledEntries(m_bundled_root, destination_root, &error);
+				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{});
+				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), m_destination_directory));
+			}
+		}
+
+	  private:
+		Application* m_app;
+		std::shared_ptr<std::atomic_bool> m_lifetime_token;
+		std::filesystem::path m_data_root;
+		std::filesystem::path m_bundled_root;
+		std::string m_destination_directory;
+		IMPLEMENT_REFCOUNTING(AppSeedMarkdownTask);
+	};
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -315,6 +368,7 @@ Application::Application()
 
 Application::~Application()
 {
+	m_lifetimeToken->store(false);
 	Shutdown();
 
 	m_platformServices = nullptr;
@@ -438,8 +492,37 @@ void Application::ScheduleNextUpdate(int delay_ms)
 void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 {
 	m_browser = browser;
+	if (!m_pendingBundledMarkdownRoot.empty())
+	{
+		// Bundled skill discovery can touch a user-selected Documents/network tree.
+		// Keep it off the CEF UI thread so startup remains responsive while it runs.
+		CefPostTask(TID_FILE_USER_BLOCKING,
+		            new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory)));
+	}
 	// Start the polling loop as soon as the browser window exists.
 	ScheduleNextUpdate(50);
+}
+
+void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (m_done || m_app.settings.markdown_store_directory != destination_directory)
+	{
+		return;
+	}
+
+	if (!seeded && !error.empty())
+	{
+		m_app.status_line = "Could not import bundled skills: " + error;
+	}
+	else if (m_app.shell_actions.empty())
+	{
+		m_app.shell_actions = std::move(shell_actions);
+	}
+	if (m_browser)
+	{
+		uam::PushStateUpdateIfChanged(m_browser, m_app);
+	}
 }
 
 bool Application::InitializeState()
@@ -518,14 +601,10 @@ bool Application::InitializeState()
 		m_app.settings.markdown_store_directory = uam::paths::Utf8PathString(m_app.data_root / "markdown-store");
 		settings_dirty = true;
 	}
-	const fs::path configured_skills_root = MarkdownStoreService::NormalizeRoot(m_app.settings.markdown_store_directory);
-	bool bundled_skills_ready = false;
 	if (!bundled_skills_root.empty())
 	{
-		std::string bundled_skills_error;
-		bundled_skills_ready = MarkdownStoreService::SeedBundledEntries(bundled_skills_root, configured_skills_root, &bundled_skills_error);
-		if (!bundled_skills_ready && !bundled_skills_error.empty())
-			m_app.status_line = "Could not import bundled skills: " + bundled_skills_error;
+		m_pendingBundledMarkdownRoot = bundled_skills_root;
+		m_pendingMarkdownStoreDirectory = m_app.settings.markdown_store_directory;
 	}
 	if (ThemeService::IsCustomThemeId(m_app.settings.ui_theme) && !ThemeService::Exists(m_app.data_root, m_app.settings.ui_theme))
 	{
@@ -560,7 +639,7 @@ bool Application::InitializeState()
 	}
 
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, bundled_skills_ready ? configured_skills_root : fs::path{});
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
