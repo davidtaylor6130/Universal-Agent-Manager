@@ -19,7 +19,20 @@ and native CLI passthrough. A clear route is not proof that the product goal is 
 
 ## Current frontier
 
-2026-09-23 beta8 installed at the usual Applications path, with the previous beta7
+2026-09-23 beta9 is installed at the usual Applications path. The immediately
+previous beta8 bundle is at `~/Applications/universal_agent_manager-4.9.0-beta-8.app.backup`;
+both beta8 and beta9 ZIPs are retained. The state patch now copies only changed
+chat summaries (`37fe3651`), with a regression covering unchanged, removed, and
+re-added chats. On the installed app, unchanged-chat patch serialization sampled
+22ms median across nine events (21-25ms), versus about 109ms for comparable
+beta8 events. After 2m20s the main process was responsive at 4.5% CPU and
+reattached the held remote OpenCode turn. Native CTest 8/8, frontend Vitest
+825/825, deep signature, all three embedded helper checksums, ZIP integrity,
+and packaged companion startup/restart/icon/chunking checks passed. The installed
+companion rejected a missing token with HTTP 401. Remote installed helpers were
+not changed. This does not validate the still-held remote turn's completion.
+
+2026-09-23 beta8 was installed at the usual Applications path, with the previous beta7
 bundle at `~/Applications/universal_agent_manager-4.9.0-beta-7.app.backup` and
 its ZIP retained. Duplicate SSH runner session exits now attach to the existing
 process with bounded retry (`f1f521db`). Failed automatic memory workers now
