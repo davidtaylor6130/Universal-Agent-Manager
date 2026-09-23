@@ -593,7 +593,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       familySessionIdsByRootId={familySessionIdsByRootId}
       selectedSessionIds={selectedSessionIds}
       onSessionClick={handleSessionClick}
-      draggable={!searchModel.isSearching}
+      draggable={!searchModel.isSearching && !isCompanionContext()}
       dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
       onDragStart={() => setDraggedFolderId(folder.id)}
       onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}

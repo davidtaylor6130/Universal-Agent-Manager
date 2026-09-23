@@ -18,6 +18,7 @@ function gridLayout(...sessionIds: string[]) {
 const now = new Date('2026-01-01T12:00:00.000Z')
 const originalAddFolder = useAppStore.getState().addFolder
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
+const originalSetActiveSession = useAppStore.getState().setActiveSession
 
 function makeFolder(): Folder {
   return {
@@ -132,6 +133,27 @@ describe('FolderTree', () => {
     } finally {
       act(() => root.unmount())
       host.remove()
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
+  it('does not enable desktop folder dragging in the companion chat list', () => {
+    window.history.replaceState(null, '', '/companion')
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ setActiveSession, activeSessionId: 'chat-2' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      expect((host.querySelector('[data-testid="folder-row-project"]') as HTMLElement | null)?.draggable).toBe(false)
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ setActiveSession: originalSetActiveSession })
       window.history.replaceState(null, '', '/')
     }
   })
