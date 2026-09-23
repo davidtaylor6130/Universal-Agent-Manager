@@ -1145,6 +1145,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			        session.last_error, "Remote prompt transport disconnected."));
 			return true;
 		}
+		for (const std::size_t index : unsent_messages)
+		{
+			chat.messages[index].acp_prompt_not_sent = true;
+			chat.messages[index].interrupted = true;
+		}
 		session.pending_request_methods.erase(id);
 		session.prompt_request_id = 0;
 		CompletePromptTurn(session, kAcpLifecycleError);
