@@ -7653,6 +7653,79 @@ UAM_TEST(AcpMissingRemoteProcessCompletesPersistedStopCleanup)
 	UAM_ASSERT(!persisted->remote_stop_cleanup_pending);
 }
 
+UAM_TEST(AcpMissingRemoteProcessClearsDeadTurnDeliveryOutbox)
+{
+	TempDir temp("uam-acp-missing-turn-outbox");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-missing-turn-outbox";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	chat.remote_turn_reconnect_pending = true;
+	chat.remote_prompt_delivery_session_id = "acp-chat-missing-turn-outbox";
+	chat.remote_prompt_delivery_id = "delivery-dead-turn";
+	chat.remote_prompt_delivery_payload = "{\"method\":\"turn/start\"}\n";
+	chat.remote_pending_requests.push_back(
+	    {.request_id = 17, .method = "turn/start", .delivery_id = "delivery-dead-turn",
+	     .payload = "{\"jsonrpc\":\"2.0\",\"id\":17}", .user_message_index = 0,
+	     .turn_serial = 1});
+	chat.remote_interaction_responses.push_back({"\"permission-1\"", "{\"approved\":true}"});
+	chat.messages.push_back({.role = MessageRole::User, .content = "Continue the remote task."});
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Partial answer."});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = "codex-cli";
+	owned_session->running = true;
+	owned_session->processing = true;
+	owned_session->recovering_remote_turn = true;
+	owned_session->prompt_request_id = 17;
+	owned_session->pending_request_methods[17] = "turn/start";
+	owned_session->turn_user_message_index = 0;
+	owned_session->turn_assistant_message_index = 1;
+	owned_session->current_assistant_message_index = 1;
+	uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c",
+	    "echo The remote process does not exist. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {
+	    "/bin/sh", "-c", "printf 'The remote process does not exist.\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	for (int attempt = 0; attempt < 100 && session->lifecycle_state != "error"; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(session->last_error,
+	              std::string("The remote turn no longer exists on the selected runner."));
+	UAM_ASSERT(!session->processing);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+	UAM_ASSERT(app.chats.front().remote_prompt_delivery_session_id.empty());
+	UAM_ASSERT(app.chats.front().remote_prompt_delivery_id.empty());
+	UAM_ASSERT(app.chats.front().remote_prompt_delivery_payload.empty());
+	UAM_ASSERT(app.chats.front().remote_pending_requests.empty());
+	UAM_ASSERT(app.chats.front().remote_interaction_responses.empty());
+	const std::optional<ChatSession> persisted =
+	    ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(!persisted->remote_turn_reconnect_pending);
+	UAM_ASSERT(persisted->remote_prompt_delivery_id.empty());
+	UAM_ASSERT(persisted->remote_prompt_delivery_payload.empty());
+	UAM_ASSERT(persisted->remote_pending_requests.empty());
+	UAM_ASSERT(persisted->remote_interaction_responses.empty());
+}
+
 UAM_TEST(AcpMissingRemoteProcessCompletesRestartCleanupWithoutDroppingPrompt)
 {
 	TempDir temp("uam-acp-missing-restart-cleanup");

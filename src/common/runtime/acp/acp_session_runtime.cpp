@@ -3076,6 +3076,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.reconnect_pending = false;
 					session.reconnect_not_before_time_s = 0.0;
 					session.last_error = "The remote turn no longer exists on the selected runner.";
+					// Exit 70 confirms the helper-owned process is gone, so its
+					// write-ahead delivery and interaction queues can no longer be replayed.
+					chat.remote_turn_reconnect_pending = false;
+					chat.remote_prompt_delivery_session_id.clear();
+					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_payload.clear();
+					chat.remote_pending_requests.clear();
+					chat.remote_interaction_responses.clear();
 					(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 					FailAcpTurnOrSession(session, &chat, session.last_error);
 					AppendAcpDiagnostic(session, "reconnect", "remote_turn_missing", "", "",
