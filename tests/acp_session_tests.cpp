@@ -3111,6 +3111,13 @@ UAM_TEST(CodexRemoteSteerResponsesRestoreFromSavedChat)
 	UAM_ASSERT(!session.processing);
 	session.pending_remote_output_ack_line = "ack\n";
 	session.pending_remote_stdout_cursor = 123;
+	session.waiting_for_permission = true;
+	const bool first_waiting_poll_changed = uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+	const bool second_waiting_poll_changed = uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+	UAM_ASSERT(!first_waiting_poll_changed);
+	UAM_ASSERT(!second_waiting_poll_changed);
+	UAM_ASSERT_EQ(session.pending_remote_output_ack_line, std::string("ack\n"));
+	session.waiting_for_permission = false;
 	const std::filesystem::path blocked_root = temp.root / "blocked";
 	std::ofstream(blocked_root) << "not a directory";
 	app.data_root = blocked_root;

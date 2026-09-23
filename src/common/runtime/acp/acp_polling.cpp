@@ -591,11 +591,11 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		// A permission or user-input request is actionable runtime state. Do not ACK
 		// its bytes until the wait is resolved, so a crash forces runner replay.
 		if (session.waiting_for_permission || session.waiting_for_user_input)
-			return true;
+			return changed;
 		if (session.remote_consumed_stderr_cursor < session.pending_remote_stderr_cursor)
 		{
 			session.stderr_poll_pending = true;
-			return true;
+			return changed;
 		}
 		const std::uintmax_t old_stdout_cursor = chat.remote_delivered_stdout_cursor;
 		const std::uintmax_t old_stderr_cursor = chat.remote_delivered_stderr_cursor;
