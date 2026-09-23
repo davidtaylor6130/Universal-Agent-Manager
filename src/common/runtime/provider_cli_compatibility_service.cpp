@@ -16,6 +16,7 @@
 #include "common/utils/range_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -97,8 +98,10 @@ namespace
 	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error);
 
 	ProcessExecutionResult RunCliCommand(const ExecutionHost& host, const std::string& provider_id,
-	    const std::string& command, bool installing, int timeout_ms, std::stop_token stop_token, const std::string& previous_probe)
+	    const std::string& command, bool installing, int timeout_ms, std::stop_token stop_token,
+	    const std::string& previous_probe, std::optional<bool>* remote_connected_out)
 	{
+		if (remote_connected_out != nullptr) *remote_connected_out = std::nullopt;
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 		if (host.id == uam::execution_hosts::kLocalHostId)
 			return service.ExecuteCommand(command, timeout_ms, stop_token);
@@ -113,17 +116,23 @@ namespace
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
 		        host.runner_directory, host.runner_protocol_version),
 		    host.runner_version, host.runner_protocol_version);
+		const auto finish = [&]() -> ProcessExecutionResult
+		{
+			if (remote_connected_out != nullptr && !result.canceled)
+				*remote_connected_out = client.IsConnected();
+			return std::move(result);
+		};
 		uam::remote::DirectoryListing home;
-		if (!client.ListDirectories({}, home, &result.error)) return result;
+		if (!client.ListDirectories({}, home, &result.error)) return finish();
 		if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, home.directory))
 		{
 			result.error = "The SSH helper returned an invalid home directory.";
-			return result;
+			return finish();
 		}
 		if (installing)
 		{
 			const ProviderCliPolicy* policy = FindProviderCliPolicy(provider_id);
-			if (policy == nullptr) { result.error = "The provider update policy is unavailable."; return result; }
+			if (policy == nullptr) { result.error = "The provider update policy is unavailable."; return finish(); }
 			const std::string probe_command = BuildInstallAwareProbeCommand(*policy, host.platform);
 			const std::vector<std::string> probe_argv = host.platform == "windows"
 			    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", probe_command}
@@ -133,12 +142,12 @@ namespace
 			{
 				if (result.error.empty()) result.error = "Could not recheck the installed CLI. No update was started.";
 				result.ok = false;
-				return result;
+				return finish();
 			}
 			if (!ValidateRemoteInstallProbe(previous_probe, result.output, host.platform, &result.error))
 			{
 				result.ok = false;
-				return result;
+				return finish();
 			}
 		}
 		const std::vector<std::string> argv = host.platform == "windows"
@@ -146,7 +155,8 @@ namespace
 		    : std::vector<std::string>{"sh", "-lc", command};
 		// The fixed install ID excludes a second installer while an uncertain old lease remains.
 		const std::string process_id = installing ? "cli-update-" + provider_id : "cli-check-" + service.GenerateUuid();
-		return client.ExecuteCommand(process_id, uam::paths::PathFromUtf8(home.directory), argv, timeout_ms, stop_token);
+		result = client.ExecuteCommand(process_id, uam::paths::PathFromUtf8(home.directory), argv, timeout_ms, stop_token);
+		return finish();
 	}
 
 	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const ExecutionHost& host, const std::string& provider_id, const std::string& command, bool installing, int timeout_ms, const std::string& previous_probe = {})
@@ -160,7 +170,8 @@ namespace
 		task.worker = std::make_unique<std::jthread>(
 		    [host, provider_id, command, installing, timeout_ms, previous_probe, state](std::stop_token stop_token)
 		    {
-			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms, stop_token, previous_probe);
+			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
+			        stop_token, previous_probe, &state->remote_helper_connected);
 
 			    if (!state->result.error.empty() && state->result.output.empty())
 			    {
@@ -201,8 +212,10 @@ namespace
 		    });
 	}
 
-	bool TryConsumeAsyncCommandTaskOutput(uam::AsyncCommandTask& task, std::string& output_out)
+	bool TryConsumeAsyncCommandTaskOutput(uam::AsyncCommandTask& task, std::string& output_out,
+	    std::optional<bool>* remote_connected_out)
 	{
+		if (remote_connected_out != nullptr) *remote_connected_out = std::nullopt;
 		if (!task.running)
 		{
 			return false;
@@ -221,6 +234,8 @@ namespace
 		}
 
 		output_out = std::move(task.state->result.output);
+		if (remote_connected_out != nullptr)
+			*remote_connected_out = task.state->remote_helper_connected;
 		uam::ResetAsyncCommandTask(task);
 		return true;
 	}
@@ -749,6 +764,18 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		const ExecutionHost* current = uam::execution_hosts::Find(app.settings.execution_hosts, captured.id);
 		return current != nullptr && uam::execution_hosts::SameConnection(captured, *current);
 	};
+	const auto apply_remote_health = [&app](const ExecutionHost& captured,
+	    const std::optional<bool>& connected)
+	{
+		if (captured.id == uam::execution_hosts::kLocalHostId || !connected) return;
+		auto current = std::ranges::find_if(app.settings.execution_hosts,
+		    [&captured](const ExecutionHost& host) { return host.id == captured.id; });
+		if (current == app.settings.execution_hosts.end()) return;
+		const ExecutionHost previous = *current;
+		if (uam::execution_hosts::ApplyHealthObservation(*current, captured, *connected,
+		        uam::time::IsoUtcTimestampNow()) && *current != previous)
+			app.remote_host_health_changed = true;
+	};
 	std::erase_if(app.runtime_cli_versions_by_provider_id, [&host_matches](const auto& entry)
 	{
 		return entry.second.execution_host.id != uam::execution_hosts::kLocalHostId &&
@@ -757,8 +784,10 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	std::string output;
 
 	const ExecutionHost check_host = app.runtime_cli_version_check_task.execution_host;
-	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output))
+	std::optional<bool> check_connected;
+	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output, &check_connected))
 	{
+		apply_remote_health(check_host, check_connected);
 		const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(app.runtime_cli_version_provider_id);
 		if (host_matches(check_host))
 		{
@@ -825,8 +854,10 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	}
 
 	const ExecutionHost install_host = app.runtime_cli_pin_task.execution_host;
-	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output))
+	std::optional<bool> install_connected;
+	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output, &install_connected))
 	{
+		apply_remote_health(install_host, install_connected);
 		if (!host_matches(install_host))
 		{
 			app.status_line = "Machine configuration changed. Check its CLI version again.";

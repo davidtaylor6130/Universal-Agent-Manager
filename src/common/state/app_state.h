@@ -761,6 +761,7 @@ namespace uam
 		std::string runtime_cli_version_provider_id;
 		std::string runtime_cli_pin_provider_id;
 		std::deque<std::pair<std::string, std::string>> runtime_cli_version_check_queue;
+		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
 		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;

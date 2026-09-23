@@ -437,6 +437,9 @@ void Application::PollTick()
 #endif
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
+	const bool remote_host_health_changed = m_app.remote_host_health_changed;
+	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
+		m_app.remote_host_health_changed = false;
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
 
 	// Poll the provider model catalog service for async model refresh completion.
@@ -447,7 +450,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed;
+	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{

@@ -10133,6 +10133,42 @@ UAM_TEST(CliProviderVersionCompletionsRejectReconfiguredOrRemovedHosts)
 	}
 }
 
+UAM_TEST(CliProviderVersionProbeUpdatesRemoteHelperHealthWithoutConfusingMissingCli)
+{
+	for (const std::optional<bool> connected : {std::optional<bool>{false}, std::optional<bool>{true}, std::optional<bool>{}})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "fixture-remote";
+		host.transport = "ssh";
+		host.ssh_alias = "fixture-remote";
+		host.platform = "linux";
+		host.runner_status = "ready";
+		host.runner_version = "fixture";
+		host.runner_protocol_version = 3;
+		host.last_seen_at = "before";
+		app.settings.execution_hosts.push_back(host);
+		app.runtime_cli_version_provider_id = uam::provider_ids::kOpenCodeCli;
+		uam::AsyncCommandTask& task = app.runtime_cli_version_check_task;
+		task.running = true;
+		task.execution_host = host;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->remote_helper_connected = connected;
+		task.state->result.output = connected == false
+		    ? "Failed to run command: SSH helper unavailable"
+		    : "[UAM CLI PATH] |\nopencode: command not found";
+		task.state->completed.store(true);
+
+		ProviderCliCompatibilityService().Poll(app);
+
+		const ExecutionHost& observed = app.settings.execution_hosts.front();
+		UAM_ASSERT_EQ(observed.runner_status, connected == false ? std::string("error") : std::string("ready"));
+		UAM_ASSERT_EQ(app.remote_host_health_changed, connected.has_value());
+		UAM_ASSERT_EQ(observed.last_seen_at != "before", connected == true);
+	}
+}
+
 UAM_TEST(CliProviderVersionProbeRejectsSemverFromFailedCommand)
 {
 	uam::AppState app;

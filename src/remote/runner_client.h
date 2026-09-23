@@ -57,6 +57,7 @@ namespace uam::remote
 		RunnerClient& operator=(const RunnerClient&) = delete;
 
 		bool Connect(std::string* error_out = nullptr);
+		bool IsConnected() const { return m_connected; }
 		bool StartProcess(const std::string& session_id,
 		                  const std::filesystem::path& working_directory,
 		                  const std::vector<std::string>& argv,

@@ -530,6 +530,7 @@ struct AsyncProcessTaskState
 {
 	std::atomic<bool> completed{false};
 	ProcessExecutionResult result;
+	std::optional<bool> remote_helper_connected;
 	std::chrono::steady_clock::time_point launch_time;
 	std::string provider_id;
 	int64_t estimated_input_tokens = 0;
