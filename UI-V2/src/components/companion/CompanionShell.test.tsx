@@ -117,10 +117,10 @@ it('skips unchanged poll snapshots and reloads changed or restarted boots', asyn
     expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(2)
-    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(2)
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(3)
-    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(3)
   } finally {
     await act(async () => root.unmount())
     host.remove()

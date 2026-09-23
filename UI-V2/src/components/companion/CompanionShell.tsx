@@ -202,7 +202,7 @@ export function CompanionShell() {
         const selectedAcpBinding = selectedId ? current.acpBindingBySessionId?.[selectedId] : undefined
         const selectedCliBinding = selectedId ? current.cliBindingBySessionId?.[selectedId] : undefined
         const selectedTranscriptNeedsRefresh = selectedId && current.sessions.some((candidate) => candidate.id === selectedId) &&
-          (explicit || selectedMessages === undefined || Boolean(
+          (explicit || stateChanged || selectedMessages === undefined || Boolean(
             selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
           ))
         if (selectedTranscriptNeedsRefresh && selectedId) {
