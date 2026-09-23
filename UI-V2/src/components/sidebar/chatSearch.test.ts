@@ -111,7 +111,7 @@ describe('chatSearch', () => {
     expect(model.unfolderedSessionIds).toEqual(['s-loose'])
   })
 
-  it('keeps branches in one sidebar row and maps branch searches to their root chat', () => {
+  it('keeps branches in one sidebar row until search identifies a branch', () => {
     const folders = [makeFolder('general')]
     const root = { ...makeSession('root', 'Original chat', 'general'), branchRootChatId: 'root' }
     const branch = {
@@ -121,7 +121,8 @@ describe('chatSearch', () => {
     }
 
     expect(visibleSessionIds(searchModel('', folders, [root, branch]))).toEqual(['root'])
-    expect(visibleSessionIds(searchModel('deployment', folders, [root, branch]))).toEqual(['root'])
+    expect(visibleSessionIds(searchModel('deployment', folders, [root, branch]))).toEqual(['branch'])
+    expect(visibleSessionIds(searchModel('original', folders, [root, branch]))).toEqual(['root'])
   })
 
   it('sorts by activity (updatedAt), ignoring selection time (issue #49)', () => {
