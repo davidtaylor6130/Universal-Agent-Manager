@@ -560,6 +560,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.session_ready = false;
 		session.stdout_buffer.clear();
 		session.stderr_buffer.clear();
+		// Diagnostics belong to the proxy instance that just disconnected. Do not
+		// let a prior "remote process does not exist" line classify the replacement
+		// bridge's exit as permanent remote-process loss.
+		session.recent_stderr.clear();
 		session.stdout_poll_pending = false;
 		session.stderr_poll_pending = false;
 	}

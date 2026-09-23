@@ -1315,10 +1315,13 @@ done
 	recovery.managed_agent_run_id = "11111111-1111-4111-8111-111111111111";
 	recovery.managed_launch_attempted = true;
 	recovery.recovering_remote_turn = true;
+	recovery.recent_stderr = "The remote process does not exist.\n";
 	app.chats.front().remote_turn_reconnect_pending = true;
 	error.clear();
 	UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(
 	    app, recovery, app.chats.front(), &error));
+	UAM_ASSERT(recovery.recent_stderr.find("The remote process does not exist.") ==
+	           std::string::npos);
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(recovery, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(recovery);
 	recovery.running = false;
