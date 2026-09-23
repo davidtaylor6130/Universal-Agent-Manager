@@ -2,6 +2,21 @@
 
 using namespace uam_test;
 
+namespace
+{
+	void DrainMemoryWork(uam::AppState& app)
+	{
+		while (!app.memory_extraction_tasks.empty())
+		{
+			for (uam::AsyncMemoryExtractionTask& task : app.memory_extraction_tasks)
+			{
+				if (task.worker != nullptr && task.worker->joinable()) task.worker->join();
+			}
+			(void)MemoryService::ProcessDueMemoryWork(app);
+		}
+	}
+}
+
 UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 {
 	TempDir temp("uam-memory-service");
@@ -1580,9 +1595,12 @@ UAM_TEST(MemoryServiceColdAutomaticScanHydratesOnlyWhenDequeued)
 		UAM_ASSERT(!chat.messages_loaded && chat.messages.empty());
 	}
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
-	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count + app.chats[1].memory_last_processed_message_count, 1);
-	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_extraction_tasks.size() == static_cast<std::size_t>(1));
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT(!chat.messages_loaded && chat.messages.empty());
+	}
+	DrainMemoryWork(app);
 	UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
 	UAM_ASSERT_EQ(app.status_line, unrelated_status);
 	for (const ChatSession& chat : app.chats)
@@ -1593,6 +1611,36 @@ UAM_TEST(MemoryServiceColdAutomaticScanHydratesOnlyWhenDequeued)
 		UAM_ASSERT(saved && saved->messages.size() == 1);
 		UAM_ASSERT_EQ(saved->memory_last_processed_message_count, 1);
 	}
+}
+
+UAM_TEST(MemoryServiceColdPreparationDoesNotSkipNewMessages)
+{
+	TempDir temp("uam-memory-cold-stale");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "cold-stale";
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = true;
+	chat.memory_level = "strict";
+	chat.messages.push_back({MessageRole::User, "Tighten the button spacing.", "now"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	uam::QueuedMemoryExtractionTask queued;
+	queued.chat_id = chat.id;
+	app.memory_extraction_queue.push_back(queued);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+
+	ChatSession& live = app.chats.front();
+	live.messages_loaded = true;
+	live.messages = chat.messages;
+	live.messages.push_back({MessageRole::User, "Remember this critical lesson.", "later"});
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 60;
+	DrainMemoryWork(app);
+	UAM_ASSERT_EQ(live.memory_last_processed_message_count, 0);
+	UAM_ASSERT_EQ(live.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
 }
 
 UAM_TEST(MemoryServiceColdHydrationFailuresRetryAfterRepair)
@@ -1620,9 +1668,10 @@ UAM_TEST(MemoryServiceColdHydrationFailuresRetryAfterRepair)
 		queued.chat_id = chat.id;
 		queued.manual = manual;
 		queued.scan_start_message_index = manual ? 0 : -1;
-		app.memory_extraction_queue.push_back(queued);
-		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
-		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	app.memory_extraction_queue.push_back(queued);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
 		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
 		const double retry_at = app.memory_retry_not_before_by_chat_id[chat.id];
 		UAM_ASSERT(retry_at > uam::GetAppTimeSeconds());
@@ -1637,6 +1686,7 @@ UAM_TEST(MemoryServiceColdHydrationFailuresRetryAfterRepair)
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		app.memory_retry_not_before_by_chat_id[chat.id] = 0;
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		DrainMemoryWork(app);
 		UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
 		UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(chat.id));
 		UAM_ASSERT(!app.memory_retry_not_before_by_chat_id.contains(chat.id));
@@ -1700,6 +1750,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 		app.memory_global_retry_not_before = 0;
 		// No configured provider: retry reaches startup without launching an installed CLI.
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		DrainMemoryWork(app);
 		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 2);
 		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
 		UAM_ASSERT(app.memory_extraction_queue[0].manual);

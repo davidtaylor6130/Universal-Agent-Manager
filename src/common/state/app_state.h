@@ -558,17 +558,29 @@ namespace uam
 		task.state.reset();
 	}
 
+	struct AsyncMemoryExtractionState
+	{
+		int hydrated_message_count = -1;
+		std::string hydrated_messages_digest;
+		bool low_signal_skip = false;
+		bool hydration_failed = false;
+	};
+
 	struct AsyncMemoryExtractionTask
 	{
 		bool running = false;
 		std::string chat_id;
 		std::string command_preview;
 		int message_count = 0;
+		bool prepared_from_cold = false;
+		int source_persisted_message_count = 0;
+		std::string source_persisted_messages_digest;
 		int scan_start_message_index = -1;
 		std::filesystem::path workspace_root;
 		std::filesystem::path native_history_chats_dir;
 		std::vector<std::string> native_history_files_before;
 		std::shared_ptr<AsyncProcessTaskState> state;
+		std::shared_ptr<AsyncMemoryExtractionState> extraction_state;
 		std::unique_ptr<std::jthread> worker;
 	};
 
