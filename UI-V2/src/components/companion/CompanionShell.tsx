@@ -44,6 +44,7 @@ export function CompanionShell() {
     return () => { manifest.remove(); icon.remove() }
   }, [])
   const polling = useRef(false)
+  const refreshQueued = useRef(false)
   const refreshNow = useRef<(() => Promise<void>) | null>(null)
   const initialTabDecided = useRef(false)
   const manualTabChoice = useRef(false)
@@ -119,7 +120,11 @@ export function CompanionShell() {
     manualTabChoice.current = false
     let cancelled = false
     const refresh = async () => {
-      if (cancelled || polling.current || document.visibilityState === 'hidden') return
+      if (cancelled || document.visibilityState === 'hidden') return
+      if (polling.current) {
+        refreshQueued.current = true
+        return
+      }
       polling.current = true
       try {
         const response = await sendToCEF<CppAppState>({ action: 'getInitialState' })
@@ -168,6 +173,10 @@ export function CompanionShell() {
         if (!cancelled) setError(failure instanceof Error ? failure.message : 'Could not connect to UAM.')
       } finally {
         polling.current = false
+        if (refreshQueued.current && !cancelled) {
+          refreshQueued.current = false
+          await refresh()
+        }
       }
     }
     refreshNow.current = refresh
@@ -176,6 +185,7 @@ export function CompanionShell() {
     document.addEventListener('visibilitychange', refresh)
     return () => {
       cancelled = true
+      refreshQueued.current = false
       refreshNow.current = null
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', refresh)

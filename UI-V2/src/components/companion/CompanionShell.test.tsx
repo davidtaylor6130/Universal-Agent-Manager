@@ -210,6 +210,34 @@ it('opens the shared new chat flow from the phone Chats tab', async () => {
   }
 })
 
+it('runs a queued refresh after creating a chat during an in-flight poll', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  let resolvePoll!: (response: Awaited<ReturnType<typeof sendToCEF>>) => void
+  const initialState = { ok: true as const, data: { folders: [], stateRevision: 1 } }
+  vi.mocked(sendToCEF)
+    .mockResolvedValueOnce(initialState)
+    .mockReturnValueOnce(new Promise((resolve) => { resolvePoll = resolve }))
+    .mockResolvedValueOnce(initialState)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    await act(async () => { host.querySelector('[aria-label="Activity"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => { host.querySelector('[aria-label="Refresh activity"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => { useAppStore.setState({ isNewChatModalOpen: true }) })
+    await act(async () => { host.querySelector('[role="dialog"] button')?.click() })
+    expect(sendToCEF).toHaveBeenCalledTimes(2)
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Refresh activity"]')?.disabled).toBe(true)
+    await act(async () => resolvePoll(initialState))
+    expect(sendToCEF).toHaveBeenCalledTimes(3)
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Refresh activity"]')?.disabled).toBe(false)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
 it('filters activity by project and keeps review status above the completion time', async () => {
   window.localStorage.setItem('uam-companion-token', 'test-token')
   const completedAt = new Date('2026-09-23T14:05:00')
