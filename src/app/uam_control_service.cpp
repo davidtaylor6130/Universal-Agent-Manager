@@ -3,6 +3,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/chat_domain_service.h"
+#include "app/computer_use_service.h"
 #include "app/goal_service.h"
 #include "app/markdown_store_service.h"
 #include "common/chat/chat_repository.h"
@@ -20,6 +21,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <chrono>
@@ -47,6 +49,7 @@ namespace uam
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
 		constexpr int64_t kCapabilityLifetimeMs = 24LL * 60LL * 60LL * 1000LL;
+		constexpr int64_t kApprovalLifetimeMs = 90LL * 1000LL;
 		constexpr int64_t kModelGoalTokenBudget = 200000;
 		constexpr std::string_view kServerFlag = "--uam-control-mcp";
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
@@ -54,6 +57,7 @@ namespace uam
 		struct ToolResult
 		{
 			bool ok = false;
+			bool deferred = false;
 			nlohmann::json result = nlohmann::json::object();
 			std::string error;
 			std::string reason;
@@ -126,6 +130,8 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"agentId", "task"}, {"providerId", "modelId"});
 			if (method == "goal_create")
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
+			if (method == "computer_use_request")
+				return HasOnlyStringArguments(arguments, {"reason"});
 			return false;
 		}
 
@@ -259,6 +265,30 @@ namespace uam
 			return ChatRepository::SaveChat(app.data_root, *chat);
 		}
 
+		bool WriteResponse(const std::filesystem::path& directory, std::string_view request_id,
+		                   const nlohmann::json& response)
+		{
+			if (!SafeRequestId(request_id)) return false;
+			const std::string text = response.dump();
+			if (text.size() > kMaxResponseBytes) return false;
+			const std::filesystem::path path = directory / "responses" /
+			                                   (std::string(request_id) + ".json");
+			return !uam::paths::IsLinkOrReparsePointNoThrow(path) &&
+			       uam::io::WriteTextFile(path, text);
+		}
+
+		std::string ApprovalRequestId(const UamControlCapability& capability)
+		{
+			return "uam-control:" + capability.id + ":" + capability.pending_approval->request_id;
+		}
+
+		std::string_view ApprovalChatId(const UamControlCapability& capability)
+		{
+			return capability.pending_approval->method == "computer_use_request"
+			           ? std::string_view(capability.session_chat_id)
+			           : std::string_view(capability.chat_id);
+		}
+
 		AgentDefinitionCatalog AgentCatalog(const AppState& app, const ChatSession& chat)
 		{
 			return AgentDefinitionService::Load(
@@ -387,13 +417,18 @@ namespace uam
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			const bool mutations_allowed = chat != nullptr && MutationsAllowed(*chat);
+			const bool goal_creation_allowed = chat != nullptr &&
+			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) !=
+			        uam::approval_modes::kPlanApprovalMode;
 			return {.ok = true,
 			        .result = {{"goal", GoalJson(GoalService::FindActiveOrLatestTerminalGoal(app, capability.chat_id), app)},
 			                   {"controlEnabled", chat != nullptr && chat->uam_control_enabled},
 			                   {"mutationToolsEnabled", mutations_allowed},
 			                   {"mutationPolicy", mutations_allowed ? "yoloAutoApprove" : "readOnly"},
-			                   {"agentGoalManagementEnabled", mutations_allowed}, {"lifecycleOwner", "uam"},
-			                   {"modelMayCreateOnly", mutations_allowed}},
+			                   {"agentGoalManagementEnabled", goal_creation_allowed}, {"lifecycleOwner", "uam"},
+			                   {"modelMayCreateOnly", goal_creation_allowed},
+			                   {"goalCreationPolicy", mutations_allowed ? "yoloAutoApprove" :
+			                       goal_creation_allowed ? "userApproval" : "disabled"}},
 			        .reason = "Read current-chat goal state and immutable ceilings."};
 		}
 
@@ -406,22 +441,100 @@ namespace uam
 				return {.error = "Goal objective must be between 1 byte and 32 KiB."};
 			if (!SafeRequestId(idempotency_key)) return {.error = "Goal creation requires a bounded idempotency key."};
 			const std::string idempotency_hash = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(idempotency_key));
-			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (chat == nullptr || std::ranges::any_of(chat->goals, [&](const Goal& goal) {
 				    return goal.creator == "model" && goal.creator_request_key_hash == idempotency_hash;
 			    }))
 				return {.error = "Goal creation idempotency key was already used."};
 			if (GoalService::FindActiveGoal(app, capability.chat_id) != nullptr)
 				return {.error = "This chat already has an active goal."};
+			const ChatSession before = *chat;
 			std::string goal_id;
 			if (!GoalService::CreateGoal(app, capability.chat_id, objective, kModelGoalTokenBudget,
 			                             &goal_id, "uam", "", "model", capability.provider_id,
 			                             capability.agent_id, capability.agent_run_id, idempotency_hash) ||
 			    !GoalService::SetActiveGoal(app, capability.chat_id, goal_id))
+			{
+				*chat = before;
 				return {.error = "UAM could not create and activate the goal."};
+			}
 			return {.ok = true, .result = {{"goalId", goal_id}, {"status", "active"},
 			                              {"tokenBudget", kModelGoalTokenBudget}, {"lifecycleOwner", "uam"}},
 			        .reason = "Created one visible bounded UAM-owned goal."};
+		}
+
+		ToolResult QueueApproval(AppState& app, UamControlCapability& capability,
+		                         UamControlCapability::PendingApproval pending)
+		{
+			const auto session = std::ranges::find_if(app.acp_sessions, [&](const auto& value) {
+				return value != nullptr && value->chat_id == capability.session_chat_id &&
+				       value->uam_control_capability_id == capability.id;
+			});
+			if (session == app.acp_sessions.end() ||
+			    !(*session)->pending_user_input.request_id_json.empty() ||
+			    !(*session)->pending_permission.request_id_json.empty())
+				return {.error = "Finish the current provider question or permission request first."};
+			const std::string_view target_chat_id = pending.method == "computer_use_request"
+			    ? std::string_view(capability.session_chat_id) : std::string_view(capability.chat_id);
+			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
+				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
+			    }))
+				return {.error = "Another UAM request is already waiting for approval in this chat."};
+			capability.pending_approval = std::move(pending);
+			return {.deferred = true};
+		}
+
+		ToolResult GoalCreateRequest(AppState& app, UamControlCapability& capability,
+		                             std::string_view request_id, const nlohmann::json& arguments,
+		                             int64_t now_epoch_ms)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (chat == nullptr || !chat->uam_control_enabled)
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
+			    uam::approval_modes::kPlanApprovalMode)
+				return {.error = "Goals cannot be created in Plan mode."};
+			const std::string objective = uam::strings::Trim(arguments.value("objective", ""));
+			const std::string key = uam::strings::Trim(arguments.value("idempotencyKey", ""));
+			if (objective.empty() || !SafeText(objective, 2048))
+				return {.error = "Goals requiring GUI approval must have an objective of at most 2 KiB."};
+			if (!SafeRequestId(key))
+				return {.error = "Goal creation requires a bounded idempotency key."};
+			const std::string key_hash = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(key));
+			if (std::ranges::any_of(chat->goals, [&](const Goal& goal) {
+			    return goal.creator == "model" && goal.creator_request_key_hash == key_hash;
+			})) return {.error = "Goal creation idempotency key was already used."};
+			if (GoalService::FindActiveGoal(app, capability.chat_id) != nullptr)
+				return {.error = "This chat already has an active goal."};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id),
+			                                     .method = "goal_create", .objective = objective,
+			                                     .idempotency_key = key,
+			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+		}
+
+		ToolResult ComputerUseRequest(AppState& app, UamControlCapability& capability,
+		                              std::string_view request_id, const nlohmann::json& arguments,
+		                              int64_t now_epoch_ms)
+		{
+			ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (chat == nullptr || !chat->uam_control_enabled || root_chat == nullptr ||
+			    !root_chat->uam_control_enabled)
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (!uam::computer_use::AvailableForChat(*chat) || !uam::computer_use::UsesUamBackend(*chat))
+				return {.error = "UAM Computer Use is unavailable for this chat or execution host."};
+			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
+			    uam::approval_modes::kPlanApprovalMode)
+				return {.error = "Computer Use cannot be enabled in Plan mode."};
+			const std::string reason = uam::strings::SafeLine(arguments.value("reason", ""), 513, true);
+			if (reason.empty() || !SafeText(reason, 512))
+				return {.error = "Computer Use requests need a reason of at most 512 bytes."};
+			if (chat->computer_use_enabled)
+				return {.ok = true, .result = {{"enabled", true}, {"chatId", chat->id}},
+				        .reason = "Computer Use was already enabled for this chat."};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id),
+			                                     .method = "computer_use_request", .reason = reason,
+			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
 		}
 
 		ToolResult ExecuteTool(AppState& app, UamControlCapability& capability,
@@ -492,7 +605,14 @@ namespace uam
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
 			const std::optional<ChatSession> rollback = before_chat == nullptr ? std::nullopt : std::optional<ChatSession>{*before_chat};
-			ToolResult result = ExecuteTool(app, *capability, method, arguments);
+			const bool goal_needs_approval = method == "goal_create" && before_chat != nullptr &&
+			    !MutationsAllowed(*before_chat);
+			ToolResult result = method == "computer_use_request"
+			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : goal_needs_approval
+			                            ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                            : ExecuteTool(app, *capability, method, arguments);
+			if (result.deferred) return {{"pendingApproval", true}};
 			const UamControlCapability capability_snapshot = *capability;
 			if (!AppendAuditAndSave(app, capability_snapshot, request_id, method, result))
 			{
@@ -534,6 +654,11 @@ namespace uam
 
 		nlohmann::json Tools()
 		{
+			nlohmann::json goal_create = ToolSchema(
+			    "goal_create", {{"objective", {{"type", "string"}}},
+			                    {"idempotencyKey", {{"type", "string"}}}},
+			    {"objective", "idempotencyKey"});
+			goal_create["description"] = "Create one bounded UAM goal. In Plan mode this is unavailable; in YOLO mode it runs immediately; otherwise it waits for the user's approval in UAM. Do not retry after denial or timeout.";
 			return nlohmann::json::array({
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}}, {"id"}),
@@ -544,7 +669,11 @@ namespace uam
 			                                                 {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}},
 			                               {"agentId", "task"}),
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
-			    MutationToolSchema("goal_create", {{"objective", {{"type", "string"}}}, {"idempotencyKey", {{"type", "string"}}}}, {"objective", "idempotencyKey"}),
+			    std::move(goal_create),
+			    { {"name", "computer_use_request"},
+			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
+			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
+			                       {"required", nlohmann::json::array({"reason"})}, {"additionalProperties", false}}} },
 			});
 		}
 
@@ -560,7 +689,9 @@ namespace uam
 			if (request_text.size() > kMaxRequestBytes ||
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			for (int attempt = 0; attempt < 400; ++attempt)
+			const int max_attempts = method == "computer_use_request" || method == "goal_create"
+			    ? 4000 : 400;
+			for (int attempt = 0; attempt < max_attempts; ++attempt)
 			{
 				const auto size = uam::paths::FileSizeNoThrow(response_path);
 				if (size.has_value())
@@ -572,6 +703,7 @@ namespace uam
 					const nlohmann::json response = nlohmann::json::parse(text, nullptr, false);
 					return response.is_object() ? std::optional<nlohmann::json>{response} : std::nullopt;
 				}
+				if (!uam::paths::IsDirectoryNoThrow(capability)) return std::nullopt;
 				std::this_thread::sleep_for(std::chrono::milliseconds(25));
 			}
 			return std::nullopt;
@@ -771,6 +903,132 @@ namespace uam
 		});
 	}
 
+	std::optional<AcpPendingUserInputState> UamControlService::PendingApprovalForChat(
+	    const AppState& app, std::string_view chat_id)
+	{
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || ApprovalChatId(capability) != chat_id ||
+			    capability.pending_approval->expires_at_epoch_ms <= now ||
+			    !HasAuthority(app, capability, now)) continue;
+			const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
+			if (chat == nullptr) continue;
+			AcpPendingUserInputState input;
+			input.request_id_json = ApprovalRequestId(capability);
+			input.status = "pending";
+			input.attention_kind = "question";
+			AcpUserInputQuestionState question;
+			const bool computer_use = capability.pending_approval->method == "computer_use_request";
+			question.id = computer_use ? "computerUse" : "goalCreate";
+			question.header = computer_use ? "Computer Use" : "Goal";
+			question.question = computer_use
+			    ? "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
+			          " to enable Computer Use in " +
+			          uam::strings::SafeLine(chat->title, 120, true) + "? " +
+			          capability.pending_approval->reason
+			    : "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
+			          " to create this goal in " + uam::strings::SafeLine(chat->title, 120, true) +
+			          "? " + uam::strings::SafeLine(capability.pending_approval->objective, 2048, true);
+			question.options = computer_use
+			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Enable Computer Use for this chat."},
+			                                          {"Deny", "Keep Computer Use disabled."}}
+			    : std::vector<AcpUserInputOptionState>{{"Allow", "Create this goal."},
+			                                          {"Deny", "Do not create this goal."}};
+			input.questions.push_back(std::move(question));
+			return input;
+		}
+		return std::nullopt;
+	}
+
+	bool UamControlService::ResolveApproval(
+	    AppState& app, std::string_view chat_id, std::string_view request_id,
+	    const std::map<std::string, std::vector<std::string>>& answers,
+	    std::string* error_out)
+	{
+		auto fail = [&](std::string message) {
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		for (UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || ApprovalRequestId(capability) != request_id)
+				continue;
+			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, now) ||
+			    capability.pending_approval->expires_at_epoch_ms <= now)
+				return fail("This UAM request is no longer active in this chat.");
+			const bool computer_use = capability.pending_approval->method == "computer_use_request";
+			const std::string question_id = computer_use ? "computerUse" : "goalCreate";
+			if (answers.size() != 1 || !answers.contains(question_id) ||
+			    answers.at(question_id).size() != 1)
+				return fail("Choose Allow or Deny for this UAM request.");
+			const std::string& answer = answers.at(question_id).front();
+			if (answer != "Allow" && answer != "Deny")
+				return fail("Choose Allow or Deny for this UAM request.");
+			ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
+			ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (chat == nullptr || root_chat == nullptr || !root_chat->uam_control_enabled ||
+			    (computer_use && (!chat->uam_control_enabled ||
+			                      !uam::computer_use::AvailableForChat(*chat) ||
+			                      !uam::computer_use::UsesUamBackend(*chat))))
+				return fail("This UAM request is no longer available for this chat.");
+			if (answer == "Allow" &&
+			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
+			        uam::approval_modes::kPlanApprovalMode)
+				return fail("This request cannot be approved in Plan mode.");
+			const ChatSession before = *chat;
+			const ChatSession root_before = *root_chat;
+			ToolResult result;
+			if (answer == "Allow")
+			{
+				if (computer_use)
+				{
+					chat->computer_use_enabled = true;
+					std::string error;
+					if (!ComputerUseService::SetControlState(app, chat->id, "armed", &error))
+					{
+						*chat = before;
+						result.error = error.empty() ? "Computer Use could not be enabled." : error;
+					}
+					else
+					{
+						result.ok = true;
+						result.result = {{"enabled", true}, {"chatId", chat->id}};
+						result.reason = "The user approved Computer Use for this chat.";
+					}
+				}
+				else
+				{
+					result = GoalCreate(app, capability,
+					                    {{"objective", capability.pending_approval->objective},
+					                     {"idempotencyKey", capability.pending_approval->idempotency_key}});
+				}
+			}
+			else result.error = computer_use
+			    ? "The user denied Computer Use for this chat. Do not retry without a new user request."
+			    : "The user denied goal creation for this chat. Do not retry without a new user request.";
+			const nlohmann::json response = result.ok
+			    ? nlohmann::json{{"ok", true}, {"result", result.result}}
+			    : nlohmann::json{{"ok", false}, {"error", result.error}};
+			if (!AppendAuditAndSave(app, capability, capability.pending_approval->request_id,
+			                        capability.pending_approval->method, result) ||
+			    !WriteResponse(capability.directory, capability.pending_approval->request_id, response))
+			{
+				if (result.ok && computer_use)
+					(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
+				*chat = before;
+				if (chat != root_chat) *root_chat = root_before;
+				(void)ChatRepository::SaveChat(app.data_root, *chat);
+				if (chat != root_chat) (void)ChatRepository::SaveChat(app.data_root, *root_chat);
+				return fail("UAM decision could not be delivered. Try again.");
+			}
+			capability.pending_approval.reset();
+			return true;
+		}
+		return fail("This UAM request is no longer pending.");
+	}
+
 	bool UamControlService::ProcessPendingRequests(AppState& app)
 	{
 		bool changed = false;
@@ -789,6 +1047,17 @@ namespace uam
 				app.uam_control_capabilities.erase(app.uam_control_capabilities.begin() + static_cast<std::ptrdiff_t>(capability_index));
 				changed = true;
 				continue;
+			}
+			if (capability.pending_approval.has_value() &&
+			    capability.pending_approval->expires_at_epoch_ms <= now)
+			{
+				const ToolResult expired{.error = "UAM approval timed out."};
+				(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id,
+				                         capability.pending_approval->method, expired);
+				(void)WriteResponse(capability.directory, capability.pending_approval->request_id,
+				                    {{"ok", false}, {"error", expired.error}});
+				capability.pending_approval.reset();
+				changed = true;
 			}
 			std::vector<std::filesystem::path> files;
 			std::error_code list_error;
@@ -834,13 +1103,14 @@ namespace uam
 					    !uam::paths::IsLinkOrReparsePointNoThrow(file))
 					{
 						const nlohmann::json request = nlohmann::json::parse(text, nullptr, false);
-						response = HandleRequest(app, capability_id, request, now);
+						if (request.is_object() && request.contains("requestId") &&
+						    request["requestId"].is_string() && request["requestId"] == request_id)
+							response = HandleRequest(app, capability_id, request, now);
 					}
 				}
 				(void)uam::paths::RemoveFileNoThrow(file);
-				const std::string response_text = response.dump();
-				if (response_text.size() <= kMaxResponseBytes)
-					(void)uam::io::WriteTextFile(capability_directory / "responses" / (request_id + ".json"), response_text);
+				if (!response.value("pendingApproval", false))
+					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}
 			++capability_index;

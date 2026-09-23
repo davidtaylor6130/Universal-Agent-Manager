@@ -309,6 +309,16 @@ namespace uam
 
 	struct UamControlCapability
 	{
+		struct PendingApproval
+		{
+			std::string request_id;
+			std::string method;
+			std::string reason;
+			std::string objective;
+			std::string idempotency_key;
+			int64_t expires_at_epoch_ms = 0;
+		};
+
 		std::string id;
 		std::filesystem::path directory;
 		std::string chat_id;
@@ -322,6 +332,7 @@ namespace uam
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
 		std::unordered_set<std::string> owned_agent_run_ids;
+		std::optional<PendingApproval> pending_approval;
 	};
 
 	struct AcpPendingSteerState

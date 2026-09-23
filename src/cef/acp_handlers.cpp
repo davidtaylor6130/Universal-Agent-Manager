@@ -14,6 +14,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "app/uam_control_service.h"
 #include "common/utils/base64.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -880,7 +882,11 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 	}
 
 	std::string error;
-	if (!uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error))
+	const bool is_uam_control_request = request_id.rfind("uam-control:", 0) == 0;
+	const bool resolved = is_uam_control_request
+		? uam::UamControlService::ResolveApproval(m_app, chat_id, request_id, answers, &error)
+		: uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error);
+	if (!resolved)
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resolve ACP user input request."));
 		return;

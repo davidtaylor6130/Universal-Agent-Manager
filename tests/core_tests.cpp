@@ -4,6 +4,7 @@
 #include "app/persistence_coordinator.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
+#include "cef/state_serializer.h"
 #include "cef/uam_cef_client.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
@@ -11,6 +12,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
 #include <fstream>
@@ -592,11 +594,18 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	for (const std::string tier : {"off", "acceptEdits", "aiReview"})
 	{
 		app.chats.front().command_safety_tier = tier;
-		const nlohmann::json rejected = call(
+		const nlohmann::json pending = call(
 		    capability, "policy-" + tier, "goal_create",
-		    {{"objective", "Must remain unchanged."}, {"idempotencyKey", "policy-" + tier}});
-		UAM_ASSERT(!rejected.value("ok", true));
-		UAM_ASSERT(rejected.value("error", "").find("YOLO") != std::string::npos);
+		    {{"objective", "Must remain unchanged."}, {"idempotencyKey", "policy-" + tier}},
+		    uam::time::SystemEpochMillisecondsNow());
+		UAM_ASSERT(pending.value("pendingApproval", false));
+		const std::optional<uam::AcpPendingUserInputState> policy_question =
+		    uam::UamControlService::PendingApprovalForChat(app, chat_id);
+		UAM_ASSERT(policy_question.has_value());
+		UAM_ASSERT_EQ(policy_question->questions.front().id, std::string("goalCreate"));
+		UAM_ASSERT(uam::UamControlService::ResolveApproval(
+		    app, chat_id, policy_question->request_id_json,
+		    {{"goalCreate", {"Deny"}}}, &error));
 		UAM_ASSERT(uam::GoalService::FindActiveGoal(app, chat_id) == nullptr);
 	}
 	app.chats.front().command_safety_tier = "yolo";
@@ -708,6 +717,266 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(app.uam_control_capabilities.empty());
 	UAM_ASSERT(raw_session->uam_control_capability_id.empty());
 	UAM_ASSERT(!std::filesystem::exists(stale_directory));
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
+{
+	TempDir temp("uam-control-computer-use-approval");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", "opencode-cli");
+	chat.id = "chat-computer-use-approval";
+	chat.uam_control_enabled = true;
+	chat.execution_host_id = "local";
+	const std::string chat_id = chat.id;
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat_id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+	    app, *raw_session, app.chats.front(), "session/new", setup, &error));
+	UAM_ASSERT_EQ(app.uam_control_capabilities.size(), static_cast<std::size_t>(1));
+	const std::string capability_id = app.uam_control_capabilities.front().id;
+	const std::filesystem::path capability_directory = app.uam_control_capabilities.front().directory;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const nlohmann::json request = {
+	    {"requestId", "computer-use-deny"},
+	    {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "The task needs a visible browser."}}},
+	};
+	const nlohmann::json pending = uam::UamControlService::HandleRequestForTests(
+	    app, capability_id, request, now);
+	UAM_ASSERT(pending.value("pendingApproval", false));
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	const std::optional<uam::AcpPendingUserInputState> question =
+	    uam::UamControlService::PendingApprovalForChat(app, chat_id);
+	UAM_ASSERT(question.has_value());
+	UAM_ASSERT_EQ(question->questions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(question->questions.front().id, std::string("computerUse"));
+	UAM_ASSERT_EQ(question->questions.front().options.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(question->request_id_json.find("uam-control:") == 0);
+
+	std::map<std::string, std::vector<std::string>> wrong_answer{{"computerUse", {"Allow"}}};
+	UAM_ASSERT(!uam::UamControlService::ResolveApproval(
+	    app, "another-chat", question->request_id_json, wrong_answer, &error));
+	UAM_ASSERT(!uam::UamControlService::ResolveApproval(
+	    app, chat_id, question->request_id_json,
+	    {{"computerUse", {"Not an approval"}}}, &error));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, chat_id, question->request_id_json,
+	    {{"computerUse", {"Deny"}}}, &error));
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	std::string denied_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(
+	    capability_directory / "responses" / "computer-use-deny.json", denied_text));
+	const nlohmann::json denied = nlohmann::json::parse(denied_text);
+	UAM_ASSERT(!denied.value("ok", true));
+	UAM_ASSERT(denied.value("error", "").find("denied") != std::string::npos);
+
+	setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+	    app, *raw_session, app.chats.front(), "session/new", setup, &error));
+	UAM_ASSERT_EQ(app.uam_control_capabilities.size(), static_cast<std::size_t>(1));
+	const std::filesystem::path allow_directory = app.uam_control_capabilities.front().directory;
+	nlohmann::json allow_request = request;
+	allow_request["requestId"] = "computer-use-allow";
+	UAM_ASSERT(uam::io::WriteTextFile(
+	    allow_directory / "requests" / "computer-use-allow.json", allow_request.dump()));
+	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	const std::optional<uam::AcpPendingUserInputState> allow_question =
+	    uam::UamControlService::PendingApprovalForChat(app, chat_id);
+	UAM_ASSERT(allow_question.has_value());
+	UAM_ASSERT(!uam::UamControlService::ResolveApproval(
+	    app, chat_id, allow_question->request_id_json,
+	    {{"computerUse", {"Allow", "Deny"}}}, &error));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, chat_id, allow_question->request_id_json,
+	    {{"computerUse", {"Allow"}}}, &error));
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	std::string allowed_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(
+	    allow_directory / "responses" / "computer-use-allow.json", allowed_text));
+	const nlohmann::json allowed = nlohmann::json::parse(allowed_text);
+	UAM_ASSERT(allowed.value("ok", false));
+	UAM_ASSERT(allowed["result"].value("enabled", false));
+	UAM_ASSERT(app.chats.front().uam_control_audit.size() >= static_cast<std::size_t>(2));
+	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(temp.root);
+	const auto persisted_chat = std::ranges::find(persisted, chat_id, &ChatSession::id);
+	UAM_ASSERT(persisted_chat != persisted.end());
+	UAM_ASSERT(persisted_chat->uam_control_audit.size() >= static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(persisted_chat->uam_control_audit.back().method,
+	              std::string("computer_use_request"));
+	UAM_ASSERT_EQ(persisted_chat->uam_control_audit.back().result, std::string("ok"));
+
+	const nlohmann::json expired_request = {
+	    {"requestId", "computer-use-expired"}, {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "This request should expire without a user answer."}}},
+	};
+	app.chats.front().computer_use_enabled = false;
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
+	    app, app.uam_control_capabilities.front().id, expired_request, now - 91000)
+	               .value("pendingApproval", false));
+	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat_id).has_value());
+	std::string expired_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(
+	    allow_directory / "responses" / "computer-use-expired.json", expired_text));
+	UAM_ASSERT(nlohmann::json::parse(expired_text).value("error", "").find("timed out") != std::string::npos);
+
+	uam::AppState remote_app;
+	remote_app.data_root = temp.root / "remote";
+	ChatSession remote_chat = ChatDomainService().CreateNewChat("", "opencode-cli");
+	remote_chat.id = "chat-computer-use-remote";
+	remote_chat.execution_host_id = "ssh-test";
+	remote_chat.uam_control_enabled = true;
+	remote_app.chats.push_back(std::move(remote_chat));
+	auto remote_session = std::make_unique<uam::AcpSessionState>();
+	remote_session->chat_id = "chat-computer-use-remote";
+	remote_session->provider_id = "opencode-cli";
+	remote_session->running = true;
+	uam::AcpSessionState* raw_remote_session = remote_session.get();
+	remote_app.acp_sessions.push_back(std::move(remote_session));
+	UAM_ASSERT(uam::UamControlService::Initialize(remote_app, &error));
+	setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+	    remote_app, *raw_remote_session, remote_app.chats.front(), "session/new", setup, &error));
+	const nlohmann::json remote_rejected = uam::UamControlService::HandleRequestForTests(
+	    remote_app, remote_app.uam_control_capabilities.front().id,
+	    {{"requestId", "remote-computer-use"}, {"method", "computer_use_request"},
+     {"arguments", {{"reason", "Remote must be rejected."}}}}, now);
+	UAM_ASSERT(!remote_rejected.value("ok", true));
+	UAM_ASSERT(remote_rejected.value("error", "").find("unavailable") != std::string::npos);
+	UAM_ASSERT(!remote_app.chats.front().computer_use_enabled);
+
+	uam::UamControlService::Shutdown(remote_app);
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
+{
+	TempDir temp("uam-control-goal-and-child-approval");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-goal-approval-root";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	const std::string root_id = root.id;
+	app.chats.push_back(std::move(root));
+	auto root_session = std::make_unique<uam::AcpSessionState>();
+	root_session->chat_id = root_id;
+	root_session->provider_id = "opencode-cli";
+	root_session->running = true;
+	uam::AcpSessionState* raw_root_session = root_session.get();
+	app.acp_sessions.push_back(std::move(root_session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+
+	auto append_server = [&](uam::AcpSessionState& session, const ChatSession& chat) {
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+		    app, session, chat, "session/new", setup, &error));
+		const auto capability = std::ranges::find(app.uam_control_capabilities, chat.id,
+		                                          &uam::UamControlCapability::session_chat_id);
+		UAM_ASSERT(capability != app.uam_control_capabilities.end());
+		return capability->id;
+	};
+	const std::string goal_capability = append_server(*raw_root_session, app.chats.front());
+	const std::filesystem::path goal_directory = std::ranges::find(
+	    app.uam_control_capabilities, root_id, &uam::UamControlCapability::session_chat_id)->directory;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const nlohmann::json goal_request = {
+	    {"requestId", "goal-approval"},
+	    {"method", "goal_create"},
+	    {"arguments", {{"objective", "Finish the bounded task."}, {"idempotencyKey", "goal-approval-once"}}},
+	};
+	const nlohmann::json pending_goal = uam::UamControlService::HandleRequestForTests(
+	    app, goal_capability, goal_request, now);
+	UAM_ASSERT(pending_goal.value("pendingApproval", false));
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, root_id) == nullptr);
+	const std::optional<uam::AcpPendingUserInputState> goal_question =
+	    uam::UamControlService::PendingApprovalForChat(app, root_id);
+	UAM_ASSERT(goal_question.has_value());
+	UAM_ASSERT_EQ(goal_question->questions.front().id, std::string("goalCreate"));
+	const nlohmann::json pending_serialized = uam::StateSerializer::Serialize(app, true);
+	UAM_ASSERT_EQ(pending_serialized["chats"][0]["acpSession"]["pendingUserInput"]["attentionKind"],
+	              std::string("question"));
+	UAM_ASSERT_EQ(pending_serialized["chats"][0]["acpSession"]["pendingUserInput"]["questions"][0]["id"],
+	              std::string("goalCreate"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, root_id, goal_question->request_id_json,
+	    {{"goalCreate", {"Allow"}}}, &error));
+	const Goal* goal = uam::GoalService::FindActiveGoal(app, root_id);
+	UAM_ASSERT(goal != nullptr);
+	UAM_ASSERT_EQ(goal->objective, std::string("Finish the bounded task."));
+	const nlohmann::json resolved_serialized = uam::StateSerializer::Serialize(app, true);
+	UAM_ASSERT(resolved_serialized["chats"][0]["acpSession"]["pendingUserInput"].is_null());
+	std::string goal_response_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(
+	    goal_directory / "responses" / "goal-approval.json", goal_response_text));
+	UAM_ASSERT(nlohmann::json::parse(goal_response_text).value("ok", false));
+	UAM_ASSERT(!app.chats.front().uam_control_audit.empty());
+	UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().method, std::string("goal_create"));
+
+	app.chats.front().approval_mode = "plan";
+	const std::string plan_capability = append_server(*raw_root_session, app.chats.front());
+	const nlohmann::json plan_rejected = uam::UamControlService::HandleRequestForTests(
+	    app, plan_capability,
+	    {{"requestId", "goal-plan"}, {"method", "goal_create"},
+	     {"arguments", {{"objective", "Must not run."}, {"idempotencyKey", "goal-plan"}}}}, now);
+	UAM_ASSERT(!plan_rejected.value("ok", true));
+	UAM_ASSERT(plan_rejected.value("error", "").find("Plan") != std::string::npos);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+
+	ChatSession child = ChatDomainService().CreateNewChat("", "opencode-cli");
+	child.id = "chat-goal-approval-child";
+	child.uam_control_enabled = true;
+	child.execution_host_id = "local";
+	child.agent_run_id = "child-run";
+	const std::string child_id = child.id;
+	app.chats.push_back(std::move(child));
+	AgentRun child_run;
+	child_run.id = "child-run";
+	child_run.root_chat_id = root_id;
+	child_run.transcript_chat_id = child_id;
+	child_run.status = "running";
+	app.agent_runs.push_back(std::move(child_run));
+	auto child_session = std::make_unique<uam::AcpSessionState>();
+	child_session->chat_id = child_id;
+	child_session->provider_id = "opencode-cli";
+	child_session->running = true;
+	uam::AcpSessionState* raw_child_session = child_session.get();
+	app.acp_sessions.push_back(std::move(child_session));
+	app.chats.front().approval_mode = "default";
+	const std::string child_capability = append_server(*raw_child_session, app.chats.back());
+	const nlohmann::json child_request = {
+	    {"requestId", "child-computer-use"},
+	    {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "The child task needs browser control."}}},
+	};
+	const nlohmann::json child_pending = uam::UamControlService::HandleRequestForTests(
+	    app, child_capability, child_request, now);
+	UAM_ASSERT(child_pending.value("pendingApproval", false));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	const std::optional<uam::AcpPendingUserInputState> child_question =
+	    uam::UamControlService::PendingApprovalForChat(app, child_id);
+	UAM_ASSERT(child_question.has_value());
+	UAM_ASSERT_EQ(child_question->questions.front().id, std::string("computerUse"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, child_id, child_question->request_id_json,
+	    {{"computerUse", {"Allow"}}}, &error));
+	UAM_ASSERT(app.chats.back().computer_use_enabled);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+
 	uam::UamControlService::Shutdown(app);
 }
 

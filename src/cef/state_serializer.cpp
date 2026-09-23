@@ -3,6 +3,7 @@
 #include "app/agent_definition_service.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_model_catalog_service.h"
+#include "app/uam_control_service.h"
 #include "common/memory/memory_levels.h"
 
 #include "common/chat/message_attachment_json.h"
@@ -34,6 +35,7 @@
 #include <cctype>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -966,7 +968,13 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing;
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
-			const std::string attention_kind = AcpAttentionKindForFrontend(*session);
+			const std::optional<AcpPendingUserInputState> uam_control_approval =
+				UamControlService::PendingApprovalForChat(app, chat.id);
+			const std::string attention_kind =
+				uam_control_approval.has_value() && session->pending_user_input.request_id_json.empty() &&
+					session->pending_permission.request_id_json.empty()
+					? "question"
+					: AcpAttentionKindForFrontend(*session);
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = session->lifecycle_state;
 			acp_json["lastError"] = session->last_error;
@@ -1006,7 +1014,15 @@ namespace uam
 			acp_json["waitStaleReason"] = session->wait_stale_reason;
 			acp_json["waitSeconds"] = session->wait_started_time_s > 0.0 ? static_cast<int>(std::max(0.0, GetAppTimeSeconds() - session->wait_started_time_s)) : 0;
 			acp_json["pendingPermission"] = SerializePendingAcpPermission(session->pending_permission);
-			acp_json["pendingUserInput"] = SerializePendingAcpUserInput(session->pending_user_input);
+			if (uam_control_approval.has_value() && session->pending_user_input.request_id_json.empty() &&
+				session->pending_permission.request_id_json.empty())
+			{
+				acp_json["pendingUserInput"] = SerializePendingAcpUserInput(*uam_control_approval);
+			}
+			else
+			{
+				acp_json["pendingUserInput"] = SerializePendingAcpUserInput(session->pending_user_input);
+			}
 			acp_json["providerUsage"] = SerializeAcpProviderUsage(session->provider_usage);
 
 			return acp_json;
