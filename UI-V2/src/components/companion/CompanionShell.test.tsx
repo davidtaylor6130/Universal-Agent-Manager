@@ -262,6 +262,7 @@ it('filters activity by project and keeps review status above the completion tim
     expect(host.textContent).toContain('Running task')
     expect(host.textContent).toContain('Finished task')
     expect(host.textContent).toContain('Other task')
+    expect(host.querySelector('.uam-companion-refresh-stack [role="status"]')?.textContent).toMatch(/^Updated /)
     expect(Array.from(host.querySelectorAll('#companion-project-filter option')).filter((option) => option.textContent === 'Project A').map((option) => option.getAttribute('value'))).toEqual(['project-a', 'project-a-copy'])
     const reviewRow = host.querySelector('[data-session-id="review"]')!
     const expectedReviewTime = completedAt.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })

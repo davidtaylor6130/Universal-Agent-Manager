@@ -250,7 +250,7 @@ export function CompanionShell() {
             </div>
         {tab === 'activity' ? <>
           <div className="uam-companion-scope">
-            <label htmlFor="companion-project-filter">Project</label>
+            <label className="uam-companion-scope-label" htmlFor="companion-project-filter">Project</label>
             <select id="companion-project-filter" aria-label="Filter activity by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
               <option value="all">All projects</option>
               {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
@@ -258,7 +258,7 @@ export function CompanionShell() {
             </select>
             <span className="uam-companion-refresh-stack">
               <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
-              <small>{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
+              <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
             </span>
           </div>
           <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(activityRow) : <p className="uam-companion-empty">No active chats.</p>}</section>
