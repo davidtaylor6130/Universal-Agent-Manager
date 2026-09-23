@@ -1929,9 +1929,16 @@ describe('SettingsModal memory settings', () => {
         onSuccess(JSON.stringify({ ok: true, data: {} }))
       }
     }
+    useAppStore.setState({
+      sessions: useAppStore.getState().sessions.map((session) => ({ ...session, providerId: 'gemini-cli' })),
+    })
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer Use"]')!.click())
     expect(host.textContent).toContain('Screen Recording')
+    const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
+    expect(uamControlToggle?.disabled).toBe(false)
+    await act(async () => { uamControlToggle?.click() })
+    expect(useAppStore.getState().sessions[0].uamControlEnabled).toBe(true)
     expect(host.textContent).toContain('Accessibility')
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Open settings')).toBe(true)
     expect(host.textContent).toContain('Request Screen Recording')

@@ -355,6 +355,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const setMcpServers = useAppStore((s) => s.setMcpServers)
   const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
+  const setSessionUamControlEnabled = useAppStore((s) => s.setSessionUamControlEnabled)
   const setUamAgentPreferences = useAppStore((s) => s.setUamAgentPreferences)
   const refreshUamAgents = useAppStore((s) => s.refreshUamAgents)
   const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
@@ -1225,6 +1226,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeSession = sessions.find((session) => session.id === activeSessionId)
     const activeComputerUseBackend: ComputerUseBackend = activeSession?.computerUseBackend ?? 'auto'
     const activeComputerUseProviderAvailable = activeSession?.computerUseProviderAvailable ?? false
+    const activeProvider = providers.find((provider) => provider.id === activeSession?.providerId)
+    const activeUamControlSupported = Boolean(
+      activeSession
+      && (activeSession.executionHostId || 'local') === 'local'
+      && activeProvider?.supportsStructured !== false
+      && ['gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+        activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
+      ),
+    )
     const statusRows = [
       ['Screen Recording', 'screenRecording', computerUseStatus?.screenRecording],
       ['Accessibility', 'accessibility', computerUseStatus?.accessibility],
@@ -1258,6 +1268,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 ? 'Turn Computer Use off in the active chat before changing its backend.'
                 : 'This applies to the active local chat. Target approval still appears only when the AI requests a target.'
               : 'Open a local chat to choose its Computer Use backend.'}
+          </p>
+          <Switch
+            label="Allow UAM Control requests"
+            checked={Boolean(activeSession?.uamControlEnabled)}
+            disabled={!activeUamControlSupported || computerUseBusy}
+            onChange={(event) => {
+              if (!activeSession) return
+              setComputerUseBusy(true)
+              setComputerUseMessage('')
+              void setSessionUamControlEnabled(activeSession.id, event.target.checked)
+                .then((result) => {
+                  if (!result) setComputerUseMessage('Could not change UAM Control. Stop the active session first, then try again.')
+                })
+                .finally(() => setComputerUseBusy(false))
+            }}
+          />
+          <p style={{ color: 'var(--text-3)' }}>
+            {activeUamControlSupported
+              ? 'Lets the agent request goal creation and Computer Use through UAM Control. Each request appears in the chat for approval.'
+              : 'UAM Control is available for supported local structured chats.'}
           </p>
         </div>
       </SectionCard>
