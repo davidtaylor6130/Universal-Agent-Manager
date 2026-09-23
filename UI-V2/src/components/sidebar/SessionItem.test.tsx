@@ -207,6 +207,41 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('selects sibling chats inside the active branch family', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    useAppStore.setState({
+      sessions: [rootSession, branchSession],
+      activeSessionId: 'chat-root',
+      setActiveSession,
+    })
+    const familySessionIds = ['chat-root', 'chat-branch']
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch" session={branchSession} familySessionIds={familySessionIds} />
+    </>))
+
+    const rootRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    const branchRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-branch"]')!
+    expect(rootRow.getAttribute('aria-current')).toBe('page')
+    expect(branchRow.hasAttribute('aria-current')).toBe(false)
+    act(() => branchRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch')
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-branch' }))
+    expect(rootRow.hasAttribute('aria-current')).toBe(false)
+    expect(branchRow.getAttribute('aria-current')).toBe('page')
+    act(() => rootRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(setActiveSession).toHaveBeenLastCalledWith('chat-root')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps a failed delete confirmation visible with its error', async () => {
     useAppStore.setState({ deleteSessions: vi.fn(async () => false) })
     const { host, root } = renderSessionItem()

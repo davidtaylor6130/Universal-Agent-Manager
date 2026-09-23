@@ -126,6 +126,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
   const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
+  const isSelectedChat = useAppStore((s) => s.activeSessionId === sessionId)
   const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
@@ -230,7 +231,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         ref={rowRef}
         role="button"
         tabIndex={0}
-        aria-current={isActive ? 'page' : undefined}
+        aria-current={isSelectedChat ? 'page' : undefined}
         aria-label={`Open chat ${sessionName}`}
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
@@ -242,7 +243,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
-          if (!isActive) setActiveSession(sessionId)
+          if (!isSelectedChat) setActiveSession(sessionId)
         }}
         onDoubleClick={() => {
           if (isCompanionContext()) return
@@ -253,7 +254,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.target !== event.currentTarget || editing) return
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            if (!isActive) setActiveSession(sessionId)
+            if (!isSelectedChat) setActiveSession(sessionId)
           } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
