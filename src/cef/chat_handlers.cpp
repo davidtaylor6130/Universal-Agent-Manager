@@ -22,6 +22,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/state/app_state.h"
+#include "common/platform/platform_services.h"
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -35,6 +36,12 @@
 
 namespace
 {
+	const std::string& CompanionBootId()
+	{
+		static const std::string id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		return id;
+	}
+
 	struct NativeChatTranscript
 	{
 		bool success = false;
@@ -85,7 +92,15 @@ namespace
 
 void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const std::string known_boot_id = payload.value("knownBootId", "");
+	const std::uint64_t known_revision = payload.value("knownStateRevision", std::numeric_limits<std::uint64_t>::max());
+	if (payload.value("summaryOnly", false) && known_boot_id == CompanionBootId() && known_revision == m_app.state_revision)
+	{
+		cb->Success(nlohmann::json{{"unchanged", true}, {"bootId", CompanionBootId()}, {"stateRevision", m_app.state_revision}}.dump());
+		return;
+	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", false));
+	state["bootId"] = CompanionBootId();
 	cb->Success(state.dump());
 }
 

@@ -91,6 +91,61 @@ it.each([1, 100])('accepts a restarted desktop revision %s, preserves selection,
   host.remove()
 })
 
+it('skips unchanged poll snapshots and reloads changed or restarted boots', async () => {
+  vi.useFakeTimers()
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  useAppStore.setState({
+    activeSessionId: 'phone-chat',
+    sessions: [{ id: 'phone-chat', name: 'Phone chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number]],
+  })
+  vi.mocked(sendToCEF)
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 2, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 0, bootId: 'boot-b' } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().loadSessionMessages).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(3)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  }
+})
+
+it('applies a forced full snapshot when its revision is unchanged', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    useAppStore.setState({ lastAppliedStateRevision: 1 })
+    await act(async () => {
+      host.querySelector('[aria-label="Settings"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const refresh = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Refresh chats and activity')
+    await act(async () => refresh?.click())
+    expect(useAppStore.getState().loadFromCef).toHaveBeenCalledTimes(2)
+    expect(useAppStore.getState().lastAppliedStateRevision).toBe(-1)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
 it('shows transcript failures and clears them after a successful refresh', async () => {
   window.localStorage.setItem('uam-companion-token', 'test-token')
   useAppStore.setState({
@@ -213,7 +268,7 @@ it('opens the shared new chat flow from the phone Chats tab', async () => {
 it('runs a queued refresh after creating a chat during an in-flight poll', async () => {
   window.localStorage.setItem('uam-companion-token', 'test-token')
   let resolvePoll!: (response: Awaited<ReturnType<typeof sendToCEF>>) => void
-  const initialState = { ok: true as const, data: { folders: [], stateRevision: 1 } }
+  const initialState = { ok: true as const, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } }
   vi.mocked(sendToCEF)
     .mockResolvedValueOnce(initialState)
     .mockReturnValueOnce(new Promise((resolve) => { resolvePoll = resolve }))
@@ -231,6 +286,7 @@ it('runs a queued refresh after creating a chat during an in-flight poll', async
     expect(host.querySelector<HTMLButtonElement>('[aria-label="Refresh activity"]')?.disabled).toBe(true)
     await act(async () => resolvePoll(initialState))
     expect(sendToCEF).toHaveBeenCalledTimes(3)
+    expect(sendToCEF.mock.calls[2][0]).toEqual({ action: 'getInitialState' })
     expect(host.querySelector<HTMLButtonElement>('[aria-label="Refresh activity"]')?.disabled).toBe(false)
   } finally {
     await act(async () => root.unmount())

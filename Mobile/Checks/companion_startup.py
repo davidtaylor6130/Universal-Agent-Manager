@@ -112,6 +112,8 @@ def main():
                        if not key.startswith('UAM_COMPANION_')}
         environment['UAM_DATA_DIR'] = str(root)
         url = f'http://127.0.0.1:{proxy_port}'
+        previous_boot_id = None
+        previous_state_revision = None
         for attempt in range(2):
             with (root / 'launch.log').open('ab') as log:
                 process = subprocess.Popen([str(executable)], cwd=root, env=environment,
@@ -171,6 +173,24 @@ def main():
                             body = gzip.decompress(body)
                         return json.loads(body)
                 before = api('getInitialState')
+                assert isinstance(before.get('bootId'), str) and before['bootId'], before
+                assert isinstance(before.get('stateRevision'), int), before
+                if previous_boot_id is not None:
+                    restarted = api('getInitialState', {
+                        'knownBootId': previous_boot_id,
+                        'knownStateRevision': previous_state_revision,
+                    })
+                    assert restarted.get('unchanged') is not True, 'Restart reused the old companion state'
+                    assert restarted.get('bootId') != previous_boot_id, restarted
+                unchanged = api('getInitialState', {
+                    'knownBootId': before['bootId'],
+                    'knownStateRevision': before['stateRevision'],
+                })
+                assert unchanged == {
+                    'unchanged': True,
+                    'bootId': before['bootId'],
+                    'stateRevision': before['stateRevision'],
+                }, unchanged
                 assert 'messages' not in next(chat for chat in before['chats']
                                               if chat['id'] == 'transport-check'), 'Startup embedded the selected transcript'
                 created = api('createSession', {'title': 'Created on phone', 'folderId': 'phone-workspace',
@@ -178,6 +198,11 @@ def main():
                 assert created.get('chatId'), created
                 api('setChatPinned', {'chatId': created['chatId'], 'pinned': True})
                 after = api('getInitialState')
+                changed = api('getInitialState', {
+                    'knownBootId': before['bootId'],
+                    'knownStateRevision': before['stateRevision'],
+                })
+                assert changed.get('unchanged') is not True, 'Changed state returned unchanged'
                 assert after.get('selectedChatId') == before.get('selectedChatId'), 'Phone moved desktop selection'
                 saved_chat = root / 'chats' / (created['chatId'] + '.json')
                 assert saved_chat.exists(), 'New chat was not persisted'
@@ -187,6 +212,8 @@ def main():
                     raise AssertionError('Invalid workspace accepted')
                 except urllib.error.HTTPError as error:
                     assert error.code == 400, error.code
+                previous_boot_id = before['bootId']
+                previous_state_revision = before['stateRevision']
                 print(f'Launch {attempt + 1}: saved configuration, proxy, authenticated state and local-only settings passed', flush=True)
             finally:
                 process.terminate()

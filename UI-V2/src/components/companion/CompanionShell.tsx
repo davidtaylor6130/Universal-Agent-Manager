@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Activity, MessageSquare, RefreshCw, Settings, Pin, PinOff, CircleAlert, Check, ChevronRight, Plus } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import type { CppAppState } from '../../store/cpp/types'
+import type { CppAppState, CppCompanionUnchangedState } from '../../store/cpp/types'
 import { ChatView } from '../views/ChatView'
 import { FolderTree } from '../sidebar/FolderTree'
 import { sidebarStatusIcon } from '../sidebar/SessionItem'
@@ -45,7 +45,11 @@ export function CompanionShell() {
   }, [])
   const polling = useRef(false)
   const refreshQueued = useRef(false)
-  const refreshNow = useRef<(() => Promise<void>) | null>(null)
+  const queuedForceFull = useRef(false)
+  const refreshNow = useRef<((forceFull?: boolean) => Promise<void>) | null>(null)
+  const companionBootId = useRef('')
+  const companionStateRevision = useRef<number | null>(null)
+  const automaticPollCount = useRef(0)
   const initialTabDecided = useRef(false)
   const manualTabChoice = useRef(false)
   const sessions = useAppStore((s) => s.sessions)
@@ -62,7 +66,7 @@ export function CompanionShell() {
   ) : null
   const refreshManually = async () => {
     setRefreshing(true)
-    try { await refreshNow.current?.() } finally { setRefreshing(false) }
+    try { await refreshNow.current?.(true) } finally { setRefreshing(false) }
   }
   const togglePin = async () => {
     if (!session || pinning) return
@@ -119,33 +123,67 @@ export function CompanionShell() {
     initialTabDecided.current = false
     manualTabChoice.current = false
     let cancelled = false
-    const refresh = async () => {
+    const refresh = async (forceFull = false) => {
       if (cancelled || document.visibilityState === 'hidden') return
       if (polling.current) {
         refreshQueued.current = true
+        queuedForceFull.current = queuedForceFull.current || forceFull
         return
       }
       polling.current = true
       try {
-        const response = await sendToCEF<CppAppState>({ action: 'getInitialState' })
+        const fullRefresh = forceFull || automaticPollCount.current % 8 === 0
+        automaticPollCount.current += 1
+        const knownState = fullRefresh || !companionBootId.current || companionStateRevision.current === null
+          ? {}
+          : { knownBootId: companionBootId.current, knownStateRevision: companionStateRevision.current }
+        const response = await sendToCEF<CppAppState | CppCompanionUnchangedState>({
+          action: 'getInitialState',
+          ...(Object.keys(knownState).length ? { payload: knownState } : {}),
+        })
         if (cancelled) return
         if (!response.ok || !response.data) throw new Error(response.error || 'Could not connect to UAM.')
+        const state = response.data
+        if ('unchanged' in state && state.unchanged === true) {
+          companionBootId.current = state.bootId
+          companionStateRevision.current = state.stateRevision
+          const current = useAppStore.getState()
+          const selectedId = current.activeSessionId
+          // Stream tokens can change without changing the chat-list revision.
+          if (selectedId && current.sessions.some((candidate) => candidate.id === selectedId)) {
+            if (await current.loadSessionMessages(selectedId) === false) {
+              throw new Error(useAppStore.getState().statusLine || 'Could not refresh chat history.')
+            }
+          }
+          setLastRefreshedAt(new Date())
+          setReady(true)
+          setError('')
+          return
+        }
         const phoneState = useAppStore.getState()
         const selectedId = phoneState.activeSessionId
-        // Serialized full snapshots remain authoritative even when a restarted desktop reuses a revision.
-        if (typeof response.data.stateRevision === 'number' &&
-            response.data.stateRevision <= phoneState.lastAppliedStateRevision) {
+        const previousBootId = companionBootId.current
+        const previousRevision = companionStateRevision.current
+        const nextBootId = state.bootId ?? ''
+        const nextRevision = typeof state.stateRevision === 'number' ? state.stateRevision : 0
+        const bootChanged = Boolean(previousBootId && nextBootId && previousBootId !== nextBootId)
+        const stateChanged = bootChanged || previousRevision === null || previousRevision !== nextRevision
+        companionBootId.current = nextBootId
+        companionStateRevision.current = nextRevision
+        if (bootChanged || (fullRefresh && nextRevision <= phoneState.lastAppliedStateRevision) ||
+            (previousRevision === null && nextRevision <= phoneState.lastAppliedStateRevision) ||
+            (stateChanged && nextRevision < phoneState.lastAppliedStateRevision)) {
           useAppStore.setState({ lastAppliedStateRevision: -1 })
         }
         phoneState.loadFromCef({
-          ...response.data,
+          ...state,
           selectedChatId: selectedId,
           selectedChatIndex: -1,
-          folders: response.data.folders.map((folder) => {
+          folders: state.folders.map((folder) => {
             const local = phoneState.folders.find((candidate) => candidate.id === folder.id)
             return local ? { ...folder, collapsed: !local.isExpanded } : folder
           }),
-          resourceCollections: response.data.resourceCollections?.map((collection) => {
+          resourceCollections: state.resourceCollections?.map((collection) => {
             const local = phoneState.resourceCollections.find((candidate) => candidate.id === collection.id)
             return local ? { ...collection, collapsed: local.collapsed } : collection
           }),
@@ -174,21 +212,25 @@ export function CompanionShell() {
       } finally {
         polling.current = false
         if (refreshQueued.current && !cancelled) {
+          const forceQueuedRefresh = queuedForceFull.current
           refreshQueued.current = false
-          await refresh()
+          queuedForceFull.current = false
+          await refresh(forceQueuedRefresh)
         }
       }
     }
     refreshNow.current = refresh
-    void refresh()
+    void refresh(true)
     const timer = window.setInterval(() => void refresh(), 2000)
-    document.addEventListener('visibilitychange', refresh)
+    const handleVisibilityChange = () => void refresh(true)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       cancelled = true
       refreshQueued.current = false
+      queuedForceFull.current = false
       refreshNow.current = null
       window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refresh)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [token])
 
@@ -269,7 +311,7 @@ export function CompanionShell() {
           </>}
         </div>}
       </main>
-      {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.() }} /></Suspense>}
+      {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true) }} /></Suspense>}
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
       <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>

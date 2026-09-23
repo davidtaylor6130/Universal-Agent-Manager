@@ -679,7 +679,9 @@ export interface VcsCommitMessageSuggestion {
 }
 
 export interface CppAppState {
+  unchanged?: false
   stateRevision?: number
+  bootId?: string
   appVersion?: string
   runnerProtocolVersion?: number
   folders: CppFolder[]
@@ -696,6 +698,12 @@ export interface CppAppState {
   shellActions?: ShellAction[]
   shellActionNotification?: string
   statusLine?: string
+}
+
+export interface CppCompanionUnchangedState {
+  unchanged: true
+  bootId: string
+  stateRevision: number
 }
 
 export interface CppStatePatch {
