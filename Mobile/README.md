@@ -14,7 +14,7 @@ For isolated development previews, environment configuration still overrides the
 python3 Mobile/start-desktop.py --desktop Builds/audit-gui/universal_agent_manager.app
 ```
 
-Open http://127.0.0.1:58948/companion on the Mac. Paste the token from `~/Library/Application Support/UAM Companion/token`. The token stays in browser session storage. The launcher refuses to start alongside another desktop instance and does not replace the installed app.
+Open http://127.0.0.1:58948/companion on the Mac. Paste the token from `~/Library/Application Support/UAM Companion/token`. The token stays in browser local storage until Logout. The launcher refuses to start alongside another desktop instance and does not replace the installed app.
 
 The server currently listens on loopback only. iPhone access still requires a secure connection to the Mac; this is not an installed iPhone app. No Apple membership is needed for this Mac browser preview.
 

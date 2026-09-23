@@ -81,8 +81,8 @@ const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
   generic: 'Input needed',
 }
 
-function sidebarStatusIcon(kind: AcpAttentionKind) {
-  const props = { size: 12, 'aria-hidden': true } as const
+export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
+  const props = { size, 'aria-hidden': true } as const
   switch (kind) {
     case 'question': return <HelpCircle {...props} />
     case 'plan': return <ClipboardList {...props} />

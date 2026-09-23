@@ -15,11 +15,14 @@ vi.mock('../../store/useAppStore', async () => {
 })
 vi.mock('../views/ChatView', () => ({ ChatView: () => <div>Conversation</div> }))
 vi.mock('../sidebar/FolderTree', () => ({ FolderTree: () => <div>Workspace chats</div> }))
-vi.mock('../sidebar/SessionItem', () => ({ SessionItem: ({ sessionId }: { sessionId: string }) => <div data-session-id={sessionId}>Chat row</div> }))
+vi.mock('../sidebar/SessionItem', () => ({
+  SessionItem: ({ sessionId }: { sessionId: string }) => <div data-session-id={sessionId}>Chat row</div>,
+  sidebarStatusIcon: () => <span aria-hidden="true" />,
+}))
 vi.mock('../sidebar/NewChatModal', () => ({ NewChatModal: ({ onCreated }: { onCreated?: () => void }) => <div role="dialog">New chat modal<button onClick={onCreated}>Create</button></div> }))
 vi.mock('../ui', () => ({
-  Button: ({ children, variant: _variant, size: _size, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string }) => <button {...props}>{children}</button>,
-  IconButton: ({ label, onClick }: { label: string; onClick: () => void }) => <button onClick={onClick}>{label}</button>,
+  Button: ({ children, variant: _variant, size: _size, leadingIcon: _leadingIcon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; leadingIcon?: React.ReactNode }) => <button {...props}>{children}</button>,
+  IconButton: ({ label, onClick }: { label: string; onClick: () => void }) => <button aria-label={label} onClick={onClick}>{label}</button>,
 }))
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -66,10 +69,10 @@ it.each([1, 100])('accepts a restarted desktop revision %s, preserves selection,
   await act(async () => connectedRoot.render(<CompanionShell />))
   expect(useAppStore.getState().loadFromCef).toHaveBeenCalledWith({ selectedChatId: 'phone-chat', selectedChatIndex: -1, folders: [], resourceCollections: undefined, stateRevision: revision })
   expect(useAppStore.getState().lastAppliedStateRevision).toBe(-1)
-  expect(host.textContent).toContain('Activity')
+  expect(host.querySelector('[aria-label="Activity"]')).not.toBeNull()
   vi.mocked(sendToCEF).mockClear()
   await act(async () => {
-    Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Settings')!.click()
+    host.querySelector('[aria-label="Settings"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
   expect(host.textContent).toContain('Connected')
   await act(async () => {
@@ -77,10 +80,10 @@ it.each([1, 100])('accepts a restarted desktop revision %s, preserves selection,
   })
   expect(sendToCEF).toHaveBeenCalledWith({ action: 'getInitialState' })
   await act(async () => {
-    Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Chats')!.click()
+    host.querySelector('[aria-label="Chats"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
   expect(host.textContent).toContain('Workspace chats')
-  await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Settings')!.click() })
+  await act(async () => { host.querySelector('[aria-label="Settings"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
   await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Logout')!.click() })
   expect(window.localStorage.getItem('uam-companion-token')).toBeNull()
   expect(host.querySelector('input[type="password"]')).not.toBeNull()
@@ -105,7 +108,7 @@ it('shows transcript failures and clears them after a successful refresh', async
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('Remote transcript could not be read.')
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
     expect(host.querySelector('[role="alert"]')).toBeNull()
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Settings')?.click() })
+    await act(async () => { host.querySelector('[aria-label="Settings"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(host.textContent).toContain('Connected')
   } finally {
     await act(async () => root.unmount())
@@ -127,15 +130,34 @@ it.each([false, true])('chooses the initial tab from activity=%s and preserves l
   const root = createRoot(host)
   try {
     await act(async () => root.render(<CompanionShell />))
-    const activity = () => host.querySelector('button[aria-current="page"]')?.textContent
+    const activity = () => host.querySelector('button[aria-current="page"]')?.getAttribute('aria-label')
     expect(activity()).toBe(hasActivity ? 'Activity' : 'Chats')
     const manualChoice = hasActivity ? 'Chats' : 'Activity'
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === manualChoice)?.click() })
+    await act(async () => { host.querySelector(`[aria-label="${manualChoice}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(activity()).toBe(manualChoice)
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Settings')?.click() })
+    await act(async () => { host.querySelector('[aria-label="Settings"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Refresh chats and activity')?.click() })
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === manualChoice)?.click() })
+    await act(async () => { host.querySelector(`[aria-label="${manualChoice}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(activity()).toBe(manualChoice)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('keeps Settings open when the initial activity refresh finishes', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  let resolveState!: (response: Awaited<ReturnType<typeof sendToCEF>>) => void
+  vi.mocked(sendToCEF).mockReturnValue(new Promise((resolve) => { resolveState = resolve }))
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    await act(async () => { host.querySelector('[aria-label="Settings"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => resolveState({ ok: true, data: { folders: [], stateRevision: 1 } }))
+    expect(host.textContent).toContain('Connected')
+    expect(host.querySelector('h1')?.textContent).toBe('Settings')
   } finally {
     await act(async () => root.unmount())
     host.remove()
@@ -179,9 +201,71 @@ it('opens the shared new chat flow from the phone Chats tab', async () => {
   const root = createRoot(host)
   try {
     await act(async () => root.render(<CompanionShell />))
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Chats')?.click() })
-    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New chat')?.click() })
+    await act(async () => { host.querySelector('[aria-label="Chats"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => { host.querySelector('[aria-label="New chat"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(setNewChatModalOpen).toHaveBeenCalledWith(true)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('filters activity by project and keeps review status above the completion time', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const completedAt = new Date('2026-09-23T14:05:00')
+  useAppStore.setState({
+    folders: [
+      { id: 'project-a', name: 'Project A', parentId: null, directory: '/tmp/a', isExpanded: true, createdAt: new Date() },
+      { id: 'project-a-copy', name: 'Project A', parentId: null, directory: '/tmp/a-copy', isExpanded: true, createdAt: new Date() },
+    ],
+    sessions: [
+      { id: 'running', name: 'Running task', folderId: 'project-a', providerId: 'codex-cli', workspaceDirectory: '/tmp/a/main', updatedAt: new Date(), viewMode: 'chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number],
+      { id: 'review', name: 'Finished task', folderId: 'project-a', providerId: 'claude-cli', workspaceDirectory: '/tmp/a/review', updatedAt: completedAt, viewMode: 'chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number],
+      { id: 'other', name: 'Other task', folderId: 'other', providerId: 'opencode-cli', workspaceDirectory: '/tmp/other', updatedAt: new Date(), viewMode: 'chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number],
+    ],
+    acpBindingBySessionId: { running: { processing: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string], review: { readySinceLastSelect: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string], other: { readySinceLastSelect: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] },
+  })
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1 } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    expect(host.textContent).toContain('Running task')
+    expect(host.textContent).toContain('Finished task')
+    expect(host.textContent).toContain('Other task')
+    expect(Array.from(host.querySelectorAll('#companion-project-filter option')).filter((option) => option.textContent === 'Project A').map((option) => option.getAttribute('value'))).toEqual(['project-a', 'project-a-copy'])
+    const reviewRow = host.querySelector('[data-session-id="review"]')!
+    const expectedReviewTime = completedAt.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    expect(reviewRow.textContent?.indexOf('Ready to review')).toBeLessThan(reviewRow.textContent?.indexOf(expectedReviewTime) ?? -1)
+    await act(async () => {
+      const filter = host.querySelector<HTMLSelectElement>('#companion-project-filter')!
+      filter.value = 'unsorted'
+      filter.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('Other task')
+    expect(host.textContent).not.toContain('Running task')
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('keeps one central new-chat control and slides the icon navigation selection', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1 } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    expect(host.querySelectorAll('[aria-label="New chat"]').length).toBe(1)
+    expect(host.querySelector('[aria-label="Activity"] svg')).not.toBeNull()
+    await act(async () => host.querySelector('[aria-label="Chats"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(host.querySelector('[aria-label="Activity"] svg')).not.toBeNull()
+    expect(host.querySelector('[aria-label="Chats"] svg')).not.toBeNull()
+    expect(host.querySelector('.uam-companion-nav-indicator--chats')).not.toBeNull()
+    expect(host.querySelector('.uam-companion-list')?.textContent).not.toContain('New chat')
   } finally {
     await act(async () => root.unmount())
     host.remove()

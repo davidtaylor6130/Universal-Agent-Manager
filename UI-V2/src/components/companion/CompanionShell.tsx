@@ -1,12 +1,13 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Activity, MessageSquare, RefreshCw, Settings, Pin, PinOff, CircleAlert, Check } from 'lucide-react'
+import { ArrowLeft, Activity, MessageSquare, RefreshCw, Settings, Pin, PinOff, CircleAlert, Check, ChevronRight, Plus } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import type { CppAppState } from '../../store/cpp/types'
 import { ChatView } from '../views/ChatView'
 import { FolderTree } from '../sidebar/FolderTree'
-import { SessionItem } from '../sidebar/SessionItem'
+import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
+import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
 import './companion.css'
 
@@ -27,6 +28,8 @@ export function CompanionShell() {
   const [tab, setTab] = useState<'activity' | 'chats' | 'settings'>('activity')
   const [conversationOpen, setConversationOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [projectFilter, setProjectFilter] = useState('all')
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [pinning, setPinning] = useState(false)
   const [pinError, setPinError] = useState('')
@@ -45,6 +48,7 @@ export function CompanionShell() {
   const initialTabDecided = useRef(false)
   const manualTabChoice = useRef(false)
   const sessions = useAppStore((s) => s.sessions)
+  const folders = useAppStore((s) => s.folders)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const storeNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const setStoreNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
@@ -68,10 +72,45 @@ export function CompanionShell() {
     } catch { setPinError('Could not update pin. Try again.') }
     finally { setPinning(false) }
   }
-  const activeSessions = sessions.filter((candidate) => displayedChatStatus(
+  const statusFor = (candidate: typeof sessions[number]) => displayedChatStatus(
     cliBindings[candidate.id] ? [cliBindings[candidate.id]] : [],
     acpBindings[candidate.id] ? [acpBindings[candidate.id]] : [],
-  ))
+  )
+  const workspaceLabel = (candidate: typeof sessions[number]) => {
+    const directory = candidate.workspaceDirectory?.trim() || ''
+    return directory.split(/[\\/]/).filter(Boolean).pop() || 'Local workspace'
+  }
+  const projectLabel = (candidate: typeof sessions[number]) => {
+    const folder = folders.find((item) => item.id === candidate.folderId)
+    return folder?.name || 'Unsorted'
+  }
+  const projectKey = (candidate: typeof sessions[number]) => folders.some((folder) => folder.id === candidate.folderId) ? candidate.folderId : 'unsorted'
+  const visibleSessions = sessions.filter((candidate) => projectFilter === 'all' || projectKey(candidate) === projectFilter)
+  const activeSessions = visibleSessions.filter((candidate) => {
+    const status = statusFor(candidate)
+    return status?.type === 'processing' || status?.type === 'attention'
+  })
+  const recentSessions = visibleSessions.filter((candidate) => statusFor(candidate)?.type === 'done')
+  const activityRow = (candidate: typeof sessions[number]) => {
+    const status = statusFor(candidate)
+    const statusLabel = status?.type === 'processing' ? 'Running' : status?.type === 'attention' ? 'Needs input' : 'Ready to review'
+    const updatedAt = candidate.updatedAt ? new Date(candidate.updatedAt) : null
+    const timestamp = updatedAt && !Number.isNaN(updatedAt.getTime())
+      ? updatedAt.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : 'Time unavailable'
+    const attentionIcon = status?.type === 'attention' ? sidebarStatusIcon(status.kind, 14) : null
+    const statusIcon = status?.type === 'processing'
+      ? <span aria-hidden="true" />
+      : status?.type === 'attention'
+        ? attentionIcon
+        : <Check size={14} aria-hidden="true" />
+    return <button key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
+      <ProviderLogo providerId={candidate.providerId} size={24} className="uam-companion-provider" />
+      <span className="uam-companion-row-copy"><strong>{candidate.name}</strong><small>{projectLabel(candidate)} · {workspaceLabel(candidate)}</small></span>
+      <span className="uam-companion-row-state"><em className={`session-status session-status--${status?.type === 'processing' ? 'processing' : status?.type === 'attention' ? 'attention' : 'idle'}`} aria-label={statusLabel}>{statusIcon}</em><small className="uam-companion-review-status">{status?.type === 'done' ? 'Ready to review' : statusLabel}</small><small>{timestamp}</small></span>
+      <ChevronRight size={18} aria-hidden />
+    </button>
+  }
 
 
   useEffect(() => {
@@ -122,6 +161,7 @@ export function CompanionShell() {
           ))
           if (!manualTabChoice.current) setTab(hasActivity ? 'activity' : 'chats')
         }
+        setLastRefreshedAt(new Date())
         setReady(true)
         setError('')
       } catch (failure) {
@@ -157,13 +197,15 @@ export function CompanionShell() {
   return <div className="uam-companion uam-app">
     <header className="uam-companion-header">
       {conversationOpen && session && <IconButton icon={<ArrowLeft size={18} />} label="Back to chats" onClick={() => setConversationOpen(false)} />}
-      <strong className="truncate">{conversationOpen && session ? session.name : 'UAM'}</strong>
+      {!conversationOpen && <span className="uam-companion-brand"><img src="/app_icon-180.png" alt="UAM" /><strong className="truncate">Universal Agent Manager</strong></span>}
+      {conversationOpen && <strong className="truncate">{session?.name}</strong>}
       {conversationOpen && session && <>
         <IconButton icon={session.isPinned ? <PinOff size={16} /> : <Pin size={16} />} label={session.isPinned ? 'Unpin chat' : 'Pin chat'} active={Boolean(session.isPinned)} disabled={pinning} aria-busy={pinning || undefined} onClick={() => void togglePin()} />
         <span role="status" aria-label={currentStatus?.type === 'processing' ? 'Agent running' : currentStatus?.type === 'attention' ? `Needs attention: ${currentStatus.kind}` : currentStatus?.type === 'done' ? 'Done' : 'Idle'} className={`session-status session-status--${currentStatus?.type === 'processing' ? 'processing' : currentStatus?.type === 'attention' ? 'attention' : 'idle'}`}>
           {currentStatus?.type === 'attention' ? <CircleAlert size={16} /> : currentStatus?.type === 'done' ? <Check size={16} /> : <span />}
         </span>
       </>}
+      {!conversationOpen && <IconButton icon={<Settings size={18} />} label="Settings" active={tab === 'settings'} onClick={() => { manualTabChoice.current = true; setTab('settings'); setPinError('') }} />}
     </header>
     {pinError && <div className="uam-companion-error" role="alert">{pinError}</div>}
     {error && <div className="uam-companion-error" role="alert">{error}</div>}
@@ -195,9 +237,23 @@ export function CompanionShell() {
           }}>
             <div className="flex items-center justify-between px-3 py-2">
               <h1 className="!p-0">{tab === 'activity' ? 'Activity' : 'Chats'}</h1>
-              {tab === 'chats' && <Button size="sm" variant="primary" onClick={() => setStoreNewChatModalOpen(true)}>New chat</Button>}
             </div>
-          {tab === 'activity' ? activeSessions.length ? activeSessions.map((candidate) => <SessionItem key={candidate.id} sessionId={candidate.id} session={candidate} familySessionIds={[candidate.id]} />) : <p className="px-3">No active chats.</p> : <>
+        {tab === 'activity' ? <>
+          <div className="uam-companion-scope">
+            <label htmlFor="companion-project-filter">Project</label>
+            <select id="companion-project-filter" aria-label="Filter activity by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+              <option value="all">All projects</option>
+              {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+              {sessions.some((candidate) => !candidate.folderId || !folders.some((folder) => folder.id === candidate.folderId)) && <option value="unsorted">Unsorted</option>}
+            </select>
+            <span className="uam-companion-refresh-stack">
+              <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
+              <small>{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
+            </span>
+          </div>
+          <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(activityRow) : <p className="uam-companion-empty">No active chats.</p>}</section>
+          <section className="uam-companion-section"><h2>Recent output</h2>{recentSessions.length ? recentSessions.map(activityRow) : <p className="uam-companion-empty">No recent output.</p>}</section>
+        </> : <>
             <input className="uam-companion-search" type="search" aria-label="Search chats" placeholder="Search chats" value={search} onChange={(event) => setSearch(event.target.value)} />
             <FolderTree searchQuery={search} />
           </>}
@@ -206,9 +262,10 @@ export function CompanionShell() {
       {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.() }} /></Suspense>}
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
-      {(['activity', 'chats', 'settings'] as const).map((item) => <button key={item} type="button" aria-current={tab === item && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab(item); setConversationOpen(false); setPinError('') }}>
-        {item === 'activity' ? <Activity size={18} /> : item === 'chats' ? <MessageSquare size={18} /> : <Settings size={18} />}{item === 'activity' ? 'Activity' : item === 'chats' ? 'Chats' : 'Settings'}
-      </button>)}
+      <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>
+      <button type="button" className="uam-companion-new-chat" aria-label="New chat" onClick={() => setStoreNewChatModalOpen(true)}><Plus size={30} strokeWidth={2.5} /></button>
+      <button type="button" aria-label="Chats" aria-current={tab === 'chats' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('chats'); setConversationOpen(false); setPinError('') }}><MessageSquare size={21} /></button>
+      {tab !== 'settings' && <span className={`uam-companion-nav-indicator uam-companion-nav-indicator--${tab === 'chats' ? 'chats' : 'activity'}`} aria-hidden="true" />}
     </nav>}
   </div>
 }
