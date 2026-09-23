@@ -1,5 +1,6 @@
 #include "chat_domain_service.h"
 
+#include "app/goal_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_branching.h"
@@ -687,6 +688,39 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.memory_enabled = source.memory_enabled;
 	branch.small_model_mode = source.small_model_mode;
 	branch.imported_read_only = source.imported_read_only;
+	branch.active_goal_id.clear();
+	if (source.goal_owner_chat_id.empty())
+	{
+		for (const Goal& source_goal : source.goals)
+		{
+			Goal branch_goal = source_goal;
+			branch_goal.id.clear();
+			for (int attempt = 0; attempt < 4 && branch_goal.id.empty(); ++attempt)
+			{
+				const std::string candidate = uam::GoalService::GenerateGoalId();
+				if (candidate.empty()) continue;
+				const bool id_in_use = std::ranges::any_of(app.chats, [&candidate](const ChatSession& chat)
+				{
+					return std::ranges::any_of(chat.goals, [&candidate](const Goal& goal)
+					{
+						return goal.id == candidate;
+					});
+				});
+				const bool id_already_cloned = std::ranges::any_of(branch.goals, [&candidate](const Goal& goal)
+				{
+					return goal.id == candidate;
+				});
+				if (!id_in_use && !id_already_cloned) branch_goal.id = candidate;
+			}
+			if (branch_goal.id.empty())
+			{
+				app.status_line = "Failed to create independent goal snapshots for the branch.";
+				return false;
+			}
+			if (branch_goal.status == GoalStatus::Active) branch_goal.status = GoalStatus::Paused;
+			branch.goals.push_back(std::move(branch_goal));
+		}
+	}
 	const bool branch_from_git_worktree = uam::paths::HasGitWorktreeSource(source);
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);

@@ -6336,6 +6336,76 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
 }
 
+UAM_TEST(ChatDomainServiceBranchesWithIndependentPausedGoalSnapshots)
+{
+	TempDir temp("uam-message-branch-goals");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	source.id = "chat-goal-source";
+	source.active_goal_id = "goal-active-source";
+	source.goals.push_back(Goal{
+	    .id = "goal-active-source", .objective = "Finish the source task.",
+	    .status = GoalStatus::Active, .completed_items = {"Inspect source"},
+	    .remaining_items = {"Implement change"}, .current_step = "Implement change",
+	    .last_verification = "Source test passed", .loop_count = 2});
+	source.goals.push_back(Goal{
+	    .id = "goal-paused-source", .objective = "Keep this paused goal.",
+	    .status = GoalStatus::Paused, .remaining_items = {"Review later"}});
+	source.messages.push_back(Message{MessageRole::User, "Original prompt"});
+	app.chats.push_back(source);
+	ChatDomainService().SelectChatById(app, source.id);
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited prompt")));
+	const ChatSession* branch = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(branch != nullptr);
+	UAM_ASSERT(branch->active_goal_id.empty());
+	UAM_ASSERT_EQ(branch->goals.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(branch->goal_owner_chat_id.empty());
+	UAM_ASSERT(branch->goals[0].id != source.goals[0].id);
+	UAM_ASSERT(branch->goals[1].id != source.goals[1].id);
+	UAM_ASSERT(branch->goals[0].id != branch->goals[1].id);
+	UAM_ASSERT_EQ(branch->goals[0].status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(branch->goals[1].status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(branch->goals[0].objective, source.goals[0].objective);
+	UAM_ASSERT_EQ(branch->goals[0].completed_items, source.goals[0].completed_items);
+	UAM_ASSERT_EQ(branch->goals[0].remaining_items, source.goals[0].remaining_items);
+	UAM_ASSERT_EQ(branch->goals[0].current_step, source.goals[0].current_step);
+	UAM_ASSERT_EQ(branch->goals[0].last_verification, source.goals[0].last_verification);
+	UAM_ASSERT_EQ(branch->goals[0].loop_count, source.goals[0].loop_count);
+
+	const ChatSession* unchanged_source = ChatDomainService().FindChatById(app, source.id);
+	UAM_ASSERT(unchanged_source != nullptr);
+	UAM_ASSERT_EQ(unchanged_source->active_goal_id, std::string("goal-active-source"));
+	UAM_ASSERT_EQ(unchanged_source->goals[0].status, GoalStatus::Active);
+	UAM_ASSERT_EQ(unchanged_source->goals[0].id, std::string("goal-active-source"));
+	UAM_ASSERT_EQ(unchanged_source->goals[1].id, std::string("goal-paused-source"));
+
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	const auto persisted_branch = std::ranges::find_if(saved, [&branch](const ChatSession& chat)
+	{
+		return chat.id == branch->id;
+	});
+	UAM_ASSERT(persisted_branch != saved.end());
+	UAM_ASSERT(persisted_branch->active_goal_id.empty());
+	UAM_ASSERT_EQ(persisted_branch->goals.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(persisted_branch->goals[0].status, GoalStatus::Paused);
+
+	ChatSession worker = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	worker.id = "chat-internal-goal-worker";
+	worker.goal_owner_chat_id = source.id;
+	worker.goal_iteration_goal_id = source.goals[0].id;
+	worker.goals = source.goals;
+	worker.messages.push_back(Message{MessageRole::User, "Internal worker prompt"});
+	app.chats.push_back(worker);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, worker.id, 0));
+	const ChatSession* worker_branch = ChatDomainService().SelectedChat(app);
+	UAM_ASSERT(worker_branch != nullptr);
+	UAM_ASSERT(worker_branch->goals.empty());
+	UAM_ASSERT(worker_branch->active_goal_id.empty());
+}
+
 UAM_TEST(ChatDomainServiceRejectsMessageBranchDuringActiveTurn)
 {
 	TempDir temp("uam-message-branch-active");
@@ -6558,6 +6628,8 @@ UAM_TEST(MessageBranchRetryFailureRollsBackBranchAndRuntimeState)
 	source.branch_root_chat_id = source.id;
 	source.workspace_directory = invalid_workspace.string();
 	source.messages.push_back(Message{MessageRole::User, "Retry this prompt"});
+	source.active_goal_id = "goal-rollback-source";
+	source.goals.push_back(Goal{.id = source.active_goal_id, .objective = "Preserve this source goal."});
 	app.chats.push_back(std::move(source));
 	ChatDomainService().SelectChatById(app, "chat-source");
 	UAM_ASSERT(PersistenceCoordinator().SaveSettings(app));
@@ -6569,6 +6641,9 @@ UAM_TEST(MessageBranchRetryFailureRollsBackBranchAndRuntimeState)
 	UAM_ASSERT(!error.empty());
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("chat-source"));
+	UAM_ASSERT_EQ(app.chats.front().active_goal_id, std::string("goal-rollback-source"));
+	UAM_ASSERT_EQ(app.chats.front().goals.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT(app.acp_sessions.empty());
 	UAM_ASSERT(app.cli_terminals.empty());
 
