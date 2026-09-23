@@ -171,6 +171,8 @@ def main():
                             body = gzip.decompress(body)
                         return json.loads(body)
                 before = api('getInitialState')
+                assert 'messages' not in next(chat for chat in before['chats']
+                                              if chat['id'] == 'transport-check'), 'Startup embedded the selected transcript'
                 created = api('createSession', {'title': 'Created on phone', 'folderId': 'phone-workspace',
                                                'providerId': 'opencode-cli', 'selectChat': True})
                 assert created.get('chatId'), created
