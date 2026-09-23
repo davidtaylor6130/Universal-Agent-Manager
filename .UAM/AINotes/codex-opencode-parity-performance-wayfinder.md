@@ -19,7 +19,18 @@ and native CLI passthrough. A clear route is not proof that the product goal is 
 
 ## Current frontier
 
-2026-09-23 beta9 is installed at the usual Applications path. The immediately
+2026-09-23 beta10 is installed at the usual Applications path, with the just-running
+beta9 bundle preserved at `~/Applications/universal_agent_manager-4.9.0-beta-9.app.backup`
+and both ZIPs retained. Recovered SSH proxies now discard the previous proxy's stderr
+before classifying a later exit (`ce02cea5`), with a focused regression. Exact beta10
+native CTest 8/8 and frontend Vitest 825/825 passed. The staged and installed app
+binaries matched; deep signature, three freshly built embedded helper checksums,
+ZIP integrity, and packaged companion startup/restart/icon/chunking passed. After
+launch the held remote OpenCode turn reattached following one transient retry,
+and the installed companion rejected a missing token with HTTP 401. Installed
+remote helpers were not changed; the held turn has not completed for live validation.
+
+2026-09-23 beta9 was installed at the usual Applications path. The immediately
 previous beta8 bundle is at `~/Applications/universal_agent_manager-4.9.0-beta-8.app.backup`;
 both beta8 and beta9 ZIPs are retained. The state patch now copies only changed
 chat summaries (`37fe3651`), with a regression covering unchanged, removed, and
