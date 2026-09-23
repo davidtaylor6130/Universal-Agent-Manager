@@ -627,6 +627,116 @@ UAM_TEST(RemoteRunnerReplaysPolledOutputUntilItIsAcknowledged)
 #endif
 }
 
+UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	uam::remote::RunnerState state(8);
+	const nlohmann::json started = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-start"}, {"type", "process.start"}, {"sessionId", "rollover"},
+	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
+	     {"argv", nlohmann::json::array({"/bin/sh", "-c",
+	         "printf 12345678; read reply; printf abcdefgh; read reply; printf ABCDEFGH"})}},
+	    "test-version", &state);
+	UAM_ASSERT(started.value("ok", false));
+	const auto poll = [&](const char* id, std::uint64_t cursor)
+	{
+		return uam::remote::HandleRunnerRequest(
+		    {{"id", id}, {"type", "process.poll"}, {"sessionId", "rollover"},
+		     {"controlToken", kProcessControlToken}, {"acknowledgedOutput", true},
+		     {"stdoutCursor", cursor}, {"stderrCursor", std::uint64_t{0}}},
+		    "test-version", &state);
+	};
+	nlohmann::json first;
+	std::string first_output;
+	for (int attempt = 0; attempt < 100 && first_output.empty(); ++attempt)
+	{
+		first = poll("rollover-poll-1", 0);
+		UAM_ASSERT(first.value("ok", false));
+		UAM_ASSERT(uam::base64::Decode(first["result"].value("stdoutBase64", ""), first_output));
+		if (first_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(first_output, std::string("12345678"));
+	const std::uint64_t first_cursor = first["result"]["stdoutCursor"].get<std::uint64_t>();
+	UAM_ASSERT_EQ(first_cursor, std::uint64_t{8});
+	const nlohmann::json ack = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-ack-1"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
+	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	UAM_ASSERT(ack.value("ok", false));
+	const auto advance = [&](const char* id, std::uint64_t input_sequence)
+	{
+		return uam::remote::HandleRunnerRequest(
+		    {{"id", id}, {"type", "process.write"}, {"sessionId", "rollover"},
+		     {"controlToken", kProcessControlToken}, {"dataBase64", uam::base64::Encode("\n")},
+		     {"inputSequence", input_sequence}}, "test-version", &state);
+	};
+	UAM_ASSERT(advance("rollover-write-1", 1).value("ok", false));
+	nlohmann::json second;
+	std::string second_output;
+	for (int attempt = 0; attempt < 100 && second_output.empty(); ++attempt)
+	{
+		second = poll("rollover-poll-2", first_cursor);
+		UAM_ASSERT(second.value("ok", false));
+		UAM_ASSERT(uam::base64::Decode(second["result"].value("stdoutBase64", ""), second_output));
+		if (second_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(second_output, std::string("abcdefgh"));
+	UAM_ASSERT_EQ(second["result"]["stdoutCursor"].get<std::uint64_t>(), std::uint64_t{16});
+	const nlohmann::json duplicate_ack = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-ack-replay"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
+	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	UAM_ASSERT(duplicate_ack.value("ok", false));
+	const nlohmann::json ack_second = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-ack-2"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	     {"controlToken", kProcessControlToken}, {"stdoutCursor", std::uint64_t{16}},
+	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	UAM_ASSERT(ack_second.value("ok", false));
+	UAM_ASSERT(advance("rollover-write-2", 2).value("ok", false));
+	nlohmann::json third;
+	std::string third_output;
+	for (int attempt = 0; attempt < 100 && third_output.empty(); ++attempt)
+	{
+		third = poll("rollover-poll-3", 16);
+		UAM_ASSERT(third.value("ok", false));
+		UAM_ASSERT(uam::base64::Decode(third["result"].value("stdoutBase64", ""), third_output));
+		if (third_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(third_output, std::string("ABCDEFGH"));
+	const nlohmann::json removed = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", "rollover"},
+	     {"controlToken", kProcessControlToken}}, "test-version", &state);
+	UAM_ASSERT(removed.value("ok", false));
+#endif
+}
+
+UAM_TEST(RemoteRunnerKeepsTheSpoolLimitForUnreadDisconnectedOutput)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	uam::remote::RunnerState state(8);
+	const nlohmann::json started = uam::remote::HandleRunnerRequest(
+	    {{"id", "unread-cap-start"}, {"type", "process.start"}, {"sessionId", "unread-cap"},
+	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
+	     {"argv", nlohmann::json::array({"/bin/sh", "-c", "printf 12345678abcdefgh"})}},
+	    "test-version", &state);
+	UAM_ASSERT(started.value("ok", false));
+	nlohmann::json polled;
+	for (int attempt = 0; attempt < 100; ++attempt)
+	{
+		polled = uam::remote::HandleRunnerRequest(
+		    {{"id", "unread-cap-poll"}, {"type", "process.poll"}, {"sessionId", "unread-cap"},
+		     {"controlToken", kProcessControlToken}, {"acknowledgedOutput", true}},
+		    "test-version", &state);
+		if (!polled.value("ok", false)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(!polled.value("ok", true));
+	UAM_ASSERT_EQ(polled["error"].value("code", ""), std::string("read_failed"));
+	UAM_ASSERT(polled["error"].value("message", "").find("disconnect spool limit") !=
+	           std::string::npos);
+#endif
+}
+
 UAM_TEST(RemoteRunnerProcessProxySpecStaysOffTheCommandLineAndReconnectCanAttach)
 {
 	TempDir temp("uam-proxy-unicode");

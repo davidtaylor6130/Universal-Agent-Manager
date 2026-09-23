@@ -22,7 +22,7 @@ namespace uam::remote
 	class RunnerState
 	{
 	  public:
-		RunnerState();
+		explicit RunnerState(std::uintmax_t max_spool_bytes_per_stream = 1024ull * 1024ull * 1024ull);
 		~RunnerState();
 		RunnerState(const RunnerState&) = delete;
 		RunnerState& operator=(const RunnerState&) = delete;
@@ -49,6 +49,9 @@ namespace uam::remote
 			std::string control_token;
 			std::uintmax_t stdout_offset = 0;
 			std::uintmax_t stderr_offset = 0;
+			std::uintmax_t stdout_base_cursor = 0;
+			std::uintmax_t stderr_base_cursor = 0;
+			std::uintmax_t max_spool_bytes = 1024ull * 1024ull * 1024ull;
 			std::uint64_t input_sequence = 0;
 			std::uint64_t input_digest = 0;
 			std::size_t input_size = 0;
@@ -102,6 +105,7 @@ namespace uam::remote
 		void SweepExpiredTransientProcesses();
 		std::mutex m_stateMutex;
 		std::filesystem::path m_spoolDirectory;
+		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
 		std::unordered_map<std::string, Channel> m_channels;
 		std::unordered_map<std::string, std::shared_ptr<Upload>> m_uploads;

@@ -20,6 +20,11 @@
 #include <vector>
 #include <thread>
 
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #if defined(__APPLE__)
 namespace uam::platform_macos_impl
 {
@@ -56,7 +61,6 @@ namespace uam::remote
 		inline constexpr std::int64_t kMaxTransientLeaseMs = 60000;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
-		inline constexpr std::uintmax_t kMaxSpoolBytesPerStream = 1024ull * 1024ull * 1024ull;
 
 		IPlatformProcessService& ProcessService()
 		{
@@ -225,16 +229,103 @@ namespace uam::remote
 			return output;
 		}
 
+		bool ReplaceSpool(const std::filesystem::path& temporary,
+		                  const std::filesystem::path& path, std::string& error)
+		{
+#if defined(_WIN32)
+			if (!MoveFileExW(temporary.c_str(), path.c_str(),
+			                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{
+				error = "Acknowledged remote process output could not be reclaimed.";
+				return false;
+			}
+#else
+			std::error_code replace_error;
+			std::filesystem::rename(temporary, path, replace_error);
+			if (replace_error)
+			{
+				error = "Acknowledged remote process output could not be reclaimed.";
+				return false;
+			}
+#endif
+			return true;
+		}
+
+		bool ReclaimSpoolPrefix(const std::filesystem::path& path, std::ofstream& append_stream,
+		                        std::uintmax_t& base_cursor, std::uintmax_t acknowledged_cursor,
+		                        std::string& error)
+		{
+			if (acknowledged_cursor <= base_cursor) return true;
+			append_stream.close();
+			std::error_code size_error;
+			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
+			if (size_error || acknowledged_cursor - base_cursor > size)
+			{
+				error = "Remote process output spool could not be reclaimed.";
+				return false;
+			}
+			const std::uintmax_t prefix = acknowledged_cursor - base_cursor;
+			const std::filesystem::path temporary = path.string() + ".compact";
+			std::ifstream input(path, std::ios::binary);
+			std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+			if (!input || !output)
+			{
+				error = "Acknowledged remote process output could not be reclaimed.";
+				return false;
+			}
+			input.seekg(static_cast<std::streamoff>(prefix));
+			std::array<char, 64 * 1024> buffer{};
+			while (input)
+			{
+				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+				const std::streamsize count = input.gcount();
+				if (count > 0) output.write(buffer.data(), count);
+			}
+			output.close();
+			if (input.bad() || !output)
+			{
+				std::error_code cleanup_error;
+				std::filesystem::remove(temporary, cleanup_error);
+				error = "Acknowledged remote process output could not be reclaimed.";
+				return false;
+			}
+			input.close();
+			if (!ReplaceSpool(temporary, path, error))
+			{
+				std::error_code cleanup_error;
+				std::filesystem::remove(temporary, cleanup_error);
+				return false;
+			}
+			base_cursor = acknowledged_cursor;
+			append_stream.open(path, std::ios::binary | std::ios::app);
+			if (!append_stream)
+			{
+				error = "Remote process output spool could not be reopened.";
+				return false;
+			}
+			return true;
+		}
+
 		bool AppendSpool(const std::filesystem::path& path, std::ofstream& stream,
-		                 std::string_view bytes, std::string& error)
+		                 std::string_view bytes, std::uintmax_t& base_cursor,
+		                 std::uintmax_t acknowledged_cursor, std::uintmax_t max_bytes,
+		                 std::string& error)
 		{
 			if (bytes.empty()) return true;
 			std::error_code size_error;
 			const std::uintmax_t size = std::filesystem::file_size(path, size_error);
-			if (size_error || bytes.size() > kMaxSpoolBytesPerStream -
-			                              std::min(size, kMaxSpoolBytesPerStream))
+			if (size_error)
 			{
-				error = "Remote process output exceeded the 1 GiB disconnect spool limit.";
+				error = "Remote process output spool could not be read.";
+				return false;
+			}
+			if (bytes.size() > max_bytes - std::min(size, max_bytes) &&
+			    !ReclaimSpoolPrefix(path, stream, base_cursor, acknowledged_cursor, error))
+				return false;
+			const std::uintmax_t remaining_size = std::filesystem::file_size(path, size_error);
+			if (size_error || bytes.size() > max_bytes - std::min(remaining_size, max_bytes))
+			{
+				error = "Remote process output exceeded the disconnect spool limit.";
 				return false;
 			}
 			stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -247,8 +338,9 @@ namespace uam::remote
 			return true;
 		}
 
-		std::string ReadSpool(const std::filesystem::path& path, std::uintmax_t offset,
-		                      std::uintmax_t& end_offset, std::string& error)
+		std::string ReadSpool(const std::filesystem::path& path, std::uintmax_t logical_offset,
+		                      std::uintmax_t base_cursor, std::uintmax_t& end_offset,
+		                      std::string& error)
 		{
 			std::ifstream stream(path, std::ios::binary);
 			if (!stream)
@@ -256,19 +348,20 @@ namespace uam::remote
 				error = "Remote process output spool could not be opened.";
 				return {};
 			}
-			stream.seekg(static_cast<std::streamoff>(offset));
+			stream.seekg(static_cast<std::streamoff>(logical_offset - base_cursor));
 			std::string output(kMaxReadBytesPerStream, '\0');
 			stream.read(output.data(), static_cast<std::streamsize>(output.size()));
 			output.resize(static_cast<std::size_t>(stream.gcount()));
-			end_offset = offset + output.size();
+			end_offset = logical_offset + output.size();
 			return output;
 		}
 
-		bool SpoolHasUnread(const std::filesystem::path& path, std::uintmax_t offset)
+		bool SpoolHasUnread(const std::filesystem::path& path, std::uintmax_t logical_offset,
+		                    std::uintmax_t base_cursor)
 		{
 			std::error_code error;
 			const std::uintmax_t size = std::filesystem::file_size(path, error);
-			return !error && offset < size;
+			return !error && logical_offset < base_cursor + size;
 		}
 
 		void StartDrainer(RunnerState::Process& process)
@@ -319,9 +412,11 @@ namespace uam::remote
 					{
 						std::scoped_lock lock(process.mutex);
 						spool_ok = AppendSpool(process.stdout_spool, stdout_stream, stdout_bytes,
-						                       output_error) &&
+						                       process.stdout_base_cursor, process.stdout_offset,
+						                       process.max_spool_bytes, output_error) &&
 						           AppendSpool(process.stderr_spool, stderr_stream, stderr_bytes,
-						                       output_error);
+						                       process.stderr_base_cursor, process.stderr_offset,
+						                       process.max_spool_bytes, output_error);
 					}
 					if (!spool_ok)
 					{
@@ -352,7 +447,8 @@ namespace uam::remote
 		}
 	}
 
-	RunnerState::RunnerState()
+	RunnerState::RunnerState(std::uintmax_t max_spool_bytes_per_stream)
+	    : m_maxSpoolBytesPerStream(max_spool_bytes_per_stream)
 	{
 		std::error_code error;
 		m_spoolDirectory = std::filesystem::temp_directory_path(error) /
@@ -874,6 +970,7 @@ namespace uam::remote
 				                       {"inputSequence", process.input_sequence}});
 			}
 			auto process = std::make_shared<Process>();
+			process->max_spool_bytes = m_maxSpoolBytesPerStream;
 			process->working_directory = working_directory;
 			process->arguments = arguments;
 			process->environment = environment;
@@ -1086,23 +1183,28 @@ namespace uam::remote
 						    std::filesystem::file_size(process.stdout_spool, stdout_size_error);
 						const std::uintmax_t stderr_size =
 						    std::filesystem::file_size(process.stderr_spool, stderr_size_error);
-						if (stdout_size_error || stderr_size_error || stdout_offset > stdout_size ||
-						    stderr_offset > stderr_size)
+						if (stdout_size_error || stderr_size_error ||
+						    stdout_offset < process.stdout_base_cursor ||
+						    stderr_offset < process.stderr_base_cursor ||
+						    stdout_offset > process.stdout_base_cursor + stdout_size ||
+						    stderr_offset > process.stderr_base_cursor + stderr_size)
 							return ProcessError(request, "invalid_request",
 							                    "Process output resume cursor is invalid.");
 					}
 					standard_output = ReadSpool(process.stdout_spool, stdout_offset,
-					                            stdout_cursor, output_error);
+						                            process.stdout_base_cursor, stdout_cursor, output_error);
 					standard_error = ReadSpool(process.stderr_spool, stderr_offset,
-					                           stderr_cursor, output_error);
+						                           process.stderr_base_cursor, stderr_cursor, output_error);
 					if (!acknowledged_output)
 					{
 						process.stdout_offset = stdout_cursor;
 						process.stderr_offset = stderr_cursor;
 					}
 				}
-				output_pending = SpoolHasUnread(process.stdout_spool, stdout_cursor) ||
-				                 SpoolHasUnread(process.stderr_spool, stderr_cursor);
+				output_pending = SpoolHasUnread(process.stdout_spool, stdout_cursor,
+				                                 process.stdout_base_cursor) ||
+				                 SpoolHasUnread(process.stderr_spool, stderr_cursor,
+				                                 process.stderr_base_cursor);
 				input_sequence = process.input_sequence;
 			}
 			if (!output_error.empty())
@@ -1134,11 +1236,15 @@ namespace uam::remote
 			std::error_code stderr_error;
 			const std::uintmax_t stdout_size = std::filesystem::file_size(process.stdout_spool, stdout_error);
 			const std::uintmax_t stderr_size = std::filesystem::file_size(process.stderr_spool, stderr_error);
-			if (stdout_error || stderr_error || stdout_cursor > stdout_size ||
-			    stderr_cursor > stderr_size)
+			const std::uintmax_t stdout_end = process.stdout_base_cursor + stdout_size;
+			const std::uintmax_t stderr_end = process.stderr_base_cursor + stderr_size;
+			if (stdout_error || stderr_error || stdout_cursor > stdout_end ||
+			    stderr_cursor > stderr_end)
 				return ProcessError(request, "invalid_request", "Process output cursor is invalid.");
-			process.stdout_offset = std::max(process.stdout_offset, stdout_cursor);
-			process.stderr_offset = std::max(process.stderr_offset, stderr_cursor);
+			process.stdout_offset = std::max(process.stdout_offset,
+			                                 std::min(stdout_cursor, stdout_end));
+			process.stderr_offset = std::max(process.stderr_offset,
+			                                 std::min(stderr_cursor, stderr_end));
 			return ProcessSuccess(request, {{"stdoutCursor", stdout_cursor},
 			                                {"stderrCursor", stderr_cursor}});
 		}
