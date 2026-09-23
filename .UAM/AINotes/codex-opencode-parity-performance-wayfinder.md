@@ -19,6 +19,22 @@ and native CLI passthrough. A clear route is not proof that the product goal is 
 
 ## Current frontier
 
+2026-09-23 beta11 is installed at the usual Applications path. The immediately
+previous beta10 bundle is preserved at `~/Applications/universal_agent_manager-4.9.0-beta-10.app.backup`;
+beta8 and beta9 backups and the beta11 ZIP remain available. Branch-title search now
+lists and selects matching message branches (`2d10ec07`). Companion startup omits
+the selected transcript (`916ca074`), reducing the live authenticated transfer
+from about 13.4 MB to 3.44 MB across 638 chats. The remaining payload includes
+roughly 1.5 MB of duplicated per-chat ACP model/config catalogs; removal needs
+a model-control fallback on chat selection. Beta11 frontend Vitest 825/825,
+native CTest 8/8, deep signature, archive integrity, embedded helper checksums,
+and isolated phone startup/restart/icon/chunking passed. The installed app returned
+HTTP 401 without a phone token and HTTP 200 with one; the selected transcript
+was absent from the startup fixture. Its held remote OpenCode turn reattached
+after transient bridge retries and remains waiting for permission, so completion
+is unverified. The user rejected iPhone layout mocks A/B; revised C/D/E previews
+await a layout choice before production UI changes. Do not touch InferDeck.
+
 2026-09-23 beta10 is installed at the usual Applications path, with the just-running
 beta9 bundle preserved at `~/Applications/universal_agent_manager-4.9.0-beta-9.app.backup`
 and both ZIPs retained. Recovered SSH proxies now discard the previous proxy's stderr
