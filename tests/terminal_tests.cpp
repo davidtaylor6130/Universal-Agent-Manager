@@ -893,6 +893,52 @@ UAM_TEST(CliMissingOutputTransportCannotRemainRunning)
 	UAM_ASSERT(!terminal.last_error.empty());
 }
 
+UAM_TEST(CliOutputDoesNotTriggerRedundantStateSerialization)
+{
+	TempDir temp("uam-terminal-output-change");
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "terminal-output-only";
+	chat.provider_id = ProviderProfileStore::DefaultOpenCodeProfile().id;
+	app.chats.push_back(chat);
+
+	uam::CliTerminalState terminal;
+	terminal.rows = 24;
+	terminal.cols = 80;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "<nul set /p=raw-output & ping -n 11 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf raw-output; sleep 10"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	terminal.running = true;
+
+	bool polled_output = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline && !polled_output)
+	{
+		const bool changed = uam::PollCliTerminal(nullptr, app, terminal, false);
+		if (terminal.recent_output_bytes.find("raw-output") != std::string::npos)
+		{
+			UAM_ASSERT(!changed);
+			polled_output = true;
+		}
+		else
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+	uam::StopCliTerminal(terminal);
+	UAM_ASSERT(polled_output);
+}
+
 UAM_TEST(CliTerminalSteeringInputIsBracketedAndDropsUnsafeControls)
 {
 	const std::string input = uam::BuildCliTerminalPromptInput(std::string_view("xx  Change\x1b[31m direction\nnow  yy").substr(2, 30));

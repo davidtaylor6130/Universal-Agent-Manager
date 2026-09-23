@@ -351,7 +351,6 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			terminal.last_output_time_s = now;
 			terminal.last_activity_time_s = now;
 			terminal.last_ai_output_time_s = now;
-			changed = true;
 			output_for_frontend.append(buffer, static_cast<std::size_t>(read_bytes));
 			continue;
 		}
