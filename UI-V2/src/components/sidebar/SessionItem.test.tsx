@@ -209,8 +209,8 @@ describe('SessionItem status icons', () => {
 
   it('selects sibling chats inside the active branch family', () => {
     const setActiveSession = vi.fn()
-    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
-    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 8 }
     useAppStore.setState({
       sessions: [rootSession, branchSession],
       activeSessionId: 'chat-root',
@@ -236,7 +236,7 @@ describe('SessionItem status icons', () => {
     expect(rootRow.hasAttribute('aria-current')).toBe(false)
     expect(branchRow.getAttribute('aria-current')).toBe('page')
     act(() => rootRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(setActiveSession).toHaveBeenLastCalledWith('chat-root')
+    expect(setActiveSession).toHaveBeenLastCalledWith('chat-branch')
 
     act(() => root.unmount())
     host.remove()

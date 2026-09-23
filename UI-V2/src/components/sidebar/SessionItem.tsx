@@ -133,6 +133,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return displayedChatStatus(cliBindings, acpBindings)
   }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const selectChat = () => {
+    const state = useAppStore.getState()
+    const sessions = state.sessions
+    const clickedSession = sessions.find((candidate) => candidate.id === sessionId)
+    const branchRootId = clickedSession?.branchRootChatId || clickedSession?.parentChatId || clickedSession?.id
+    if (clickedSession && branchRootId === sessionId) {
+      const longestChat = sessions
+        .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId)
+        .sort((a, b) =>
+          (b.messageCount ?? 0) - (a.messageCount ?? 0) ||
+          (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0) ||
+          a.id.localeCompare(b.id)
+        )[0]
+      const chatId = longestChat?.id ?? sessionId
+      if (state.activeSessionId !== chatId) setActiveSession(chatId)
+      return
+    }
+    if (state.activeSessionId !== sessionId) setActiveSession(sessionId)
+  }
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
   const deleteSessions = useAppStore((s) => s.deleteSessions)
@@ -243,7 +262,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
-          if (!isSelectedChat) setActiveSession(sessionId)
+          selectChat()
         }}
         onDoubleClick={() => {
           if (isCompanionContext()) return
@@ -254,7 +273,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.target !== event.currentTarget || editing) return
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            if (!isSelectedChat) setActiveSession(sessionId)
+            selectChat()
           } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
