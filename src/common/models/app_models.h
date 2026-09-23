@@ -146,6 +146,7 @@ struct Message
 	/// <summary>Runtime model used for this response; absent for legacy or unknown history.</summary>
 	std::string model_id;
 	bool continues_turn = false;
+	bool acp_prompt_not_sent = false;
 };
 
 /// <summary>

@@ -529,6 +529,28 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	cb->Success(nlohmann::json{{"chatId", created_chat_id}}.dump());
 }
 
+void UamQueryHandler::HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<int> message_index = uam::nlohmann_json::IntFieldStrict(payload, "messageIndex");
+	if (!payload.contains("chatId") || !payload["chatId"].is_string() ||
+	    payload["chatId"].get<std::string>().empty() || !message_index.has_value() || *message_index < 0 ||
+	    payload.contains("content") || payload.contains("attachments") || payload.contains("markdownStoreFiles"))
+	{
+		cb->Failure(400, "Retry requires chatId and messageIndex without replacement content.");
+		return;
+	}
+	const std::string chat_id = payload["chatId"].get<std::string>();
+	if (uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat no longer exists.") == nullptr) return;
+	std::string error;
+	if (!uam::RetryFailedAcpMessage(m_app, chat_id, *message_index, &error))
+	{
+		cb->Failure(409, error);
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"chatId", chat_id}}.dump());
+}
+
 void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");

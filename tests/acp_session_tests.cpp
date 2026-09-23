@@ -487,6 +487,164 @@ UAM_TEST(FailedTextOnlyTurnPersistsAsInterrupted)
 	UAM_ASSERT(reloaded->messages.back().interrupted);
 }
 
+UAM_TEST(AcpRetryFailedPromptRestoresNonDeliveryMarkerAfterWriteFailure)
+{
+	TempDir temp("uam-acp-retry-write-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-write-failure";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-session";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.", .interrupted = true, .acp_prompt_not_sent = true});
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = app.chats.front().native_session_id;
+	session->running = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(raw_session->lifecycle_state == "error");
+}
+
+UAM_TEST(AcpRetryFailedPromptRestoresAffordanceWhenChatSaveFails)
+{
+	TempDir temp("uam-acp-retry-save-failure");
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "file blocks chat storage"));
+	uam::AppState app;
+	app.data_root = blocked_root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-save-failure";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-session";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
+	                         .interrupted = true, .acp_prompt_not_sent = true});
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = app.chats.front().native_session_id;
+	session->running = true;
+	session->session_ready = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	std::string error;
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(raw_session->lifecycle_state == "error");
+	UAM_ASSERT(raw_session->last_error.find("chat history could not be saved") != std::string::npos);
+}
+
+UAM_TEST(AcpPromptMarkerSaveFailurePreservesRetryAffordanceBeforeWrite)
+{
+	TempDir temp("uam-acp-prompt-marker-save-failure");
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "file blocks chat storage"));
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "prompt-marker-save-failure";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-session";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
+	                         .interrupted = true, .acp_prompt_not_sent = true});
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->session_id = app.chats.front().native_session_id;
+	session->running = true;
+	session->session_ready = true;
+	session->processing = true;
+	session->queued_prompt = "Retry this prompt.";
+	session->turn_first_user_message_index = 0;
+	session->turn_user_message_index = 0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, sink_argv, &error));
+	app.data_root = blocked_root;
+
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(
+	    app, *raw_session, app.chats.front()));
+	UAM_ASSERT(app.chats.front().messages.front().interrupted);
+	UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
+	UAM_ASSERT_EQ(raw_session->last_error,
+	              std::string("Prompt is waiting for its delivery intent to be saved."));
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	UAM_ASSERT(raw_session->pending_request_methods.empty());
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+}
+
+UAM_TEST(AcpPromptDispatchClearsOnlyCurrentBatchNonDeliveryMarkers)
+{
+	TempDir temp("uam-acp-current-batch-markers");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "current-batch-markers";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.messages = {
+	    {.role = MessageRole::User, .content = "Older unsent prompt.", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Current prompt one.", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Current prompt two.", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Later unsent prompt.", .interrupted = true, .acp_prompt_not_sent = true},
+	};
+	app.chats.push_back(std::move(chat));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = app.chats.front().provider_id;
+	session->running = true;
+	session->session_ready = true;
+	session->session_id = "native-session";
+	session->processing = true;
+	session->queued_prompt = "Current prompt one.\n\nCurrent prompt two.";
+	session->turn_first_user_message_index = 1;
+	session->turn_user_message_index = 2;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, app.chats.front()));
+	UAM_ASSERT(app.chats.front().messages[0].acp_prompt_not_sent);
+	UAM_ASSERT(!app.chats.front().messages[1].acp_prompt_not_sent);
+	UAM_ASSERT(!app.chats.front().messages[2].acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages[3].acp_prompt_not_sent);
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
+}
+
 UAM_TEST(IterationTurnInactivityBlocksItsOwnerGoal)
 {
 	TempDir temp("uam-iteration-inactivity");

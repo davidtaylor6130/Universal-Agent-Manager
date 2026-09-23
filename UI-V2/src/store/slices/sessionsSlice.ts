@@ -483,6 +483,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    retryFailedMessage: async (id: string, messageIndex: number) => {
+      if (!isCefContext()) return { ok: false, error: 'Retry requires the desktop runtime.' }
+      const response = await sendToCEF({ action: 'retryFailedMessage', payload: { chatId: id, messageIndex } })
+      if (response.ok) await requestChatMessagesFromCef(id, true)
+      return { ok: response.ok, error: response.error }
+    },
+
     branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<{ chatId?: string }>({

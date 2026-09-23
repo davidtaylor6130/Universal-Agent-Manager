@@ -60,6 +60,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
 		{"createSession", &UamQueryHandler::HandleCreateSession},
 		{"branchFromMessage", &UamQueryHandler::HandleBranchFromMessage},
+		{"retryFailedMessage", &UamQueryHandler::HandleRetryFailedMessage},
 		{"openNativeSessionChat", &UamQueryHandler::HandleOpenNativeSessionChat},
 		{"renameSession", &UamQueryHandler::HandleRenameSession},
 		{"setChatPinned", &UamQueryHandler::HandleSetChatPinned},

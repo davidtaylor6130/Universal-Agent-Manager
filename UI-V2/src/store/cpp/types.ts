@@ -43,6 +43,7 @@ export interface CppMessage {
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
+	acpPromptNotSent?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string

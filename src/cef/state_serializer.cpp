@@ -358,6 +358,7 @@ namespace uam
 			message_json["createdAt"] = message.created_at;
 			if (!message.model_id.empty()) message_json["modelId"] = message.model_id;
 			if (message.interrupted) message_json["interrupted"] = true;
+			if (message.acp_prompt_not_sent) message_json["acpPromptNotSent"] = true;
 			if (message.priority_steer) message_json["prioritySteer"] = true;
 			if (message.continues_turn) message_json["continuesTurn"] = true;
 			if (message.processing_time_ms > 0)
@@ -540,6 +541,7 @@ namespace uam
 					FingerprintHashBool(hash, attachment.copied);
 				}
 				FingerprintHashBool(hash, message.interrupted);
+				FingerprintHashBool(hash, message.acp_prompt_not_sent);
 				FingerprintHashBool(hash, message.priority_steer);
 			}
 

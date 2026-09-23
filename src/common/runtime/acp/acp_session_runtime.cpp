@@ -938,6 +938,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				ChatDomainService::MessageAnalytics analytics;
 				analytics.provider = MessageProviderId(session);
 				ChatDomainService().AddMessageWithAnalytics(chat, MessageRole::User, queued.text, analytics);
+				chat.messages.back().acp_prompt_not_sent = true;
 				chat.messages.back().priority_steer = queued.priority_steer;
 				chat.messages.back().markdown_store_files = queued.markdown_store_files;
 				chat.messages.back().markdown_store_prompt_blocks = queued.markdown_store_prompt_blocks;
@@ -1061,6 +1062,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.inactivity_timeout_pending = false;
 			session.current_assistant_message_index = -1;
 			const std::size_t appended_message_count = static_cast<std::size_t>(std::count_if(batch.begin(), batch.end(), [](const AcpQueuedUserPromptState& queued) { return queued.append_user_message; }));
+			const int existing_user_message_index = session.turn_user_message_index;
+			session.turn_first_user_message_index = appended_message_count > 0
+			    ? static_cast<int>(chat.messages.size())
+			    : existing_user_message_index;
 			session.turn_user_message_index = static_cast<int>(chat.messages.size() + appended_message_count) - 1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
@@ -1167,6 +1172,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			AppendQueuedUserMessages(chat, session, {prompt});
 			chat.messages.back().continues_turn = true;
+			chat.messages.back().acp_prompt_not_sent = false;
 			AcpPendingSteerState& pending = session.pending_steer_requests[request_key];
 			pending.user_message_index = static_cast<int>(chat.messages.size()) - 1;
 			pending.turn_serial = session.turn_serial;
@@ -1913,6 +1919,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		for (std::size_t index = first_message; index < chat.messages.size(); ++index)
 		{
 			chat.messages[index].interrupted = true;
+			chat.messages[index].acp_prompt_not_sent = true;
 		}
 		return chat.messages.size() != first_message;
 	}
@@ -1956,6 +1963,72 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return SendAcpPrompt(app, chat_id, text, std::vector<std::string>{}, std::vector<MessageAttachment>{}, false, error_out);
 	}
 
+	bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int message_index, std::string* error_out)
+	{
+		const auto reject = [&](const std::string& error)
+		{
+			if (error_out != nullptr) *error_out = error;
+			return false;
+		};
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat == nullptr || !chat->messages_loaded || message_index < 0 ||
+		    static_cast<std::size_t>(message_index) + 1 != chat->messages.size())
+			return reject("The failed message is no longer the latest message.");
+		Message& message = chat->messages.back();
+		if (message.role != MessageRole::User || !message.interrupted || !message.acp_prompt_not_sent)
+			return reject("Retry requires a failed user message with confirmed non-delivery.");
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (session == nullptr || !session->running || !session->session_ready || session->session_id.empty() ||
+		    session->session_id != chat->native_session_id || session->provider_id != chat->provider_id ||
+		    (!message.provider.empty() && message.provider != chat->provider_id))
+			return reject("Reconnect the original native session before retrying.");
+		if (AcpSessionHasBlockingRuntimeWork(*session) || AcpSessionHasPendingCancel(*session) ||
+		    session->reconnect_pending || session->remote_stop_pending || session->remote_stop_unconfirmed ||
+		    session->recovering_remote_turn || session->recovering_remote_process || session->model_discovery_only ||
+		    session->goal_review_scheduled || !session->managed_agent_run_id.empty() ||
+		    !session->pending_steer_requests.empty() || !session->pending_request_methods.empty() ||
+		    !chat->acp_queued_prompts.empty() || chat->acp_dispatched_queued_prompt_count != 0 ||
+		    chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending || chat->remote_restart_pending ||
+		    !chat->remote_pending_requests.empty() || !chat->remote_prompt_delivery_id.empty() ||
+		    AcpStopInProgress(app, chat_id) || app.worktree_operation_chat_ids.contains(chat_id))
+			return reject("Wait for pending runtime work or delivery recovery before retrying.");
+		if (message.markdown_store_files.size() != message.markdown_store_prompt_blocks.size())
+			return reject("The original attached skill snapshots are unavailable.");
+		AcpQueuedUserPromptState queued;
+		queued.text = message.content;
+		queued.markdown_store_files = message.markdown_store_files;
+		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
+		queued.attachments = message.attachments;
+		queued.append_user_message = false;
+		queued.computer_use_mode = chat->computer_use_enabled;
+		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
+		if ((queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
+		     queued.uam_agent_execution_capability == "copilot-native-agent-plugin" ||
+		     session->active_uam_agent_execution_capability == "opencode-native-agent-config" ||
+		     session->active_uam_agent_execution_capability == "copilot-native-agent-plugin") &&
+		    (session->active_uam_agent_id != queued.uam_agent_id ||
+		     session->active_uam_agent_definition_hash != queued.uam_agent_definition_hash ||
+		     session->active_uam_agent_execution_capability != queued.uam_agent_execution_capability))
+			return reject("Restore the original native agent before retrying.");
+		message.interrupted = false;
+		session->turn_user_message_index = message_index;
+		const bool started = StartAcpUserPrompt(app, *session, *chat, queued, error_out);
+		if (!started || message.acp_prompt_not_sent)
+		{
+			message.interrupted = true;
+			message.acp_prompt_not_sent = true;
+			if (!SaveChatQuietly(app, *chat)) ScheduleChatSave(app, *chat, 0.0);
+			if (error_out != nullptr && error_out->empty())
+			{
+				*error_out = uam::strings::NonEmptyOrFallback(
+				    session->last_error, "Retry was not confirmed as saved for delivery.");
+			}
+			return false;
+		}
+		if (error_out != nullptr) error_out->clear();
+		return true;
+	}
+
 	bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -1995,6 +2068,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
 
 		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		session.turn_user_message_index = static_cast<int>(chat->messages.size()) - 1;
 		return StartAcpUserPrompt(app, session, *chat, queued, error_out);
 	}
 
@@ -2326,6 +2400,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.stdout_poll_pending = false;
 		session.stderr_poll_pending = false;
 		session.current_assistant_message_index = -1;
+		session.turn_first_user_message_index = -1;
 		session.turn_user_message_index = -1;
 		session.turn_assistant_message_index = -1;
 		session.turn_events.clear();

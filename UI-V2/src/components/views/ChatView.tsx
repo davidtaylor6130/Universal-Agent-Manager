@@ -19,7 +19,7 @@ import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText,
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
-import { preferredBranch, setPreferredBranch } from '../../utils/branchPreferenceStorage'
+import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
@@ -615,22 +615,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const branchSessions = useAppStore(useShallow((s) => s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
-  useEffect(() => {
-    if (branchSessions.length < 2) return
-    for (let index = 0; index < messages.length; index += 1) {
-      if (messages[index]?.role !== 'user') continue
-      const parentId = session.parentChatId && session.branchFromMessageIndex === index ? session.parentChatId : session.id
-      const candidates = branchSessions.filter((candidate) =>
-        candidate.id === parentId || (candidate.parentChatId === parentId && candidate.branchFromMessageIndex === index)
-      )
-      if (candidates.length < 2) continue
-      const preferred = preferredBranch(parentId, index, candidates.map((candidate) => candidate.id))
-      if (preferred && preferred !== session.id) {
-        setActiveSession(preferred)
-        return
-      }
-    }
-  }, [branchSessions, messages, session.branchFromMessageIndex, session.id, session.parentChatId, setActiveSession])
+  const retryFailedMessage = useAppStore((s) => s.retryFailedMessage)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -1432,6 +1417,20 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const createMessageBranch = useCallback(async (messageIndex: number, content?: string) => {
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
+    const chatMessages = useAppStore.getState().messages[session.id] ?? []
+    const failedMessage = chatMessages[messageIndex]
+    if (content === undefined && messageIndex === chatMessages.length - 1 &&
+      failedMessage?.interrupted && failedMessage.acpPromptNotSent) {
+      try {
+        const result = await retryFailedMessage(session.id, messageIndex)
+        if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
+      } catch {
+        setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
+      } finally {
+        setBranchingMessageIndex(null)
+      }
+      return
+    }
     const branchId = await branchFromMessage(session.id, messageIndex, content)
     setBranchingMessageIndex(null)
     if (!branchId) {
@@ -1440,7 +1439,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
-  }, [branchFromMessage, session.id])
+  }, [branchFromMessage, retryFailedMessage, session.id])
   const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
     setEditingMessageIndex(messageIndex)
     setEditingMessageText(content)

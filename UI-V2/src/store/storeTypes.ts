@@ -139,6 +139,7 @@ export interface AppState {
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
+  retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>

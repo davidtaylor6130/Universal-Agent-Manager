@@ -292,6 +292,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.prompt_request_id = 0;
 	session.cancel_request_id = 0;
 	session.current_assistant_message_index = -1;
+	session.turn_first_user_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
@@ -1045,10 +1046,29 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 
 	if (msg.is_null() || msg.empty())
 	{
-		CompletePromptTurn(session, kAcpLifecycleError);
+		FailAcpTurnOrSession(session, &chat, session.last_error);
 		return true;
 	}
 
+	std::vector<std::size_t> unsent_messages;
+	const int first_user_message_index = session.turn_first_user_message_index;
+	const int last_user_message_index = session.turn_user_message_index;
+	for (int index = first_user_message_index; index >= 0 && index <= last_user_message_index &&
+	     index < static_cast<int>(chat.messages.size()); ++index)
+	{
+		Message& user_message = chat.messages[static_cast<std::size_t>(index)];
+		if (user_message.role == MessageRole::User && user_message.acp_prompt_not_sent)
+		{
+			unsent_messages.push_back(static_cast<std::size_t>(index));
+			user_message.acp_prompt_not_sent = false;
+		}
+	}
+	if (!unsent_messages.empty() && !SaveChatQuietly(app, chat))
+	{
+		for (const std::size_t index : unsent_messages) chat.messages[index].acp_prompt_not_sent = true;
+		session.last_error = "Prompt is waiting for its delivery intent to be saved.";
+		return true;
+	}
 	if (!method.empty())
 	{
 		session.pending_request_methods[id] = method;
@@ -1357,6 +1377,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.current_assistant_message_index = -1;
+	session.turn_first_user_message_index = -1;
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial += 1;
@@ -1399,6 +1420,11 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	session.last_error = message;
 	if (chat != nullptr)
 	{
+		if (session.turn_user_message_index >= 0 && session.turn_user_message_index < static_cast<int>(chat->messages.size()))
+		{
+			Message& user = chat->messages[static_cast<std::size_t>(session.turn_user_message_index)];
+			if (user.role == MessageRole::User && user.acp_prompt_not_sent) user.interrupted = true;
+		}
 		const int index = session.current_assistant_message_index >= 0
 		                      ? session.current_assistant_message_index
 		                      : session.turn_assistant_message_index;

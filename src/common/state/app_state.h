@@ -372,6 +372,7 @@ namespace uam
 		int prompt_request_id = 0;
 		int cancel_request_id = 0;
 		int current_assistant_message_index = -1;
+		int turn_first_user_message_index = -1;
 		int turn_user_message_index = -1;
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;

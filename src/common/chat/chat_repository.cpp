@@ -423,6 +423,7 @@ namespace
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
+		if (msg.acp_prompt_not_sent) uam::json::SetBool(obj, "acp_prompt_not_sent", true);
 		if (msg.continues_turn) uam::json::SetBool(obj, kMessageContinuesTurnField, true);
 		if (msg.priority_steer)
 		{
@@ -542,6 +543,7 @@ namespace
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
 		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
 		msg.continues_turn = JsonBoolOrDefault(obj.Find(kMessageContinuesTurnField), false);
+		msg.acp_prompt_not_sent = JsonBoolOrDefault(obj.Find("acp_prompt_not_sent"), false);
 		msg.checkpoint_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointShaField));
 		msg.checkpoint_parent_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointParentShaField));
 		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
@@ -756,7 +758,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)

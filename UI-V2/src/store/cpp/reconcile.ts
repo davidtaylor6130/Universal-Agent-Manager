@@ -724,6 +724,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
+		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
 		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
@@ -750,6 +751,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
+		acpPromptNotSent: Boolean(message.acpPromptNotSent),
 		prioritySteer: Boolean(message.prioritySteer),
 		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,

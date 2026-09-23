@@ -52,6 +52,7 @@ export interface Message {
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
+	acpPromptNotSent?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string
