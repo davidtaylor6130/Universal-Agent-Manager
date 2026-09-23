@@ -973,61 +973,66 @@ UAM_TEST(RemoteRecoveryHydrationFailureRetriesAfterChatRepair)
 	UAM_ASSERT(deleted_app.remote_recovery_hydration_retry_not_before_by_chat_id.empty());
 }
 
-UAM_TEST(RemoteCodexBridgeExitKeepsGoalActiveWhileReconnectIsPending)
+UAM_TEST(RemoteBridgeExitKeepsProviderTurnStateWhileReconnectIsPending)
 {
-	TempDir temp("uam-remote-codex-bridge-exit");
-	uam::AppState app;
-	app.data_root = temp.root;
-	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatSession chat;
-	chat.id = "remote-active-turn";
-	chat.provider_id = uam::provider_ids::kCodexCli;
-	chat.execution_host_id = "ssh-test";
-	chat.workspace_directory = temp.root.string();
-	chat.remote_turn_reconnect_pending = true;
-	app.chats.push_back(std::move(chat));
-	std::string goal_id;
-	UAM_ASSERT(uam::GoalService::CreateGoal(app, app.chats.front().id, "Keep working.", 0, &goal_id));
-	UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
-
-	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
-	session->chat_id = app.chats.front().id;
-	session->provider_id = uam::provider_ids::kCodexCli;
-	session->protocol_kind = "codex-app-server";
-	session->running = true;
-	session->processing = true;
-	session->session_ready = true;
-	session->prompt_request_id = 17;
-	session->pending_request_methods[17] = "turn/start";
-	session->tool_calls.push_back({"tool-1", "Remote tool", "shell", "running", ""});
-	uam::AcpSessionState* raw_session = session.get();
-#if defined(_WIN32)
-	const std::vector<std::string> exit_argv = {"cmd.exe", "/d", "/s", "/c", "exit /b 0"};
-#else
-	const std::vector<std::string> exit_argv = {"/bin/sh", "-c", "exit 0"};
-#endif
-	std::string error;
-	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
-	    *raw_session, temp.root, exit_argv, &error));
-	app.acp_sessions.push_back(std::move(session));
-
-	for (int attempt = 0; attempt < 100 && raw_session->running; ++attempt)
+	for (const auto& [provider_id, protocol_kind] : {
+	         std::pair{std::string(uam::provider_ids::kCodexCli), std::string("codex-app-server")},
+	         std::pair{std::string(uam::provider_ids::kOpenCodeCli), std::string(uam::provider_profile_constants::kProtocolOpenCodeAcp)}})
 	{
-		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
+		TempDir temp("uam-remote-bridge-exit");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "remote-active-turn";
+		chat.provider_id = provider_id;
+		chat.execution_host_id = "ssh-test";
+		chat.workspace_directory = temp.root.string();
+		chat.remote_turn_reconnect_pending = true;
+		app.chats.push_back(std::move(chat));
+		std::string goal_id;
+		UAM_ASSERT(uam::GoalService::CreateGoal(app, app.chats.front().id, "Keep working.", 0, &goal_id));
+		UAM_ASSERT(uam::GoalService::SetActiveGoal(app, app.chats.front().id, goal_id));
 
-	UAM_ASSERT(!raw_session->running);
-	UAM_ASSERT(raw_session->reconnect_pending);
-	UAM_ASSERT(raw_session->recovering_remote_turn);
-	UAM_ASSERT_EQ(raw_session->prompt_request_id, 17);
-	UAM_ASSERT_EQ(raw_session->pending_request_methods.at(17), std::string("turn/start"));
-	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("running"));
-	const Goal* goal = uam::GoalService::FindActiveGoal(app, app.chats.front().id);
-	UAM_ASSERT(goal != nullptr);
-	UAM_ASSERT_EQ(goal->status, GoalStatus::Active);
-	UAM_ASSERT(goal->last_blocker.empty());
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = app.chats.front().id;
+		session->provider_id = provider_id;
+		session->protocol_kind = protocol_kind;
+		session->running = true;
+		session->processing = true;
+		session->session_ready = true;
+		session->prompt_request_id = 17;
+		session->pending_request_methods[17] = "turn/start";
+		session->tool_calls.push_back({"tool-1", "Remote tool", "shell", "running", ""});
+		uam::AcpSessionState* raw_session = session.get();
+#if defined(_WIN32)
+		const std::vector<std::string> exit_argv = {"cmd.exe", "/d", "/s", "/c", "exit /b 0"};
+#else
+		const std::vector<std::string> exit_argv = {"/bin/sh", "-c", "exit 0"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+		    *raw_session, temp.root, exit_argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+
+		for (int attempt = 0; attempt < 100 && raw_session->running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+
+		UAM_ASSERT(!raw_session->running);
+		UAM_ASSERT(raw_session->reconnect_pending);
+		UAM_ASSERT(raw_session->recovering_remote_turn);
+		UAM_ASSERT_EQ(raw_session->prompt_request_id, 17);
+		UAM_ASSERT_EQ(raw_session->pending_request_methods.at(17), std::string("turn/start"));
+		UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("running"));
+		const Goal* goal = uam::GoalService::FindActiveGoal(app, app.chats.front().id);
+		UAM_ASSERT(goal != nullptr);
+		UAM_ASSERT_EQ(goal->status, GoalStatus::Active);
+		UAM_ASSERT(goal->last_blocker.empty());
+	}
 }
 
 UAM_TEST(RemoteCodexSourceExitSettlesWithoutAnAttachReconnect)
