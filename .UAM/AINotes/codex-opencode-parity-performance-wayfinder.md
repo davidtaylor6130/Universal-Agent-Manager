@@ -19,6 +19,20 @@ and native CLI passthrough. A clear route is not proof that the product goal is 
 
 ## Current frontier
 
+2026-09-23 beta12 is installed at the usual Applications path, with the byte-identical,
+signature-valid beta11 rollback at `~/Applications/universal_agent_manager-4.9.0-beta-11.app.backup`.
+Historic Git checkpoint branches now use independent worktrees (`e055ecc3`), and idle SSH
+control relays poll at 50 ms instead of 10 ms (`e2c9668d`). The user selected the dense
+across-projects iPhone layout D; its Activity, chat tree, project context, provider icons,
+filter, and navigation were refined (`d79ad86e`), and desktop/phone UI routes load separately
+(`61240e1b`). Beta12 UI Vitest 828/828, native CTest 8/8, release build, deep signature,
+archive smoke, and isolated companion startup/restart/icon/>900 KB chunking passed. The
+installed app is connected; switching and restoring a chat in its two-pane GUI worked.
+Its live companion returned 200 for the page and 401 for unauthenticated API access; an
+authenticated initial state loaded 638 chats in 0.1 s (277 KB compressed), with no embedded
+transcripts. The installed SSH helpers were not updated on remote hosts, and live remote
+turn completion and a physical iPhone remain unverified. Do not touch InferDeck.
+
 2026-09-23 beta11 is installed at the usual Applications path. The immediately
 previous beta10 bundle is preserved at `~/Applications/universal_agent_manager-4.9.0-beta-10.app.backup`;
 beta8 and beta9 backups and the beta11 ZIP remain available. Branch-title search now
