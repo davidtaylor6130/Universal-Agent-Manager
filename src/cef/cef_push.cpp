@@ -37,7 +37,6 @@ namespace
 	// interaction prompts are never delayed.
 	constexpr std::chrono::milliseconds kSelectedChatSummaryMinPushInterval{100};
 
-	std::string g_last_pushed_state_fingerprint;
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
 	bool g_state_push_deferred = false;
 	std::unordered_map<std::string, std::string> g_last_pushed_chat_summaries_by_chat_id;
@@ -52,6 +51,7 @@ namespace
 	std::string g_last_pushed_shell_action_notification;
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
+	std::string g_last_pushed_chat_order_fingerprint;
 
 	std::string DumpFrontendJson(const nlohmann::json& value)
 	{
@@ -84,9 +84,13 @@ namespace
 		return uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
 	}
 
+	void StripVolatileAcpWaitTelemetry(nlohmann::json& state);
+	nlohmann::json ChatOrderForPatch(const uam::AppState& app);
+
 	void ResetPatchBaselines(const uam::AppState& app)
 	{
-		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		g_last_pushed_folders_fingerprint = DumpFrontendJson(fingerprint_state.at("folders"));
 		g_last_pushed_resource_collections_fingerprint = DumpFrontendJson(fingerprint_state.at("resourceCollections"));
 		g_last_pushed_providers_fingerprint = DumpFrontendJson(fingerprint_state.at("providers"));
@@ -98,6 +102,7 @@ namespace
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
+		g_last_pushed_chat_order_fingerprint = DumpFrontendJson(ChatOrderForPatch(app));
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
 		g_state_push_deferred = false;
@@ -160,11 +165,6 @@ namespace
 		nlohmann::json changed_chats = nlohmann::json::array();
 		nlohmann::json removed_chat_ids = nlohmann::json::array();
 		std::unordered_map<std::string, std::string> next_chat_summaries;
-
-		bool HasChatListChange() const
-		{
-			return !changed_chats.empty() || !removed_chat_ids.empty();
-		}
 	};
 
 	bool ChatSummaryHasPendingInteraction(const nlohmann::json& chat)
@@ -260,9 +260,8 @@ namespace
 		return diff;
 	}
 
-	void ApplyChatPatchDiff(nlohmann::json& data, const uam::AppState& app, ChatPatchDiff diff)
+	void ApplyChatPatchDiff(nlohmann::json& data, ChatPatchDiff diff)
 	{
-		const bool include_chat_order = diff.HasChatListChange();
 		if (!diff.changed_chats.empty())
 		{
 			data["chats"] = std::move(diff.changed_chats);
@@ -271,11 +270,6 @@ namespace
 		{
 			data["removedChatIds"] = std::move(diff.removed_chat_ids);
 		}
-		if (include_chat_order)
-		{
-			data["chatOrder"] = ChatOrderForPatch(app);
-		}
-
 		g_last_pushed_chat_summaries_by_chat_id = std::move(diff.next_chat_summaries);
 	}
 
@@ -285,7 +279,7 @@ namespace
 		const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 		nlohmann::json data = nlohmann::json::object();
 
-		data["stateRevision"] = app.state_revision;
+		data["stateRevision"] = app.state_revision + 1;
 
 		AddChangedJsonField(data, "folders", fingerprint_state.at("folders"), g_last_pushed_folders_fingerprint);
 
@@ -324,7 +318,8 @@ namespace
 			g_last_pushed_selected_chat_id = selected_chat_id;
 		}
 
-		ApplyChatPatchDiff(data, app, BuildChatPatchDiff(app, fingerprint_state, selected_chat_id));
+		ApplyChatPatchDiff(data, BuildChatPatchDiff(app, fingerprint_state, selected_chat_id));
+		AddChangedJsonField(data, "chatOrder", ChatOrderForPatch(app), g_last_pushed_chat_order_fingerprint);
 		if (has_payload != nullptr)
 		{
 			*has_payload = data.size() > 1;
@@ -335,34 +330,6 @@ namespace
 		const std::string message = DumpFrontendJson(msg);
 		MaybeLogLargePatch(message, static_cast<int>(uam::nlohmann_json::ArrayFieldOrEmpty(msg["data"], "chats").size()), std::chrono::steady_clock::now() - started);
 		return message;
-	}
-
-	void StripVolatileCliDebugTelemetry(nlohmann::json& state)
-	{
-		const auto cli_debug_it = state.find("cliDebug");
-		if (cli_debug_it == state.end() || !cli_debug_it->is_object())
-		{
-			return;
-		}
-
-		auto& cli_debug = *cli_debug_it;
-		const auto terminals_it = cli_debug.find("terminals");
-		if (terminals_it == cli_debug.end() || !terminals_it->is_array())
-		{
-			return;
-		}
-
-		for (auto& terminal : *terminals_it)
-		{
-			if (!terminal.is_object())
-			{
-				continue;
-			}
-
-			terminal.erase("lastUserInputAt");
-			terminal.erase("lastAiOutputAt");
-			terminal.erase("lastPolledAt");
-		}
 	}
 
 	void StripVolatileAcpWaitTelemetry(nlohmann::json& state)
@@ -388,19 +355,6 @@ namespace
 		}
 	}
 
-	std::string BuildStateFingerprintFromState(const nlohmann::json& fingerprint_state)
-	{
-		nlohmann::json state = fingerprint_state;
-		StripVolatileCliDebugTelemetry(state);
-		StripVolatileAcpWaitTelemetry(state);
-		return DumpFrontendJson(state);
-	}
-
-	std::string BuildStateFingerprint(const uam::AppState& app)
-	{
-		return BuildStateFingerprintFromState(uam::StateSerializer::SerializeFingerprint(app));
-	}
-
 	void BumpStateRevision(uam::AppState& app)
 	{
 		++app.state_revision;
@@ -423,7 +377,9 @@ namespace uam
 	std::string StatePatchForTests(const AppState& before, const AppState& after)
 	{
 		ResetPatchBaselines(before);
-		return BuildStatePatchMessage(after, StateSerializer::SerializeFingerprint(after));
+		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after);
+		StripVolatileAcpWaitTelemetry(fingerprint_state);
+		return BuildStatePatchMessage(after, fingerprint_state);
 	}
 
 	bool HasDeferredStatePush()
@@ -433,22 +389,15 @@ namespace uam
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
-		const nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
-		const std::string fingerprint = BuildStateFingerprintFromState(fingerprint_state);
-		// A throttled summary must still be flushed if no further state changes arrive.
-		if (fingerprint == g_last_pushed_state_fingerprint && !g_state_push_deferred)
-		{
-			return false;
-		}
-
-		BumpStateRevision(app);
+		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		bool has_payload = false;
 		const std::string message = BuildStatePatchMessage(app, fingerprint_state, &has_payload);
 		if (!has_payload)
 		{
 			return false;
 		}
-		g_last_pushed_state_fingerprint = fingerprint;
+		BumpStateRevision(app);
 		PostPush(browser, message);
 		return true;
 	}
@@ -457,7 +406,6 @@ namespace uam
 	{
 		BumpStateRevision(app);
 		const std::string message = BuildFullStateUpdateMessage(app);
-		g_last_pushed_state_fingerprint = BuildStateFingerprint(app);
 		ResetPatchBaselines(app);
 		PostPush(browser, message);
 	}

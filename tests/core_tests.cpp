@@ -9033,6 +9033,34 @@ UAM_TEST(StatePatchUsesSummaryOnlyForMessageChanges)
 	UAM_ASSERT(!message_patch.contains("messagesByChatId"));
 }
 
+UAM_TEST(StatePatchSendsChatOrderOnlyWhenOrderChanges)
+{
+	uam::AppState before;
+	ChatSession first;
+	first.id = "first";
+	ChatSession second;
+	second.id = "second";
+	before.chats.push_back(first);
+	before.chats.push_back(second);
+
+	uam::AppState metadata_changed;
+	metadata_changed.chats = before.chats;
+	metadata_changed.chats.front().title = "Renamed";
+	const nlohmann::json metadata_patch =
+	    nlohmann::json::parse(uam::StatePatchForTests(before, metadata_changed))["data"];
+	UAM_ASSERT(metadata_patch.contains("chats"));
+	UAM_ASSERT(!metadata_patch.contains("chatOrder"));
+
+	uam::AppState reordered;
+	reordered.chats = before.chats;
+	std::swap(reordered.chats[0], reordered.chats[1]);
+	const nlohmann::json order_patch =
+	    nlohmann::json::parse(uam::StatePatchForTests(before, reordered))["data"];
+	UAM_ASSERT(!order_patch.contains("chats"));
+	UAM_ASSERT_EQ(order_patch["chatOrder"][0].get<std::string>(), std::string("second"));
+	UAM_ASSERT_EQ(order_patch["chatOrder"][1].get<std::string>(), std::string("first"));
+}
+
 UAM_TEST(StatePatchKeepsLargeLiveChatUpdatesBelowTheCefScriptLimit)
 {
 	uam::AppState before;
@@ -9069,8 +9097,33 @@ UAM_TEST(StatePushSkipsRevisionOnlyPatchWhileSelectedSummaryIsDeferred)
 	app.chats.front().messages.front().content = "second";
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	app.chats.front().messages.front().content = "third";
+	const auto revision_before_deferred = app.state_revision;
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT(uam::HasDeferredStatePush());
+	UAM_ASSERT_EQ(app.state_revision, revision_before_deferred);
+}
+
+UAM_TEST(StatePushIgnoresVolatileAcpWaitSecondsButKeepsRealChanges)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "chat-waiting";
+	app.chats.push_back(std::move(chat));
+	app.selected_chat_index = 0;
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-waiting";
+	session->wait_started_time_s = uam::GetAppTimeSeconds() - 10.0;
+	app.acp_sessions.push_back(std::move(session));
+	uam::PushStateUpdate(nullptr, app);
+
+	const auto revision_before_timer = app.state_revision;
+	app.acp_sessions.front()->wait_started_time_s -= 20.0;
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(app.state_revision, revision_before_timer);
+
+	app.chats.front().title = "Waiting chat renamed";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(app.state_revision, revision_before_timer + 1);
 }
 
 UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)
