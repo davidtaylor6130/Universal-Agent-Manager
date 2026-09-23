@@ -49,7 +49,7 @@
 
 namespace
 {
-	uam::query_handler_async::AsyncCefResult RunComputerUseSettingsHelper(
+	uam::query_handler_async::AsyncCefResult RunComputerUseSettingsHelperOnce(
 	    std::string action, std::string permission = {})
 	{
 		const bool user_prompt = action == "request";
@@ -64,8 +64,9 @@ namespace
 		uam::platform::StdioProcessPlatformFields process;
 		std::string error;
 		auto& process_service = PlatformServicesFactory::Instance().process_service;
-		if (!process_service.StartStdioProcessWithInput(process, {}, argv, {}, &error))
+		if (!process_service.StartStdioProcess(process, {}, argv, &error))
 			return uam::query_handler_async::AsyncFailure(500, error.empty() ? "Computer Use helper could not start." : error);
+		process_service.CloseStdioProcessInput(process);
 
 		std::string output;
 		std::string stderr_output;
@@ -111,10 +112,20 @@ namespace
 		process_service.CloseStdioProcessHandles(process);
 		const nlohmann::json result = nlohmann::json::parse(output, nullptr, false);
 		if (exit_code != 0)
-			return uam::query_handler_async::AsyncFailure(409, result.is_object() ? result.value("error", "Computer Use helper failed.") : "Computer Use helper failed.");
+			return uam::query_handler_async::AsyncFailure(409, result.is_object() ? result.value("error", "Computer Use helper failed.") : stderr_output.empty() ? "Computer Use helper failed." : stderr_output);
 		if (!result.is_object() && !result.is_array())
 			return uam::query_handler_async::AsyncFailure(502, stderr_output.empty() ? "Computer Use helper returned invalid output." : stderr_output);
 		return uam::query_handler_async::AsyncSuccess(result);
+	}
+
+	uam::query_handler_async::AsyncCefResult RunComputerUseSettingsHelper(
+	    const std::string& action, const std::string& permission = {})
+	{
+		uam::query_handler_async::AsyncCefResult result = RunComputerUseSettingsHelperOnce(action, permission);
+		if ((action == "check" || action == "list") && !result.ok && result.status == 502 &&
+		    result.error == "Computer Use helper returned invalid output.")
+			result = RunComputerUseSettingsHelperOnce(action, permission);
+		return result;
 	}
 }
 

@@ -1,5 +1,14 @@
 file(READ "${SOURCE_ROOT}/src/computer_use/computer_use_mcp_server.cpp" mcp_server)
 file(READ "${SOURCE_ROOT}/src/computer_use/computer_use_platform_macos.mm" macos)
+file(READ "${SOURCE_ROOT}/src/cef/chat_config_handlers.cpp" settings_handler)
+
+# Helper diagnostics must not corrupt the JSON read by the Computer Use settings UI.
+string(FIND "${settings_handler}" "StartStdioProcess(process, {}, argv, &error)" separate_output)
+string(FIND "${settings_handler}" "CloseStdioProcessInput(process)" closed_input)
+string(FIND "${settings_handler}" "StartStdioProcessWithInput" merged_output)
+if(separate_output EQUAL -1 OR closed_input EQUAL -1 OR NOT merged_output EQUAL -1)
+  message(FATAL_ERROR "Computer Use settings must isolate helper stdout and close its input.")
+endif()
 
 foreach(token IN ITEMS "CGRequestScreenCaptureAccess(" "AXIsProcessTrustedWithOptions(")
   string(FIND "${mcp_server}" "${token}" interactive_request)
