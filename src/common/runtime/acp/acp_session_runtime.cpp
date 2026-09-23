@@ -82,6 +82,8 @@ namespace uam
 		using namespace acp_detail;
 		constexpr int kAcpReconnectMaxAttempts = 3;
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
+		constexpr double kRemoteTurnReconnectBaseDelaySeconds = 0.5;
+		constexpr double kRemoteTurnReconnectMaxDelaySeconds = 60.0;
 		constexpr double kAcpCancelTimeoutSeconds = 5.0;
 		constexpr std::size_t kMarkdownStorePromptMaxBytes = 2U * 1024U * 1024U;
 		constexpr std::size_t kAcpUserPromptMaxBytes = 1U * 1024U * 1024U;
@@ -197,6 +199,13 @@ namespace uam
 			return kAcpReconnectBaseDelaySeconds * (1 << std::clamp(attempt, 0, kAcpReconnectMaxAttempts - 1));
 		}
 
+		double RemoteTurnReconnectDelaySeconds(int attempt)
+		{
+			return std::min(kRemoteTurnReconnectMaxDelaySeconds,
+			                kRemoteTurnReconnectBaseDelaySeconds *
+			                    (1 << std::clamp(attempt - 1, 0, 7)));
+		}
+
 		void BlockActiveGoalForSetupFailure(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& message)
 		{
 			const std::string owner_chat_id = uam::strings::NonEmptyOrFallback(
@@ -225,8 +234,10 @@ namespace uam
 			    session.reconnect_attempts < kAcpReconnectMaxAttempts)
 			{
 				session.reconnect_pending = true;
-				session.reconnect_not_before_time_s =
-				    now_seconds + AcpReconnectDelaySeconds(session.reconnect_attempts);
+				const double delay_seconds = session.recovering_remote_turn
+				    ? RemoteTurnReconnectDelaySeconds(session.reconnect_attempts)
+				    : AcpReconnectDelaySeconds(session.reconnect_attempts);
+				session.reconnect_not_before_time_s = now_seconds + delay_seconds;
 				AppendAcpDiagnostic(session, "reconnect", "retry_scheduled", "", "", false, 0, message);
 				return;
 			}
@@ -262,7 +273,10 @@ namespace uam
 				return;
 			}
 			session.reconnect_pending = true;
-			session.reconnect_not_before_time_s = now_seconds + AcpReconnectDelaySeconds(session.reconnect_attempts);
+			const double delay_seconds = session.recovering_remote_turn
+			    ? RemoteTurnReconnectDelaySeconds(session.reconnect_attempts)
+			    : AcpReconnectDelaySeconds(session.reconnect_attempts);
+			session.reconnect_not_before_time_s = now_seconds + delay_seconds;
 			AppendAcpDiagnostic(session, "reconnect", "scheduled", "", "", false, 0, "Structured runtime disconnected; reconnect scheduled.");
 		}
 

@@ -313,8 +313,9 @@ namespace uam::acp_detail
 					{
 						if (request.delivery_id != *input_receipt) continue;
 						// Provider correlation survives the helper's transport acknowledgment.
+						std::string payload = std::move(request.payload);
 						request.payload.clear();
-						(void)SaveChatQuietly(app, chat);
+						if (!SaveChatQuietly(app, chat)) request.payload = std::move(payload);
 						break;
 					}
 					session.pending_remote_input_receipt_id = *input_receipt;

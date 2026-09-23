@@ -246,6 +246,46 @@ UAM_TEST(AcpRemoteInputReceiptIsConsumedBeforeProviderParsing)
 	UAM_ASSERT(session.stdout_buffer.empty());
 }
 
+UAM_TEST(AcpRemoteInputReceiptKeepsReplayPayloadWhenChatSaveFails)
+{
+	TempDir temp("uam-acp-input-receipt-save-failure");
+	uam::AppState app;
+	app.data_root = temp.root / "blocked-data-root";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocks chat storage"));
+	ChatSession chat;
+	chat.id = "remote-input-save-failure";
+	chat.execution_host_id = "ssh-test";
+	uam::AcpRemotePendingRequestState request;
+	request.request_id = 7;
+	request.method = "session/prompt";
+	request.delivery_id = "request-7";
+	request.payload = "replay this request";
+	chat.remote_pending_requests.push_back(request);
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.running = true;
+	session.remote_output_delivery_token = "delivery-token";
+	const std::string receipt = std::string(uam::remote::kRemoteInputReceiptPrefix) +
+	    "delivery-token request-7\n";
+	session.stdout_buffer = receipt;
+
+	UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(
+	    app, session, app.chats.front(), nullptr, 1), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().remote_pending_requests.front().payload,
+	              std::string("replay this request"));
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+
+	app.data_root = temp.root / "data";
+	session.stdout_buffer = receipt;
+	UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(
+	    app, session, app.chats.front(), nullptr, 1), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().remote_pending_requests.front().payload.empty());
+	const std::optional<ChatSession> persisted =
+	    ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(persisted->remote_pending_requests.front().payload.empty());
+}
+
 UAM_TEST(AcpRemoteSourceExitMarkerIsInternalAndAuthenticated)
 {
 	uam::AppState app;
@@ -744,11 +784,26 @@ UAM_TEST(RemoteReconnectFailureKeepsRetryingAHelperOwnedTurn)
 	session.turn_assistant_message_index = 1;
 	session.tool_calls.push_back({.id = "tool-1", .status = "running"});
 
-	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 1.0, "bridge unavailable");
-	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 2.0, "bridge unavailable");
-	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 3.0, "bridge unavailable");
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 0.5);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 1.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 2.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 4.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 8.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 16.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 32.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 60.0);
+	uam::RecordAcpReconnectFailureForTests(app, session, app.chats.front(), 0.0, "bridge unavailable");
+	UAM_ASSERT_EQ(session.reconnect_not_before_time_s, 60.0);
 
-	UAM_ASSERT_EQ(session.reconnect_attempts, 3);
+	UAM_ASSERT_EQ(session.reconnect_attempts, 9);
 	UAM_ASSERT(session.reconnect_pending);
 	UAM_ASSERT(session.processing);
 	UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
