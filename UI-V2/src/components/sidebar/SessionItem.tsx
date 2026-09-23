@@ -279,8 +279,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
-        {selected && (
-          <span role="img" aria-label="Selected for bulk actions" className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
+        {(selected || (isCompanionContext() && isSelectedChat)) && (
+          <span role="img" aria-label={selected ? 'Selected for bulk actions' : 'Selected chat'} className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
             <Check size={12} aria-hidden />
           </span>
         )}

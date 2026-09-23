@@ -242,6 +242,32 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('marks only the exact active chat in the companion branch list', () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    useAppStore.setState({ sessions: [rootSession, branchSession], activeSessionId: 'chat-root' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch']} />
+      <SessionItem sessionId="chat-branch" session={branchSession} familySessionIds={['chat-root', 'chat-branch']} />
+    </>))
+
+    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeNull()
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-branch' }))
+    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeNull()
+    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+    window.history.pushState({}, '', previousPath)
+  })
+
   it('keeps a failed delete confirmation visible with its error', async () => {
     useAppStore.setState({ deleteSessions: vi.fn(async () => false) })
     const { host, root } = renderSessionItem()
