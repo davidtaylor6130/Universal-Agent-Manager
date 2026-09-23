@@ -211,7 +211,8 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
 {
 #if !defined(_WIN32)
 	const std::optional<std::string> log_path = uam::env::GetNonEmptyString("UAM_TEST_MCP_LOST_ACK_LOG");
-	if (!log_path || argc < 2) return std::nullopt;
+	const std::optional<std::string> idle_poll_log = uam::env::GetNonEmptyString("UAM_TEST_MCP_IDLE_POLL_LOG");
+	if ((!log_path && !idle_poll_log) || argc < 2) return std::nullopt;
 	if (std::string_view(argv[1]) == "--uam-test-mcp-lost-ack")
 		return uam::remote::RunRemoteMcpShim("lost-ack", fs::path("unused.sock"));
 	if (std::string_view(argv[1]) != "bridge") return std::nullopt;
@@ -220,7 +221,12 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");
-		if (type == "channel.write")
+		if (idle_poll_log && type == "channel.poll")
+		{
+			std::ofstream log(*idle_poll_log, std::ios::app);
+			log << "poll\n";
+		}
+		if (log_path && type == "channel.write")
 		{
 			std::ofstream log(*log_path, std::ios::app);
 			log << request.at("writeSequence").get<std::uint64_t>() << '\n';
@@ -229,8 +235,11 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
 		}
 		const nlohmann::json response = type == "hello"
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
+		    : idle_poll_log && type == "channel.poll"
+		    ? nlohmann::json{{"id", request["id"]}, {"ok", true},
+		        {"result", {{"dataBase64", ""}, {"cursor", 0}}}}
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true},
-		        {"result", {{"remoteToDesktopWriteSequence", fs::exists(*log_path) ? 1 : 0}}}};
+		        {"result", {{"remoteToDesktopWriteSequence", log_path && fs::exists(*log_path) ? 1 : 0}}}};
 		if (!uam::remote::WriteFrame(std::cout, response)) return 1;
 		std::cout.flush();
 	}
@@ -239,6 +248,27 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
 	(void)argc;
 	(void)argv;
 	return std::nullopt;
+#endif
+}
+
+UAM_TEST(RemoteMcpShimBoundsIdleChannelPolling)
+{
+#if !defined(_WIN32)
+	TempDir temp("uam-mcp-idle-poll");
+	const fs::path log = temp.root / "polls.txt";
+	ScopedEnvVar idle_log("UAM_TEST_MCP_IDLE_POLL_LOG", log.string());
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields shim;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(
+	    shim, temp.root,
+	    {service.ResolveCurrentExecutablePath().string(), "--uam-test-mcp-lost-ack"},
+	    &error));
+	std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	service.StopStdioProcess(shim, true);
+	const std::string polls = ReadFile(log);
+	UAM_ASSERT(!polls.empty());
+	UAM_ASSERT(std::count(polls.begin(), polls.end(), '\n') <= 10);
 #endif
 }
 

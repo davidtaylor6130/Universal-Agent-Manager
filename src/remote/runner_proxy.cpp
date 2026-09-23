@@ -281,7 +281,7 @@ namespace uam::remote
 					break;
 				if (!input.empty()) pending_input_cursor = input_cursor;
 				if (output <= 0 && input.empty())
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			}
 			if (running) process_service.StopStdioProcess(process, true);
 			process_service.CloseStdioProcessHandles(process);
@@ -1052,7 +1052,7 @@ namespace uam::remote
 					break;
 			}
 			if (count < 0 && output.empty())
-				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		}
 		(void)channel.CloseChannel(channel_id);
 		if (!error.empty()) std::cerr << error << '\n';
@@ -1128,7 +1128,7 @@ namespace uam::remote
 				}
 			}
 			if (input.Closed() && pending.empty()) break;
-			if (pending.empty() && output.empty()) Sleep(10);
+			if (pending.empty() && output.empty()) Sleep(50);
 		}
 		(void)channel.CloseChannel(channel_id);
 		return !input_failed && error.empty() ? 0 : 70;
