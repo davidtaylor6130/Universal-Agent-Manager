@@ -1617,7 +1617,7 @@ const FolderRow = memo(function FolderRow({
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuTriggerRef = useRef<HTMLButtonElement>(null)
-  const shouldLimitSessions = !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
+  const shouldLimitSessions = !isCompanionContext() && !isSearching && sessionIds.length > VISIBLE_SESSION_LIMIT
   const visibleSessionIds = shouldLimitSessions && !showAllSessions
     ? sessionIds.slice(0, VISIBLE_SESSION_LIMIT)
     : sessionIds

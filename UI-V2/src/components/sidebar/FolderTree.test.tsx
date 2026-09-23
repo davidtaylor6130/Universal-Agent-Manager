@@ -115,6 +115,27 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('shows all chats in an expanded companion workspace', () => {
+    window.history.replaceState(null, '', '/companion')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    try {
+      act(() => {
+        root.render(<FolderTree searchQuery="" />)
+      })
+
+      expect(host.textContent).toContain('Chat 6')
+      expect(host.textContent).toContain('Chat 7')
+      expect(host.textContent).not.toContain('Show 2 more')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
   it('does not rescan the sidebar runtime model when only turn event text changes', () => {
     const sessions = Array.from({ length: 120 }, (_, index) => makeSession(index + 1))
     let historicalStatusReads = 0
