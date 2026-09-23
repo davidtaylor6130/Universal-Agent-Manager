@@ -44,6 +44,8 @@ namespace
 	constexpr int kMemoryWorkerTimeoutMs = 120000;
 	constexpr double kRetryBaseDelaySeconds = 300.0;
 	constexpr double kRetryMaxDelaySeconds = 3600.0;
+	constexpr double kGlobalRetryBaseDelaySeconds = 30.0;
+	constexpr double kGlobalRetryMaxDelaySeconds = 300.0;
 	constexpr std::size_t kMaxWorkerLogBytes = 16000;
 	constexpr const char* kMemoryWorkerPromptPrefix = "You are a non-interactive memory extraction function.";
 	constexpr const char* kMemoryWorkerCompletedStatus = "Memory worker completed.";
@@ -787,7 +789,14 @@ namespace
 		task.chat_id = chat_id;
 		task.scan_start_message_index = scan_start_message_index;
 		task.manual = manual;
-		app.memory_extraction_queue.push_back(std::move(task));
+		if (manual)
+		{
+			app.memory_extraction_queue.push_front(std::move(task));
+		}
+		else
+		{
+			app.memory_extraction_queue.push_back(std::move(task));
+		}
 		return true;
 	}
 
@@ -848,6 +857,33 @@ namespace
 			delay = std::min(kRetryMaxDelaySeconds, delay * 2.0);
 		}
 		return delay;
+	}
+
+	double GlobalRetryDelayForFailureCount(int failure_count)
+	{
+		double delay = kGlobalRetryBaseDelaySeconds;
+		for (int i = 1; i < failure_count && delay < kGlobalRetryMaxDelaySeconds; ++i)
+		{
+			delay = std::min(kGlobalRetryMaxDelaySeconds, delay * 2.0);
+		}
+		return delay;
+	}
+
+	bool GlobalMemoryRetryDue(const uam::AppState& app, double now)
+	{
+		return app.memory_global_retry_not_before <= now;
+	}
+
+	void RecordGlobalMemoryFailure(uam::AppState& app)
+	{
+		const int failure_count = ++app.memory_global_failure_count;
+		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + GlobalRetryDelayForFailureCount(failure_count);
+	}
+
+	void ResetGlobalMemoryFailure(uam::AppState& app)
+	{
+		app.memory_global_failure_count = 0;
+		app.memory_global_retry_not_before = 0.0;
 	}
 
 	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason)
@@ -919,6 +955,10 @@ namespace
 			const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
 			RecordMemoryWorkerResult(app, task, failure_status);
 			RecordMemoryFailure(app, task.chat_id, failure_status);
+			if (!task.state->result.canceled)
+			{
+				RecordGlobalMemoryFailure(app);
+			}
 			return false;
 		}
 
@@ -927,12 +967,14 @@ namespace
 		if (MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, task.state->result.output, task.message_count, &error))
 		{
 			RecordMemorySuccess(app, task.chat_id);
+			ResetGlobalMemoryFailure(app);
 			return true;
 		}
 
 		const std::string failure_reason = uam::strings::NonEmptyOrFallback(error, kMemoryWorkerOutputDiscardedStatus);
 		RecordMemoryWorkerResult(app, task, failure_reason);
 		RecordMemoryFailure(app, task.chat_id, failure_reason);
+		RecordGlobalMemoryFailure(app);
 		return false;
 	}
 
@@ -1513,7 +1555,18 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		app.memory_retry_not_before_by_chat_id.erase(chat.id);
-		if (QueueMemoryWork(app, chat.id, 0, true))
+		const auto queued = std::ranges::find_if(app.memory_extraction_queue, [&chat](const uam::QueuedMemoryExtractionTask& task)
+		                                              { return task.chat_id == chat.id; });
+		if (queued != app.memory_extraction_queue.end())
+		{
+			uam::QueuedMemoryExtractionTask promoted = std::move(*queued);
+			app.memory_extraction_queue.erase(queued);
+			promoted.scan_start_message_index = 0;
+			promoted.manual = true;
+			app.memory_extraction_queue.push_front(std::move(promoted));
+			++queued_count;
+		}
+		else if (QueueMemoryWork(app, chat.id, 0, true))
 		{
 			++queued_count;
 		}
@@ -1529,6 +1582,8 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		SetError(error_out, "No eligible chats were available to scan.");
 		return false;
 	}
+
+	ResetGlobalMemoryFailure(app);
 
 	app.memory_last_status = "Queued memory scan for " + std::to_string(queued_count) + " chat(s).";
 	RefreshMemoryActivity(app);
@@ -1574,6 +1629,10 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	bool read_cold_transcript = false;
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
+		if (!GlobalMemoryRetryDue(app, uam::GetAppTimeSeconds()))
+		{
+			break;
+		}
 		const std::size_t attempts = app.memory_extraction_queue.size();
 		bool started = false;
 		for (std::size_t i = 0; i < attempts && RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty(); ++i)
@@ -1664,11 +1723,14 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			else
 			{
 				RecordMemoryFailure(app, chat.id, app.memory_last_status);
+				RecordGlobalMemoryFailure(app);
 				if (queued.manual)
 				{
 					RequeueMemoryWork(app, std::move(queued));
 				}
+				started = true;
 				changed = true;
+				break;
 			}
 		}
 
@@ -1676,6 +1738,15 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		{
 			break;
 		}
+	}
+
+	if (!GlobalMemoryRetryDue(app, uam::GetAppTimeSeconds()))
+	{
+		if (changed)
+		{
+			RefreshMemoryActivity(app);
+		}
+		return changed;
 	}
 
 	const double now = uam::GetAppTimeSeconds();

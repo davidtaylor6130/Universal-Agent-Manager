@@ -1436,6 +1436,82 @@ UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
 	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
 }
 
+UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
+{
+	TempDir temp("uam-memory-global-backoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatSession failed;
+	failed.id = "chat-global-failure";
+	failed.provider_id = "gemini-cli";
+	failed.workspace_directory = temp.root.string();
+	failed.memory_enabled = true;
+	failed.messages.push_back({MessageRole::User, "Remember this.", "now"});
+	ChatSession queued = failed;
+	queued.id = "chat-global-queued";
+	queued.provider_id = "missing-provider";
+	ChatSession queued_again = queued;
+	queued_again.id = "chat-global-queued-again";
+	app.chats = {failed, queued, queued_again};
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = failed.id;
+	task.message_count = 1;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = failed.provider_id;
+	task.state->result.exit_code = 1;
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+	app.memory_extraction_queue.push_back({queued.id, -1, false});
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_global_retry_not_before > uam::GetAppTimeSeconds());
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 1);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+
+	app.memory_extraction_queue.clear();
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
+	uam::AsyncMemoryExtractionTask success;
+	success.running = true;
+	success.chat_id = failed.id;
+	success.message_count = 1;
+	success.workspace_root = temp.root;
+	success.state = std::make_shared<AsyncProcessTaskState>();
+	success.state->provider_id = failed.provider_id;
+	success.state->result.ok = true;
+	success.state->result.output = R"({"memories":[]})";
+	success.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(success));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
+	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+
+	ChatSession fresh = queued;
+	fresh.id = "chat-global-fresh-manual";
+	app.chats.push_back(fresh);
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {fresh.id}));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, fresh.id);
+	app.memory_extraction_queue.clear();
+
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+	app.memory_extraction_queue.push_back({queued.id, -1, false});
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {queued.id}));
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
+	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, queued.id);
+	UAM_ASSERT(app.memory_extraction_queue.front().manual);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[queued.id], 1);
+	UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(queued_again.id));
+}
+
 UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 {
 	TempDir temp("uam-memory-worker-command-not-found");
@@ -1621,6 +1697,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 
 		app.data_root = temp.root / "data";
 		app.memory_retry_not_before_by_chat_id[chat.id] = 0;
+		app.memory_global_retry_not_before = 0;
 		// No configured provider: retry reaches startup without launching an installed CLI.
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 2);

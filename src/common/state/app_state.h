@@ -758,6 +758,8 @@ namespace uam
 		std::unordered_map<std::string, double> memory_idle_started_at_by_chat_id;
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
+		double memory_global_retry_not_before = 0.0;
+		int memory_global_failure_count = 0;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::string memory_last_status;
