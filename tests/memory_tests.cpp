@@ -1451,6 +1451,53 @@ UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
 	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
 }
 
+UAM_TEST(MemoryServiceFailedWorkerKeepsCachedEntryCountsWithoutRescanningRoots)
+{
+	TempDir temp("uam-memory-failed-worker-no-recount");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatSession chat;
+	chat.id = "chat-failed-no-recount";
+	chat.provider_id = "opencode-cli";
+	chat.workspace_directory = (temp.root / "workspace").string();
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.messages.push_back({MessageRole::User, "Remember this preference.", "now"});
+	fs::create_directories(chat.workspace_directory);
+	app.chats.push_back(chat);
+
+	const std::string memory_output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Cached entry","memory":"Keep cached entry metadata.","evidence":"Test setup.","confidence":"high"}]})";
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, memory_output, 1, &error));
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 1);
+	const std::string last_created_at = app.memory_activity.last_created_at;
+	fs::remove_all(chat.workspace_directory);
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = chat.id;
+	task.workspace_root = chat.workspace_directory;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = chat.provider_id;
+	task.state->result.error = "OpenCode worker unavailable";
+	task.state->result.exit_code = 1;
+	task.state->result.output = "worker diagnostic output";
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 1);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_at, last_created_at);
+	UAM_ASSERT_EQ(app.memory_activity.running_count, 0);
+	UAM_ASSERT(app.memory_activity.last_status.find("OpenCode worker unavailable") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_status.find("OpenCode worker unavailable") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_error, std::string("OpenCode worker unavailable"));
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_output, std::string("worker diagnostic output"));
+	UAM_ASSERT(app.memory_activity.last_worker_has_exit_code);
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 1);
+}
+
 UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 {
 	TempDir temp("uam-memory-global-backoff");

@@ -1657,6 +1657,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 {
 	bool changed = false;
+	bool memory_entries_may_have_changed = false;
 	for (auto it = app.memory_extraction_tasks.begin(); it != app.memory_extraction_tasks.end();)
 	{
 		uam::AsyncMemoryExtractionTask& task = *it;
@@ -1725,11 +1726,17 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 					requeue_completed_task();
 				}
 			}
-			else if (!ApplyCompletedMemoryWorkerResult(app, chat, task) &&
-			         task.scan_start_message_index >= 0 && !task.state->result.canceled)
+			else
 			{
-				// Manual scans carry an explicit start index; automatic scans use -1.
-				requeue_completed_task();
+				const bool worker_applied = ApplyCompletedMemoryWorkerResult(app, chat, task);
+				// Failed output application can follow partial writes, so its entry count needs a recount.
+				memory_entries_may_have_changed = memory_entries_may_have_changed || (task.state->result.ok && !worker_applied);
+				if (!worker_applied &&
+			         task.scan_start_message_index >= 0 && !task.state->result.canceled)
+				{
+					// Manual scans carry an explicit start index; automatic scans use -1.
+					requeue_completed_task();
+				}
 			}
 			changed = true;
 			}
@@ -1837,7 +1844,15 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	{
 		if (changed)
 		{
-			RefreshMemoryActivity(app);
+			if (memory_entries_may_have_changed)
+			{
+				RefreshMemoryActivity(app);
+			}
+			else
+			{
+				app.memory_activity.running_count = RunningMemoryTaskCount(app);
+				app.memory_activity.last_status = uam::strings::NonEmptyOrFallback(app.memory_last_status, app.memory_activity.last_status);
+			}
 		}
 		return changed;
 	}
@@ -1886,7 +1901,15 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 
 	if (changed)
 	{
-		RefreshMemoryActivity(app);
+		if (memory_entries_may_have_changed)
+		{
+			RefreshMemoryActivity(app);
+		}
+		else
+		{
+			app.memory_activity.running_count = RunningMemoryTaskCount(app);
+			app.memory_activity.last_status = uam::strings::NonEmptyOrFallback(app.memory_last_status, app.memory_activity.last_status);
+		}
 	}
 	return changed;
 }
