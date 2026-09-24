@@ -7000,7 +7000,12 @@ UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
 	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "opencode-cli");
 	source.id = "chat-source";
 	source.workspace_directory = temp.root.string();
-	source.messages.push_back(Message{MessageRole::User, "Earlier user context"});
+	Message earlier_user{MessageRole::User, ""};
+	earlier_user.markdown_store_files = {"skills/original.uam"};
+	earlier_user.markdown_store_prompt_blocks = {"<skill>UAM_ORIGINAL_SKILL_SNAPSHOT</skill>"};
+	earlier_user.attachments.push_back(MessageAttachment{
+	    "attachment-1", "diagram.png", "image", "image/png", ".UAM/attachments/chat-source/diagram.png"});
+	source.messages.push_back(std::move(earlier_user));
 	source.messages.push_back(Message{MessageRole::Assistant, "Earlier assistant context"});
 	source.messages.push_back(Message{MessageRole::User, "Retry this prompt"});
 	source.messages.push_back(Message{MessageRole::Assistant, "Do not leak this later response"});
@@ -7009,6 +7014,9 @@ UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
 	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, "chat-source", 2));
 	ChatSession* branch = ChatDomainService().SelectedChat(app);
 	UAM_ASSERT(branch != nullptr);
+	const fs::path changed_skill = temp.root / "skills" / "original.uam";
+	fs::create_directories(changed_skill.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(changed_skill, "UAM_CHANGED_SKILL_ON_DISK"));
 
 	auto session = std::make_unique<uam::AcpSessionState>();
 	uam::AcpSessionState* raw_session = session.get();
@@ -7028,7 +7036,9 @@ UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
 	std::string retry_error;
 	UAM_ASSERT(uam::RetryLastAcpPrompt(app, branch->id, &retry_error));
 	UAM_ASSERT(retry_error.empty());
-	UAM_ASSERT(raw_session->queued_prompt.find("Earlier user context") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("UAM_ORIGINAL_SKILL_SNAPSHOT") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find(".UAM/attachments/chat-source/diagram.png") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("UAM_CHANGED_SKILL_ON_DISK") == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Earlier assistant context") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Retry this prompt") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("Do not leak this later response") == std::string::npos);

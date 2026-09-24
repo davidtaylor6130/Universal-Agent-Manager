@@ -2098,9 +2098,29 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			queued.text = "Continue this branched conversation using the prior transcript as context.\n\n"
 			              "Prior conversation:\n";
+			std::size_t markdown_store_bytes = 0;
 			for (auto prior = chat->messages.begin(); prior != chat->messages.end() - 1; ++prior)
 			{
-				if (!uam::strings::IsBlank(prior->content))
+				if (prior->role == MessageRole::User)
+				{
+					if (!prior->markdown_store_files.empty() &&
+					    prior->markdown_store_files.size() != prior->markdown_store_prompt_blocks.size())
+					{
+						if (error_out != nullptr)
+							*error_out = "The original attached skill snapshots are unavailable.";
+						return false;
+					}
+					AcpQueuedUserPromptState prior_prompt;
+					prior_prompt.text = prior->content;
+					prior_prompt.markdown_store_files = prior->markdown_store_files;
+					prior_prompt.markdown_store_prompt_blocks = prior->markdown_store_prompt_blocks;
+					prior_prompt.attachments = prior->attachments;
+					std::string prompt_body;
+					if (!BuildAcpPromptBody(app, *chat, prior_prompt, markdown_store_bytes, prompt_body, error_out))
+						return false;
+					queued.text += "User: " + prompt_body + "\n\n";
+				}
+				else if (!uam::strings::IsBlank(prior->content))
 				{
 					queued.text += RoleToString(prior->role) + ": " + prior->content + "\n\n";
 				}
