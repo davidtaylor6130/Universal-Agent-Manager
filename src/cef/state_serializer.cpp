@@ -1561,11 +1561,18 @@ namespace uam
 	nlohmann::json StateSerializer::SerializeMessagePage(const ChatSession& session,
 	                                                     std::size_t limit,
 	                                                     std::optional<std::size_t> before,
-	                                                     bool defer_tool_call_content)
+	                                                     bool defer_tool_call_content,
+	                                                     std::string_view known_digest)
 	{
 		const std::size_t total_count = session.messages.size();
 		const std::size_t end = std::min(before.value_or(total_count), total_count);
 		const std::size_t start = end > limit ? end - limit : 0;
+		const std::string digest = MessageDigestForFingerprint(session);
+		if (!before.has_value() && !known_digest.empty() && known_digest == digest)
+		{
+			return {{"startIndex", start}, {"totalCount", total_count},
+			        {"messagesDigest", digest}, {"unchanged", true}};
+		}
 		nlohmann::json messages = JsonArrayWithCapacity(end - start);
 		for (std::size_t index = start; index < end; ++index)
 		{
@@ -1576,7 +1583,7 @@ namespace uam
 		    {"messages", std::move(messages)},
 		    {"startIndex", start},
 		    {"totalCount", total_count},
-		    {"messagesDigest", MessageDigestForFingerprint(session)},
+		    {"messagesDigest", digest},
 		};
 	}
 

@@ -73,11 +73,9 @@ namespace
 		if (page.has_value())
 		{
 			nlohmann::json result = uam::StateSerializer::SerializeMessagePage(
-			    chat, page->first, page->second, defer_tool_call_content);
+			    chat, page->first, page->second, defer_tool_call_content, known_digest);
 			result["chatId"] = chat.id;
-			result["unchanged"] = !page->second.has_value() && !known_digest.empty() &&
-			                     known_digest == result.value("messagesDigest", "");
-			if (result["unchanged"].get<bool>()) result.erase("messages");
+			if (!result.contains("unchanged")) result["unchanged"] = false;
 			return result;
 		}
 		if (!known_digest.empty() &&

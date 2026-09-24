@@ -9984,9 +9984,23 @@ UAM_TEST(StateSerializerMessagePagesReturnLatestAndOlderSlices)
 	UAM_ASSERT_EQ(older["messages"][0]["content"], std::string("message-0"));
 	UAM_ASSERT_EQ(older["messages"][1]["content"], std::string("message-1"));
 	UAM_ASSERT_EQ(latest["messagesDigest"], older["messagesDigest"]);
+	const std::string digest = latest["messagesDigest"].get<std::string>();
+	const nlohmann::json unchanged = uam::StateSerializer::SerializeMessagePage(
+	    chat, 2, std::nullopt, true, digest);
+	UAM_ASSERT(unchanged.value("unchanged", false));
+	UAM_ASSERT(!unchanged.contains("messages"));
+	UAM_ASSERT_EQ(unchanged["startIndex"], 2);
+	UAM_ASSERT_EQ(unchanged["totalCount"], 4);
+	UAM_ASSERT_EQ(unchanged["messagesDigest"], latest["messagesDigest"]);
+	const nlohmann::json older_with_digest = uam::StateSerializer::SerializeMessagePage(
+	    chat, 2, 2, true, digest);
+	UAM_ASSERT(older_with_digest.contains("messages"));
 
 	chat.messages[0].content = "changed";
-	UAM_ASSERT(latest["messagesDigest"] != uam::StateSerializer::SerializeMessagePage(chat, 2, std::nullopt)["messagesDigest"]);
+	const nlohmann::json changed = uam::StateSerializer::SerializeMessagePage(
+	    chat, 2, std::nullopt, true, digest);
+	UAM_ASSERT(changed.contains("messages"));
+	UAM_ASSERT(latest["messagesDigest"] != changed["messagesDigest"]);
 }
 
 UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
