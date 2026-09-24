@@ -772,6 +772,14 @@ namespace uam::remote
 		}
 		parsed.stdout_cursor = value.value("stdoutCursor", static_cast<std::uintmax_t>(0));
 		parsed.stderr_cursor = value.value("stderrCursor", static_cast<std::uintmax_t>(0));
+		if (m_processOutputAcknowledgement &&
+		    ((value.contains("stdoutCursor") && parsed.stdout_cursor < parsed.standard_output.size()) ||
+		     (value.contains("stderrCursor") && parsed.stderr_cursor < parsed.standard_error.size())))
+		{
+			if (error_out != nullptr)
+				*error_out = "The remote runner returned process cursors before the delivered output.";
+			return false;
+		}
 		parsed.input_sequence = value.value("inputSequence", static_cast<std::uint64_t>(0));
 		m_processInputSequences[session_id] = std::max(
 		    m_processInputSequences[session_id], parsed.input_sequence);
