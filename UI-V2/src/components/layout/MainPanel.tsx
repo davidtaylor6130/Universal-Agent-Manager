@@ -90,9 +90,15 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
+  const executionHosts = useAppStore((s) => s.executionHosts)
   const paneColor = chatPaneColors[paneIndex]
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
+  const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
+  const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
+    ? executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId
+    : 'Local'
+  const workspaceAndHostLabel = workspaceLabel ? `${workspaceLabel} · ${executionHostLabel}` : executionHostLabel
 
   useEffect(() => {
     if (session.importedReadOnly) {
@@ -128,16 +134,14 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         {/* Session name */}
         <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight" title={session.name}>
           <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
-          {workspaceLabel && (
-            <span
-              data-testid={`chat-workspace-${session.id}`}
-              className="uam-chat-pane__workspace truncate text-[10px] font-normal"
-              style={{ color: 'var(--text-3)' }}
-              title={workspaceDirectory}
-            >
-              {workspaceLabel}
-            </span>
-          )}
+          <span
+            data-testid={`chat-workspace-${session.id}`}
+            className="uam-chat-pane__workspace truncate text-[10px] font-normal"
+            style={{ color: 'var(--text-3)' }}
+            title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
+          >
+            {workspaceAndHostLabel}
+          </span>
         </div>
 
         <div

@@ -68,6 +68,9 @@ describe('MainPanel', () => {
           updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         },
       ],
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+      ],
       activeSessionId: 'chat-1',
       lastAppliedStateRevision: -1,
       messages: { 'chat-1': [] },
@@ -122,7 +125,7 @@ describe('MainPanel', () => {
 
     expect(chatButton().textContent).toBe('')
     expect(cliButton().textContent).toBe('')
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project · Local')
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -167,6 +170,32 @@ describe('MainPanel', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows the saved remote host beside the workspace and reacts to host updates', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<MainPanel />))
+    act(() => useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, executionHostId: 'lab', workspaceDirectory: '' })),
+      executionHosts: [{
+        id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'x86_64', lastSeenAt: '',
+      }],
+    })))
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Homelab')
+
+    act(() => useAppStore.setState((state) => ({
+      executionHosts: state.executionHosts.map((executionHost) => ({ ...executionHost, label: 'AI Server' })),
+    })))
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('AI Server')
+
+    act(() => useAppStore.setState({ executionHosts: [] }))
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('lab')
+
+    act(() => root.unmount())
     host.remove()
   })
 
