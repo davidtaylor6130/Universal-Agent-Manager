@@ -7181,10 +7181,18 @@ UAM_TEST(MessageBranchRetryFailureRollsBackLegacyAndPreservesIdempotentBranch)
 	UAM_ASSERT(!warning.empty());
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
 	const std::string preserved_branch_id = branch_id;
-	UAM_ASSERT(uam::BranchFromMessageAndRetry(app, "chat-source", 0, std::nullopt, &branch_id,
+	UAM_ASSERT(!uam::BranchFromMessageAndRetry(app, "chat-source", 0, std::nullopt, &branch_id,
 		&error, std::string("branch-retry-1"), &warning));
 	UAM_ASSERT_EQ(branch_id, preserved_branch_id);
+	UAM_ASSERT(!warning.empty());
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	const std::vector<ChatSession> saved_after_failure = ChatRepository::LoadLocalChats(temp.root);
+	const auto preserved = std::ranges::find_if(saved_after_failure, [&preserved_branch_id](const ChatSession& chat)
+	{
+		return chat.id == preserved_branch_id;
+	});
+	UAM_ASSERT(preserved != saved_after_failure.end());
+	UAM_ASSERT(!preserved->branch_retry_error.empty());
 }
 
 UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)

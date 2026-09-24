@@ -560,7 +560,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           console.error('[CEF] branchFromMessage failed:', response.error)
           return null
         }
-        if (response.data?.warning) console.warn(`[CEF] branchFromMessage warning: ${response.data.warning}`)
+        if (response.data?.warning) set({ statusLine: response.data.warning })
         return response.data?.chatId?.trim() || null
       }
 

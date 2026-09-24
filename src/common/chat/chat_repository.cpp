@@ -123,6 +123,7 @@ namespace
 	constexpr std::string_view kChatBranchFromMessageIndexField = "branch_from_message_index";
 	constexpr std::string_view kChatBranchMessageEditedField = "branch_message_edited";
 	constexpr std::string_view kChatBranchOperationIdField = "branch_operation_id";
+	constexpr std::string_view kChatBranchRetryErrorField = "branch_retry_error";
 	constexpr std::string_view kChatFolderIdField = "folder_id";
 	constexpr std::string_view kChatTitleField = "title";
 	constexpr std::string_view kChatCreatedAtField = "created_at";
@@ -1177,6 +1178,7 @@ namespace
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
 		chat.branch_message_edited = JsonBoolOrDefault(root.Find(kChatBranchMessageEditedField), false);
 		chat.branch_operation_id = JsonStringOrEmpty(root.Find(kChatBranchOperationIdField));
+		chat.branch_retry_error = JsonStringOrEmpty(root.Find(kChatBranchRetryErrorField));
 		chat.folder_id = JsonStringOrEmpty(root.Find(kChatFolderIdField));
 		std::erase_if(chat.folder_id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		chat.title = JsonStringOrEmpty(root.Find(kChatTitleField));
@@ -1631,6 +1633,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
 	uam::json::SetBool(root, kChatBranchMessageEditedField, chat.branch_message_edited);
 	uam::json::SetString(root, kChatBranchOperationIdField, chat.branch_operation_id);
+	uam::json::SetString(root, kChatBranchRetryErrorField, chat.branch_retry_error);
 	{
 		std::string folder_id_sanitized = chat.folder_id;
 		std::erase_if(folder_id_sanitized, [](char c) { return static_cast<unsigned char>(c) < 0x20; });

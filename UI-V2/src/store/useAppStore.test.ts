@@ -2531,6 +2531,16 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[1].payload).toEqual(requests[0].payload)
   })
 
+  it('shows a saved branch when its regeneration failed', async () => {
+    window.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify({
+      chatId: 'branch-1',
+      warning: 'Branch was created, but regeneration could not start.',
+    }))
+
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 0)).resolves.toBe('branch-1')
+    expect(useAppStore.getState().statusLine).toBe('Branch was created, but regeneration could not start.')
+  })
+
   it('keeps message branch metadata from native state', () => {
     const state = makeCppState(3)
     state.chats[0] = {

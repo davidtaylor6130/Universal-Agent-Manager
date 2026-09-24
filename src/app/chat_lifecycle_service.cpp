@@ -1062,7 +1062,14 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	{
 		*branch_id_out = branch_id;
 	}
-	if (reused_existing_branch) return true;
+	if (reused_existing_branch)
+	{
+		if (branch->branch_retry_error.empty()) return true;
+		app.status_line = "Branch exists, but regeneration did not start: " + branch->branch_retry_error;
+		if (warning_out != nullptr) *warning_out = app.status_line;
+		if (error_out != nullptr) *error_out = app.status_line;
+		return false;
+	}
 	std::string retry_error;
 	if (RetryLastAcpPrompt(app, branch_id, &retry_error))
 	{
@@ -1070,7 +1077,13 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	}
 	if (operation_id.has_value() && !uam::strings::Trim(*operation_id).empty())
 	{
-		app.status_line = "Branch was created, but regeneration could not start: " + retry_error;
+		const std::string failure = uam::strings::NonEmptyOrFallback(retry_error, "Regeneration could not start.");
+		if (ChatSession* failed_branch = ChatDomainService().FindChatById(app, branch_id); failed_branch != nullptr)
+		{
+			failed_branch->branch_retry_error = failure;
+			(void)SaveChatHistories(app, {*failed_branch});
+		}
+		app.status_line = "Branch was created, but regeneration could not start: " + failure;
 		if (warning_out != nullptr) *warning_out = app.status_line;
 		if (error_out != nullptr) *error_out = app.status_line;
 		return false;
