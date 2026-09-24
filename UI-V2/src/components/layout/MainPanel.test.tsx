@@ -594,6 +594,27 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('does not glide loaded chats in a compact split pane', () => {
+    useAppStore.setState((state) => ({
+      sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-2', name: 'Second chat' }],
+      messages: {
+        'chat-1': [{ id: 'message-1', sessionId: 'chat-1', role: 'assistant', content: 'First', createdAt: new Date() }],
+        'chat-2': [{ id: 'message-2', sessionId: 'chat-2', role: 'assistant', content: 'Second', createdAt: new Date() }],
+      },
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-2"]')?.classList.contains('uam-pane-glide')).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not glide into a blank chat even when the outgoing chat has content', () => {
     useAppStore.setState((state) => ({
       sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-2', name: 'Blank chat' }],
