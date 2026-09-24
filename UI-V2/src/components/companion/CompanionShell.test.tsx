@@ -48,6 +48,7 @@ beforeEach(() => {
   useAppStore.setState({
     sessions: [], folders: [], resourceCollections: [], activeSessionId: null,
     messages: {},
+    chatHistoryErrorBySessionId: {},
     acpBindingBySessionId: {}, cliBindingBySessionId: {}, statusLine: '',
     isNewChatModalOpen: false, setNewChatModalOpen: vi.fn(), setSessionPinned: vi.fn().mockResolvedValue(true),
   })
@@ -157,6 +158,45 @@ it('refreshes an unchanged selected transcript while processing or streaming', a
     })
     expect(loadSessionMessages).toHaveBeenCalledTimes(3)
     expect(loadSessionMessages).toHaveBeenLastCalledWith('phone-chat', false, true)
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  }
+})
+
+it('retries a failed unchanged transcript only on the slower full-refresh cadence', async () => {
+  vi.useFakeTimers()
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const loadSessionMessages = vi.fn(async () => false)
+  useAppStore.setState({
+    activeSessionId: 'phone-chat',
+    sessions: [{ id: 'phone-chat', name: 'Phone chat' } as ReturnType<typeof useAppStore.getState>['sessions'][number]],
+    messages: { 'phone-chat': [{ id: 'message', role: 'user' } as ReturnType<typeof useAppStore.getState>['messages'][string][number]] },
+    chatHistoryErrorBySessionId: { 'phone-chat': 'Connection lost.' },
+    loadSessionMessages,
+  })
+  vi.mocked(sendToCEF)
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValueOnce({ ok: true, data: { folders: [], stateRevision: 1, bootId: 'boot-a' } })
+    .mockResolvedValue({ ok: true, data: { unchanged: true, stateRevision: 1, bootId: 'boot-a' } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CompanionShell />))
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(14000) })
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(loadSessionMessages).toHaveBeenCalledTimes(2)
   } finally {
     await act(async () => root.unmount())
     host.remove()
