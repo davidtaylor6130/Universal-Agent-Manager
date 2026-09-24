@@ -35,7 +35,7 @@ jobs:
           restore-keys: Windows-uam-computer-use-
       - run: npm --prefix UI-V2 ci
       - run: vcpkg install zlib:x64-windows-static
-      - run: cmake -S . -B Builds/companion -A x64 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
+      - run: cmake -S . -B Builds/companion -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/companion --config Debug --target uam_core_tests
       - name: Validate isolated external-window capture
         shell: pwsh
