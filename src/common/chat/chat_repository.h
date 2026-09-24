@@ -46,6 +46,9 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
+	/// <summary>Adopts a validated hydrated transcript without replacing live chat metadata.</summary>
+	static bool AdoptHydratedMessagesIfUnchanged(ChatSession& current, ChatSession&& loaded,
+	                                             std::size_t expected_count, std::string_view expected_digest);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
 

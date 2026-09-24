@@ -200,6 +200,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string known_digest = payload.value("messagesDigest", "");
 	const bool defer_tool_call_content = payload.value("deferToolCallContent", false);
+	const bool refresh_native = payload.value("refreshNative", false);
 	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
 	if (payload.contains("limit") || payload.contains("before"))
 	{
@@ -232,6 +233,46 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	{
 		return;
 	}
+	if (!chat->messages_loaded && chat->persisted_message_count > 0 && !refresh_native)
+	{
+		const auto data_root = m_app.data_root;
+		const std::size_t expected_count = chat->persisted_message_count;
+		const std::string expected_digest = chat->persisted_messages_digest;
+		auto loaded = std::make_shared<std::optional<ChatSession>>();
+		uam::query_handler_async::RunAsyncCefQuery(
+		    m_asyncLifetime, cb,
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, loaded]()
+		    {
+			    std::string warning;
+			    *loaded = ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
+			    if (!loaded->has_value())
+				    return uam::query_handler_async::AsyncFailure(500,
+				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
+			    return uam::query_handler_async::AsyncSuccess(
+			        SerializeChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content));
+		    },
+		    [this, chat_id, known_digest, page, defer_tool_call_content, expected_count,
+		     expected_digest, loaded](uam::query_handler_async::AsyncCefResult& response)
+		    {
+			    if (!response.ok) return;
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    if (current == nullptr)
+			    {
+				    response = uam::query_handler_async::AsyncFailure(404, "Chat was removed while its history was loading.");
+				    return;
+			    }
+			    if (current->messages_loaded)
+			    {
+				    response = uam::query_handler_async::AsyncSuccess(
+				        SerializeChatMessagesResult(*current, known_digest, page, defer_tool_call_content));
+				    return;
+			    }
+			    if (!ChatRepository::AdoptHydratedMessagesIfUnchanged(
+			            *current, std::move(**loaded), expected_count, expected_digest))
+				    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+		    });
+		return;
+	}
 
 	std::string hydrate_warning;
 	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
@@ -245,7 +286,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	const std::string provider_id =
 	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id);
 	const bool hydrate_native_chat =
-	    (payload.value("refreshNative", false) ||
+	    (refresh_native ||
 	     (chat->messages.empty() && execution_host_id != uam::execution_hosts::kLocalHostId)) &&
 	    !chat->imported_read_only &&
 	    !uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(m_app, *chat) &&

@@ -12795,6 +12795,43 @@ UAM_TEST(NativeChildToolMetadataIgnoresUnrelatedAndMalformedRecords)
 #endif
 }
 
+UAM_TEST(ChatRepositoryAdoptsOnlyUnchangedHydratedMessages)
+{
+	ChatSession current;
+	current.id = "hydration-guard";
+	current.title = "Renamed while loading";
+	current.folder_id = "live-folder";
+	current.messages_loaded = false;
+	current.persisted_message_count = 1;
+	current.persisted_messages_digest = "digest-1";
+
+	ChatSession loaded = current;
+	loaded.title = "Persisted title";
+	loaded.messages_loaded = true;
+	loaded.messages = {Message{MessageRole::Assistant, "loaded"}};
+	UAM_ASSERT(ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(loaded), 1, "digest-1"));
+	UAM_ASSERT(current.messages_loaded);
+	UAM_ASSERT_EQ(current.messages.front().content, std::string("loaded"));
+	UAM_ASSERT_EQ(current.title, std::string("Renamed while loading"));
+	UAM_ASSERT_EQ(current.folder_id, std::string("live-folder"));
+
+	current.messages_loaded = false;
+	current.messages.clear();
+	current.persisted_messages_digest = "digest-2";
+	ChatSession stale_current = current;
+	stale_current.messages_loaded = true;
+	stale_current.messages = {Message{MessageRole::Assistant, "stale"}};
+	UAM_ASSERT(!ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(stale_current), 1, "digest-1"));
+	UAM_ASSERT(current.messages.empty());
+
+	ChatSession mismatched_loaded = current;
+	mismatched_loaded.messages_loaded = true;
+	mismatched_loaded.persisted_messages_digest = "digest-other";
+	mismatched_loaded.messages = {Message{MessageRole::Assistant, "wrong"}};
+	UAM_ASSERT(!ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(mismatched_loaded), 1, "digest-2"));
+	UAM_ASSERT(current.messages.empty());
+}
+
 UAM_TEST(SaveNativeTranscriptPreservesDetailsAndCommitsBeforeReplacingLiveChat)
 {
 	TempDir temp("uam-native-transcript-save");
