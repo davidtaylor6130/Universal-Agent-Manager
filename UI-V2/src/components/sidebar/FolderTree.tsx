@@ -1681,6 +1681,8 @@ const FolderRow = memo(function FolderRow({
       <div
         data-testid={`folder-header-${folder.id}`}
         tabIndex={draggable ? 0 : -1}
+        aria-expanded={shouldShowSessions}
+        aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts="ArrowUp ArrowDown"
         className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
         style={{
@@ -1866,41 +1868,50 @@ const FolderRow = memo(function FolderRow({
       )}
 
       {/* Sessions */}
-      {shouldShowSessions && (
-        <div className="pl-3.5">
-          {sessionIds.length === 0 ? (
-            <div className="px-4 py-0.5 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
-              Empty
+      <div
+        id={`folder-sessions-${folder.id}`}
+        data-testid={`folder-sessions-${folder.id}`}
+        aria-hidden={!shouldShowSessions}
+        {...(!shouldShowSessions ? { inert: '' } : {})}
+      >
+        <div className="min-h-0 overflow-hidden">
+          {shouldShowSessions && (
+            <div className="uam-folder-expand-glide pl-3.5">
+              {sessionIds.length === 0 ? (
+                <div className="px-4 py-0.5 text-xs" style={{ color: 'var(--text-3)', opacity: 0.5, fontSize: 11 }}>
+                  Empty
+                </div>
+              ) : (
+                visibleSessionIds.map((id) => (
+                  <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
+                ))
+              )}
+              {shouldLimitSessions && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSessions((value) => !value)}
+                  className="mx-3 mt-0.5 inline-flex items-center px-2 py-0.5 text-xs transition-colors duration-100"
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--text-3)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = 'var(--text-2)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = 'var(--text-3)'
+                  }}
+                >
+                  {showAllSessions ? 'Show less' : `Show ${hiddenSessionCount} more`}
+                </button>
+              )}
             </div>
-          ) : (
-            visibleSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
-            ))
-          )}
-          {shouldLimitSessions && (
-            <button
-              type="button"
-              onClick={() => setShowAllSessions((value) => !value)}
-              className="mx-3 mt-0.5 inline-flex items-center px-2 py-0.5 text-xs transition-colors duration-100"
-              style={{
-                background: 'transparent',
-                color: 'var(--text-3)',
-                border: 'none',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = 'var(--text-2)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--text-3)'
-              }}
-            >
-              {showAllSessions ? 'Show less' : `Show ${hiddenSessionCount} more`}
-            </button>
           )}
         </div>
-      )}
+      </div>
     </div>
   )
 })

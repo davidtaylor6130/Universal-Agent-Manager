@@ -1,12 +1,13 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Columns2, MessageSquare, Rows2, SquareTerminal, X } from 'lucide-react'
+import { Columns2, MessageSquare, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
-import { IconButton, StatusDot, Tooltip } from '../ui'
+import { IconButton, Notice, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
+import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
@@ -68,6 +69,15 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     writeChatViewMode(session.id, nextView)
   }
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const canStopAcpRuntime = useAppStore((s) => {
+    if (view !== 'chat' || session.importedReadOnly) return false
+    const acp = s.acpBindingBySessionId[session.id]
+    return Boolean(acp?.running && acp.lifecycleState === 'ready' &&
+      !acp.processing && !acp.pendingPermission && !acp.pendingUserInput)
+  })
+  const stopAcpSession = useAppStore((s) => s.stopAcpSession)
+  const [stopRuntimeError, setStopRuntimeError] = useState('')
+  useEffect(() => setStopRuntimeError(''), [session.id])
   const cliSwitchLocked = useAppStore((s) => {
     const acpBinding = s.acpBindingBySessionId[session.id]
     const cliBinding = s.cliBindingBySessionId[session.id]
@@ -180,6 +190,22 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
+        {canStopAcpRuntime && (
+          <IconButton
+            icon={<PowerOff size={14} aria-hidden />}
+            label="Stop runtime"
+            tooltip="Stop the idle runtime for this chat"
+            tooltipSide="bottom"
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              setStopRuntimeError('')
+              void stopAcpSession(session.id).then((ok) => {
+                if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+              }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+            }}
+          />
+        )}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
@@ -192,8 +218,14 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
 
       </div>
 
+      {stopRuntimeError && (
+        <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
+          {stopRuntimeError}
+        </Notice>
+      )}
+
       {/* View content */}
-      <div className="flex-1 overflow-hidden">
+      <div key={`${session.id}:${view}`} className="uam-pane-glide flex-1 overflow-hidden" data-pane-content={session.id} data-view={view}>
         {view === 'chat'
           ? <ChatView session={session} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}

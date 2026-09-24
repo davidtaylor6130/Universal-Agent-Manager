@@ -38,5 +38,6 @@ namespace uam
 		                                            const nlohmann::json& request,
 		                                            int64_t now_epoch_ms);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
+		static nlohmann::json ToolDefinitionsForTests();
 	};
 } // namespace uam

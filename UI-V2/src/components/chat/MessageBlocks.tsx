@@ -860,6 +860,10 @@ export function TurnTimelineContent({
     pendingPermission &&
       events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
   )
+  const hasPendingPermissionToolEvent = Boolean(
+    pendingPermission &&
+      events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
+  )
   const hasPendingUserInputEvent = Boolean(
     pendingUserInput &&
       events.some((event) => event.type === 'user_input_request' && event.requestId === pendingUserInput.requestId)
@@ -1015,6 +1019,11 @@ export function TurnTimelineContent({
           onApprove={planActions?.onApprove}
           onDeny={planActions?.onDeny}
         />
+      )}
+      {pendingPermission && !hasPendingPermissionEvent && !hasPendingPermissionToolEvent && (
+        <PermissionInlineCard permission={pendingPermission} onResolve={onResolvePermission}
+          waitIsStale={waitIsStale} waitStaleReason={waitStaleReason} waitSeconds={waitSeconds}
+          onCancelTurn={onCancelTurn} onStopRuntime={onStopRuntime} />
       )}
       {pendingUserInput && !hasPendingUserInputEvent && !hasPendingUserInputToolEvent && (
         <UserInputInlineCard

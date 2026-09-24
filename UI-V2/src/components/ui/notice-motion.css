@@ -1,0 +1,12 @@
+.uam-notice {
+  animation: uam-notice-enter 140ms ease-out both;
+}
+
+@keyframes uam-notice-enter {
+  from { transform: translateY(4px); }
+  to { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-notice { animation: none; }
+}

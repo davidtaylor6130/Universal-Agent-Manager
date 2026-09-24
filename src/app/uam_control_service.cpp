@@ -31,6 +31,7 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -132,6 +133,26 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
+			if (method == "user_question")
+			{
+				if (!arguments.is_object() || !arguments.contains("question") ||
+				    !arguments["question"].is_string() || arguments.size() > 2)
+					return false;
+				const std::string question = arguments["question"].get<std::string>();
+				if (question.empty() || question.size() > 2048 || question.find('\0') != std::string::npos)
+					return false;
+				if (!arguments.contains("options")) return arguments.size() == 1;
+				const nlohmann::json& options = arguments["options"];
+				if (!options.is_array() || options.size() > 3) return false;
+				std::set<std::string> seen;
+				for (const nlohmann::json& option : options)
+				{
+					if (!option.is_string()) return false;
+					const std::string label = option.get<std::string>();
+					if (label.empty() || !SafeText(label, 128) || !seen.insert(label).second) return false;
+				}
+				return true;
+			}
 			return false;
 		}
 
@@ -284,7 +305,8 @@ namespace uam
 
 		std::string_view ApprovalChatId(const UamControlCapability& capability)
 		{
-			return capability.pending_approval->method == "computer_use_request"
+			return capability.pending_approval->method == "computer_use_request" ||
+			               capability.pending_approval->method == "user_question"
 			           ? std::string_view(capability.session_chat_id)
 			           : std::string_view(capability.chat_id);
 		}
@@ -474,8 +496,8 @@ namespace uam
 			    !(*session)->pending_user_input.request_id_json.empty() ||
 			    !(*session)->pending_permission.request_id_json.empty())
 				return {.error = "Finish the current provider question or permission request first."};
-			const std::string_view target_chat_id = pending.method == "computer_use_request"
-			    ? std::string_view(capability.session_chat_id) : std::string_view(capability.chat_id);
+			const std::string_view target_chat_id = pending.method == "goal_create"
+			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
 			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
 			    }))
@@ -534,6 +556,25 @@ namespace uam
 				        .reason = "Computer Use was already enabled for this chat."};
 			return QueueApproval(app, capability, {.request_id = std::string(request_id),
 			                                     .method = "computer_use_request", .reason = reason,
+			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+		}
+
+		ToolResult UserQuestionRequest(AppState& app, UamControlCapability& capability,
+		                              std::string_view request_id, const nlohmann::json& arguments,
+		                              int64_t now_epoch_ms)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (chat == nullptr || root_chat == nullptr || !chat->uam_control_enabled ||
+			    !root_chat->uam_control_enabled)
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			std::vector<std::string> options;
+			for (const nlohmann::json& option : arguments.value("options", nlohmann::json::array()))
+				options.push_back(option.get<std::string>());
+			return QueueApproval(app, capability, {.request_id = std::string(request_id),
+			                                     .method = "user_question",
+			                                     .question = arguments.at("question").get<std::string>(),
+			                                     .question_options = std::move(options),
 			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
 		}
 
@@ -609,6 +650,8 @@ namespace uam
 			    !MutationsAllowed(*before_chat);
 			ToolResult result = method == "computer_use_request"
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : method == "user_question"
+			                            ? UserQuestionRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                        : goal_needs_approval
 			                            ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                            : ExecuteTool(app, *capability, method, arguments);
@@ -659,6 +702,11 @@ namespace uam
 			                    {"idempotencyKey", {{"type", "string"}}}},
 			    {"objective", "idempotencyKey"});
 			goal_create["description"] = "Create one bounded UAM goal. In Plan mode this is unavailable; in YOLO mode it runs immediately; otherwise it waits for the user's approval in UAM. Do not retry after denial or timeout.";
+			nlohmann::json user_question = ToolSchema(
+			    "user_question", { {"question", {{"type", "string"}}},
+			                       {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 3}}} },
+			    {"question"});
+			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
 			return nlohmann::json::array({
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}}, {"id"}),
@@ -670,6 +718,7 @@ namespace uam
 			                               {"agentId", "task"}),
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    std::move(goal_create),
+			    std::move(user_question),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
@@ -689,7 +738,7 @@ namespace uam
 			if (request_text.size() > kMaxRequestBytes ||
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			const int max_attempts = method == "computer_use_request" || method == "goal_create"
+			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question"
 			    ? 4000 : 400;
 			for (int attempt = 0; attempt < max_attempts; ++attempt)
 			{
@@ -920,17 +969,26 @@ namespace uam
 			input.attention_kind = "question";
 			AcpUserInputQuestionState question;
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
-			question.id = computer_use ? "computerUse" : "goalCreate";
-			question.header = computer_use ? "Computer Use" : "Goal";
-			question.question = computer_use
-			    ? "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
-			          " to enable Computer Use in " +
-			          uam::strings::SafeLine(chat->title, 120, true) + "? " +
-			          capability.pending_approval->reason
-			    : "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
-			          " to create this goal in " + uam::strings::SafeLine(chat->title, 120, true) +
-			          "? " + uam::strings::SafeLine(capability.pending_approval->objective, 2048, true);
-			question.options = computer_use
+			const bool user_question = capability.pending_approval->method == "user_question";
+			question.id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
+			question.header = computer_use ? "Computer Use" : user_question ? "Question" : "Goal";
+			if (computer_use)
+				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
+				                   " to enable Computer Use in " + uam::strings::SafeLine(chat->title, 120, true) +
+				                   "? " + capability.pending_approval->reason;
+			else if (user_question)
+				question.question = uam::strings::SafeLine(capability.pending_approval->question, 2048, true);
+			else
+				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
+				                   " to create this goal in " + uam::strings::SafeLine(chat->title, 120, true) +
+				                   "? " + uam::strings::SafeLine(capability.pending_approval->objective, 2048, true);
+			if (user_question)
+			{
+				for (const std::string& option : capability.pending_approval->question_options)
+					question.options.push_back({option, {}});
+				question.is_other = true;
+			}
+			else question.options = computer_use
 			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Enable Computer Use for this chat."},
 			                                          {"Deny", "Keep Computer Use disabled."}}
 			    : std::vector<AcpUserInputOptionState>{{"Allow", "Create this goal."},
@@ -959,28 +1017,41 @@ namespace uam
 			    capability.pending_approval->expires_at_epoch_ms <= now)
 				return fail("This UAM request is no longer active in this chat.");
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
-			const std::string question_id = computer_use ? "computerUse" : "goalCreate";
+			const bool user_question = capability.pending_approval->method == "user_question";
+			const std::string question_id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
 			if (answers.size() != 1 || !answers.contains(question_id) ||
 			    answers.at(question_id).size() != 1)
-				return fail("Choose Allow or Deny for this UAM request.");
+				return fail(user_question ? "Provide one answer to this UAM question." : "Choose Allow or Deny for this UAM request.");
 			const std::string& answer = answers.at(question_id).front();
-			if (answer != "Allow" && answer != "Deny")
+			if (user_question)
+			{
+				if (!SafeText(answer, 2048) || uam::strings::Trim(answer).empty())
+					return fail("Provide one non-empty answer to this UAM question.");
+			}
+			else if (answer != "Allow" && answer != "Deny")
 				return fail("Choose Allow or Deny for this UAM request.");
 			ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (chat == nullptr || root_chat == nullptr || !root_chat->uam_control_enabled ||
+			    (user_question && !chat->uam_control_enabled) ||
 			    (computer_use && (!chat->uam_control_enabled ||
 			                      !uam::computer_use::AvailableForChat(*chat) ||
 			                      !uam::computer_use::UsesUamBackend(*chat))))
 				return fail("This UAM request is no longer available for this chat.");
-			if (answer == "Allow" &&
+			if (!user_question && answer == "Allow" &&
 			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
 			        uam::approval_modes::kPlanApprovalMode)
 				return fail("This request cannot be approved in Plan mode.");
 			const ChatSession before = *chat;
 			const ChatSession root_before = *root_chat;
 			ToolResult result;
-			if (answer == "Allow")
+			if (user_question)
+			{
+				result.ok = true;
+				result.result = {{"answer", uam::strings::Trim(answer)}};
+				result.reason = "The user answered the UAM question.";
+			}
+			else if (answer == "Allow")
 			{
 				if (computer_use)
 				{
@@ -1129,5 +1200,10 @@ namespace uam
 	bool UamControlService::ValidStdioToolCallForTests(const nlohmann::json& request)
 	{
 		return ValidStdioToolCall(request);
+	}
+
+	nlohmann::json UamControlService::ToolDefinitionsForTests()
+	{
+		return Tools();
 	}
 } // namespace uam

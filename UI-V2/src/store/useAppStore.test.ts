@@ -356,16 +356,20 @@ describe('useAppStore Gemini CLI slice', () => {
     window.localStorage.clear()
 
     expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).expandWorkTraces).toBe(true)
+    expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).collapsibleWorkSections).toBe(true)
     useAppStore.getState().setWorkingDisplayMode('compact')
     useAppStore.getState().setExpandWorkTraces(false)
+    useAppStore.getState().setCollapsibleWorkSections(false)
 
     expect(useAppStore.getState().workingDisplayMode).toBe('compact')
     expect(JSON.parse(window.localStorage.getItem('uam-app-shell-layout-v2') ?? '{}')).toMatchObject({
       workingDisplayMode: 'compact',
       expandWorkTraces: false,
+      collapsibleWorkSections: false,
     })
     expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).workingDisplayMode).toBe('compact')
     expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).expandWorkTraces).toBe(false)
+    expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).collapsibleWorkSections).toBe(false)
   })
 
   it('does not claim provider CLI operations succeeded outside CEF', async () => {

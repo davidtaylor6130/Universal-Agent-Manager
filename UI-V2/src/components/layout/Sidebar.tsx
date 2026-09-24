@@ -7,6 +7,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import './SidebarGlide.css'
 
 interface SearchChatMessagesResponse {
   chatIds?: string[]
@@ -93,7 +94,7 @@ export function Sidebar() {
   }, [deepSearch, deepSearchRetry, searchQuery])
 
   return (
-    <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--sidebar-bg)' }}>
+    <div className="uam-sidebar-glide flex flex-col h-full overflow-hidden" style={{ background: 'var(--sidebar-bg)' }}>
       <ChatSearchBar
         value={searchQuery}
         deepSearch={deepSearch}

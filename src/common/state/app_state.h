@@ -316,6 +316,8 @@ namespace uam
 			std::string reason;
 			std::string objective;
 			std::string idempotency_key;
+			std::string question;
+			std::vector<std::string> question_options;
 			int64_t expires_at_epoch_ms = 0;
 		};
 

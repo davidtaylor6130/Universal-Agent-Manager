@@ -45,6 +45,7 @@ import {
   providerShortName,
 } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
+import './settings-motion.css'
 
 interface MemoryModelOption {
   id: string
@@ -321,6 +322,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const appVersion = useAppStore((s) => s.appVersion)
   const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
   const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
+  const collapsibleWorkSections = useAppStore((s) => s.collapsibleWorkSections)
+  const setCollapsibleWorkSections = useAppStore((s) => s.setCollapsibleWorkSections)
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const setWorkingDisplayMode = useAppStore((s) => s.setWorkingDisplayMode)
   const showProviderIconsInSidebar = useAppStore((s) => s.showProviderIconsInSidebar)
@@ -1286,7 +1289,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <p style={{ color: 'var(--text-3)' }}>
             {activeUamControlSupported
-              ? 'Lets the agent request goal creation and Computer Use through UAM Control. Each request appears in the chat for approval.'
+              ? 'Lets the agent ask a question, request goal creation, and use Computer Use through UAM Control. Each request appears in the chat for approval.'
               : 'UAM Control is available for supported local structured chats.'}
           </p>
         </div>
@@ -1397,6 +1400,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               label="Expand work traces"
               checked={expandWorkTraces}
               onChange={(event) => setExpandWorkTraces(event.target.checked)}
+            />
+            <Switch
+              label="Allow work sections to collapse"
+              checked={collapsibleWorkSections}
+              onChange={(event) => setCollapsibleWorkSections(event.target.checked)}
             />
           </SectionCard>
         </div>
@@ -2619,7 +2627,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
+    <div className="uam-settings-motion flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
       <div ref={dialogRef} role="region" aria-label="Settings" tabIndex={-1} className="w-full h-full min-h-0 flex flex-col overflow-hidden">
         <div className="grid flex-1 min-h-0" style={{gridTemplateColumns:'200px minmax(0,1fr)'}}>
           <aside className="min-h-0 flex flex-col px-3 py-3" style={{borderRight:'1px solid var(--border)',background:'var(--sidebar-bg)'}}>

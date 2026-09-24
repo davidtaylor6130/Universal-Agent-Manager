@@ -48,8 +48,9 @@ const INITIAL_RENDERED_MESSAGES = 200
 const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
+const ALWAYS_OPEN_WORK_SECTION = { expanded: true, toggle: () => undefined }
 
-type WorkSection = { id: string; firstIndex: number; workedSeconds: number; hasAssistant: boolean }
+type WorkSection = { id: string; firstIndex: number; lastAssistantIndex: number; workedSeconds: number; hasAssistant: boolean }
 
 function findWorkSectionStartIndex(messages: Message[], index: number) {
   let start = Math.min(index, messages.length - 1)
@@ -62,13 +63,14 @@ export function buildVisibleWorkSections(messages: Message[], firstVisibleIndex:
   if (messages.length === 0) return sections
 
   const startIndex = findWorkSectionStartIndex(messages, firstVisibleIndex)
-  let section: WorkSection = { id: '', firstIndex: startIndex, workedSeconds: 0, hasAssistant: false }
+  let section: WorkSection = { id: '', firstIndex: startIndex, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
   for (let index = startIndex; index < messages.length; index += 1) {
     const message = messages[index]
     if (index === 0 || (message.role === 'user' && !message.continuesTurn))
-      section = { id: message.id, firstIndex: index, workedSeconds: 0, hasAssistant: false }
+      section = { id: message.id, firstIndex: index, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
     section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
     section.hasAssistant ||= message.role === 'assistant'
+    if (message.role === 'assistant') section.lastAssistantIndex = index
     sections.set(index, section)
   }
   return sections
@@ -559,7 +561,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
-  const [stopRuntimeError, setStopRuntimeError] = useState('')
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
   const [goalSubmitting, setGoalSubmitting] = useState(false)
@@ -785,6 +786,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => ({}), [session.id, turnSerial])
   const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
   const expandWorkTraces = useAppStore((state) => state.expandWorkTraces)
+  const collapsibleWorkSections = useAppStore((state) => state.collapsibleWorkSections)
   const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>({ sessionId: session.id, expanded: {} })
   const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
   const workSections = useMemo(
@@ -2285,19 +2287,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 }
 
                 const section = workSections.get(index)!
-                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex)
+                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
+                const sectionControl = sectionActive || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
+                const sectionCollapsed = !sectionActive && !sectionControl.expanded
+                const hideCollapsedMessage = sectionCollapsed && (
+                  (message.role === 'user' && message.continuesTurn) ||
+                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
+                )
+                if (hideCollapsedMessage) return null
+                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
+                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
                 const sectionStart = messages[section.firstIndex]
                 const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
                 const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
                 const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
-                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
                 const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
-                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]}
+                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
                   onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
                 /></div> : null
                 return (
-                  <WorkSectionContext.Provider key={message.id} value={sectionControls(section.id)}>
+                  <WorkSectionContext.Provider key={message.id} value={sectionControl}>
                   <div className="space-y-1">
                     {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
                       sectionProviderName,
@@ -2420,14 +2430,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   />
                 </div>
               )}
-              {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && !completedFallbackAlreadyPersisted && (
+              {(turnEvents.length > 0 || pendingPermission || pendingUserInput) &&
+                !renderTimelineAfterUser && !renderTimelineAtAssistant &&
+                (!completedFallbackAlreadyPersisted || pendingPermission || pendingUserInput) && (
                 <MessageFrame
                   key={`turn-${turnSerial}-fallback`}
                   role="assistant"
                   assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                   streaming={Boolean(acp?.processing)}
                 >
-                  <WorkSectionContext.Provider value={activeWorkSectionId ? sectionControls(activeWorkSectionId) : null}>
+                  <WorkSectionContext.Provider value={activeWorkSectionId ? ALWAYS_OPEN_WORK_SECTION : null}>
                   <TurnTimelineContent
                     disclosureState={liveWorkDisclosure}
                     key={`turn-${turnSerial}-fallback-content`}
@@ -2597,11 +2609,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             {workspaceFeedback && (
               <Notice key={`workspace:${workspaceFeedback.tone}:${workspaceFeedback.message}`} tone={workspaceFeedback.tone} title="Workspace" dismissLabel="Dismiss workspace action message" onDismiss={() => setWorkspaceFeedback(null)}>
                 {workspaceFeedback.message}
-              </Notice>
-            )}
-            {stopRuntimeError && (
-              <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
-                {stopRuntimeError}
               </Notice>
             )}
             {!providerSupported && (
@@ -3026,18 +3033,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onOpenMarkdownStore={() => void openMarkdownStore()}
               workspaceControl={!isCompanionContext() && (
                 <>
-                {acp?.running && !acp.processing && <button
-                  type="button"
-                  title="Stop runtime"
-                  onClick={() => {
-                    setStopRuntimeError('')
-                    void stopAcpSession(session.id).then((ok) => {
-                      if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-                    }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-                  }}
-                  className="uam-composer-action h-[30px] shrink-0 px-2 text-xs font-semibold"
-                  style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', color: 'var(--red)' }}
-                >Stop runtime</button>}
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"

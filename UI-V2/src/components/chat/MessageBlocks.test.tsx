@@ -30,6 +30,23 @@ describe('AttachmentList', () => {
 })
 
 describe('working transcript', () => {
+  it('shows a pending permission even before the provider emits a matching event', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<TurnTimelineContent events={[]} tools={[]}
+      pendingPermission={{ requestId: 'permission-1', toolCallId: 'missing-tool', title: 'Run command',
+        kind: 'commandExecution', status: 'pending', content: 'npm test',
+        options: [{ id: 'allow', name: 'Allow', kind: 'decision' }] }}
+      pendingUserInput={null} onSelectTool={() => undefined}
+      onResolvePermission={() => Promise.resolve(true)} onResolveUserInput={() => Promise.resolve(true)}
+      onCancelTurn={() => undefined} onStopRuntime={() => undefined} />))
+    expect(host.textContent).toContain('Run command')
+    expect(host.textContent).toContain('Allow')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   const tools = [{
     id: 'tool-1',
     title: '/bin/zsh -lc "rg TODO src"',

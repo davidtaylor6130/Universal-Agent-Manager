@@ -73,6 +73,32 @@ describe('FolderTree', () => {
     })
   })
 
+  it('glides workspace chats on expand and keeps collapsed chats inert', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+    const list = host.querySelector<HTMLElement>('[data-testid="folder-sessions-project"]')!
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeTruthy()
+
+    act(() => header.click())
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(list.getAttribute('aria-hidden')).toBe('true')
+    expect(list.hasAttribute('inert')).toBe(true)
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeNull()
+
+    act(() => header.click())
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(list.hasAttribute('inert')).toBe(false)
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows five recent chats in a folder until see more is clicked', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

@@ -54,6 +54,8 @@ describe('ChatView', () => {
     removeComposerDrafts(['chat-1', 'chat-2'])
     useAppStore.setState({
       workingDisplayMode: 'verbose',
+      collapsibleWorkSections: true,
+      expandWorkTraces: true,
       folders: [
         {
           id: 'default',
@@ -893,57 +895,6 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
-    host.remove()
-  })
-
-  it('lets a ready idle ACP runtime be stopped from the composer', async () => {
-    const stopAcpSession = vi.fn(() => Promise.resolve(true))
-    useAppStore.setState((state) => ({
-      stopAcpSession,
-      acpBindingBySessionId: {
-        ...state.acpBindingBySessionId,
-        'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: true, processing: false, lifecycleState: 'ready' },
-      },
-    }))
-
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-
-    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((candidate) => candidate.textContent === 'Stop runtime')
-    expect(button).toBeTruthy()
-    await act(async () => {
-      button?.click()
-      await Promise.resolve()
-    })
-    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('hides the idle runtime stop control when stopped or processing', () => {
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    const session = useAppStore.getState().sessions[0]
-
-    for (const binding of [
-      { running: false, processing: false, lifecycleState: 'stopped' as const },
-      { running: true, processing: true, lifecycleState: 'processing' as const },
-    ]) {
-      act(() => useAppStore.setState((state) => ({
-        acpBindingBySessionId: {
-          ...state.acpBindingBySessionId,
-          'chat-1': { ...state.acpBindingBySessionId['chat-1'], ...binding },
-        },
-      })))
-      act(() => root.render(<ChatView session={session} />))
-      expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Stop runtime')).toBe(false)
-    }
-
-    act(() => root.unmount())
     host.remove()
   })
 
@@ -1821,6 +1772,43 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows MCP questions and goal approval in the chat and returns the chosen answer', async () => {
+    const resolveAcpUserInput = vi.fn(() => Promise.resolve(true))
+    const pendingInput = (requestId: string, id: string, question: string, options: string[], isOther: boolean) => ({
+      requestId, itemId: '', status: 'pending', questions: [{ id, header: id === 'goalCreate' ? 'Goal' : 'Question',
+        question, isOther, isSecret: false, options: options.map((label) => ({ label, description: '' })) }],
+    })
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'waitingUserInput',
+          turnEvents: [], pendingUserInput: pendingInput('uam-control:question-1', 'userQuestion',
+            'Which browser should I use?', ['Firefox', 'Safari'], true) },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    let dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Which browser should I use?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:question-1', { userQuestion: ['Firefox'] })
+
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId,
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingUserInput: pendingInput(
+        'uam-control:goal-1', 'goalCreate', 'Allow OpenCode to create this goal?', ['Allow', 'Deny'], false) },
+    } })))
+    dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Allow OpenCode to create this goal?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:goal-1', { goalCreate: ['Allow'] })
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('locks Codex user input while submitting and permits retry after failure', async () => {
     let finishResponse: ((accepted: boolean) => void) | undefined
     const resolveAcpUserInput = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))
@@ -1992,10 +1980,66 @@ describe('ChatView', () => {
     expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(2)
     expect(host.textContent).not.toContain('Earlier reasoning')
     expect(host.textContent).not.toContain('Later reasoning')
+    expect(host.textContent).not.toContain('Before steering')
+    expect(host.textContent).not.toContain('Include SSH')
     expect(host.textContent).toContain('New section reasoning')
+    expect(host.textContent).toContain('After steering')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand work trace"]')!.click())
     expect(host.textContent).toContain('Earlier reasoning')
     expect(host.textContent).toContain('Later reasoning')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps work sections expanded when section collapsing is disabled', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    useAppStore.setState((state) => ({
+      collapsibleWorkSections: false,
+      expandWorkTraces: false,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'user', sessionId: 'chat-1', role: 'user', content: 'Original request', createdAt },
+        { id: 'first-answer', sessionId: 'chat-1', role: 'assistant', content: 'Earlier answer', createdAt },
+        { id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Steer request', continuesTurn: true, prioritySteer: true, createdAt },
+        { id: 'last-answer', sessionId: 'chat-1', role: 'assistant', content: 'Final answer', createdAt },
+      ] },
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+    expect(host.textContent).toContain('Earlier answer')
+    expect(host.textContent).toContain('Steer request')
+    expect(host.textContent).toContain('Final answer')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps steering and earlier output visible while a turn is still running', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    useAppStore.setState((state) => ({
+      expandWorkTraces: false,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'user', sessionId: 'chat-1', role: 'user', content: 'Original request', createdAt },
+        { id: 'first-answer', sessionId: 'chat-1', role: 'assistant', content: 'Earlier answer', createdAt },
+        { id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Steer request', continuesTurn: true, prioritySteer: true, createdAt },
+        { id: 'last-answer', sessionId: 'chat-1', role: 'assistant', content: 'Final answer', createdAt },
+      ] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 3 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Earlier answer')
+    expect(host.textContent).toContain('Steer request')
+    act(() => useAppStore.setState({ acpBindingBySessionId: {} }))
+    expect(host.textContent).not.toContain('Earlier answer')
+    expect(host.textContent).not.toContain('Steer request')
+    expect(host.textContent).toContain('Final answer')
     act(() => root.unmount())
     host.remove()
   })
@@ -5411,6 +5455,7 @@ describe('ChatView', () => {
     expect(host.querySelector('time.conversation-turn-start')?.textContent).toContain('Gemini · original-model')
     expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
     expect(host.textContent).not.toContain('Visible reasoning')
     act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Show earlier messages')!.click())
     expect(host.textContent).toContain('Original request')

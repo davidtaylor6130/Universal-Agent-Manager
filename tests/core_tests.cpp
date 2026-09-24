@@ -587,6 +587,17 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(uam::UamControlService::ValidStdioToolCallForTests(
 	    {{"method", "tools/call"},
 	     {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}}));
+	const nlohmann::json control_tools = uam::UamControlService::ToolDefinitionsForTests();
+	const auto goal_tool = std::ranges::find(control_tools, "goal_create", [](const nlohmann::json& tool) {
+		return tool.value("name", "");
+	});
+	const auto computer_use_tool = std::ranges::find(control_tools, "computer_use_request", [](const nlohmann::json& tool) {
+		return tool.value("name", "");
+	});
+	UAM_ASSERT(goal_tool != control_tools.end());
+	UAM_ASSERT(computer_use_tool != control_tools.end());
+	UAM_ASSERT((*goal_tool)["inputSchema"]["required"] == nlohmann::json::array({"objective", "idempotencyKey"}));
+	UAM_ASSERT((*computer_use_tool)["inputSchema"]["required"] == nlohmann::json::array({"reason"}));
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -976,6 +987,129 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	    {{"computerUse", {"Allow"}}}, &error));
 	UAM_ASSERT(app.chats.back().computer_use_enabled);
 	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
+{
+	TempDir temp("uam-control-user-question");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-user-question-root";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	const std::string root_id = root.id;
+	app.chats.push_back(std::move(root));
+	auto root_session = std::make_unique<uam::AcpSessionState>();
+	root_session->chat_id = root_id;
+	root_session->provider_id = "opencode-cli";
+	root_session->running = true;
+	uam::AcpSessionState* raw_root_session = root_session.get();
+	app.acp_sessions.push_back(std::move(root_session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json tools = uam::UamControlService::ToolDefinitionsForTests();
+	const auto question_tool = std::ranges::find(tools, "user_question", [](const nlohmann::json& tool) {
+		return tool.value("name", "");
+	});
+	UAM_ASSERT(question_tool != tools.end());
+	UAM_ASSERT((*question_tool)["inputSchema"]["required"] == nlohmann::json::array({"question"}));
+
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+	    app, *raw_root_session, app.chats.front(), "session/new", setup, &error));
+	const std::string capability_id = app.uam_control_capabilities.front().id;
+	const std::filesystem::path root_directory = app.uam_control_capabilities.front().directory;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	UAM_ASSERT_EQ(uam::UamControlService::HandleRequestForTests(
+	    app, capability_id, {{"requestId", "invalid-question"}, {"method", "user_question"},
+	                         {"arguments", {{"question", "Which browser?"}, {"unexpected", "value"}}}}, now)
+	                  .value("error", ""),
+	              std::string("Control request has an unknown method or invalid arguments."));
+	const nlohmann::json request = {
+	    {"requestId", "question-root"}, {"method", "user_question"},
+	    {"arguments", {{"question", "Which browser should I use?"}, {"options", {"Firefox", "Safari"}}}},
+	};
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id, request, now)
+	               .value("pendingApproval", false));
+	const auto pending = uam::UamControlService::PendingApprovalForChat(app, root_id);
+	UAM_ASSERT(pending.has_value());
+	UAM_ASSERT_EQ(pending->questions.front().id, std::string("userQuestion"));
+	UAM_ASSERT_EQ(pending->questions.front().question, std::string("Which browser should I use?"));
+	UAM_ASSERT_EQ(pending->questions.front().options.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(pending->questions.front().is_other);
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app, true);
+	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["pendingUserInput"]["questions"][0]["id"],
+	              std::string("userQuestion"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, root_id, pending->request_id_json,
+	    {{"userQuestion", {"Brave"}}}, &error));
+	std::string response_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(root_directory / "responses" / "question-root.json", response_text));
+	UAM_ASSERT_EQ(nlohmann::json::parse(response_text)["result"]["answer"], std::string("Brave"));
+
+	ChatSession child = ChatDomainService().CreateNewChat("", "opencode-cli");
+	child.id = "chat-user-question-child";
+	child.uam_control_enabled = true;
+	child.execution_host_id = "local";
+	child.agent_run_id = "question-child-run";
+	const std::string child_id = child.id;
+	app.chats.push_back(std::move(child));
+	AgentRun child_run;
+	child_run.id = "question-child-run";
+	child_run.root_chat_id = root_id;
+	child_run.transcript_chat_id = child_id;
+	child_run.status = "running";
+	app.agent_runs.push_back(std::move(child_run));
+	auto child_session = std::make_unique<uam::AcpSessionState>();
+	child_session->chat_id = child_id;
+	child_session->provider_id = "opencode-cli";
+	child_session->running = true;
+	uam::AcpSessionState* raw_child_session = child_session.get();
+	app.acp_sessions.push_back(std::move(child_session));
+	setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(
+	    app, *raw_child_session, app.chats.back(), "session/new", setup, &error));
+	const std::string child_capability_id = app.uam_control_capabilities.back().id;
+	const nlohmann::json child_request = {
+	    {"requestId", "question-child"}, {"method", "user_question"},
+	    {"arguments", {{"question", "What should I inspect next?"}}},
+	};
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
+	    app, child_capability_id, child_request, now).value("pendingApproval", false));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	const auto child_pending = uam::UamControlService::PendingApprovalForChat(app, child_id);
+	UAM_ASSERT(child_pending.has_value());
+	const nlohmann::json concurrent_root_request = {
+	    {"requestId", "question-concurrent-root"}, {"method", "user_question"},
+	    {"arguments", {{"question", "Can the root chat proceed?"}}},
+	};
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
+	    app, capability_id, concurrent_root_request, now).value("pendingApproval", false));
+	const auto concurrent_root_pending = uam::UamControlService::PendingApprovalForChat(app, root_id);
+	UAM_ASSERT(concurrent_root_pending.has_value());
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, root_id, concurrent_root_pending->request_id_json,
+	    {{"userQuestion", {"Yes"}}}, &error));
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, child_id).has_value());
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, child_id, child_pending->request_id_json,
+	    {{"userQuestion", {"Review the SSH runtime"}}}, &error));
+
+	const nlohmann::json expired_request = {
+	    {"requestId", "question-expired"}, {"method", "user_question"},
+	    {"arguments", {{"question", "This should expire."}}},
+	};
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
+	    app, capability_id, expired_request, now).value("pendingApproval", false));
+	const auto root_capability = std::ranges::find(app.uam_control_capabilities, capability_id,
+	                                                &uam::UamControlCapability::id);
+	UAM_ASSERT(root_capability != app.uam_control_capabilities.end());
+	root_capability->pending_approval->expires_at_epoch_ms = now - 1;
+	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
 	uam::UamControlService::Shutdown(app);
 }

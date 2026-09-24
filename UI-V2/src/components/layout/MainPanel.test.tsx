@@ -170,6 +170,40 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('shows the idle runtime stop action in the chat header only while it can stop', async () => {
+    const originalStop = useAppStore.getState().stopAcpSession
+    const stopAcpSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ stopAcpSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    const stopButton = () => host.querySelector<HTMLButtonElement>('.uam-chat-pane__header button[aria-label="Stop runtime"]')
+    expect(stopButton()).toBeNull()
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+      },
+    })))
+    expect(stopButton()?.querySelector('.lucide-power-off')).toBeTruthy()
+    expect(host.querySelector('.uam-composer-action[title="Stop runtime"]')).toBeNull()
+    await act(async () => { stopButton()?.click(); await Promise.resolve() })
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, lifecycleState: 'stopped' },
+      },
+    })))
+    expect(stopButton()).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ stopAcpSession: originalStop })
+  })
+
   it('opens a terminal-first session in the terminal fallback view', async () => {
     const binding = useAppStore.getState().acpBindingBySessionId['chat-1']
     const onRender = vi.fn()
@@ -471,10 +505,33 @@ describe('MainPanel', () => {
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-3' }))
     expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-3', 'chat-2'])
-    expect(host.querySelector('[data-testid="chat-pane-chat-3"]')).toBeTruthy()
+    const selectedContent = host.querySelector<HTMLElement>('[data-pane-content="chat-3"]')
+    expect(selectedContent?.classList.contains('uam-pane-glide')).toBe(true)
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
     expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(readChatGridLayout().root)[1].id)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('glides content when switching between chat and terminal views', async () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    expect(host.querySelector('[data-pane-content="chat-1"]')?.getAttribute('data-view')).toBe('chat')
+    await act(async () => (host.querySelector('button[aria-label="Terminal fallback"]') as HTMLButtonElement).click())
+    const terminalContent = host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')
+    expect(terminalContent?.getAttribute('data-view')).toBe('cli')
+    expect(terminalContent?.classList.contains('uam-pane-glide')).toBe(true)
 
     act(() => root.unmount())
     host.remove()

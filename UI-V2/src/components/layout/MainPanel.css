@@ -1,0 +1,19 @@
+.uam-pane-glide {
+  animation: uam-pane-glide-in 200ms ease-out both;
+}
+
+@keyframes uam-pane-glide-in {
+  from {
+    transform: translateX(8px);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-pane-glide {
+    animation: none;
+  }
+}

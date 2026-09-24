@@ -104,6 +104,7 @@ export interface AppState {
   customThemes: CustomTheme[]
   workingDisplayMode: 'compact' | 'verbose'
   expandWorkTraces: boolean
+  collapsibleWorkSections: boolean
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
@@ -269,6 +270,7 @@ export interface AppState {
   setTheme: (theme: StoredTheme) => void
   setWorkingDisplayMode: (mode: 'compact' | 'verbose') => void
   setExpandWorkTraces: (expanded: boolean) => void
+  setCollapsibleWorkSections: (enabled: boolean) => void
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>

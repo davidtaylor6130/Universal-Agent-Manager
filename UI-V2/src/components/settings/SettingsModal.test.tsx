@@ -63,6 +63,7 @@ describe('SettingsModal memory settings', () => {
       customThemes: [],
       workingDisplayMode: 'verbose',
       expandWorkTraces: true,
+      collapsibleWorkSections: true,
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
       memoryWorkerBindings: {
@@ -133,6 +134,7 @@ describe('SettingsModal memory settings', () => {
       deleteCustomTheme: vi.fn(() => Promise.resolve(true)),
       setWorkingDisplayMode: vi.fn(),
       setExpandWorkTraces: vi.fn(),
+      setCollapsibleWorkSections: vi.fn(),
       setSidebarSettings: vi.fn(() => Promise.resolve(true)),
       refreshCliProviderVersion: vi.fn(() => Promise.resolve(true)),
       applyCliProviderVersion: vi.fn(() => Promise.resolve(true)),
@@ -836,6 +838,10 @@ describe('SettingsModal memory settings', () => {
     expect(expandWorkTraces?.checked).toBe(true)
     act(() => expandWorkTraces?.click())
     expect(useAppStore.getState().setExpandWorkTraces).toHaveBeenCalledWith(false)
+    const collapsibleWorkSections = host.querySelector<HTMLInputElement>('input[aria-label="Allow work sections to collapse"]')
+    expect(collapsibleWorkSections?.checked).toBe(true)
+    act(() => collapsibleWorkSections?.click())
+    expect(useAppStore.getState().setCollapsibleWorkSections).toHaveBeenCalledWith(false)
     expect(useAppStore.getState().setSidebarSettings).not.toHaveBeenCalled()
 
     act(() => root.unmount())

@@ -122,13 +122,14 @@ export function ConversationWorkRow({ text, tool, onSelectTool, renderSubAgentHi
 }
 
 /** Presentation only: tool detail and sub-agent callbacks remain owned by the chat. */
-export function ConversationWork({ events, tools, active, duration, onSelectTool, renderSubAgentHistory, headerOnly = false, startedAt, expanded, onToggle, disclosureState, sectionHeading = false }: {
+export function ConversationWork({ events, tools, active, duration, onSelectTool, renderSubAgentHistory, headerOnly = false, startedAt, expanded, onToggle, disclosureState, sectionHeading = false, collapsible = true }: {
   disclosureState?: WorkTraceDisclosureState
   expanded?: boolean
   onToggle?: () => void
   startedAt?: number
   headerOnly?: boolean
   sectionHeading?: boolean
+  collapsible?: boolean
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
   active: boolean
@@ -147,11 +148,15 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
       <span className="conversation-work__heading" aria-label="Work in progress">
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
       </span>
-    ) : (
+    ) : collapsible ? (
       <button type="button" className="conversation-work__heading conversation-work__toggle" aria-expanded={open} aria-label={open ? 'Collapse work trace' : 'Expand work trace'} onClick={toggle}>
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
         <ChevronRight size={14} className="conversation-work__chevron" aria-hidden />
       </button>
+    ) : (
+      <span className="conversation-work__heading">
+        <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
+      </span>
     )}
     <span className="conversation-work__divider" aria-hidden />
   </div>
