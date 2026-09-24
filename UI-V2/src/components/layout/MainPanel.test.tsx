@@ -567,7 +567,7 @@ describe('MainPanel', () => {
     expect(terminalContent?.classList.contains('uam-pane-glide')).toBe(false)
 
     act(() => useAppStore.setState({ cliTranscriptBySessionId: { 'chat-1': { terminalId: 'terminal-1', content: 'ready' } } }))
-    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')?.classList.contains('uam-pane-glide')).toBe(true)
+    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')?.classList.contains('uam-pane-glide')).toBe(false)
 
     act(() => root.unmount())
     host.remove()
@@ -577,7 +577,7 @@ describe('MainPanel', () => {
     useAppStore.setState((state) => ({
       sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-2', name: 'Loaded chat' }],
       messages: {
-        'chat-1': [],
+        'chat-1': [{ id: 'message-1', sessionId: 'chat-1', role: 'assistant', content: 'Existing chat', createdAt: new Date() }],
         'chat-2': [{ id: 'message-2', sessionId: 'chat-2', role: 'user', content: 'Hello', createdAt: new Date() }],
       },
     }))
@@ -587,7 +587,28 @@ describe('MainPanel', () => {
     act(() => root.render(<MainPanel />))
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+    act(() => useAppStore.getState().unloadSessionMessages('chat-1'))
     expect(host.querySelector<HTMLElement>('[data-pane-content="chat-2"]')?.classList.contains('uam-pane-glide')).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not glide into a blank chat even when the outgoing chat has content', () => {
+    useAppStore.setState((state) => ({
+      sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-2', name: 'Blank chat' }],
+      messages: {
+        'chat-1': [{ id: 'message-1', sessionId: 'chat-1', role: 'assistant', content: 'Existing chat', createdAt: new Date() }],
+        'chat-2': [{ id: 'message-2', sessionId: 'chat-2', role: 'assistant', content: '   ', createdAt: new Date() }],
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-2"]')?.classList.contains('uam-pane-glide')).toBe(false)
 
     act(() => root.unmount())
     host.remove()
