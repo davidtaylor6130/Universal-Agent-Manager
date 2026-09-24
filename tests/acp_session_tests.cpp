@@ -9017,6 +9017,65 @@ UAM_TEST(AcpIdleControlInactivityTimeoutStopsAndReconnects)
 	UAM_ASSERT(raw_session->last_error.find("setup timed out") != std::string::npos);
 }
 
+UAM_TEST(AcpReadyRuntimeStopsAfterIdleTimeoutWithoutStoppingWork)
+{
+	TempDir temp("uam-acp-ready-idle-timeout");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	// Zero avoids a wall-clock wait; persisted settings clamp this to at least 30 seconds.
+	app.settings.cli_idle_timeout_seconds = 0;
+
+	ChatSession chat;
+	chat.id = "chat-ready-idle-timeout";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(std::move(chat));
+
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "gemini-cli";
+	session->protocol_kind = "gemini-acp";
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->session_id = "ready-session";
+	session->lifecycle_state = "ready";
+	session->last_runtime_activity_time_s = uam::GetAppTimeSeconds();
+	session->turn_started_time_s = uam::GetAppTimeSeconds();
+	uam::AcpSessionState* raw_session = session.get();
+
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *raw_session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+
+	raw_session->processing = true;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(raw_session->running);
+	raw_session->processing = false;
+	raw_session->model_change_request_id = 7;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(raw_session->running);
+	raw_session->model_change_request_id = 0;
+	raw_session->recovering_remote_process = true;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(raw_session->running);
+	raw_session->recovering_remote_process = false;
+	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
+	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+	{
+		return diagnostic.reason == "idle_shutdown";
+	}));
+}
+
 UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)
 {
 	TempDir temp("uam-acp-deferred-controls");

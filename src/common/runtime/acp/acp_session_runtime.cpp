@@ -3345,6 +3345,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				changed = true;
 			}
+			if (session.running && session.session_ready &&
+			    session.lifecycle_state == kAcpLifecycleReady &&
+			    !session.model_discovery_only && !session.reconnect_pending &&
+			    !session.recovering_remote_turn && !session.recovering_remote_process &&
+			    !session.remote_stop_pending && !session.remote_stop_unconfirmed &&
+			    session.managed_agent_run_id.empty() && !session.goal_review_scheduled &&
+			    !AcpSessionHasBlockingRuntimeWork(session) &&
+			    !chat.remote_turn_reconnect_pending && !chat.remote_restart_pending &&
+			    !chat.remote_stop_cleanup_pending && chat.acp_queued_prompts.empty() &&
+			    chat.remote_pending_requests.empty() && chat.remote_interaction_responses.empty() &&
+			    chat.remote_prompt_delivery_id.empty() &&
+			    session.last_runtime_activity_time_s > 0.0 &&
+			    now_seconds - session.last_runtime_activity_time_s >=
+			        static_cast<double>(app.settings.cli_idle_timeout_seconds))
+			{
+				AppendAcpDiagnostic(session, "session", "idle_shutdown", "", "", false, 0,
+				                    "Stopped the inactive structured runtime.");
+				(void)StopAcpSession(app, session.chat_id);
+				changed = true;
+			}
 		}
 
 		std::unordered_set<std::string> completed_ephemeral_ids;
