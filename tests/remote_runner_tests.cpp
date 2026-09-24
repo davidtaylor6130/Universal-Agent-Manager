@@ -741,6 +741,13 @@ UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 		if (third_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(third_output, std::string("ABCDEFGH"));
+	for (int attempt = 0; attempt < 100 && third["result"].value("running", true); ++attempt)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		third = poll("rollover-poll-exit", 16);
+		UAM_ASSERT(third.value("ok", false));
+	}
+	UAM_ASSERT(!third["result"].value("running", true));
 	const nlohmann::json removed = uam::remote::HandleRunnerRequest(
 	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", "rollover"},
 	     {"controlToken", kProcessControlToken}}, "test-version", &state);
