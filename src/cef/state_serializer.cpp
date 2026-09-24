@@ -26,11 +26,13 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/hash_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cctype>
 #include <filesystem>
@@ -501,6 +503,7 @@ namespace uam
 				return session.updated_at + ":" + std::to_string(session.persisted_message_count);
 			}
 
+			const auto started = std::chrono::steady_clock::now();
 			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
 
 			FingerprintHashString(hash, std::to_string(session.messages.size()));
@@ -571,6 +574,18 @@ namespace uam
 				FingerprintHashBool(hash, message.priority_steer);
 			}
 
+			const auto finished = std::chrono::steady_clock::now();
+			const auto elapsed = finished - started;
+			static auto last_slow_digest_report = std::chrono::steady_clock::time_point::min();
+			if (elapsed >= std::chrono::milliseconds(100) &&
+			    (last_slow_digest_report == std::chrono::steady_clock::time_point::min() ||
+			     finished - last_slow_digest_report >= std::chrono::seconds(5)))
+			{
+				uam::diagnostics::Write("[performance] Loaded transcript digest took " +
+					std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) +
+					" ms across " + std::to_string(session.messages.size()) + " messages.");
+				last_slow_digest_report = finished;
+			}
 			return FingerprintHashHex(hash);
 		}
 
@@ -1442,10 +1457,31 @@ namespace uam
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		const std::string selected_chat_id = SelectedVisibleChatId(app);
+		const auto chats_started = std::chrono::steady_clock::now();
+		std::chrono::microseconds slowest_chat{0};
+		std::size_t loaded_chats = 0;
 		for (const auto& chat : app.chats)
 		{
 			if (IsInternalChat(chat)) continue;
+			const auto chat_started = std::chrono::steady_clock::now();
 			chats_arr.push_back(SerializeFingerprintSession(app, chat, catalog_cache));
+			slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - chat_started));
+			loaded_chats += chat.messages_loaded ? 1 : 0;
+		}
+		const auto chats_finished = std::chrono::steady_clock::now();
+		static auto last_slow_chat_scan_report = std::chrono::steady_clock::time_point::min();
+		if (chats_finished - chats_started >= std::chrono::milliseconds(250) &&
+		    (last_slow_chat_scan_report == std::chrono::steady_clock::time_point::min() ||
+		     chats_finished - last_slow_chat_scan_report >= std::chrono::seconds(5)))
+		{
+			uam::diagnostics::Write("[performance] Fingerprint chat scan took " +
+				std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(chats_finished - chats_started).count()) +
+				" ms; loaded=" + std::to_string(loaded_chats) +
+				", slowestChatUs=" + std::to_string(slowest_chat.count()) +
+				", acpSessions=" + std::to_string(app.acp_sessions.size()) +
+				", terminals=" + std::to_string(app.cli_terminals.size()) + ".");
+			last_slow_chat_scan_report = chats_finished;
 		}
 
 		j["chats"] = std::move(chats_arr);
