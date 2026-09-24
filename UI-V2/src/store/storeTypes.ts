@@ -49,6 +49,7 @@ export interface AppState {
   activeSessionId: string | null
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
+  historyStartIndexBySessionId: Record<string, number>
   chatHistoryErrorBySessionId: Record<string, string>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
@@ -137,6 +138,7 @@ export interface AppState {
   // Session actions
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
+  loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>

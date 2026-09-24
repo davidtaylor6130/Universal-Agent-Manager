@@ -78,6 +78,7 @@ describe('ChatView', () => {
         },
       ],
       activeSessionId: 'chat-1',
+      historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
       defaultGoalTokenBudgetByChatId: {},
@@ -1246,6 +1247,28 @@ describe('ChatView', () => {
     await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('uses absolute indices for actions on a paged chat', async () => {
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    useAppStore.setState((state) => ({
+      branchFromMessage,
+      historyStartIndexBySessionId: { 'chat-1': 7 },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false,
+          processingStartedAtMs: null, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    await act(async () => host.querySelector('button[aria-label="Revert to message in new branch"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 7, undefined)
     act(() => root.unmount())
     host.remove()
   })
@@ -4573,7 +4596,7 @@ describe('ChatView', () => {
     window.cefQuery = ({ request, onSuccess }) => {
       expect(JSON.parse(request)).toMatchObject({
         action: 'getToolCallContent',
-        payload: { chatId: 'chat-1', toolCallId: 'tool-1', offset: source === 'live' ? Number.MAX_SAFE_INTEGER : 0, ...(source === 'saved' ? { messageIndex: 1 } : {}) },
+        payload: { chatId: 'chat-1', toolCallId: 'tool-1', offset: source === 'live' ? Number.MAX_SAFE_INTEGER : 0, ...(source === 'saved' ? { messageIndex: 8 } : {}) },
       })
       onSuccess(JSON.stringify({ content: 'Active output page', offset: 0, nextOffset: 18, previousOffset: 0, lastOffset: 0, totalBytes: 18, hasPrevious: false, hasMore: false }))
     }
@@ -4590,6 +4613,7 @@ describe('ChatView', () => {
     }))
 
     if (source === 'saved') useAppStore.setState((state) => ({
+      historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, 'chat-1': 7 },
       acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
         ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready',
         turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [],

@@ -18,6 +18,7 @@ import {
 import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
   attachmentsEquivalent,
+  buildMessageFromCpp,
   clearPendingRequest,
   cliLifecycleIsProcessing,
   isLatestPendingRequest,
@@ -118,6 +119,7 @@ export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>
   return {
     sessions,
     messages: withoutDeletedKeys(state.messages, deletedIds),
+    historyStartIndexBySessionId: withoutDeletedKeys(state.historyStartIndexBySessionId, deletedIds),
     chatHistoryErrorBySessionId: withoutDeletedKeys(state.chatHistoryErrorBySessionId, deletedIds),
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
     activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
@@ -165,6 +167,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       action: 'getChatMessages',
       payload: {
         chatId,
+        ...(isCompanionContext() ? { limit: 200 } : {}),
         ...(refreshNative ? { refreshNative: true } : {}),
         messagesDigest: force || current.messages[chatId] === undefined
           ? ''
@@ -199,6 +202,26 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return
       }
       if (!Array.isArray(data.messages)) return
+
+      if (isCompanionContext() && data.startIndex !== undefined) {
+        const start = data.startIndex
+        const total = data.totalCount
+        if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(total) ||
+            total === undefined || start + data.messages.length !== total) return false as const
+        const page = data.messages.map((message, index) => buildMessageFromCpp(chatId, message, start + index))
+        loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
+        set((state) => ({
+          messages: { ...state.messages, [chatId]: page },
+          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: start },
+          sessions: state.sessions.map((candidate) => candidate.id === chatId
+            ? { ...candidate, messageCount: total, messagesDigest: data.messagesDigest ?? '' }
+            : candidate),
+          chatHistoryErrorBySessionId: Object.fromEntries(
+            Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== chatId)
+          ),
+        }))
+        return
+      }
 
       set((state) => {
         let streamedTail: Message | undefined
@@ -280,6 +303,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     activeSessionId: (inCef ? null : 's1') as string | null,
     lastAppliedStateRevision: -1,
     messages: {} as Record<string, Message[]>,
+    historyStartIndexBySessionId: {} as Record<string, number>,
     chatHistoryErrorBySessionId: {} as Record<string, string>,
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
@@ -359,6 +383,42 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadSessionMessages: requestChatMessagesFromCef,
 
+    loadOlderSessionMessages: async (id: string) => {
+      if (!isCompanionContext()) return false
+      const before = get().historyStartIndexBySessionId[id] ?? 0
+      if (before <= 0 || !get().messages[id]) return false
+      const fail = (error: string) => {
+        set((state) => ({ chatHistoryErrorBySessionId: {
+          ...state.chatHistoryErrorBySessionId, [id]: error,
+        } }))
+        return false
+      }
+      const response = await sendToCEF<ChatMessagesResponse>({
+        action: 'getChatMessages',
+        payload: { chatId: id, limit: 100, before },
+      })
+      const data = response.data
+      if (!response.ok) return fail(response.error || 'Could not load earlier messages.')
+      if (!data || !Array.isArray(data.messages) ||
+          !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined ||
+          data.startIndex < 0 || data.startIndex + data.messages.length !== before) return fail('The earlier message page was invalid.')
+      if (data.messagesDigest !== loadedMessagesDigestByChatId.get(id)) return fail('Chat history changed while loading. Retry to refresh it.')
+      const page = data.messages.map((message, index) => buildMessageFromCpp(id, message, data.startIndex! + index))
+      let added = false
+      set((state) => {
+        if (state.historyStartIndexBySessionId[id] !== before || !state.messages[id]) return state
+        added = true
+        return {
+          messages: { ...state.messages, [id]: [...page, ...state.messages[id]] },
+          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [id]: data.startIndex! },
+          chatHistoryErrorBySessionId: Object.fromEntries(
+            Object.entries(state.chatHistoryErrorBySessionId).filter(([chatId]) => chatId !== id)
+          ),
+        }
+      })
+      return added
+    },
+
     unloadSessionMessages: (id: string) => {
       const current = get()
       if (current.acpBindingBySessionId[id]?.processing || current.cliBindingBySessionId[id]?.processing) return
@@ -367,12 +427,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id]) return
       loadedMessagesDigestByChatId.delete(id)
       const messages = { ...current.messages }
+      const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
       const cliTranscriptBySessionId = { ...current.cliTranscriptBySessionId }
       const chatHistoryErrorBySessionId = { ...current.chatHistoryErrorBySessionId }
       delete messages[id]
+      delete historyStartIndexBySessionId[id]
       delete cliTranscriptBySessionId[id]
       delete chatHistoryErrorBySessionId[id]
-      set({ messages, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
+      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
     },
 
     addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
@@ -2036,7 +2098,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const state = get()
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
       const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
-      const userMessageIndex = Math.max(state.messages[sessionId]?.length ?? 0,
+      const userMessageIndex = Math.max((state.historyStartIndexBySessionId[sessionId] ?? 0) + (state.messages[sessionId]?.length ?? 0),
         state.sessions.find((session) => session.id === sessionId)?.messageCount ?? 0)
 
       if (isCefContext()) {
@@ -2106,7 +2168,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         set((state) => {
           const existing = state.messages[sessionId] ?? []
           const sentAttachments = messageAttachments({ markdownStoreFiles, attachments })
-          const hydratedUser = existing[userMessageIndex]
+          const hydratedUser = existing[userMessageIndex - (state.historyStartIndexBySessionId[sessionId] ?? 0)]
           const alreadyHydrated = hydratedUser?.role === 'user' && hydratedUser.content === prompt &&
             attachmentsEquivalent(hydratedUser.attachments ?? [], sentAttachments)
           const messages = appendUserMessage && !alreadyHydrated

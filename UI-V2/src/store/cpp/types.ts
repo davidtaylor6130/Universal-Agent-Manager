@@ -667,6 +667,8 @@ export interface ChatMessagesResponse {
   messagesDigest?: string
   unchanged?: boolean
   messages?: CppMessage[]
+  startIndex?: number
+  totalCount?: number
 }
 
 export interface OpenNativeSessionChatResponse {

@@ -45,6 +45,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const providers = useAppStore((state) => state.providers)
   const session = useAppStore((state) => state.sessions.find((candidate) => candidate.id === chatId))
   const messages = useAppStore((state) => state.messages[chatId]) ?? []
+  const historyStartIndex = useAppStore((state) => state.historyStartIndexBySessionId[chatId] ?? 0)
   const selectedTool = messages.find((message) => message.id === selectedToolRef?.messageId)
     ?.toolCalls?.find((candidate) => candidate.id === selectedToolRef?.toolId)
   const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
@@ -178,7 +179,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   return (
     <section className="space-y-3" aria-label={`Subtask transcript: ${session.name}`}>
       {errorNotice}
-      {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} messageIndex={messages.findIndex((message) => message.id === selectedToolRef?.messageId)} onClose={() => setSelectedToolRef(null)} />}
+      {selectedTool && <ToolCallModal tool={selectedTool} chatId={chatId} messageIndex={messages.findIndex((message) => message.id === selectedToolRef?.messageId) + historyStartIndex} onClose={() => setSelectedToolRef(null)} />}
       <div>
         <div className="text-xs font-semibold" style={{ color: 'var(--blue)' }}>{session.name}</div>
         <div className="text-[10px]" style={{ color: 'var(--text-3)' }}>{providerName} · Transcript available</div>

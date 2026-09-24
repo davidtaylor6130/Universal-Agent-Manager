@@ -66,8 +66,19 @@ namespace
 	}
 
 	nlohmann::json SerializeChatMessagesResult(
-	    const ChatSession& chat, std::string_view known_digest)
+	    const ChatSession& chat, std::string_view known_digest,
+	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page)
 	{
+		if (page.has_value())
+		{
+			nlohmann::json result = uam::StateSerializer::SerializeMessagePage(
+			    chat, page->first, page->second);
+			result["chatId"] = chat.id;
+			result["unchanged"] = !page->second.has_value() && !known_digest.empty() &&
+			                     known_digest == result.value("messagesDigest", "");
+			if (result["unchanged"].get<bool>()) result.erase("messages");
+			return result;
+		}
 		if (!known_digest.empty() &&
 		    known_digest == uam::StateSerializer::MessageDigest(chat))
 		{
@@ -83,6 +94,22 @@ namespace
 		    uam::nlohmann_json::FindArrayField(serialized, "messages");
 		result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
 		return result;
+	}
+
+	bool ReadMessageIndex(const nlohmann::json& value, std::size_t& result)
+	{
+		if (!value.is_number_integer() && !value.is_number_unsigned()) return false;
+		if (value.is_number_unsigned())
+		{
+			const std::uint64_t index = value.get<std::uint64_t>();
+			if (index > std::numeric_limits<std::size_t>::max()) return false;
+			result = static_cast<std::size_t>(index);
+			return true;
+		}
+		const std::int64_t index = value.get<std::int64_t>();
+		if (index < 0 || static_cast<std::uint64_t>(index) > std::numeric_limits<std::size_t>::max()) return false;
+		result = static_cast<std::size_t>(index);
+		return true;
 	}
 }
 
@@ -166,6 +193,33 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string known_digest = payload.value("messagesDigest", "");
+	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
+	if (payload.contains("limit") || payload.contains("before"))
+	{
+		if (!payload.contains("limit"))
+		{
+			cb->Failure(400, "A message limit is required when requesting an older page.");
+			return;
+		}
+		std::size_t limit = 0;
+		if (!ReadMessageIndex(payload.at("limit"), limit) || limit == 0 || limit > 200)
+		{
+			cb->Failure(400, "Message limit must be between 1 and 200.");
+			return;
+		}
+		std::optional<std::size_t> before;
+		if (payload.contains("before"))
+		{
+			std::size_t index = 0;
+			if (!ReadMessageIndex(payload.at("before"), index))
+			{
+				cb->Failure(400, "Message cursor must be a non-negative integer.");
+				return;
+			}
+			before = index;
+		}
+		page = std::make_pair(limit, before);
+	}
 	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
@@ -193,7 +247,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	     provider_id == uam::provider_ids::kCodexCli);
 	if (!hydrate_native_chat)
 	{
-		cb->Success(SerializeChatMessagesResult(*chat, known_digest).dump());
+		cb->Success(SerializeChatMessagesResult(*chat, known_digest, page).dump());
 		return;
 	}
 
@@ -260,7 +314,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		              502, uam::strings::NonEmptyOrFallback(
 		                       transcript->error, "Native chat history is not available yet."));
 	    },
-	    [this, browser, chat_snapshot, host_snapshot, known_digest, original_digest, request, transcript](
+		    [this, browser, chat_snapshot, host_snapshot, known_digest, original_digest, request, transcript, page](
 	        uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    const auto pending = m_nativeHistoryRequests.find(chat_snapshot.id);
@@ -319,7 +373,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 		    }
 		    response = uam::query_handler_async::AsyncSuccess(
-		        SerializeChatMessagesResult(*current, known_digest));
+			    SerializeChatMessagesResult(*current, known_digest, page));
 	    })))
 	{
 		m_nativeHistoryRequests.erase(chat_id);

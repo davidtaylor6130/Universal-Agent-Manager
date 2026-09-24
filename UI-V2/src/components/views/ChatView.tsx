@@ -583,6 +583,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
   const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
+  const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
   const goalMutationInFlightRef = useRef(false)
@@ -623,8 +624,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
   const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
   const retryChatHistory = useCallback(async (chatId: string) => {
     setChatHistoryRetryingIds((ids) => new Set(ids).add(chatId))
     try {
@@ -780,8 +783,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   const turnEvents = acp?.turnEvents ?? []
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
-  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
-  const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
+  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
+    ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
+  const turnUserMessageIndex = acp?.turnUserMessageIndex === undefined || acp.turnUserMessageIndex < 0
+    ? -1 : acp.turnUserMessageIndex - historyStartIndex
   const turnSerial = acp?.turnSerial ?? 0
   const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => ({}), [session.id, turnSerial])
   const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
@@ -931,6 +936,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setMessageBranchError('')
     setClaudePlanPrompt(null)
     setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
+    setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')
   }, [session.id])
@@ -1391,7 +1397,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (workspaceActionsDisabled || latestAssistantMessageIndex < 0) return
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(true)
-    const preview = await previewChatTurnRollback(session.id, latestAssistantMessageIndex)
+    const preview = await previewChatTurnRollback(session.id, latestAssistantMessageIndex + historyStartIndex)
     if (!preview) {
       setWorkspaceActionBusy(false)
       setWorkspaceFeedback({ message: 'This turn can no longer be rolled back safely.', tone: 'error' })
@@ -1399,7 +1405,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
     setWorkspaceActionBusy(false)
     setRollbackConfirmation({
-      messageIndex: latestAssistantMessageIndex,
+      messageIndex: latestAssistantMessageIndex + historyStartIndex,
       diff: preview.diff || 'This checkpoint contains repository changes.',
     })
   }
@@ -1464,7 +1470,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
-    if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex)) {
+    if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex - historyStartIndex)) {
       try {
         const result = await retryFailedMessage(session.id, messageIndex)
         if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
@@ -1483,7 +1489,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
-  }, [branchFromMessage, retryFailedMessage, session.id])
+  }, [branchFromMessage, historyStartIndex, retryFailedMessage, session.id])
   const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
     setEditingMessageIndex(messageIndex)
     setEditingMessageText(content)
@@ -2219,7 +2225,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         <ToolCallModal
           tool={selectedToolCall}
           chatId={session.id}
-          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) : undefined}
+          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) + historyStartIndex : undefined}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
@@ -2256,12 +2262,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               <SubAgentDisclosureProvider key={session.id}>
               <div className="uam-message-list space-y-1.5">
-              {earliestRenderedMessageIndex > 0 && (
+              {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)}
+                    loading={olderHistoryLoading}
+                    onClick={() => {
+                      if (earliestRenderedMessageIndex > 0) {
+                        setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                      } else if (!olderHistoryLoading) {
+                        setOlderHistoryLoading(true)
+                        void loadOlderSessionMessages(session.id).then((loaded) => {
+                          if (loaded) setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                        }).finally(() => {
+                          setOlderHistoryLoading(false)
+                        })
+                      }
+                    }}
                   >
                     Show earlier messages
                   </Button>
@@ -2354,18 +2372,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       <PersistedMessageRow
                         message={message}
                         disclosureState={disclosureState}
-                        index={index}
+                        index={index + historyStartIndex}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         sessionId={session.id}
                         sessionParentChatId={session.parentChatId}
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        isEditing={editingMessageIndex === index}
-                        editingText={editingMessageIndex === index ? editingMessageText : ''}
+                        isEditing={editingMessageIndex === index + historyStartIndex}
+                        editingText={editingMessageIndex === index + historyStartIndex ? editingMessageText : ''}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                         canChangeProvider={canChangeProvider}
-                        branching={branchingMessageIndex === index}
+                        branching={branchingMessageIndex === index + historyStartIndex}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
                         retryInPlace={index === retryInPlaceMessageIndex}

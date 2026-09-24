@@ -107,6 +107,7 @@ function resetStore() {
     activeSessionId: null,
     lastAppliedStateRevision: -1,
     messages: {},
+    historyStartIndexBySessionId: {},
     chatHistoryErrorBySessionId: {},
     providers: [],
     cliBindingBySessionId: {},
@@ -4010,6 +4011,7 @@ describe('useAppStore Gemini CLI slice', () => {
       sessions: ['chat-a', 'chat-b', 'chat-c'].map((id) => ({ id, name: id, viewMode: 'chat' as const, folderId: 'default', createdAt: now, updatedAt: now })),
       activeSessionId: 'chat-a',
       messages: { 'chat-a': [], 'chat-b': [], 'chat-c': [] },
+      historyStartIndexBySessionId: { 'chat-a': 10, 'chat-b': 20, 'chat-c': 0 },
       cliBindingBySessionId: {},
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {
@@ -4027,6 +4029,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().sessions.map(({ id }) => id)).toEqual(['chat-c'])
     expect(useAppStore.getState().activeSessionId).toBe('chat-c')
     expect(Object.keys(useAppStore.getState().messages)).toEqual(['chat-c'])
+    expect(useAppStore.getState().historyStartIndexBySessionId).toEqual({ 'chat-c': 0 })
     expect(Object.keys(useAppStore.getState().cliTranscriptBySessionId)).toEqual(['chat-c'])
     expect(Object.keys(useAppStore.getState().markdownStoreAttachedBySessionId)).toEqual(['chat-c'])
   })
@@ -6184,5 +6187,84 @@ describe('useAppStore Gemini CLI slice', () => {
     await expect(useAppStore.getState().setSessionComputerUseEnabled('chat-1', true)).resolves.toEqual({ ok: true })
     await expect(useAppStore.getState().setSessionComputerUseControl('chat-1', 'paused')).resolves.toEqual({ ok: false })
     expect(requests).toHaveLength(1)
+  })
+
+  it('loads a recent companion page, prepends older messages, and resets on a changed digest', async () => {
+    window.history.replaceState(null, '', '/companion')
+    const originalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    const stored = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => { stored.set(key, value) },
+      removeItem: (key: string) => { stored.delete(key) },
+      clear: () => { stored.clear() },
+    } })
+    window.localStorage.setItem('uam-companion-token', 'test-token')
+    vi.resetModules()
+    const pages = [
+      { chatId: 'chat-1', messagesDigest: 'first', startIndex: 2, totalCount: 4,
+        messages: [
+          { role: 'user', content: 'third', createdAt: '2026-01-01T00:00:02Z' },
+          { role: 'assistant', content: 'fourth', createdAt: '2026-01-01T00:00:03Z' },
+        ] },
+      { chatId: 'chat-1', messagesDigest: 'first', startIndex: 0, totalCount: 4,
+        messages: [
+          { role: 'user', content: 'first', createdAt: '2026-01-01T00:00:00Z' },
+          { role: 'assistant', content: 'second', createdAt: '2026-01-01T00:00:01Z' },
+        ] },
+      { chatId: 'chat-1', messagesDigest: 'second', startIndex: 3, totalCount: 5,
+        messages: [
+          { role: 'assistant', content: 'fourth', createdAt: '2026-01-01T00:00:03Z' },
+          { role: 'user', content: 'fifth', createdAt: '2026-01-01T00:00:04Z' },
+        ] },
+    ]
+    let companionStore: typeof useAppStore = useAppStore
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body))
+      requests.push(request)
+      if (request.action === 'sendAcpPrompt') {
+        companionStore.setState((state) => {
+          const fifth = state.messages['chat-1'][1]
+          return {
+            messages: { ...state.messages, 'chat-1': [fifth, { ...fifth, id: 'sixth', content: 'sixth' }] },
+            historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, 'chat-1': 4 },
+            sessions: state.sessions.map((session) => ({ ...session, messageCount: 6 })),
+          }
+        })
+        return { ok: true, json: async () => ({ ok: true, data: {} }) }
+      }
+      return { ok: true, json: async () => ({ ok: true, data: pages.shift() }) }
+    }))
+    try {
+      companionStore = (await import('./useAppStore')).useAppStore
+      const now = new Date()
+      companionStore.setState({ sessions: [{ id: 'chat-1', name: 'Chat', viewMode: 'chat',
+        folderId: 'default', createdAt: now, updatedAt: now }] })
+
+      await companionStore.getState().loadSessionMessages('chat-1')
+      expect(companionStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['third', 'fourth'])
+      expect(companionStore.getState().historyStartIndexBySessionId['chat-1']).toBe(2)
+      expect(await companionStore.getState().loadOlderSessionMessages('chat-1')).toBe(true)
+      expect(companionStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['first', 'second', 'third', 'fourth'])
+      expect(companionStore.getState().historyStartIndexBySessionId['chat-1']).toBe(0)
+
+      await companionStore.getState().loadSessionMessages('chat-1', true)
+      expect(companionStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['fourth', 'fifth'])
+      expect(companionStore.getState().historyStartIndexBySessionId['chat-1']).toBe(3)
+      expect(companionStore.getState().sessions[0].messageCount).toBe(5)
+      expect(await companionStore.getState().sendAcpPrompt('chat-1', 'sixth')).toBe(true)
+      expect(companionStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['fifth', 'sixth'])
+      expect(requests.slice(0, 3).map((request) => request.payload)).toEqual([
+        expect.objectContaining({ chatId: 'chat-1', limit: 200 }),
+        { chatId: 'chat-1', limit: 100, before: 2 },
+        expect.objectContaining({ chatId: 'chat-1', limit: 200 }),
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+      if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
+      else delete (window as Window & { localStorage?: Storage }).localStorage
+      window.history.replaceState(null, '', '/')
+    }
   })
 })

@@ -9918,6 +9918,35 @@ UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)
 	}
 }
 
+UAM_TEST(StateSerializerMessagePagesReturnLatestAndOlderSlices)
+{
+	ChatSession chat;
+	chat.messages_loaded = true;
+	for (int index = 0; index < 4; ++index)
+	{
+		chat.messages.push_back({MessageRole::User, "message-" + std::to_string(index),
+		                         "2026-01-01T00:00:0" + std::to_string(index) + ".000Z"});
+	}
+
+	const nlohmann::json latest = uam::StateSerializer::SerializeMessagePage(chat, 2, std::nullopt);
+	UAM_ASSERT_EQ(latest["startIndex"], 2);
+	UAM_ASSERT_EQ(latest["totalCount"], 4);
+	UAM_ASSERT_EQ(latest["messages"].size(), 2U);
+	UAM_ASSERT_EQ(latest["messages"][0]["content"], std::string("message-2"));
+	UAM_ASSERT_EQ(latest["messages"][1]["content"], std::string("message-3"));
+
+	const nlohmann::json older = uam::StateSerializer::SerializeMessagePage(chat, 2, 2);
+	UAM_ASSERT_EQ(older["startIndex"], 0);
+	UAM_ASSERT_EQ(older["totalCount"], 4);
+	UAM_ASSERT_EQ(older["messages"].size(), 2U);
+	UAM_ASSERT_EQ(older["messages"][0]["content"], std::string("message-0"));
+	UAM_ASSERT_EQ(older["messages"][1]["content"], std::string("message-1"));
+	UAM_ASSERT_EQ(latest["messagesDigest"], older["messagesDigest"]);
+
+	chat.messages[0].content = "changed";
+	UAM_ASSERT(latest["messagesDigest"] != uam::StateSerializer::SerializeMessagePage(chat, 2, std::nullopt)["messagesDigest"]);
+}
+
 UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 {
 	ChatSession chat;
