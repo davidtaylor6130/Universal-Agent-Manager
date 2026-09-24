@@ -39,6 +39,7 @@ namespace
 	constexpr int kProviderCliVersionProbeTimeoutMs = 30000;
 	constexpr int kProviderCliInstallTimeoutMs = 15 * 60 * 1000;
 	constexpr std::string_view kProviderCliPathMarker = "[UAM CLI PATH] ";
+	constexpr std::string_view kProviderCliRunningMarker = "[UAM CLI RUNNING] ";
 	constexpr auto kSafeVersionTokenPunctuation = std::to_array<char>({
 	    '.',
 	    '_',
@@ -478,28 +479,47 @@ namespace
 		return uam::strings::TrimAsciiView(output.substr(begin, output.find('\n', begin) - begin));
 	}
 
+	std::optional<bool> ProbeRemoteCliRunning(std::string_view output)
+	{
+		const std::size_t marker = output.find(kProviderCliRunningMarker);
+		if (marker == std::string_view::npos) return std::nullopt;
+		const std::size_t begin = marker + kProviderCliRunningMarker.size();
+		const std::string_view value = uam::strings::TrimAsciiView(output.substr(begin, output.find('\n', begin) - begin));
+		if (value == "0") return false;
+		if (value == "1") return true;
+		return std::nullopt;
+	}
+
 	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
 	{
 		const std::string_view identity = ProbeIdentity(previous);
 		const std::size_t separator = identity.find('|');
 		const std::string method = InstallMethodFromProbeOutput(previous, true);
+		const std::optional<bool> remote_cli_running = ProbeRemoteCliRunning(current);
 		if (identity.empty() || separator == std::string_view::npos ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(platform, identity.substr(0, separator)) ||
 		    method == "unknown" || identity != ProbeIdentity(current) ||
 		    method != InstallMethodFromProbeOutput(current, true) ||
-		    OutputIndicatesCommandFailure(current))
+		    OutputIndicatesCommandFailure(current) || !remote_cli_running.has_value())
 		{
 			return FailProviderCliInstall(error, "The CLI installation changed or could not be identified. Check this machine again before updating. No update was started.");
+		}
+		if (*remote_cli_running)
+		{
+			return FailProviderCliInstall(error, "A provider CLI process is running on the remote host. Stop it before updating. No update was started.");
 		}
 		return true;
 	}
 
 	std::string StripProbePathLine(std::string output)
 	{
-		for (std::size_t marker = output.find(kProviderCliPathMarker); marker != std::string::npos; marker = output.find(kProviderCliPathMarker))
+		for (const std::string_view marker_text : {kProviderCliPathMarker, kProviderCliRunningMarker})
 		{
-			const std::size_t line_end = output.find('\n', marker);
-			output.erase(marker, line_end == std::string::npos ? output.size() - marker : line_end - marker + 1);
+			for (std::size_t marker = output.find(marker_text); marker != std::string::npos; marker = output.find(marker_text))
+			{
+				const std::size_t line_end = output.find('\n', marker);
+				output.erase(marker, line_end == std::string::npos ? output.size() - marker : line_end - marker + 1);
+			}
 		}
 		return output;
 	}
@@ -518,6 +538,8 @@ namespace
 		    "uam_npm_prefix=$(npm prefix -g 2>/dev/null); "
 		    "if [ \"$uam_cli_path\" != \"$uam_npm_prefix/bin/" + std::string(policy.executable_name) + "\" ]; then uam_cli_target=''; fi;; esac; ";
 		command += "printf '[UAM CLI PATH] %s|%s\\n' \"$uam_cli_path\" \"$uam_cli_target\"; ";
+		command += "uam_cli_running=unknown; if command -v ps >/dev/null 2>&1; then uam_ps_output=$(ps -eo pid=,comm=,args= 2>/dev/null); uam_ps_status=$?; if [ $uam_ps_status -eq 0 ] && [ -n \"$uam_ps_output\" ]; then uam_cli_running=$(printf '%s\\n' \"$uam_ps_output\" | awk -v self=\"$$\" -v exe='" + std::string(policy.executable_name) + "' -v pkg='node_modules/" + std::string(policy.npm_package) + "/' '$1 != self { base=$2; sub(\".*/\",\"\",base); if (base == exe || (base == \"node\" && index($0,pkg))) found=1 } END { print found ? 1 : 0 }'); if [ $? -ne 0 ]; then uam_cli_running=unknown; fi; fi; fi; ";
+		command += "printf '[UAM CLI RUNNING] %s\\n' \"$uam_cli_running\"; ";
 		command += policy.version_probe_command;
 		return command;
 		}
@@ -541,7 +563,9 @@ namespace
 			    "$pkg=Join-Path $prefix.Trim() 'node_modules\\" + package_path + "';"
 			    "if((Test-Path -LiteralPath (Join-Path $pkg 'package.json')) -and "
 			    "(Get-Content -LiteralPath $p -Raw).Contains('node_modules\\" + package_path + "\\')){$t=$pkg}}}}catch{};"
-			    "Write-Output ('[UAM CLI PATH] '+$p+'|'+$t);"
+			    "$running='unknown';try{$running=if((Get-Process -Name '" + std::string(policy.executable_name) + "' -ErrorAction SilentlyContinue) -or "
+			    "@(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction Stop|Where-Object{$_.CommandLine -like '*node_modules\\" + package_path + "\\*'}).Count -gt 0){'1'}else{'0'}}catch{};"
+			    "Write-Output ('[UAM CLI PATH] '+$p+'|'+$t);Write-Output ('[UAM CLI RUNNING] '+$running);"
 			    "& cmd.exe /d /c '" + std::string(policy.version_probe_command) + "';exit $LASTEXITCODE";
 			std::string utf16_le;
 			utf16_le.reserve(script.size() * 2);

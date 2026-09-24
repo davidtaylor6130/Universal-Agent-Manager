@@ -10027,7 +10027,7 @@ UAM_TEST(ProviderRuntimeCompatibilityBlocksPendingAndKnownBadVersions)
 
 UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 {
-	const std::string npm = "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\ncodex-cli 0.148.0\n";
+	const std::string npm = "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 0\ncodex-cli 0.148.0\n";
 	std::string error;
 	UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(npm, npm, "linux", &error));
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /opt/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n0.148.0", "linux", &error));
@@ -10036,17 +10036,34 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests("0.148.0", "0.148.0", "linux", &error));
 	const std::string standalone = "[UAM CLI PATH] C:\\Tools\\codex.exe|\n0.148.0";
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(standalone, standalone, "windows", &error));
-	const std::string shim = "[UAM CLI PATH] C:\\npm\\codex.cmd|C:\\npm\\node_modules\\@openai\\codex\n0.148.0";
+	const std::string shim = "[UAM CLI PATH] C:\\npm\\codex.cmd|C:\\npm\\node_modules\\@openai\\codex\n[UAM CLI RUNNING] 0\n0.148.0";
 	UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(shim, shim, "windows", &error));
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(shim, standalone, "windows", &error));
+	UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(npm, npm, "linux", &error));
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n0.148.0", "linux", &error));
+	UAM_ASSERT(error.find("Stop it before updating") != std::string::npos);
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n0.148.0", "linux", &error));
 	const std::string windows_probe = BuildInstallAwareCliProbeForTests("codex-cli", "windows");
 	std::string encoded_script;
 	UAM_ASSERT(uam::base64::Decode(windows_probe.substr(windows_probe.find("-EncodedCommand ") + 16), encoded_script));
 	std::string script;
 	for (std::size_t index = 0; index < encoded_script.size(); index += 2) script.push_back(encoded_script[index]);
+	UAM_ASSERT(script.find("Get-Process -Name 'codex'") != std::string::npos);
+	UAM_ASSERT(script.find("[UAM CLI RUNNING]") != std::string::npos);
 	UAM_ASSERT(script.find("npm.cmd prefix -g") != std::string::npos);
 	UAM_ASSERT(script.find("package.json") != std::string::npos);
 	UAM_ASSERT(script.find("node_modules\\@openai\\codex\\") != std::string::npos);
+	const std::string opencode_probe = BuildInstallAwareCliProbeForTests("opencode-cli", "linux");
+	UAM_ASSERT(opencode_probe.find("-v exe='opencode'") != std::string::npos);
+	UAM_ASSERT(opencode_probe.find("node_modules/opencode-ai/") != std::string::npos);
+	UAM_ASSERT(opencode_probe.find("uam_ps_status=$?") != std::string::npos);
+	UAM_ASSERT(opencode_probe.find("sub(\".*/\",\"\",base)") != std::string::npos);
+	const std::string opencode_windows_probe = BuildInstallAwareCliProbeForTests("opencode-cli", "windows");
+	UAM_ASSERT(uam::base64::Decode(opencode_windows_probe.substr(opencode_windows_probe.find("-EncodedCommand ") + 16), encoded_script));
+	script.clear();
+	for (std::size_t index = 0; index < encoded_script.size(); index += 2) script.push_back(encoded_script[index]);
+	UAM_ASSERT(script.find("Get-Process -Name 'opencode'") != std::string::npos);
+	UAM_ASSERT(script.find("node_modules\\opencode-ai\\") != std::string::npos);
 	const std::string copilot_probe = BuildInstallAwareCliProbeForTests("copilot-cli", "windows");
 	UAM_ASSERT(uam::base64::Decode(copilot_probe.substr(copilot_probe.find("-EncodedCommand ") + 16), encoded_script));
 	script.clear();
