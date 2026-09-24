@@ -98,7 +98,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
     ? executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId
     : 'Local'
-  const workspaceAndHostLabel = workspaceLabel ? `${workspaceLabel} · ${executionHostLabel}` : executionHostLabel
 
   useEffect(() => {
     if (session.importedReadOnly) {
@@ -136,11 +135,12 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
           <span
             data-testid={`chat-workspace-${session.id}`}
-            className="uam-chat-pane__workspace truncate text-[10px] font-normal"
+            className="uam-chat-pane__workspace flex min-w-0 text-[10px] font-normal"
             style={{ color: 'var(--text-3)' }}
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
-            {workspaceAndHostLabel}
+            {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
+            <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>
           </span>
         </div>
 

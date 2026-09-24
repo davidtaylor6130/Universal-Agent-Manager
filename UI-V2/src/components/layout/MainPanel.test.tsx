@@ -126,6 +126,7 @@ describe('MainPanel', () => {
     expect(chatButton().textContent).toBe('')
     expect(cliButton().textContent).toBe('')
     expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project · Local')
+    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.className).toContain('shrink-0')
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -186,6 +187,7 @@ describe('MainPanel', () => {
       }],
     })))
     expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Homelab')
+    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.textContent).toBe('Homelab')
 
     act(() => useAppStore.setState((state) => ({
       executionHosts: state.executionHosts.map((executionHost) => ({ ...executionHost, label: 'AI Server' })),
