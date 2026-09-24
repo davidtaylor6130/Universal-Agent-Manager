@@ -687,15 +687,30 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 	const std::optional<std::string> replacement_content = payload.contains("content")
 	                                                      ? std::optional<std::string>(payload.value("content", ""))
 	                                                      : std::nullopt;
+	if (payload.contains("operationId") && !payload["operationId"].is_string())
+	{
+		cb->Failure(400, "operationId must be a string.");
+		return;
+	}
+	const std::optional<std::string> operation_id = payload.contains("operationId")
+	                                             ? std::optional<std::string>(payload.value("operationId", ""))
+	                                             : std::nullopt;
 
 	std::string branch_id;
 	std::string branch_error;
-	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error))
+	std::string branch_warning;
+	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error, operation_id, &branch_warning))
 	{
 		const bool branch_was_created = !branch_id.empty();
 		if (branch_was_created && ChatDomainService().FindChatById(m_app, branch_id) != nullptr)
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
+		}
+		if (branch_was_created && !branch_warning.empty())
+		{
+			nlohmann::json result{{"chatId", branch_id}, {"warning", branch_warning}};
+			cb->Success(result.dump());
+			return;
 		}
 		cb->Failure(branch_was_created ? 500 : 409,
 		            uam::query_handler_internal::FailureDetailOrFallback(

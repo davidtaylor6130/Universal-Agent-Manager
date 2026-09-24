@@ -1031,10 +1031,14 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	return ChatProviderSwitchResult::Changed;
 }
 
-bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out)
+bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out)
 {
+	if (branch_id_out != nullptr) branch_id_out->clear();
+	if (error_out != nullptr) error_out->clear();
+	if (warning_out != nullptr) warning_out->clear();
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(app);
-	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content))
+	bool reused_existing_branch = false;
+	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, &reused_existing_branch))
 	{
 		if (error_out != nullptr)
 		{
@@ -1058,10 +1062,18 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	{
 		*branch_id_out = branch_id;
 	}
+	if (reused_existing_branch) return true;
 	std::string retry_error;
 	if (RetryLastAcpPrompt(app, branch_id, &retry_error))
 	{
 		return true;
+	}
+	if (operation_id.has_value() && !uam::strings::Trim(*operation_id).empty())
+	{
+		app.status_line = "Branch was created, but regeneration could not start: " + retry_error;
+		if (warning_out != nullptr) *warning_out = app.status_line;
+		if (error_out != nullptr) *error_out = app.status_line;
+		return false;
 	}
 
 	StopChatRuntimes(app, branch_id);

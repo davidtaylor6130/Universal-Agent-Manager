@@ -2509,9 +2509,26 @@ describe('useAppStore Gemini CLI slice', () => {
     await expect(useAppStore.getState().branchFromMessage('chat-1', 2, 'Edited prompt')).resolves.toBe('branch-1')
     await expect(useAppStore.getState().branchFromMessage('chat-1', 0)).resolves.toBe('branch-1')
     expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
-      { action: 'branchFromMessage', payload: { chatId: 'chat-1', messageIndex: 2, content: 'Edited prompt' } },
-      { action: 'branchFromMessage', payload: { chatId: 'chat-1', messageIndex: 0 } },
+      { action: 'branchFromMessage', payload: expect.objectContaining({ chatId: 'chat-1', messageIndex: 2, content: 'Edited prompt' }) },
+      { action: 'branchFromMessage', payload: expect.objectContaining({ chatId: 'chat-1', messageIndex: 0 }) },
     ])
+    expect(requests[0].payload.operationId).toEqual(expect.any(String))
+    expect(requests[1].payload.operationId).toEqual(expect.any(String))
+    expect(requests[0].payload.operationId).not.toBe(requests[1].payload.operationId)
+  })
+
+  it('retries an ambiguous branch response with the same operation ID', async () => {
+    const requests: Array<{ payload: { operationId: string } }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onFailure(0, 'Connection lost. The action may have reached UAM.')
+      else onSuccess(JSON.stringify({ chatId: 'branch-1' }))
+    }
+
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 0)).resolves.toBe('branch-1')
+    expect(requests).toHaveLength(2)
+    expect(requests[0].payload.operationId).toBeTruthy()
+    expect(requests[1].payload).toEqual(requests[0].payload)
   })
 
   it('keeps message branch metadata from native state', () => {

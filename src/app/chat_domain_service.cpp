@@ -31,6 +31,7 @@ namespace
 	constexpr std::string_view kFallbackBranchChatTitle = "Branch Chat";
 	constexpr int kFirstUserMessageTitleMaxChars = 48;
 	constexpr int kBranchTitleMessageMaxChars = 40;
+	constexpr std::size_t kMaxBranchOperationIdLength = 128;
 	constexpr int kEstimatedOutputCharsPerToken = 4;
 	constexpr double kTokensPerMillion = 1000000.0;
 	constexpr double kCostPerMillionInputTokens = 0.075;
@@ -624,8 +625,45 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	return chat;
 }
 
-bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content) const
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch) const
 {
+	if (reused_existing_branch != nullptr) *reused_existing_branch = false;
+	const std::string normalized_operation_id = operation_id.has_value() ? uam::strings::Trim(*operation_id) : std::string();
+	if (normalized_operation_id.size() > kMaxBranchOperationIdLength)
+	{
+		app.status_line = "Branch operation ID is too long.";
+		return false;
+	}
+	if (!normalized_operation_id.empty())
+	{
+		for (const ChatSession& existing_summary : app.chats)
+		{
+			if (existing_summary.branch_operation_id == normalized_operation_id)
+			{
+				ChatSession* existing = FindChatById(app, existing_summary.id);
+				if (existing == nullptr) continue;
+				if (!existing->messages_loaded && !ChatRepository::HydrateChatMessages(app.data_root, *existing, nullptr))
+				{
+					app.status_line = "The existing branch history could not be loaded.";
+					return false;
+				}
+				const bool same_request = existing->parent_chat_id == source_chat_id &&
+					existing->branch_from_message_index == message_index &&
+					existing->branch_message_edited == replacement_content.has_value() &&
+					(!replacement_content.has_value() ||
+					 (message_index < static_cast<int>(existing->messages.size()) &&
+					  existing->messages[message_index].content == *replacement_content));
+				if (!same_request)
+				{
+					app.status_line = "Branch operation ID was already used for a different branch request.";
+					return false;
+				}
+				SelectChatById(app, existing->id);
+				if (reused_existing_branch != nullptr) *reused_existing_branch = true;
+				return true;
+			}
+		}
+	}
 	const int source_index = FindChatIndexById(app, source_chat_id);
 
 	if (source_index < 0)
@@ -678,6 +716,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
 	branch.branch_from_message_index = message_index;
 	branch.branch_message_edited = replacement_content.has_value();
+	branch.branch_operation_id = normalized_operation_id;
 	branch.linked_files = source.linked_files;
 	branch.execution_host_id = source.execution_host_id;
 	branch.model_id = source.model_id;

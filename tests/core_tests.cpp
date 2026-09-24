@@ -6801,6 +6801,37 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
 }
 
+UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
+{
+	TempDir temp("uam-message-branch-operation-id");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	source.id = "chat-operation-source";
+	source.messages.push_back(Message{MessageRole::User, "Original prompt"});
+	app.chats.push_back(source);
+
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::string("operation-1")));
+	const std::string branch_id = ChatDomainService().SelectedChatId(app);
+	UAM_ASSERT(!branch_id.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	const auto saved_branch = std::ranges::find_if(saved, [branch_id](const ChatSession& chat) { return chat.id == branch_id; });
+	UAM_ASSERT(saved_branch != saved.end());
+	UAM_ASSERT_EQ(saved_branch->branch_operation_id, std::string("operation-1"));
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::string("operation-1")));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), branch_id);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("operation-1")));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("operation-2")));
+	const std::string edited_branch_id = ChatDomainService().SelectedChatId(app);
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Different"), std::string("operation-2")));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), edited_branch_id);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
+}
+
 UAM_TEST(ChatDomainServiceBranchesWithIndependentPausedGoalSnapshots)
 {
 	TempDir temp("uam-message-branch-goals");
@@ -7101,7 +7132,7 @@ UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
 	UAM_ASSERT_EQ(branch->messages.size(), static_cast<std::size_t>(3));
 }
 
-UAM_TEST(MessageBranchRetryFailureRollsBackBranchAndRuntimeState)
+UAM_TEST(MessageBranchRetryFailureRollsBackLegacyAndPreservesIdempotentBranch)
 {
 	TempDir temp("uam-message-branch-retry-rollback");
 	const fs::path invalid_workspace = temp.root / "not-a-directory";
@@ -7143,6 +7174,17 @@ UAM_TEST(MessageBranchRetryFailureRollsBackBranchAndRuntimeState)
 	reloaded.data_root = temp.root;
 	PersistenceCoordinator().LoadSettings(reloaded);
 	UAM_ASSERT_EQ(reloaded.settings.last_selected_chat_id, std::string("chat-source"));
+
+	std::string warning;
+	UAM_ASSERT(!uam::BranchFromMessageAndRetry(app, "chat-source", 0, std::nullopt, &branch_id,
+		&error, std::string("branch-retry-1"), &warning));
+	UAM_ASSERT(!warning.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	const std::string preserved_branch_id = branch_id;
+	UAM_ASSERT(uam::BranchFromMessageAndRetry(app, "chat-source", 0, std::nullopt, &branch_id,
+		&error, std::string("branch-retry-1"), &warning));
+	UAM_ASSERT_EQ(branch_id, preserved_branch_id);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
 }
 
 UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)

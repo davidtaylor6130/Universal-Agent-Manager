@@ -542,18 +542,25 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
       if (isCefContext()) {
-        const response = await sendToCEF<{ chatId?: string }>({
+        const operationId = createRequestId('branch')
+        const payload = {
+          chatId: id,
+          messageIndex,
+          ...(content === undefined ? {} : { content }),
+          ...(operationId ? { operationId } : {}),
+        }
+        let response = await sendToCEF<{ chatId?: string; warning?: string }>({
           action: 'branchFromMessage',
-          payload: {
-            chatId: id,
-            messageIndex,
-            ...(content === undefined ? {} : { content }),
-          },
+          payload,
         })
+        if (!response.ok && operationId && /connection lost|action may have reached|timed out/i.test(response.error ?? '')) {
+          response = await sendToCEF<{ chatId?: string; warning?: string }>({ action: 'branchFromMessage', payload })
+        }
         if (!response.ok) {
           console.error('[CEF] branchFromMessage failed:', response.error)
           return null
         }
+        if (response.data?.warning) console.warn(`[CEF] branchFromMessage warning: ${response.data.warning}`)
         return response.data?.chatId?.trim() || null
       }
 

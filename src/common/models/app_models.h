@@ -297,6 +297,7 @@ struct ChatSession
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
+	std::string branch_operation_id;
 	std::string folder_id;
 	std::string title;
 	std::string created_at;
