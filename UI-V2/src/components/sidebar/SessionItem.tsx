@@ -250,14 +250,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
   return (
     <div
-      className="relative group"
+      className={`relative group${activityLayout ? ' uam-active-row-glide' : ''}`}
       draggable={!editing}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
         event.stopPropagation()
       }}
-      style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
         ref={rowRef}
