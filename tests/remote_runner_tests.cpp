@@ -17,6 +17,7 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 	const std::string mode = uam::env::GetNonEmptyString("UAM_TEST_CREATE_MODE").value_or("");
 	uam::remote::RunnerState state;
 	std::string output;
+	std::uint64_t stdout_cursor = 0;
 	std::uint64_t input_sequence = 0;
 	int command_poll_count = 0;
 	nlohmann::json request;
@@ -62,8 +63,10 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		}
 		else if (type == "process.poll")
 		{
+			stdout_cursor += output.size();
 			result = {{"running", true}, {"stdoutBase64", uam::base64::Encode(output)},
-			          {"stderrBase64", ""}, {"inputSequence", input_sequence}};
+			          {"stderrBase64", ""}, {"stdoutCursor", stdout_cursor},
+			          {"stderrCursor", std::uint64_t{0}}, {"inputSequence", input_sequence}};
 			output.clear();
 		}
 		const bool teardown_error = mode == "teardown-error" &&
