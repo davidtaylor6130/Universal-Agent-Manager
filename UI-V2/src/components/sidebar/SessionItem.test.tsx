@@ -242,6 +242,48 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('selects the longest provided branch without filtering or sorting all chats', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchA = {
+      ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T10:00:00Z'),
+    }
+    const branchB = {
+      ...makeSession(), id: 'chat-branch-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T11:00:00Z'),
+    }
+    const branchC = {
+      ...makeSession(), id: 'chat-branch-c', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T11:00:00Z'),
+    }
+    const unrelated = { ...makeSession(), id: 'unrelated-chat', messageCount: 100 }
+    const sessions = new Proxy([rootSession, branchA, branchC, branchB, unrelated], {
+      get(target, property, receiver) {
+        if (property === 'filter' || property === 'sort') throw new Error(`unexpected ${String(property)} on full chat list`)
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    useAppStore.setState({ sessions, activeSessionId: 'unrelated-chat', setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <SessionItem
+        sessionId="chat-root"
+        session={rootSession}
+        familySessionIds={['chat-root', 'chat-branch-a', 'chat-branch-b', 'chat-branch-c']}
+      />,
+    ))
+
+    const rootRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    act(() => rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch-b')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('marks only the exact active chat in the companion branch list', () => {
     const previousPath = window.location.pathname
     window.history.pushState({}, '', '/companion')

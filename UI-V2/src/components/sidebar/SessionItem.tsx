@@ -136,16 +136,23 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const selectChat = () => {
     const state = useAppStore.getState()
     const sessions = state.sessions
-    const clickedSession = sessions.find((candidate) => candidate.id === sessionId)
+    const clickedSession = session ?? sessions.find((candidate) => candidate.id === sessionId)
     const branchRootId = clickedSession?.branchRootChatId || clickedSession?.parentChatId || clickedSession?.id
     if (clickedSession && branchRootId === sessionId) {
-      const longestChat = sessions
-        .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId)
-        .sort((a, b) =>
-          (b.messageCount ?? 0) - (a.messageCount ?? 0) ||
-          (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0) ||
-          a.id.localeCompare(b.id)
-        )[0]
+      const compareLength = (a: Session, b: Session) =>
+        (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
+        (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
+        b.id.localeCompare(a.id)
+      const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
+      let longestChat: Session | undefined
+      for (const candidate of sessions) {
+        const isInFamily = familyIds
+          ? familyIds.has(candidate.id)
+          : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
+        if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
+          longestChat = candidate
+        }
+      }
       const chatId = longestChat?.id ?? sessionId
       if (state.activeSessionId !== chatId) setActiveSession(chatId)
       return
