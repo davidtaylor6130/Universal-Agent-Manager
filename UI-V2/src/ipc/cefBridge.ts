@@ -63,6 +63,7 @@ export async function sendToCEF<T = unknown>(
     if (['selectSession', 'toggleFolder', 'toggleResourceCollection'].includes(request.action)) return { ok: true, data: {} as T, requestId }
     const token = window.localStorage.getItem('uam-companion-token')
     if (!token) return { ok: false, error: 'Connect to UAM first.', requestId }
+    let transferFailure = ''
     try {
       const response = await fetch('/api', {
         method: 'POST',
@@ -79,13 +80,15 @@ export async function sendToCEF<T = unknown>(
         return { ok: false, error, requestId }
       }
       if (data?.uamTransfer) {
-        const { id, totalBytes } = data.uamTransfer
+        const { id, totalBytes, chunkBytes } = data.uamTransfer
         if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
           throw new Error('Invalid response transfer.')
         }
+        const transferChunkBytes = chunkBytes === undefined ? 128 * 1024 : chunkBytes
+        if (!Number.isSafeInteger(transferChunkBytes) || transferChunkBytes <= 0) throw new Error('Invalid response transfer.')
         const bytes = new Uint8Array(totalBytes)
-        let offset = 0
-        while (offset < totalBytes) {
+        const chunkCount = Math.ceil(totalBytes / transferChunkBytes)
+        const loadChunk = async (offset: number) => {
           if (window.localStorage.getItem('uam-companion-token') !== token) throw new Error('Disconnected.')
           const chunkResponse = await fetch('/api', {
             method: 'POST',
@@ -96,21 +99,31 @@ export async function sendToCEF<T = unknown>(
             cache: 'no-store',
           })
           const chunk = await chunkResponse.json()
-          if (!chunkResponse.ok) return { ok: false, error: chunk.error || 'Could not load the rest of this response.', requestId }
+          if (!chunkResponse.ok) {
+            transferFailure = chunk.error || 'Could not load the rest of this response.'
+            throw new Error(transferFailure)
+          }
           if (typeof chunk.base64 !== 'string') throw new Error('Invalid response chunk.')
           const decoded = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0))
-          if (!decoded.length || chunk.nextOffset !== offset + decoded.length || chunk.nextOffset > totalBytes
+          const expectedLength = Math.min(transferChunkBytes, totalBytes - offset)
+          if (decoded.length !== expectedLength || chunk.nextOffset !== offset + decoded.length || chunk.nextOffset > totalBytes
             || chunk.done !== (chunk.nextOffset === totalBytes)) throw new Error('Incomplete response chunk.')
           bytes.set(decoded, offset)
-          offset = chunk.nextOffset
         }
+        // Leave the final chunk until last: the server deletes the transfer when it serves it.
+        for (let first = 0; first < chunkCount - 1; first += 4) {
+          const offsets = Array.from({ length: Math.min(4, chunkCount - 1 - first) }, (_, index) => (first + index) * transferChunkBytes)
+          await Promise.all(offsets.map(loadChunk))
+        }
+        await loadChunk((chunkCount - 1) * transferChunkBytes)
+        if (window.localStorage.getItem('uam-companion-token') !== token) throw new Error('Disconnected.')
         data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
       }
       return data && typeof data.ok === 'boolean'
         ? { ...data as CEFResponse<T>, requestId }
         : { ok: true, data: data as T, requestId }
     } catch {
-      return { ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.', requestId }
+      return { ok: false, error: transferFailure || 'Connection lost. Check the chat before retrying; the action may have reached UAM.', requestId }
     }
   }
 

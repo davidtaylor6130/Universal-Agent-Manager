@@ -21,6 +21,7 @@ namespace
 {
 	constexpr std::size_t kGzipThreshold = 64 * 1024;
 	constexpr std::size_t kMaxWireBody = 900 * 1024;
+	constexpr std::size_t kCompanionTransferChunkBytes = 128 * 1024;
 
 	enum class BodyEncodingResult { Plain, Gzip, TooLarge, Failed };
 
@@ -332,7 +333,7 @@ std::optional<std::string> UamCompanionServer::StoreTransfer(std::string body)
 	if (m_transfers.size() >= 16) return std::nullopt;
 	const std::string id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	m_transfers.emplace(id, Transfer{std::move(body), now});
-	return nlohmann::json{{"uamTransfer", {{"id", id}, {"totalBytes", m_transfers.at(id).body.size()}}}}.dump();
+	return nlohmann::json{{"uamTransfer", {{"id", id}, {"totalBytes", m_transfers.at(id).body.size()}, {"chunkBytes", kCompanionTransferChunkBytes}}}}.dump();
 }
 
 std::optional<nlohmann::json> UamCompanionServer::ReadTransferChunk(const std::string& id, std::size_t offset)
@@ -346,7 +347,7 @@ std::optional<nlohmann::json> UamCompanionServer::ReadTransferChunk(const std::s
 	}
 	if (offset >= it->second.body.size()) return std::nullopt;
 	it->second.touched = std::chrono::steady_clock::now();
-	const std::size_t count = std::min<std::size_t>(128 * 1024, it->second.body.size() - offset);
+	const std::size_t count = std::min(kCompanionTransferChunkBytes, it->second.body.size() - offset);
 	const std::string encoded = CefBase64Encode(it->second.body.data() + offset, count).ToString();
 	const std::size_t next = offset + count;
 	const bool done = next == it->second.body.size();
