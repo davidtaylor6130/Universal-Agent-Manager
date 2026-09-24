@@ -8107,6 +8107,67 @@ UAM_TEST(AcpMissingRemoteProcessClearsDeadTurnDeliveryOutbox)
 	UAM_ASSERT(persisted->remote_interaction_responses.empty());
 }
 
+UAM_TEST(AcpProviderStderrCannotFalselyDeclareRemoteTurnMissing)
+{
+	TempDir temp("uam-acp-provider-stderr-false-missing");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "provider-stderr-false-missing";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	chat.remote_turn_reconnect_pending = true;
+	chat.remote_prompt_delivery_session_id = "acp-provider-stderr-false-missing";
+	chat.remote_prompt_delivery_id = "delivery-still-live";
+	chat.remote_prompt_delivery_payload = "{\"method\":\"turn/start\"}\n";
+	chat.remote_pending_requests.push_back(
+	    {.request_id = 17, .method = "turn/start", .delivery_id = "delivery-still-live",
+	     .payload = "{\"jsonrpc\":\"2.0\",\"id\":17}", .user_message_index = 0,
+	     .turn_serial = 1});
+	chat.messages.push_back({.role = MessageRole::User, .content = "Continue."});
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Partial answer."});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = "codex-cli";
+	owned_session->running = true;
+	owned_session->processing = true;
+	owned_session->prompt_request_id = 17;
+	owned_session->pending_request_methods[17] = "turn/start";
+	owned_session->turn_user_message_index = 0;
+	owned_session->turn_assistant_message_index = 1;
+	owned_session->current_assistant_message_index = 1;
+	uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c",
+	    "echo The remote process does not exist. 1>&2 & echo Remote bridge connection failed. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {
+	    "/bin/sh", "-c",
+	    "printf 'The remote process does not exist.\\nRemote bridge connection failed.\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	for (int attempt = 0; attempt < 100 && !session->reconnect_pending; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(session->processing);
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT(app.chats.front().remote_process_exists);
+	UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+	UAM_ASSERT_EQ(app.chats.front().remote_prompt_delivery_id,
+	              std::string("delivery-still-live"));
+	UAM_ASSERT_EQ(app.chats.front().remote_pending_requests.size(), static_cast<std::size_t>(1));
+}
+
 UAM_TEST(AcpMissingRemoteProcessCompletesRestartCleanupWithoutDroppingPrompt)
 {
 	TempDir temp("uam-acp-missing-restart-cleanup");
@@ -8338,6 +8399,47 @@ UAM_TEST(AcpRemoteDuplicateProcessExitSchedulesAttachRecovery)
 	UAM_ASSERT(session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().remote_process_exists);
 	UAM_ASSERT_EQ(session->reconnect_attempts, 0);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+}
+
+UAM_TEST(AcpProviderStderrCannotFalselyDeclareRemoteProcessDuplicate)
+{
+	TempDir temp("uam-acp-provider-stderr-false-duplicate");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "provider-stderr-false-duplicate";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = chat.provider_id;
+	owned_session->running = true;
+	uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c",
+	    "echo A remote process already uses this sessionId. 1>&2 & echo Remote bridge connection failed. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {
+	    "/bin/sh", "-c",
+	    "printf 'A remote process already uses this sessionId.\\nRemote bridge connection failed.\\n' >&2; exit 70"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	for (int attempt = 0; attempt < 100 && !session->reconnect_pending; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT(!session->recovering_remote_process);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
 }
 
