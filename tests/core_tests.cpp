@@ -6868,6 +6868,7 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "gemini-cli");
 	source.id = "chat-source";
 	source.model_id = "gemini-2.5-pro";
+	source.small_model_mode = true;
 	source.workspace_directory = workspace.string();
 	app.chats.push_back(std::move(source));
 
@@ -6901,6 +6902,8 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().markdown_store_prompt_blocks.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.chats.front().messages.front().markdown_store_prompt_blocks.front().find(retry_skill_sentinel) != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().goals.size(), static_cast<std::size_t>(1));
+	const std::string source_goal_id = app.chats.front().goals.front().id;
 
 	const std::string changed_skill_sentinel = "UAM_CHANGED_RETRY_SKILL";
 	UAM_ASSERT(uam::io::WriteTextFile(skill, "---\ntitle: Retry Skill\n---\n# Retry Skill\n\n" + changed_skill_sentinel + "\n"));
@@ -6928,8 +6931,19 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	UAM_ASSERT(uam::RetryLastAcpPrompt(app, branch_id, &retry_error));
 	UAM_ASSERT(retry_error.empty());
 	UAM_ASSERT_EQ(branch->messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(branch->goals.size(), static_cast<std::size_t>(2));
+	const auto paused_snapshot = std::ranges::find(branch->goals, GoalStatus::Paused, &Goal::status);
+	UAM_ASSERT(paused_snapshot != branch->goals.end());
+	UAM_ASSERT(paused_snapshot->id != source_goal_id);
+	UAM_ASSERT(!branch->active_goal_id.empty());
+	UAM_ASSERT(branch->active_goal_id != paused_snapshot->id);
+	const Goal* branch_goal = uam::GoalService::FindActiveGoal(app, branch_id);
+	UAM_ASSERT(branch_goal != nullptr);
+	UAM_ASSERT_EQ(branch_goal->objective, std::string("Retry this prompt"));
 	UAM_ASSERT_EQ(raw_session->turn_user_message_index, 0);
 	UAM_ASSERT(raw_session->processing);
+	UAM_ASSERT(raw_session->queued_prompt.find("Continue working toward the active thread goal.") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("<objective>\nRetry this prompt\n</objective>") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(retry_skill_sentinel) != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(changed_skill_sentinel) == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(uam::paths::Utf8PathString(uam::paths::NormalizeExistingPath(skill))) == std::string::npos);
