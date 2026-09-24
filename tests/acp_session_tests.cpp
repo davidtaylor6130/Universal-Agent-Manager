@@ -591,38 +591,41 @@ UAM_TEST(AcpRetryFailedPromptRestoresAffordanceWhenChatSaveFails)
 	UAM_ASSERT(raw_session->last_error.find("chat history could not be saved") != std::string::npos);
 }
 
-UAM_TEST(AcpRetryFailedPromptAcceptsTrailingEmptyAssistantPlaceholder)
+UAM_TEST(AcpRetryFailedPromptAcceptsTrailingBlankAssistantPlaceholder)
 {
-	TempDir temp("uam-acp-retry-empty-placeholder");
-	uam::AppState app;
-	app.data_root = temp.root;
-	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	ChatSession chat;
-	chat.id = "retry-empty-placeholder";
-	chat.provider_id = uam::provider_ids::kGeminiCli;
-	chat.native_session_id = "native-session";
-	chat.messages_loaded = true;
-	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
-	                         .interrupted = true, .acp_prompt_not_sent = false});
-	chat.messages.push_back({.role = MessageRole::Assistant});
-	app.chats.push_back(std::move(chat));
-	auto session = std::make_unique<uam::AcpSessionState>();
-	session->chat_id = app.chats.front().id;
-	session->provider_id = app.chats.front().provider_id;
-	session->session_id = app.chats.front().native_session_id;
-	session->running = true;
-	session->session_ready = true;
-	uam::AcpSessionState* raw_session = session.get();
-	app.acp_sessions.push_back(std::move(session));
+	for (const std::string assistant_content : {std::string{}, std::string(" \t\n")})
+	{
+		TempDir temp("uam-acp-retry-blank-placeholder");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "retry-blank-placeholder";
+		chat.provider_id = uam::provider_ids::kGeminiCli;
+		chat.native_session_id = "native-session";
+		chat.messages_loaded = true;
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry this prompt.",
+		                         .interrupted = true, .acp_prompt_not_sent = false});
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = assistant_content});
+		app.chats.push_back(std::move(chat));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = app.chats.front().id;
+		session->provider_id = app.chats.front().provider_id;
+		session->session_id = app.chats.front().native_session_id;
+		session->running = true;
+		session->session_ready = true;
+		uam::AcpSessionState* raw_session = session.get();
+		app.acp_sessions.push_back(std::move(session));
 
-	std::string error;
-	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
-	UAM_ASSERT(error.find("no longer the latest") == std::string::npos);
-	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
-	UAM_ASSERT(app.chats.front().messages.front().interrupted);
-	UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
-	UAM_ASSERT(!raw_session->processing);
+		std::string error;
+		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+		UAM_ASSERT(error.find("no longer the latest") == std::string::npos);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
+		UAM_ASSERT(app.chats.front().messages.front().interrupted);
+		UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
+		UAM_ASSERT(!raw_session->processing);
+	}
 }
 
 UAM_TEST(AcpRetryFailedPromptRejectsAssistantOutputAfterFailedUser)

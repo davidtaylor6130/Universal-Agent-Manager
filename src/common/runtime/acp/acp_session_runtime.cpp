@@ -2096,7 +2096,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("The failed message is no longer the latest message.");
 		const auto is_empty_assistant_placeholder = [](const Message& candidate)
 		{
-			return candidate.role == MessageRole::Assistant && candidate.content.empty() &&
+			return candidate.role == MessageRole::Assistant && uam::strings::IsBlank(candidate.content) &&
 			       candidate.thoughts.empty() && candidate.plan_summary.empty() &&
 			       candidate.plan_entries.empty() && candidate.tool_calls.empty() &&
 			       candidate.blocks.empty() && candidate.attachments.empty();
