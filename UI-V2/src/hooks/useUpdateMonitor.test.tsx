@@ -45,6 +45,31 @@ describe('useUpdateMonitor', () => {
     }
   })
 
+  it('clears a helper update from the panel when native install succeeds before its state push', async () => {
+    const previous = useAppStore.getState()
+    const remoteHost = { id: 'homelab', label: 'Homelab', transport: 'ssh' as const, sshAlias: 'homelab', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-beta-32', platform: 'linux', architecture: 'x86_64', lastSeenAt: '', runnerProtocolVersion: 3 }
+    useAppStore.setState({
+      appVersion: '4.9.0-beta-33',
+      runnerProtocolVersion: 3,
+      updateChecksEnabled: false,
+      executionHosts: [remoteHost],
+    })
+    window.cefQuery = ({ onSuccess }) => onSuccess('{"ok":true}')
+    let result: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { result = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      act(() => root.render(<Results />))
+      expect(result!.updates).toHaveLength(1)
+      await act(async () => { await result!.applyRemoteHelperUpdate('homelab') })
+      expect(result!.updates).toHaveLength(0)
+      expect(useAppStore.getState().executionHosts[0]).toMatchObject({ runnerVersion: '4.9.0-beta-33', runnerProtocolVersion: 3 })
+    } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
   it.each(['close', 'failure'] as const)('sequences update-all through native completion and stops the remaining queue on %s', async (ending) => {
     const previous = useAppStore.getState()
     const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '2.0.0', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' as const }

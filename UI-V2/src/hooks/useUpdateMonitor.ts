@@ -107,13 +107,22 @@ export function useUpdateMonitor() {
     if (!host || host.transport !== 'ssh' || remoteHelperUpdatingId) return { ok: false }
     setRemoteHelperUpdatingId(hostId)
     try {
-      return await sendToCEF({ action: 'installRemoteHost', payload: host })
+      const response = await sendToCEF({ action: 'installRemoteHost', payload: host })
+      if (response.ok) {
+        // Native completion can race the pushed state patch; reconcile the card immediately.
+        useAppStore.setState((state) => ({
+          executionHosts: state.executionHosts.map((candidate) => candidate.id === hostId
+            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion }
+            : candidate),
+        }))
+      }
+      return response
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : undefined }
     } finally {
       setRemoteHelperUpdatingId('')
     }
-  }, [executionHosts, remoteHelperUpdatingId])
+  }, [appVersion, executionHosts, remoteHelperUpdatingId, runnerProtocolVersion])
 
   const installCliProviderVersion = useCallback((providerId: string, version: string, executionHostId: string | undefined, signal: AbortSignal) => {
     if (signal.aborted) return Promise.resolve(false)
