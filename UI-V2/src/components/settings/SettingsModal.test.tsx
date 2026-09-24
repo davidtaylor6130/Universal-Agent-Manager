@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsModal } from './SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { fallbackProviderForId } from '../../utils/providerMetadata'
+import { version as packageVersion } from '../../../package.json'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -339,7 +340,7 @@ describe('SettingsModal memory settings', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, 'helpers/uam')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(host.textContent).toContain('~/helpers/uam/4.9.0-alpha-11')
+    expect(host.textContent).toContain(`~/helpers/uam/${packageVersion}`)
     await act(async () => {
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
@@ -1205,7 +1206,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
-    expect(host.textContent).toContain('V4.9.0-alpha-11')
+    expect(host.textContent).toContain(`V${packageVersion}`)
     expect(host.textContent).not.toContain('Gemini memory worker')
 
     act(() => {

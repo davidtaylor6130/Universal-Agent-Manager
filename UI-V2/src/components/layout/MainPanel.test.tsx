@@ -186,16 +186,16 @@ describe('MainPanel', () => {
         id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'x86_64', lastSeenAt: '',
       }],
     })))
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Homelab')
-    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.textContent).toBe('Homelab')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Remote · Homelab')
+    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.textContent).toBe('Remote · Homelab')
 
     act(() => useAppStore.setState((state) => ({
       executionHosts: state.executionHosts.map((executionHost) => ({ ...executionHost, label: 'AI Server' })),
     })))
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('AI Server')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Remote · AI Server')
 
     act(() => useAppStore.setState({ executionHosts: [] }))
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('lab')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Remote · lab')
 
     act(() => root.unmount())
     host.remove()

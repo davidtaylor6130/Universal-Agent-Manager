@@ -96,7 +96,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
   const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
   const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
-    ? executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId
+    ? `Remote · ${executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId}`
     : 'Local'
 
   useEffect(() => {

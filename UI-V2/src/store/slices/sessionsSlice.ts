@@ -1,4 +1,5 @@
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
+import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
@@ -293,7 +294,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
-    appVersion: 'V4.9.0-alpha-11',
+    appVersion: `V${packageVersion}`,
     runnerProtocolVersion: 0,
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
