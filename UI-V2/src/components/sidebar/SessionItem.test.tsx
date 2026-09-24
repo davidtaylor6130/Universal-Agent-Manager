@@ -482,6 +482,49 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('activates an existing pane when selecting a chat from another pane', () => {
+    const setActiveSession = vi.fn()
+    let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+    const leaves = chatGridLeaves(layout.root)
+    layout = setChatInLeaf(setChatInLeaf(layout, 'chat-1', leaves[0].id), 'chat-2', leaves[1].id)
+    writeChatGridLayout({ ...layout, activeLeafId: leaves[1].id })
+    useAppStore.setState({ activeSessionId: 'chat-2', setActiveSession })
+
+    const { host, root } = renderSessionItem()
+    const sessionRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')!
+    act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    expect(readChatGridLayout().activeLeafId).toBe(leaves[0].id)
+    expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not activate a sibling pane when the resolved branch is already active', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 8 }
+    let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+    const leaves = chatGridLeaves(layout.root)
+    layout = setChatInLeaf(setChatInLeaf(layout, 'chat-root', leaves[0].id), 'chat-other', leaves[1].id)
+    writeChatGridLayout({ ...layout, activeLeafId: leaves[1].id })
+    useAppStore.setState({ sessions: [rootSession, branchSession], activeSessionId: 'chat-branch', setActiveSession })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch']} />))
+    const sessionRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    expect(readChatGridLayout().activeLeafId).toBe(leaves[1].id)
+    expect(setActiveSession).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('hides pane assignment noise in single-chat view', () => {
     writeChatGridLayout(defaultChatGridLayout)
     const { host, root } = renderSessionItem()

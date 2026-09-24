@@ -13,6 +13,7 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
   chatPaneColors,
+  activateExistingChatPane,
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
@@ -154,9 +155,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }
       }
       const chatId = longestChat?.id ?? sessionId
+      activateExistingChatPane(chatId)
       if (state.activeSessionId !== chatId) setActiveSession(chatId)
       return
     }
+    activateExistingChatPane(sessionId)
     if (state.activeSessionId !== sessionId) setActiveSession(sessionId)
   }
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
