@@ -8839,6 +8839,41 @@ UAM_TEST(AcpPersistedStopCleanupDoesNotDependOnTranscriptHydration)
 	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
 }
 
+UAM_TEST(AcpLegacyRemoteHelperCannotSilentlyResumeAnActiveTurn)
+{
+	for (const int protocol_version : {0, 2})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "ssh-legacy";
+		host.ssh_alias = "legacy-test-alias";
+		host.transport = "ssh";
+		host.runner_status = "ready";
+		host.runner_protocol_version = protocol_version;
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "legacy-turn";
+		chat.provider_id = uam::provider_ids::kOpenCodeCli;
+		chat.execution_host_id = host.id;
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_delivered_stdout_cursor = 123;
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.recovering_remote_turn = true;
+		session.processing = true;
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(
+		    app, session, app.chats.front(), &error));
+		UAM_ASSERT(uam::strings::Contains(error, "Update the helper"));
+		UAM_ASSERT_EQ(app.chats.front().remote_delivered_stdout_cursor,
+		              static_cast<std::uintmax_t>(123));
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+		UAM_ASSERT(session.recovering_remote_turn);
+	}
+}
+
 UAM_TEST(AcpIdleRemoteCleanupCanAttachDespiteStaleRunnerHealth)
 {
 	for (const bool stopping : {false, true})

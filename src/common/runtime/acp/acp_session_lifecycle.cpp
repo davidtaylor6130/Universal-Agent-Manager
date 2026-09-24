@@ -515,6 +515,15 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = startup_error;
 		return false;
 	}
+	if (remote && session.recovering_remote_turn && execution_host->runner_protocol_version < 3)
+	{
+		const std::string startup_error =
+		    "This SSH helper cannot safely resume the active turn. Update the helper in Settings.";
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out != nullptr) *error_out = startup_error;
+		return false;
+	}
 	if (!remote)
 	{
 		ProviderCliCompatibilityService().Poll(app);
