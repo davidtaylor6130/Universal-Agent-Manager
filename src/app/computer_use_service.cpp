@@ -14,6 +14,12 @@
 #include <sstream>
 #include <unordered_set>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
+
 namespace uam
 {
 	namespace
@@ -36,12 +42,30 @@ namespace uam
 
 		std::string FileSignature(const std::filesystem::path& path)
 		{
-			std::error_code error;
-			const auto size = std::filesystem::file_size(path, error);
-			if (error) return "missing";
-			const auto modified = std::filesystem::last_write_time(path, error);
-			return error ? std::to_string(size) : std::to_string(size) + ":" +
-			    std::to_string(static_cast<long long>(modified.time_since_epoch().count()));
+#if defined(_WIN32)
+			WIN32_FILE_ATTRIBUTE_DATA data{};
+			if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) ||
+			    (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+				return "missing";
+			const unsigned long long size =
+			    (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+			const unsigned long long modified =
+			    (static_cast<unsigned long long>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+			    data.ftLastWriteTime.dwLowDateTime;
+			return std::to_string(size) + ":" + std::to_string(modified);
+#else
+			struct stat data{};
+			if (::stat(path.c_str(), &data) != 0 || !S_ISREG(data.st_mode)) return "missing";
+#if defined(__APPLE__)
+			const long long modified = static_cast<long long>(data.st_mtimespec.tv_sec) * 1000000000LL +
+			    data.st_mtimespec.tv_nsec;
+#else
+			const long long modified = static_cast<long long>(data.st_mtim.tv_sec) * 1000000000LL +
+			    data.st_mtim.tv_nsec;
+#endif
+			return std::to_string(static_cast<unsigned long long>(data.st_size)) + ":" +
+			    std::to_string(modified);
+#endif
 		}
 
 		std::string SourceSignature(const AppState& app, const ChatSession& chat)

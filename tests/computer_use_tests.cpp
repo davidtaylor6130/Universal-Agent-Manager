@@ -90,6 +90,12 @@ UAM_TEST(ComputerUsePollSkipsUnbackedChatsAndTracksExternalSessionChanges)
 	UAM_ASSERT(uam::ComputerUseService::Poll(app));
 	UAM_ASSERT(app.chats.back().computer_use_enabled);
 	UAM_ASSERT_EQ(app.chats.back().computer_use_target_id, std::string("42"));
+	const fs::file_time_type first_modified = fs::last_write_time(directory / "control.json");
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json",
+	    R"({"state":"running","targetId":"43","targetProcessId":"7"})" "\n"));
+	fs::last_write_time(directory / "control.json", first_modified + std::chrono::seconds(2));
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT_EQ(app.chats.back().computer_use_target_id, std::string("43"));
 
 	UAM_ASSERT(fs::remove_all(directory) > 0);
 	UAM_ASSERT(uam::ComputerUseService::Poll(app));
