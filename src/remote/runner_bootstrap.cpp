@@ -285,6 +285,7 @@ namespace uam::remote
 			const std::string temporary = directory + "/uam-runner.tmp-" + plan.nonce;
 			const std::string installed = directory + "/uam-runner";
 			const std::string backup = directory + "/uam-runner.rollback-" + plan.nonce;
+			const std::string marker = directory + "/uam-runner.activation-" + plan.nonce;
 			const std::string socket = "~/" + root + "/" +
 			                           RunnerEndpointName(plan.version) + ".sock";
 			const std::string socket_relative = root + "/" +
@@ -297,19 +298,19 @@ namespace uam::remote
 			    "exit 2; fi";
 			const std::string verify =
 			    "set -eu; file=" + temporary + "; installed=" + installed +
-			    "; backup=" + backup + "; trap 'rm -f \"$file\"' EXIT; "
+			    "; backup=" + backup + "; marker=" + marker + "; trap 'rm -f \"$file\"' EXIT; "
 			    "printf '%s  %s\\n' " + artifact->sha256 +
 			    " \"$file\" | sha256sum -c -; chmod 700 \"$file\"; "
-			    "had_backup=0; if test -f \"$installed\"; then cp -p \"$installed\" \"$backup\"; had_backup=1; fi; "
-			    "\"$file\" stop --socket " + socket + "; "
+			    "if test -f \"$installed\"; then cp -p \"$installed\" \"$backup\"; fi; "
+			    "\"$file\" stop --socket " + socket + "; : > \"$marker\"; "
 			    "if mv -f \"$file\" \"$installed\" && \"$installed\" start --socket " + socket +
 			    " && test \"$(\"$installed\" --version)\" = " + plan.version +
 			    " && test \"$(\"$installed\" --protocol-version)\" = " +
 			    std::to_string(kRunnerProtocolVersion) +
 			    "; then :; else status=$?; \"$installed\" stop --socket " + socket +
-			    " || true; if test \"$had_backup\" = 1; then "
-			    "mv -f \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi; " +
-			    "exit \"$status\"; fi";
+			    " || true; if test -f \"$backup\"; then "
+			    "cp -p \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi; "
+			    "rm -f \"$marker\"; rm -f \"$backup\"; exit \"$status\"; fi";
 			install_steps = {
 			    {"Validate runner endpoint", SshCommand(plan.ssh_alias, validate_socket), ""},
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
@@ -333,24 +334,28 @@ namespace uam::remote
 			const std::string temporary = relative + "/uam-runner.tmp-" + plan.nonce + ".exe";
 			const std::string installed = relative + "/uam-runner.exe";
 			const std::string backup = relative + "/uam-runner.rollback-" + plan.nonce + ".exe";
+			const std::string marker = relative + "/uam-runner.activation-" + plan.nonce;
 			const std::string verify = PowerShellCommand(
 			    "$file=Join-Path $HOME '" + temporary + "'; "
 			    "$installed=Join-Path $HOME '" + installed + "'; $backup=Join-Path $HOME '" + backup + "'; " +
-			    "$hadBackup=$false; "
+			    "$marker=Join-Path $HOME '" + marker + "'; "
 			    "try { if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne '" +
 			    artifact->sha256 + "') { throw 'Runner checksum mismatch.' }; "
-			    "if (Test-Path -LiteralPath $installed) { Copy-Item -LiteralPath $installed -Destination $backup -Force; $hadBackup=$true }; "
+			    "if (Test-Path -LiteralPath $installed) { Copy-Item -LiteralPath $installed -Destination $backup -Force -ErrorAction Stop }; "
 			    "& $file stop | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy with active chats.' }; "
+			    "New-Item -ItemType File -Path $marker -Force -ErrorAction Stop | Out-Null; "
 			    "$moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
 			    "try { Move-Item -LiteralPath $file -Destination $installed -Force -ErrorAction Stop; $moved=$true } "
 			    "catch { Start-Sleep -Milliseconds 100 } }; if (-not $moved) { throw 'Runner service did not release its executable.' }; "
 			    "& $installed start; if ($LASTEXITCODE -ne 0) { throw 'Runner service could not start.' }; "
 			    "if ((& $installed --version) -ne '" + plan.version + "') { throw 'Runner version verification failed.' }; "
 			    "if ((& $installed --protocol-version) -ne '" + std::to_string(kRunnerProtocolVersion) + "') { throw 'Runner protocol verification failed.' }; "
-			    "} catch { $failed=$_; try { & $installed stop | Out-Null } catch {}; "
-			    "if ($hadBackup -and (Test-Path -LiteralPath $backup)) { Move-Item -LiteralPath $backup -Destination $installed -Force } "
-			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force }; "
-			    "throw $failed } "
+			    "} catch { $failed=$_; if (Test-Path -LiteralPath $marker) { "
+			    "try { & $installed stop | Out-Null } catch {}; "
+			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
+			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop }; "
+			    "Remove-Item -LiteralPath $marker -Force -ErrorAction Stop; "
+			    "Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }; throw $failed } "
 			    "finally { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }");
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,
@@ -368,23 +373,23 @@ namespace uam::remote
 			        std::to_string(kRunnerProtocolVersion)},
 			};
 		}
-		bool activated = false;
+		bool activation_started = false;
 		for (const BootstrapStep& step : install_steps)
 		{
+			if (step.label == "Verify and activate runner") activation_started = true;
 			output.clear();
 			diagnostic.clear();
 			if (!RunStep(step, output, diagnostic, result.error, stop_token))
 			{
-				if (activated)
+				if (activation_started)
 				{
 					std::string rollback_error;
-					if (!FinalizeBootstrapPlan(plan, result, false, &rollback_error, stop_token) &&
+					if (!FinalizeBootstrapPlan(plan, result, false, &rollback_error) &&
 					    !rollback_error.empty())
 						result.error += " Rollback failed: " + rollback_error;
 				}
 				return result;
 			}
-			if (step.label == "Verify and activate runner") activated = true;
 		}
 		result.ok = true;
 		return result;
@@ -413,30 +418,38 @@ namespace uam::remote
 		{
 			const std::string installed = "~/" + relative + "/uam-runner";
 			const std::string backup = "~/" + relative + "/uam-runner.rollback-" + plan.nonce;
+			const std::string marker = "~/" + relative + "/uam-runner.activation-" + plan.nonce;
 			if (keep_new_runner)
-				command = "rm -f " + backup;
+				command = "rm -f " + backup + " " + marker;
 			else
 			{
 				command = "set -eu; installed=" + installed + "; backup=" + backup +
-				    "; \"$installed\" stop --socket ~/" + root + "/" +
+				    "; marker=" + marker + "; if test -f \"$marker\"; then "
+				    "\"$installed\" stop --socket ~/" + root + "/" +
 				    RunnerEndpointName(plan.version) +
-				    ".sock || true; if test -f \"$backup\"; then mv -f \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi";
+				    ".sock || true; if test -f \"$backup\"; then cp -p \"$backup\" \"$installed\"; else rm -f \"$installed\"; fi; "
+				    "fi; rm -f \"$marker\"; rm -f \"$backup\"";
 			}
 		}
 		else
 		{
 			const std::string installed = relative + "/uam-runner.exe";
 			const std::string backup = relative + "/uam-runner.rollback-" + plan.nonce + ".exe";
+			const std::string marker = relative + "/uam-runner.activation-" + plan.nonce;
 			if (keep_new_runner)
 				command = PowerShellCommand("$backup=Join-Path $HOME '" + backup +
-				    "'; Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue");
+				    "'; $marker=Join-Path $HOME '" + marker +
+				    "'; Remove-Item -LiteralPath $backup,$marker -Force -ErrorAction SilentlyContinue");
 			else
 			{
 				std::string script = "$installed=Join-Path $HOME '" + installed +
 				    "'; $backup=Join-Path $HOME '" + backup +
-				    "'; try { & $installed stop | Out-Null } catch {}; "
-				    "if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $installed -Force } "
-				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force }; ";
+				    "'; $marker=Join-Path $HOME '" + marker +
+				    "'; if (Test-Path -LiteralPath $marker) { try { & $installed stop | Out-Null } catch {}; "
+				    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
+				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop } }; "
+				    "if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop }; "
+				    "Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue; ";
 				command = PowerShellCommand(script);
 			}
 		}

@@ -1167,6 +1167,83 @@ if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
 	           std::string::npos);
 }
 
+UAM_TEST(RemoteRunnerBootstrapRollsBackWhenSshLosesActivationAcknowledgement)
+{
+	TempDir temp("uam-runner-linux-activation-transport-failure");
+	const fs::path runner = temp.root / "uam-runner";
+	const std::string temp_name = temp.root.filename().string();
+	const std::string temp_prefix = "uam-runner-linux-activation-transport-failure-";
+	const fs::path remote_home = fs::path("/tmp") / ("uam-" + temp_name.substr(temp_prefix.size()));
+	struct RemoteHomeCleanup
+	{
+		fs::path path;
+		~RemoteHomeCleanup()
+		{
+			std::error_code error;
+			fs::remove_all(path, error);
+		}
+	} remote_home_cleanup{remote_home};
+	fs::create_directories(remote_home);
+	const fs::path installed = remote_home / "tools/uam/4.5.7/uam-runner";
+	const fs::path log = temp.root / "ssh.log";
+	const fs::path ssh = temp.root / "ssh";
+	const fs::path scp = temp.root / "scp";
+	const fs::path sha256sum = temp.root / "sha256sum";
+	const std::string new_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.5.7;; --protocol-version) echo " +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
+	const std::string old_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.4.0;; --protocol-version) echo " +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
+	UAM_ASSERT(uam::io::WriteTextFile(runner, new_runner));
+	UAM_ASSERT(uam::io::WriteTextFile(installed, old_runner));
+	fs::permissions(installed, fs::perms::owner_read | fs::perms::owner_write |
+	                            fs::perms::owner_exec);
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
+last=
+for arg in "$@"; do last=$arg; done
+printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
+if [ "$last" = "uname -s && uname -m" ]; then printf 'Linux\nx86_64\n'; exit 0; fi
+eval "$last"
+status=$?
+case "$last" in *': > "$marker"; if mv'*) if [ "$status" -eq 0 ]; then exit 255; fi;; esac
+exit "$status"
+)"));
+	UAM_ASSERT(uam::io::WriteTextFile(scp, R"(#!/bin/sh
+previous=
+last=
+for arg in "$@"; do previous=$last; last=$arg; done
+destination=${last#*:}
+cp "$previous" "$HOME/$destination"
+)"));
+	UAM_ASSERT(uam::io::WriteTextFile(sha256sum, "#!/bin/sh\ncat >/dev/null\nexit 0\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	fs::permissions(scp, fs::perms::owner_read | fs::perms::owner_write |
+	                         fs::perms::owner_exec);
+	fs::permissions(sha256sum, fs::perms::owner_read | fs::perms::owner_write |
+	                             fs::perms::owner_exec);
+	const std::string inherited_path =
+	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+	ScopedEnvVar scoped_path("PATH", temp.root.string() + ":" + inherited_path);
+	ScopedEnvVar scoped_home("HOME", remote_home.string());
+	ScopedEnvVar scoped_log("UAM_TEST_BOOTSTRAP_LOG", log.string());
+	uam::remote::BootstrapPlan plan;
+	std::string error;
+	UAM_ASSERT(uam::remote::BuildBootstrapPlan(
+	    "linux-lab", "4.5.7", "nonce-transport",
+	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
+	    "tools/uam"));
+	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	UAM_ASSERT(!result.ok);
+	UAM_ASSERT(result.error.find("Verify and activate runner") != std::string::npos);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old_runner);
+	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.rollback-nonce-transport"));
+	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.activation-nonce-transport"));
+	const std::string commands = uam::io::ReadTextFile(log);
+	UAM_ASSERT(commands.find("rm -f \"$marker\"") != std::string::npos);
+	UAM_ASSERT(commands.find("rm -f \"$backup\"") != std::string::npos);
+	UAM_ASSERT(commands.find("exit \"$status\"; fi") != std::string::npos);
+}
+
 UAM_TEST(RemoteRunnerBootstrapRejectsAnOversizedLinuxSocketBeforeCopy)
 {
 	TempDir temp("uam-runner-linux-long-socket");
@@ -1279,7 +1356,13 @@ esac
 	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
 	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $installed -Destination $backup") !=
 	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Move-Item -LiteralPath $backup -Destination $installed") !=
+	UAM_ASSERT(decoded_commands.find("New-Item -ItemType File -Path $marker") !=
+	           std::string::npos);
+	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $marker)") !=
+	           std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $marker -Force -ErrorAction Stop") !=
+	           std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop") !=
 	           std::string::npos);
 	UAM_ASSERT(decoded_commands.find("Runner protocol verification failed") != std::string::npos);
 	UAM_ASSERT(decoded_commands.find("old-tools/uam/4.4.0/uam-runner.exe") ==
