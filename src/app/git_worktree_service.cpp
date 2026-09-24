@@ -780,7 +780,9 @@ namespace uam
 			const ProcessExecutionResult clone = RunCommand("git clone --no-hardlinks --quiet " +
 			    uam::shell::EscapeArg(uam::paths::Utf8PathString(parent_repository)) + " " +
 			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository)));
-			if (!CommandSucceeded(clone) || !GitCommand(repository, "remote remove origin", &result.message))
+			if (!CommandSucceeded(clone) ||
+			    !GitCommand(repository, "remote remove origin", &result.message) ||
+			    !GitCommand(repository, "config core.autocrlf false", &result.message))
 			{
 				if (!CommandSucceeded(clone)) result.message = CommandOutputOrFallback(clone, "Failed to clone the source chat's managed repository.");
 				(void)uam::paths::RemoveAllNoThrow(repository, &ec);

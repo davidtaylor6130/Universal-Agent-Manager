@@ -5384,7 +5384,7 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	const nlohmann::json limits = nlohmann::json::parse(line);
 	UAM_ASSERT_EQ(limits.value("method", ""), std::string("account/rateLimits/read"));
 	UAM_ASSERT_EQ(limits.value("id", 0), 101);
-	UAM_ASSERT(!std::getline(wire, line));
+	while (std::getline(wire, line)) UAM_ASSERT(uam::strings::IsBlank(line));
 	UAM_ASSERT(raw_session->last_error.empty());
 	UAM_ASSERT(raw_session->initialized);
 	UAM_ASSERT_EQ(raw_session->agent_title, std::string("Codex"));

@@ -7203,6 +7203,7 @@ UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)
 	const fs::path repo = temp.root / "repo";
 	fs::create_directories(repo);
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config core.autocrlf false"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "baseline\n"));
