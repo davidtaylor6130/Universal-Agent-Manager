@@ -1513,6 +1513,11 @@ namespace uam
 		return j;
 	}
 
+	std::string StateSerializer::MessageDigest(const ChatSession& session)
+	{
+		return MessageDigestForFingerprint(session);
+	}
+
 	std::string StateSerializer::ToolCallContentForFrontend(const ToolCall& tool_call)
 	{
 		if (!tool_call.args_json.empty() && !tool_call.result_text.empty())

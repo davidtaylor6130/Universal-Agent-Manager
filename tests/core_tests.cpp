@@ -9730,10 +9730,14 @@ UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)
 	chat.messages_loaded = true;
 	chat.messages.push_back({MessageRole::User, "first version", "2026-01-01T00:00:00.000Z"});
 	chat.messages.push_back({MessageRole::Assistant, "unchanged answer", "2026-01-01T00:00:01.000Z"});
-	const std::string before = uam::StateSerializer::SerializeSession(chat).value("messagesDigest", "");
+	const nlohmann::json serialized_before = uam::StateSerializer::SerializeSession(chat);
+	const std::string before = serialized_before.value("messagesDigest", "");
+	UAM_ASSERT_EQ(uam::StateSerializer::MessageDigest(chat), before);
 
 	chat.messages.front().content = "other version";
-	const std::string after = uam::StateSerializer::SerializeSession(chat).value("messagesDigest", "");
+	const nlohmann::json serialized_after = uam::StateSerializer::SerializeSession(chat);
+	const std::string after = serialized_after.value("messagesDigest", "");
+	UAM_ASSERT_EQ(uam::StateSerializer::MessageDigest(chat), after);
 	UAM_ASSERT(before != after);
 
 	chat.messages.back().tool_calls.emplace_back();

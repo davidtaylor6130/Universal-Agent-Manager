@@ -170,7 +170,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	const std::string target_id = target == nullptr ? std::string{} : target->id;
-	const std::string target_digest = target == nullptr ? std::string{} : uam::StateSerializer::SerializeSession(*target).value("messagesDigest", "");
+	const std::string target_digest = target == nullptr ? std::string{} : uam::StateSerializer::MessageDigest(*target);
 	const std::string request_key = target_id.empty() ? source_id + "/" + native_id : target_id;
 	const auto previous_request = m_nativeHistoryRequests.find(request_key);
 	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
@@ -272,7 +272,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    result = AsyncFailure(500, uam::strings::NonEmptyOrFallback(error, "Failed to reload the current child history."));
 				    return;
 			    }
-			    if (uam::StateSerializer::SerializeSession(*current_target).value("messagesDigest", "") != target_digest)
+			    if (uam::StateSerializer::MessageDigest(*current_target) != target_digest)
 			    {
 				    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
 				    return;

@@ -29,6 +29,9 @@ class StateSerializer
 	/// Serialise a single chat session (messages included).
 	static nlohmann::json SerializeSession(const ChatSession& session);
 
+	/// Return the message digest used in serialized chat state.
+	static std::string MessageDigest(const ChatSession& session);
+
 	/// Build the full persisted tool-call detail returned on demand.
 	static std::string ToolCallContentForFrontend(const ToolCall& tool_call);
 

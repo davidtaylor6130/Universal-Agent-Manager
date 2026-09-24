@@ -68,16 +68,17 @@ namespace
 	nlohmann::json SerializeChatMessagesResult(
 	    const ChatSession& chat, std::string_view known_digest)
 	{
-		const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
-		const std::string messages_digest = serialized.value("messagesDigest", "");
-		nlohmann::json result{{"chatId", chat.id}, {"messagesDigest", messages_digest}};
-		if (!known_digest.empty() && known_digest == messages_digest)
+		if (!known_digest.empty() &&
+		    known_digest == uam::StateSerializer::MessageDigest(chat))
 		{
-			result["unchanged"] = true;
-			return result;
+			return {{"chatId", chat.id}, {"messagesDigest", known_digest},
+			        {"unchanged", true}};
 		}
 
-		result["unchanged"] = false;
+		const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
+		nlohmann::json result{{"chatId", chat.id},
+		                      {"messagesDigest", serialized.value("messagesDigest", "")},
+		                      {"unchanged", false}};
 		const nlohmann::json* messages =
 		    uam::nlohmann_json::FindArrayField(serialized, "messages");
 		result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
@@ -217,7 +218,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	chat_snapshot.workspace_directory = chat->workspace_directory;
 	chat_snapshot.execution_host_id = chat->execution_host_id;
 	chat_snapshot.folder_id = chat->folder_id;
-	const std::string original_digest = uam::StateSerializer::SerializeSession(*chat).value("messagesDigest", "");
+	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat);
 	const auto previous_request = m_nativeHistoryRequests.find(chat_id);
 	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
 	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
@@ -308,7 +309,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    return;
 		    }
 		    // A prompt or another import may have completed while the native export was running.
-		    if (uam::StateSerializer::SerializeSession(*current).value("messagesDigest", "") == original_digest)
+		    if (uam::StateSerializer::MessageDigest(*current) == original_digest)
 		    {
 			    if (!ChatHistorySyncService().SaveNativeTranscript(m_app, *current, std::move(transcript->messages)))
 			    {
