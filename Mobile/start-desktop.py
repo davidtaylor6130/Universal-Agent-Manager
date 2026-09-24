@@ -11,6 +11,15 @@ import subprocess
 from urllib.parse import urlsplit
 
 
+def stop_proxy(proxy):
+    proxy.terminate()
+    try:
+        proxy.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proxy.kill()
+        proxy.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--desktop', type=Path, default=Path(__file__).resolve().parents[1] /
@@ -83,8 +92,7 @@ def main():
                     except subprocess.TimeoutExpired:
                         pass
         finally:
-            proxy.terminate()
-            proxy.wait(timeout=10)
+            stop_proxy(proxy)
 
 
 if __name__ == '__main__':
