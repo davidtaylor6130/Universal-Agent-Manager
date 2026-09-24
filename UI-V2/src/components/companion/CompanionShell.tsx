@@ -298,7 +298,8 @@ export function CompanionShell() {
       <Button variant="ghost" onClick={disconnect}>Logout</Button>
     </main> : ready ? <>
       <main className="uam-companion-main">
-        {conversationOpen && session ? <ChatView key={session.id} session={session} /> : <div className="uam-companion-list"
+        {conversationOpen && session ? <ChatView key={session.id} session={session} /> : <div
+          className={`uam-companion-page-viewport uam-companion-page-viewport--${tab}`}
           onClickCapture={(event) => {
             const target = event.target as Element
             if (target.closest('[data-session-id]') && !target.closest('button, input')) setConversationOpen(true)
@@ -306,28 +307,34 @@ export function CompanionShell() {
           onKeyDownCapture={(event) => {
             if ((event.key === 'Enter' || event.key === ' ') && (event.target as Element).matches('[data-session-id]')) setConversationOpen(true)
           }}>
-            <div className="flex items-center justify-between px-3 py-2">
-              <h1 className="!p-0">{tab === 'activity' ? 'Activity' : 'Chats'}</h1>
-            </div>
-        {tab === 'activity' ? <>
-          <div className="uam-companion-scope">
-            <label className="uam-companion-scope-label" htmlFor="companion-project-filter">Project</label>
-            <select id="companion-project-filter" aria-label="Filter activity by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-              <option value="all">All projects</option>
-              {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-              {sessions.some((candidate) => !candidate.folderId || !folders.some((folder) => folder.id === candidate.folderId)) && <option value="unsorted">Unsorted</option>}
-            </select>
-            <span className="uam-companion-refresh-stack">
-              <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
-              <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
-            </span>
+          <div className="uam-companion-page-track">
+            <section className="uam-companion-list uam-companion-page" aria-label="Activity page" aria-hidden={tab !== 'activity'} {...(tab !== 'activity' ? { inert: '' } : {})}>
+              <div className="flex items-center justify-between px-3 py-2">
+                <h1 className="!p-0">Activity</h1>
+              </div>
+              <div className="uam-companion-scope">
+                <label className="uam-companion-scope-label" htmlFor="companion-project-filter">Project</label>
+                <select id="companion-project-filter" aria-label="Filter activity by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+                  <option value="all">All projects</option>
+                  {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                  {sessions.some((candidate) => !candidate.folderId || !folders.some((folder) => folder.id === candidate.folderId)) && <option value="unsorted">Unsorted</option>}
+                </select>
+                <span className="uam-companion-refresh-stack">
+                  <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
+                  <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
+                </span>
+              </div>
+              <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(activityRow) : <p className="uam-companion-empty">No active chats.</p>}</section>
+              <section className="uam-companion-section"><h2>Recent output</h2>{recentSessions.length ? recentSessions.map(activityRow) : <p className="uam-companion-empty">No recent output.</p>}</section>
+            </section>
+            <section className="uam-companion-list uam-companion-page" aria-label="Chats page" aria-hidden={tab !== 'chats'} {...(tab !== 'chats' ? { inert: '' } : {})}>
+              <div className="flex items-center justify-between px-3 py-2">
+                <h1 className="!p-0">Chats</h1>
+              </div>
+              <input className="uam-companion-search" type="search" aria-label="Search chats" placeholder="Search chats" value={search} onChange={(event) => setSearch(event.target.value)} />
+              {tab === 'chats' && <FolderTree searchQuery={search} />}
+            </section>
           </div>
-          <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(activityRow) : <p className="uam-companion-empty">No active chats.</p>}</section>
-          <section className="uam-companion-section"><h2>Recent output</h2>{recentSessions.length ? recentSessions.map(activityRow) : <p className="uam-companion-empty">No recent output.</p>}</section>
-        </> : <>
-            <input className="uam-companion-search" type="search" aria-label="Search chats" placeholder="Search chats" value={search} onChange={(event) => setSearch(event.target.value)} />
-            <FolderTree searchQuery={search} />
-          </>}
         </div>}
       </main>
       {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense>}
