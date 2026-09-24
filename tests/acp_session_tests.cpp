@@ -6848,6 +6848,141 @@ UAM_TEST(FastShutdownPreservesQueuedRemotePromptsForRestart)
 	UAM_ASSERT(reloaded->messages.empty());
 }
 
+UAM_TEST(FastShutdownPreservesUndeliveredRemotePromptForRestart)
+{
+	TempDir temp("uam-fast-shutdown-remote-undelivered");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-undelivered-shutdown";
+	chat.execution_host_id = "missing-remote-host";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Older unsent prompt.",
+	                         .acp_prompt_not_sent = true});
+	Message user{.role = MessageRole::User, .content = "Deliver this once."};
+	user.acp_prompt_not_sent = true;
+	chat.messages.push_back(std::move(user));
+	chat.remote_process_exists = true;
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->processing = true;
+	session->queued_prompt = "Deliver this once.";
+	session->turn_first_user_message_index = 1;
+	session->turn_user_message_index = 1;
+	app.acp_sessions.push_back(std::move(session));
+
+	uam::FastStopAcpSessionsForExit(app);
+	const std::optional<ChatSession> persisted =
+	    ChatRepository::LoadLocalChat(app.data_root, "remote-undelivered-shutdown");
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.front().text,
+	              std::string("Deliver this once."));
+	UAM_ASSERT(!persisted->acp_queued_prompts.front().append_user_message);
+	UAM_ASSERT(persisted->acp_queued_prompts.front().prepared_for_delivery);
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.front().prepared_user_message_count, 1);
+	UAM_ASSERT_EQ(persisted->acp_dispatched_queued_prompt_count, static_cast<std::size_t>(1));
+
+	uam::AppState restarted;
+	restarted.data_root = temp.root;
+	restarted.chats = ChatRepository::LoadLocalChatSummaries(restarted.data_root);
+	(void)uam::RestoreRemoteAcpSessionsAfterRestart(restarted);
+	UAM_ASSERT_EQ(restarted.acp_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->queued_prompt,
+	              std::string("Deliver this once."));
+	UAM_ASSERT(restarted.acp_sessions.front()->processing);
+	UAM_ASSERT(restarted.acp_sessions.front()->recovering_remote_process);
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->turn_first_user_message_index, 1);
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->turn_user_message_index, 1);
+}
+
+UAM_TEST(RemotePromptMarkerAtomicallyReplacesPreparedOutboxEntry)
+{
+	TempDir temp("uam-remote-prepared-prompt-marker");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-prepared-prompt";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.execution_host_id = "ssh-test";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Send me once.",
+	                         .acp_prompt_not_sent = true});
+	uam::AcpQueuedUserPromptState prepared;
+	prepared.text = "Send me once.";
+	prepared.append_user_message = false;
+	prepared.prepared_for_delivery = true;
+	prepared.prepared_user_message_count = 1;
+	chat.acp_queued_prompts.push_back(std::move(prepared));
+	chat.acp_queued_prompts.push_back({.text = "Then send this."});
+	chat.acp_dispatched_queued_prompt_count = 1;
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = app.chats.front().id;
+	owned->provider_id = app.chats.front().provider_id;
+	owned->session_id = "native-session";
+	owned->running = true;
+	owned->session_ready = true;
+	owned->processing = true;
+	owned->queued_prompt = "Send me once.";
+	owned->turn_first_user_message_index = 0;
+	owned->turn_user_message_index = 0;
+	owned->turn_serial = 1;
+	uam::AcpSessionState* session = owned.get();
+	app.acp_sessions.push_back(std::move(owned));
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, sink, &error));
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *session, app.chats.front()));
+	const std::optional<ChatSession> persisted =
+	    ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(persisted->remote_turn_reconnect_pending);
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.front().text, std::string("Then send this."));
+	UAM_ASSERT_EQ(persisted->acp_dispatched_queued_prompt_count, static_cast<std::size_t>(0));
+	UAM_ASSERT(!persisted->messages.front().acp_prompt_not_sent);
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
+	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+}
+
+UAM_TEST(RemotePreparedInternalPromptKeepsEarlierUnsentUserMessage)
+{
+	TempDir temp("uam-remote-prepared-internal-prompt");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "remote-internal-prompt";
+	chat.execution_host_id = "missing-remote-host";
+	chat.remote_process_exists = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Earlier retry.",
+	                         .acp_prompt_not_sent = true});
+	uam::AcpQueuedUserPromptState prepared;
+	prepared.text = "Internal continuation.";
+	prepared.append_user_message = false;
+	prepared.prepared_for_delivery = true;
+	chat.acp_queued_prompts.push_back(std::move(prepared));
+	chat.acp_dispatched_queued_prompt_count = 1;
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+
+	uam::AppState restarted;
+	restarted.data_root = temp.root;
+	restarted.chats = ChatRepository::LoadLocalChatSummaries(restarted.data_root);
+	UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(restarted),
+	              static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->turn_first_user_message_index, -1);
+	UAM_ASSERT(restarted.chats.front().messages.front().acp_prompt_not_sent);
+}
+
 UAM_TEST(FastShutdownMarksLocalTextOnlyResponseInterrupted)
 {
 	TempDir temp("uam-fast-shutdown-text-settlement");

@@ -130,8 +130,20 @@ namespace uam
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
 		                               ChatSession& chat, std::string* error_out = nullptr)
 		{
+			const bool pending_remote_delivery =
+			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+			    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty() &&
+			    !chat.acp_queued_prompts.empty() &&
+			    chat.acp_queued_prompts.front().prepared_for_delivery;
+			AcpQueuedUserPromptState pending;
+			if (pending_remote_delivery) pending = chat.acp_queued_prompts.front();
 			chat.acp_queued_prompts.assign(
 			    session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+			if (pending_remote_delivery)
+			{
+				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), std::move(pending));
+				chat.acp_dispatched_queued_prompt_count = 1;
+			}
 			if (acp_detail::SaveChatQuietly(app, chat)) return true;
 			if (error_out != nullptr)
 				*error_out = "Queued prompts could not be saved.";
@@ -549,7 +561,9 @@ namespace uam
 				continue;
 			}
 			if (!chat.remote_turn_reconnect_pending && !chat.remote_stop_cleanup_pending &&
-			    !chat.remote_restart_pending && !chat.remote_process_exists)
+			    !chat.remote_restart_pending && !chat.remote_process_exists &&
+			    (chat.acp_queued_prompts.empty() ||
+			     !chat.acp_queued_prompts.front().prepared_for_delivery))
 			{
 				AcpSessionState& session = acp_detail::EnsureAcpSessionForChat(app, chat);
 				session.queued_user_prompts.assign(
@@ -599,12 +613,61 @@ namespace uam
 				}
 				continue;
 			}
-			if (chat.remote_process_exists && !chat.remote_turn_reconnect_pending)
+			if (!chat.remote_turn_reconnect_pending &&
+			    (chat.remote_process_exists ||
+			     (!chat.acp_queued_prompts.empty() &&
+			      chat.acp_queued_prompts.front().prepared_for_delivery)))
 			{
+				const bool dispatched_prompt = chat.acp_dispatched_queued_prompt_count == 1 &&
+				    !chat.acp_queued_prompts.empty() &&
+				    chat.acp_queued_prompts.front().prepared_for_delivery;
+				if (dispatched_prompt)
+				{
+					std::string warning;
+					if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning))
+					{
+						app.status_line = "Remote prompt recovery is waiting for chat history repair.";
+						app.remote_recovery_hydration_retry_not_before_by_chat_id[chat.id] =
+						    GetAppTimeSeconds() + kRemoteRecoveryHydrationRetryDelaySeconds;
+						continue;
+					}
+					app.remote_recovery_hydration_retry_not_before_by_chat_id.erase(chat.id);
+				}
 				AcpSessionState& session = acp_detail::EnsureAcpSessionForChat(app, chat);
-				session.queued_user_prompts.assign(
-				    chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
-				session.processing = false;
+				if (dispatched_prompt)
+				{
+					session.queued_prompt = chat.acp_queued_prompts.front().text;
+					session.processing = true;
+					const int user_message_count =
+					    chat.acp_queued_prompts.front().prepared_user_message_count;
+					session.turn_user_message_index = chat.remote_turn_user_message_index;
+					if (user_message_count > 0 &&
+					    (session.turn_user_message_index < 0 ||
+					     session.turn_user_message_index >= static_cast<int>(chat.messages.size())))
+					{
+						for (int index = static_cast<int>(chat.messages.size()) - 1; index >= 0; --index)
+							if (chat.messages[static_cast<std::size_t>(index)].role == MessageRole::User &&
+							    chat.messages[static_cast<std::size_t>(index)].acp_prompt_not_sent)
+							{
+								session.turn_user_message_index = index;
+								break;
+							}
+					}
+					session.turn_first_user_message_index = user_message_count == 0 ||
+					    session.turn_user_message_index < 0
+					    ? -1
+					    : std::max(0, session.turn_user_message_index -
+					        user_message_count + 1);
+					session.turn_serial = std::max(1, chat.remote_turn_serial);
+					session.queued_user_prompts.assign(
+					    chat.acp_queued_prompts.begin() + 1, chat.acp_queued_prompts.end());
+				}
+				else
+				{
+					session.queued_user_prompts.assign(
+					    chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+					session.processing = false;
+				}
 				session.recovering_remote_process = true;
 				if (!acp_detail::StartAcpProcessForChat(app, session, chat))
 				{
@@ -1104,12 +1167,32 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const std::size_t original_message_count = chat.messages.size();
 			const std::size_t original_linked_file_count = chat.linked_files.size();
 			const std::string original_updated_at = chat.updated_at;
+			const std::vector<AcpQueuedUserPromptState> original_queued_prompts = chat.acp_queued_prompts;
+			const std::size_t original_dispatched_count = chat.acp_dispatched_queued_prompt_count;
 			AppendQueuedUserMessages(chat, session, batch);
+			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+			    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty())
+			{
+				const std::size_t dispatched = std::min(original_dispatched_count,
+				                                        chat.acp_queued_prompts.size());
+				chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin(),
+				    chat.acp_queued_prompts.begin() + static_cast<std::ptrdiff_t>(dispatched));
+				AcpQueuedUserPromptState pending;
+				pending.text = session.queued_prompt;
+				pending.append_user_message = false;
+				pending.prepared_for_delivery = true;
+				pending.prepared_user_message_count =
+				    static_cast<int>(std::min<std::size_t>(appended_message_count, 64));
+				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), std::move(pending));
+				chat.acp_dispatched_queued_prompt_count = 1;
+			}
 			if (!SaveChatQuietly(app, chat))
 			{
 				chat.messages.resize(original_message_count);
 				chat.linked_files.resize(original_linked_file_count);
 				chat.updated_at = original_updated_at;
+				chat.acp_queued_prompts = original_queued_prompts;
+				chat.acp_dispatched_queued_prompt_count = original_dispatched_count;
 				session.last_error = "Prompt was not sent because chat history could not be saved.";
 				if (error_out != nullptr) *error_out = session.last_error;
 				CompletePromptTurn(session, kAcpLifecycleError);
@@ -1922,12 +2005,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			session.queued_user_prompts.pop_front();
 		}
-		chat.acp_dispatched_queued_prompt_count = 0;
-		if (!PersistQueuedPromptOutbox(app, session, chat))
+		const bool awaiting_remote_delivery =
+		    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+		    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty();
+		if (!awaiting_remote_delivery)
 		{
-			// The previous durable state contains the dispatched count. On recovery
-			// those entries are skipped while the active remote turn is reattached.
-			acp_detail::ScheduleChatSave(app, chat, 0.0);
+			chat.acp_dispatched_queued_prompt_count = 0;
+			if (!PersistQueuedPromptOutbox(app, session, chat))
+			{
+				// The previous durable state contains the dispatched count. On recovery
+				// those entries are skipped while the active remote turn is reattached.
+				acp_detail::ScheduleChatSave(app, chat, 0.0);
+			}
 		}
 		return true;
 	}
@@ -3515,9 +3604,36 @@ For desktop observation and input, use only the provider's built-in controller; 
 					    : PersistQueuedAcpUserPromptsAsInterrupted(*session, *chat);
 					if (preserve_remote_queue)
 					{
-						chat->acp_queued_prompts.assign(session->queued_user_prompts.begin(),
-						                                session->queued_user_prompts.end());
-						chat->acp_dispatched_queued_prompt_count = 0;
+						const bool undelivered_remote_prompt =
+						    !chat->remote_turn_reconnect_pending && session->processing &&
+						    session->prompt_request_id == 0 && !session->queued_prompt.empty();
+						const std::size_t dispatched = std::min(
+						    chat->acp_dispatched_queued_prompt_count,
+						    chat->acp_queued_prompts.size());
+						std::vector<AcpQueuedUserPromptState> queued;
+						if (dispatched > 0)
+							queued.assign(chat->acp_queued_prompts.begin() + static_cast<std::ptrdiff_t>(dispatched),
+						                     chat->acp_queued_prompts.end());
+						else
+							queued.assign(session->queued_user_prompts.begin(), session->queued_user_prompts.end());
+						if (undelivered_remote_prompt)
+						{
+							AcpQueuedUserPromptState dispatched_prompt;
+							dispatched_prompt.text = session->queued_prompt;
+							dispatched_prompt.append_user_message = false;
+							dispatched_prompt.prepared_for_delivery = true;
+							dispatched_prompt.prepared_user_message_count =
+							    session->turn_first_user_message_index >= 0 &&
+							    session->turn_user_message_index >= session->turn_first_user_message_index
+							        ? std::min(session->turn_user_message_index -
+							                       session->turn_first_user_message_index + 1, 64)
+							        : 0;
+							queued.insert(queued.begin(), std::move(dispatched_prompt));
+							chat->acp_dispatched_queued_prompt_count = 1;
+						}
+						else
+							chat->acp_dispatched_queued_prompt_count = 0;
+						chat->acp_queued_prompts = std::move(queued);
 						(void)acp_detail::SaveChatQuietly(app, *chat);
 					}
 					if ((queued_interrupted || local_turn_settled) &&

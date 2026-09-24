@@ -1081,6 +1081,17 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
 	if (remote)
 	{
+		const bool staged_prompt = chat.acp_dispatched_queued_prompt_count == 1 &&
+		    !chat.acp_queued_prompts.empty() &&
+		    chat.acp_queued_prompts.front().prepared_for_delivery &&
+		    chat.acp_queued_prompts.front().text == prompt;
+		AcpQueuedUserPromptState staged_entry;
+		if (staged_prompt)
+		{
+			staged_entry = std::move(chat.acp_queued_prompts.front());
+			chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+			chat.acp_dispatched_queued_prompt_count = 0;
+		}
 		AcpRemotePendingRequestState pending;
 		pending.request_id = id;
 		pending.method = method;
@@ -1105,7 +1116,17 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		}
 		if (!SaveChatQuietly(app, chat))
 		{
+			if (staged_prompt)
+			{
+				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(),
+				                               std::move(staged_entry));
+				chat.acp_dispatched_queued_prompt_count = 1;
+			}
 			chat.remote_pending_requests.pop_back();
+			chat.remote_turn_reconnect_pending = false;
+			chat.remote_prompt_delivery_session_id.clear();
+			chat.remote_prompt_delivery_id.clear();
+			chat.remote_prompt_delivery_payload.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
 			session.last_error =

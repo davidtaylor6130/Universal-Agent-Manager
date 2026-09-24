@@ -290,6 +290,10 @@ namespace
 			uam::json::PushValue(attachments, AttachmentToJson(attachment));
 		uam::json::SetValue(obj, "attachments", std::move(attachments));
 		uam::json::SetBool(obj, "append_user_message", prompt.append_user_message);
+		if (prompt.prepared_for_delivery)
+			uam::json::SetBool(obj, "prepared_for_delivery", true);
+		if (prompt.prepared_user_message_count > 0)
+			uam::json::SetNumber(obj, "prepared_user_message_count", prompt.prepared_user_message_count);
 		uam::json::SetBool(obj, "goal_mode", prompt.goal_mode);
 		uam::json::SetString(obj, "goal_id", prompt.goal_id);
 		uam::json::SetBool(obj, "computer_use_mode", prompt.computer_use_mode);
@@ -398,6 +402,9 @@ namespace
 			}
 		}
 		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
+		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
+		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
+		    obj.Find("prepared_user_message_count")), 64);
 		prompt.goal_mode = JsonBoolOrDefault(obj.Find("goal_mode"), false);
 		prompt.goal_id = JsonStringOrEmpty(obj.Find("goal_id"));
 		prompt.computer_use_mode = JsonBoolOrDefault(obj.Find("computer_use_mode"), false);
@@ -821,6 +828,8 @@ namespace
 		       lhs.markdown_store_prompt_blocks == rhs.markdown_store_prompt_blocks &&
 		       MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments) &&
 		       lhs.append_user_message == rhs.append_user_message &&
+		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
+		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
 		       lhs.goal_mode == rhs.goal_mode && lhs.goal_id == rhs.goal_id &&
 		       lhs.computer_use_mode == rhs.computer_use_mode &&
 		       lhs.priority_steer == rhs.priority_steer;

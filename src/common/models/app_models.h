@@ -84,6 +84,8 @@ namespace uam
 		std::vector<std::string> markdown_store_prompt_blocks;
 		std::vector<MessageAttachment> attachments;
 		bool append_user_message = true;
+		bool prepared_for_delivery = false;
+		int prepared_user_message_count = 0;
 		bool goal_mode = false;
 		std::string goal_id;
 		bool computer_use_mode = false;
