@@ -174,14 +174,21 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
+	const bool messages_pending_save = m_app.pending_chat_save_at_by_chat_id.contains(chat_id);
+	const bool saved = messages_pending_save
+	    ? ChatRepository::SaveChat(m_app.data_root, *selected_chat)
+	    : ChatRepository::SaveLastOpenedAt(m_app.data_root, *selected_chat);
+	if (!saved)
 	{
+		m_app.status_line = "Failed to persist selected chat.";
 		selected_chat->last_opened_at = previous_last_opened_at;
 		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
 		(void)PersistenceCoordinator().SaveSettings(m_app);
 		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 		return;
 	}
+	if (messages_pending_save) m_app.pending_chat_save_at_by_chat_id.erase(chat_id);
+	m_app.status_line.clear();
 
 	ChatDomainService().SortChatsByRecent(m_app.chats);
 	ChatDomainService().SelectChatById(m_app, chat_id);

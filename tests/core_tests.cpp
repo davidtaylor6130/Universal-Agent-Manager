@@ -6192,6 +6192,48 @@ UAM_TEST(ChatRepositoryRecoversBackupWhenPrimaryMessagesFieldIsNotAnArray)
 	UAM_ASSERT_EQ(loaded.front().messages.front().content, std::string("durable transcript"));
 }
 
+UAM_TEST(ChatRepositorySavesOpenedTimeWithoutRewritingMessages)
+{
+	TempDir temp("uam-chat-opened-time");
+	ChatSession chat;
+	chat.id = "chat-opened-time";
+	chat.provider_id = "opencode-cli";
+	chat.title = "Large transcript";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.last_opened_at = chat.updated_at;
+	chat.messages.push_back(Message{MessageRole::Assistant, std::string(1024 * 1024, 'x')});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string original_primary = ReadFile(primary);
+
+	chat.last_opened_at = "2026-01-01T00:00:02.000Z";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	UAM_ASSERT_EQ(ReadFile(primary), original_primary);
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(summary.has_value());
+	UAM_ASSERT_EQ(summary->last_opened_at, chat.last_opened_at);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *summary));
+	UAM_ASSERT_EQ(summary->last_opened_at, chat.last_opened_at);
+	UAM_ASSERT_EQ(summary->messages.front().content, chat.messages.front().content);
+	const std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(full.has_value());
+	UAM_ASSERT_EQ(full->last_opened_at, chat.last_opened_at);
+	const std::vector<ChatSession> all_full = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(all_full.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(all_full.front().last_opened_at, chat.last_opened_at);
+
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	UAM_ASSERT(uam::io::WriteTextFile(summary_path, "{"));
+	chat.last_opened_at = "2026-01-01T00:00:03.000Z";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	UAM_ASSERT(ReadFile(primary) != original_primary);
+	const std::optional<ChatSession> recovered = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(recovered.has_value());
+	UAM_ASSERT_EQ(recovered->last_opened_at, chat.last_opened_at);
+	UAM_ASSERT_EQ(recovered->messages.front().content, chat.messages.front().content);
+}
+
 UAM_TEST(ChatRepositoryUnloadedMetadataSavePreservesMessagesFromValidatedBackup)
 {
 	TempDir temp("uam-chat-unloaded-save-backup");

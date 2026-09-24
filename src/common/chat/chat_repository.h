@@ -34,6 +34,8 @@ class ChatRepository
   public:
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
+	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
+	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
 	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Loads locally persisted chat sessions from disk.</summary>

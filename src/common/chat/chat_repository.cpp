@@ -1809,6 +1809,26 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
 }
 
+bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat.id)) return false;
+	const fs::path chat_path = AppPaths::UamChatFilePath(data_root, chat.id);
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+	std::error_code error;
+	const std::uintmax_t source_size = fs::file_size(chat_path, error);
+	if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return SaveChat(data_root, chat);
+	auto summary = ParseJson(uam::io::ReadTextFile(summary_path));
+	if (!summary || summary->type != JsonValue::Type::Object ||
+	    JsonStringOrEmpty(summary->Find(kChatIdField)) != chat.id ||
+	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatSummarySourceSizeField)) != source_size)
+	{
+		return SaveChat(data_root, chat);
+	}
+	uam::json::SetString(*summary, kChatLastOpenedAtField,
+	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
+}
+
 bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat)
 {
 	return SaveChatImpl(data_root, chat, true);
@@ -1963,6 +1983,8 @@ namespace
 
 	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
 	{
+		if (summary.last_opened_at > hydrated.last_opened_at)
+			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
@@ -2025,6 +2047,17 @@ namespace
 		hydrated.memory_last_processed_message_count = summary.memory_last_processed_message_count;
 		hydrated.memory_last_processed_at = summary.memory_last_processed_at;
 		hydrated.small_model_mode = summary.small_model_mode;
+	}
+
+	void ApplySummaryOpenedAtToFullChat(const fs::path& chat_path, ChatSession& chat)
+	{
+		const fs::path summary_path = SummaryCachePathForChatFile(chat_path);
+		std::error_code error;
+		const std::uintmax_t source_size = fs::file_size(chat_path, error);
+		if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return;
+		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size);
+		if (summary.chat && summary.chat->id == chat.id && summary.chat->last_opened_at > chat.last_opened_at)
+			chat.last_opened_at = summary.chat->last_opened_at;
 	}
 
 	ChatSession BuildRecoveredChatFromBackup(const fs::path& backup_path, const LoadChatResult& backup_chat, bool include_messages, const std::string& recovered_id)
@@ -2143,6 +2176,8 @@ namespace
 			if (!primary_chat.chat)
 			{
 				primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				if (include_messages && primary_chat.chat)
+					ApplySummaryOpenedAtToFullChat(entry.path(), *primary_chat.chat);
 			}
 			if (primary_chat.chat)
 			{
@@ -2224,6 +2259,8 @@ std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::
 	if (!loaded.chat)
 	{
 		loaded = ParseLocalChatFile(chat_path, include_messages);
+		if (include_messages && loaded.chat)
+			ApplySummaryOpenedAtToFullChat(chat_path, *loaded.chat);
 	}
 	if (!loaded.chat)
 	{
