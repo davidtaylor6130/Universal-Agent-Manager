@@ -171,7 +171,7 @@ export function CompanionShell() {
           const selectedCliBinding = selectedId ? current.cliBindingBySessionId?.[selectedId] : undefined
           const selectedTranscriptNeedsRefresh = selectedId && current.sessions.some((candidate) => candidate.id === selectedId) &&
             (explicit || (fullRefresh && Boolean(current.chatHistoryErrorBySessionId?.[selectedId])) || selectedMessages === undefined || Boolean(
-              selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
+              selectedAcpBinding?.processing || selectedCliBinding?.processing || (selectedMessages?.length ? selectedMessages[selectedMessages.length - 1].isStreaming : false)
             ))
           // Stream tokens can change without changing the chat-list revision.
           if (selectedTranscriptNeedsRefresh && selectedId) {
@@ -218,7 +218,7 @@ export function CompanionShell() {
         const selectedCliBinding = selectedId ? current.cliBindingBySessionId?.[selectedId] : undefined
         const selectedTranscriptNeedsRefresh = selectedId && current.sessions.some((candidate) => candidate.id === selectedId) &&
           (explicit || stateChanged || (fullRefresh && Boolean(current.chatHistoryErrorBySessionId?.[selectedId])) || selectedMessages === undefined || Boolean(
-            selectedAcpBinding?.processing || selectedCliBinding?.processing || selectedMessages.at(-1)?.isStreaming
+            selectedAcpBinding?.processing || selectedCliBinding?.processing || (selectedMessages?.length ? selectedMessages[selectedMessages.length - 1].isStreaming : false)
           ))
         if (selectedTranscriptNeedsRefresh && selectedId) {
           if (await current.loadSessionMessages(selectedId, false, explicit) === false) {
