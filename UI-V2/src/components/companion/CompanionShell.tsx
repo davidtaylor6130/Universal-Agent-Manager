@@ -78,10 +78,6 @@ export function CompanionShell() {
     } catch { setPinError('Could not update pin. Try again.') }
     finally { setPinning(false) }
   }
-  const statusFor = (candidate: typeof sessions[number]) => displayedChatStatus(
-    cliBindings[candidate.id] ? [cliBindings[candidate.id]] : [],
-    acpBindings[candidate.id] ? [acpBindings[candidate.id]] : [],
-  )
   const workspaceLabel = (candidate: typeof sessions[number]) => {
     const directory = candidate.workspaceDirectory?.trim() || ''
     return directory.split(/[\\/]/).filter(Boolean).pop() || 'Local workspace'
@@ -92,13 +88,32 @@ export function CompanionShell() {
   }
   const projectKey = (candidate: typeof sessions[number]) => folders.some((folder) => folder.id === candidate.folderId) ? candidate.folderId : 'unsorted'
   const visibleSessions = sessions.filter((candidate) => projectFilter === 'all' || projectKey(candidate) === projectFilter)
-  const activeSessions = visibleSessions.filter((candidate) => {
-    const status = statusFor(candidate)
+  const activityGroups = Array.from(visibleSessions.reduce((families, candidate) => {
+    const rootId = candidate.branchRootChatId || candidate.parentChatId || candidate.id
+    const current = families.get(rootId)
+    const family = current ?? { representative: candidate, members: [] as typeof sessions[number][] }
+    family.members.push(candidate)
+    const candidateTime = candidate.updatedAt?.getTime() ?? 0
+    const representativeTime = family.representative.updatedAt?.getTime() ?? 0
+    if ((candidate.messageCount ?? 0) > (family.representative.messageCount ?? 0) ||
+      ((candidate.messageCount ?? 0) === (family.representative.messageCount ?? 0) &&
+        (candidateTime > representativeTime || (candidateTime === representativeTime && candidate.id.localeCompare(family.representative.id) < 0)))) {
+      family.representative = candidate
+    }
+    families.set(rootId, family)
+    return families
+  }, new Map<string, { representative: typeof sessions[number]; members: typeof sessions[number][] }>()).values()).map((family) => ({
+    session: family.representative,
+    status: displayedChatStatus(
+      family.members.flatMap((member) => cliBindings[member.id] ? [cliBindings[member.id]] : []),
+      family.members.flatMap((member) => acpBindings[member.id] ? [acpBindings[member.id]] : []),
+    ),
+  }))
+  const activeSessions = activityGroups.filter(({ status }) => {
     return status?.type === 'processing' || status?.type === 'attention'
   })
-  const recentSessions = visibleSessions.filter((candidate) => statusFor(candidate)?.type === 'done')
-  const activityRow = (candidate: typeof sessions[number]) => {
-    const status = statusFor(candidate)
+  const recentSessions = activityGroups.filter(({ status }) => status?.type === 'done')
+  const activityRow = (candidate: typeof sessions[number], status: ReturnType<typeof displayedChatStatus>) => {
     const statusLabel = status?.type === 'processing' ? 'Running' : status?.type === 'attention' ? 'Needs input' : 'Ready to review'
     const updatedAt = candidate.updatedAt ? new Date(candidate.updatedAt) : null
     const timestamp = updatedAt && !Number.isNaN(updatedAt.getTime())
@@ -324,8 +339,8 @@ export function CompanionShell() {
                   <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
                 </span>
               </div>
-              <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(activityRow) : <p className="uam-companion-empty">No active chats.</p>}</section>
-              <section className="uam-companion-section"><h2>Recent output</h2>{recentSessions.length ? recentSessions.map(activityRow) : <p className="uam-companion-empty">No recent output.</p>}</section>
+              <section className="uam-companion-section"><h2>Active</h2>{activeSessions.length ? activeSessions.map(({ session, status }) => activityRow(session, status)) : <p className="uam-companion-empty">No active chats.</p>}</section>
+              <section className="uam-companion-section"><h2>Recent output</h2>{recentSessions.length ? recentSessions.map(({ session, status }) => activityRow(session, status)) : <p className="uam-companion-empty">No recent output.</p>}</section>
             </section>
             <section className="uam-companion-list uam-companion-page" aria-label="Chats page" aria-hidden={tab !== 'chats'} {...(tab !== 'chats' ? { inert: '' } : {})}>
               <div className="flex items-center justify-between px-3 py-2">

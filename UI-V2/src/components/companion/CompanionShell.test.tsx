@@ -376,6 +376,66 @@ it('filters activity by project and keeps review status above the completion tim
   }
 })
 
+it('shows one branch family entry and opens its longest chat', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const setActiveSession = vi.fn()
+  const root = { id: 'root', name: 'Root', branchRootChatId: 'root', messageCount: 3 }
+  const shorter = { id: 'shorter', name: 'Shorter branch', parentChatId: 'root', branchRootChatId: 'root', messageCount: 6 }
+  const longest = { id: 'longest', name: 'Longest branch', parentChatId: 'root', branchRootChatId: 'root', messageCount: 9 }
+  useAppStore.setState({
+    sessions: [root, shorter, longest] as ReturnType<typeof useAppStore.getState>['sessions'],
+    acpBindingBySessionId: {
+      root: { readySinceLastSelect: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
+      shorter: { readySinceLastSelect: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
+      longest: { readySinceLastSelect: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string],
+    },
+    setActiveSession,
+  })
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1 } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const rootElement = createRoot(host)
+  try {
+    await act(async () => rootElement.render(<CompanionShell />))
+    const rows = host.querySelectorAll('.uam-companion-activity-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].getAttribute('data-session-id')).toBe('longest')
+    expect(rows[0].textContent).toContain('Longest branch')
+    await act(async () => rows[0].dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(setActiveSession).toHaveBeenCalledWith('longest')
+  } finally {
+    await act(async () => rootElement.unmount())
+    host.remove()
+  }
+})
+
+it('keeps a branch family in Active when a shorter branch is running', async () => {
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const root = { id: 'root', name: 'Root', branchRootChatId: 'root', messageCount: 3 }
+  const running = { id: 'running', name: 'Running branch', parentChatId: 'root', branchRootChatId: 'root', messageCount: 6 }
+  const longest = { id: 'longest', name: 'Longest branch', parentChatId: 'root', branchRootChatId: 'root', messageCount: 9 }
+  useAppStore.setState({
+    sessions: [root, running, longest] as ReturnType<typeof useAppStore.getState>['sessions'],
+    acpBindingBySessionId: { running: { processing: true } as ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] },
+  })
+  vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1 } })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const rootElement = createRoot(host)
+  try {
+    await act(async () => rootElement.render(<CompanionShell />))
+    const activeSection = host.querySelector('.uam-companion-section')
+    expect(activeSection?.querySelector('h2')?.textContent).toBe('Active')
+    const activityRow = activeSection?.querySelector('.uam-companion-activity-row')
+    expect(activityRow?.getAttribute('data-session-id')).toBe('longest')
+    expect(activityRow?.textContent).toContain('Longest branch')
+    expect(activityRow?.textContent).toContain('Running')
+  } finally {
+    await act(async () => rootElement.unmount())
+    host.remove()
+  }
+})
+
 it('keeps one central new-chat control and slides the icon navigation selection', async () => {
   window.localStorage.setItem('uam-companion-token', 'test-token')
   vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { folders: [], stateRevision: 1 } })
