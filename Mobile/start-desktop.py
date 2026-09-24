@@ -23,7 +23,7 @@ def stop_proxy(proxy):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--desktop', type=Path, default=Path(__file__).resolve().parents[1] /
-                        'Builds/react-companion-preview/universal_agent_manager-4.9.0-alpha-24-UNRecommended.app')
+                        'Builds/universal_agent_manager.app')
     parser.add_argument('--origin', help='HTTPS origin of the LAN reverse proxy, without a path')
     parser.add_argument('--lan-host', help='Private IPv4 address of this Mac; enables LAN HTTPS on port 58950')
     args = parser.parse_args()
