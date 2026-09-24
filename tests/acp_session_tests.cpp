@@ -1273,6 +1273,119 @@ UAM_TEST(RemoteAcpReachesTheHostBoundaryAndUsesPortableAgentInstructions)
 	UAM_ASSERT(app.acp_sessions.empty());
 }
 
+UAM_TEST(OptInRealRemoteOpenCodeTurnRecoversAfterLocalRelayLoss)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const std::optional<std::string> ssh_alias =
+	    uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_SSH_ALIAS");
+	const std::optional<std::string> workspace =
+	    uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_WORKSPACE");
+	const std::optional<std::string> platform =
+	    uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_PLATFORM");
+	if (!ssh_alias || !workspace || !platform) return;
+
+	TempDir temp("uam-real-remote-opencode");
+	uam::AppState app;
+	struct RemoteSessionCleanup
+	{
+		uam::AppState& app;
+		~RemoteSessionCleanup()
+		{
+			(void)uam::StopAcpSession(app, "real-remote-opencode-turn");
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!app.pending_acp_remote_stops.empty() &&
+			       std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	} cleanup{app};
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.provider_chat_defaults[uam::provider_ids::kOpenCodeCli].feature_preference = "uam";
+	ExecutionHost host;
+	host.id = "real-opencode-test-host";
+	host.label = "Real OpenCode test host";
+	host.transport = "ssh";
+	host.ssh_alias = *ssh_alias;
+	host.platform = *platform;
+	host.runner_directory = uam::env::GetNonEmptyString(
+	    "UAM_REAL_REMOTE_OPENCODE_RUNNER_DIRECTORY").value_or("");
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+
+	ChatSession chat;
+	chat.id = "real-remote-opencode-turn";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = *workspace;
+	chat.model_id = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_MODEL").value_or("");
+	app.chats.push_back(std::move(chat));
+
+	std::string error;
+	const std::string prompt = uam::env::GetNonEmptyString(
+	    "UAM_REAL_REMOTE_OPENCODE_PROMPT").value_or(
+	        "Reply exactly UAM_REAL_REMOTE_OPENCODE_OK after a short delay.");
+	UAM_ASSERT(uam::SendAcpPrompt(app, "real-remote-opencode-turn", prompt, {}, {}, false, &error));
+
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	uam::AcpSessionState* session = nullptr;
+	const auto active_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (std::chrono::steady_clock::now() < active_deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (!app.acp_sessions.empty())
+		{
+			session = app.acp_sessions.front().get();
+			if (session->processing && app.chats.front().remote_turn_reconnect_pending) break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(session != nullptr);
+	UAM_ASSERT(session->processing);
+	UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+
+	// Drop only the controller-side SSH relay. The protocol-3 runner must retain the provider job.
+	process_service.StopStdioProcess(*session, true);
+	process_service.CloseStdioProcessHandles(*session);
+	const auto recovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(40);
+	while (std::chrono::steady_clock::now() < recovery_deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (!session->reconnect_pending && session->session_ready && !session->processing &&
+		    !app.chats.front().remote_turn_reconnect_pending)
+			break;
+		if (session->reconnect_pending) session->reconnect_not_before_time_s = 0.0;
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+
+	int user_messages = 0;
+	int assistant_messages = 0;
+	for (const Message& message : app.chats.front().messages)
+	{
+		user_messages += message.role == MessageRole::User;
+		assistant_messages += message.role == MessageRole::Assistant;
+	}
+	UAM_ASSERT_EQ(user_messages, 1);
+	UAM_ASSERT_EQ(assistant_messages, 1);
+	UAM_ASSERT(!app.chats.front().messages.back().content.empty());
+	UAM_ASSERT(!session->reconnect_pending);
+	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+	UAM_ASSERT(session->last_error.empty());
+	UAM_ASSERT(!uam::StopAcpSession(app, "real-remote-opencode-turn"));
+	for (int attempt = 0; attempt < 300 && !app.pending_acp_remote_stops.empty(); ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+#endif
+}
+
 #if defined(__APPLE__)
 UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 {
