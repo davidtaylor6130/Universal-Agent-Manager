@@ -236,11 +236,13 @@ namespace uam
 			++session.reconnect_attempts;
 			const std::string message = uam::strings::NonEmptyOrFallback(
 			    error, "Structured runtime reconnect failed.");
-			if (session.recovering_remote_turn ||
+			const bool recovering_helper_process =
+			    session.recovering_remote_turn || session.recovering_remote_process;
+			if (recovering_helper_process ||
 			    session.reconnect_attempts < kAcpReconnectMaxAttempts)
 			{
 				session.reconnect_pending = true;
-				const double delay_seconds = session.recovering_remote_turn
+				const double delay_seconds = recovering_helper_process
 				    ? RemoteTurnReconnectDelaySeconds(session.reconnect_attempts)
 				    : AcpReconnectDelaySeconds(session.reconnect_attempts);
 				session.reconnect_not_before_time_s = now_seconds + delay_seconds;
@@ -262,7 +264,9 @@ namespace uam
 
 		void ScheduleAcpReconnect(AcpSessionState& session, double now_seconds)
 		{
-			if (!session.managed_agent_run_id.empty() && !session.recovering_remote_turn)
+			const bool recovering_helper_process =
+			    session.recovering_remote_turn || session.recovering_remote_process;
+			if (!session.managed_agent_run_id.empty() && !recovering_helper_process)
 			{
 				session.reconnect_pending = false;
 				session.reconnect_not_before_time_s = 0.0;
@@ -270,7 +274,7 @@ namespace uam
 				                    "Managed agent runs never relaunch after a provider exit.");
 				return;
 			}
-			if (!session.recovering_remote_turn &&
+			if (!recovering_helper_process &&
 			    session.reconnect_attempts >= kAcpReconnectMaxAttempts)
 			{
 				session.reconnect_pending = false;
@@ -279,7 +283,7 @@ namespace uam
 				return;
 			}
 			session.reconnect_pending = true;
-			const double delay_seconds = session.recovering_remote_turn
+			const double delay_seconds = recovering_helper_process
 			    ? RemoteTurnReconnectDelaySeconds(session.reconnect_attempts)
 			    : AcpReconnectDelaySeconds(session.reconnect_attempts);
 			session.reconnect_not_before_time_s = now_seconds + delay_seconds;
@@ -289,7 +293,7 @@ namespace uam
 		bool TryReconnectAcpSession(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
 		{
 			if (!session.managed_agent_run_id.empty() && session.managed_launch_attempted &&
-			    !session.recovering_remote_turn)
+			    !session.recovering_remote_turn && !session.recovering_remote_process)
 			{
 				session.reconnect_pending = false;
 				return false;

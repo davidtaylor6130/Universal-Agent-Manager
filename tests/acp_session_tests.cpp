@@ -930,6 +930,48 @@ UAM_TEST(RemoteReconnectFailureKeepsRetryingAHelperOwnedTurn)
 	UAM_ASSERT_EQ(reloaded->messages.back().tool_calls.front().status, std::string("running"));
 }
 
+UAM_TEST(RemoteReconnectFailureKeepsRetryingAHelperOwnedProcess)
+{
+	TempDir temp("uam-remote-process-reconnect-exhaustion");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost host;
+	host.id = "ssh-test";
+	host.ssh_alias = "unused-test-alias";
+	host.platform = "linux";
+	host.runner_status = "error";
+	host.runner_protocol_version = -1;
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-process-reconnect-exhaustion";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = temp.root.string();
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = chat.id;
+	owned_session->provider_id = chat.provider_id;
+	owned_session->managed_agent_run_id = "11111111-1111-4111-8111-111111111111";
+	owned_session->managed_launch_attempted = true;
+	owned_session->recovering_remote_process = true;
+	owned_session->reconnect_attempts = 4;
+	uam::AcpSessionState* session = owned_session.get();
+	app.acp_sessions.push_back(std::move(owned_session));
+
+	uam::ScheduleAcpReconnectForTests(*session, 10.0);
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT_EQ(session->reconnect_not_before_time_s, 14.0);
+	session->reconnect_not_before_time_s = 0.0;
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT_EQ(session->reconnect_attempts, 5);
+	UAM_ASSERT(session->reconnect_pending);
+	UAM_ASSERT(session->recovering_remote_process);
+	UAM_ASSERT(app.chats.front().remote_process_exists);
+}
+
 UAM_TEST(RemoteRecoveryHydrationFailureRetriesAfterChatRepair)
 {
 	TempDir temp("uam-remote-recovery-hydration-retry");
