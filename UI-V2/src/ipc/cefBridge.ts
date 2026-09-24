@@ -84,6 +84,10 @@ export async function sendToCEF<T = unknown>(
         if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
           throw new Error('Invalid response transfer.')
         }
+        if (totalBytes > 32 * 1024 * 1024) {
+          transferFailure = 'Response is too large to load on this device.'
+          throw new Error(transferFailure)
+        }
         const transferChunkBytes = chunkBytes === undefined ? 128 * 1024 : chunkBytes
         if (!Number.isSafeInteger(transferChunkBytes) || transferChunkBytes <= 0) throw new Error('Invalid response transfer.')
         const bytes = new Uint8Array(totalBytes)

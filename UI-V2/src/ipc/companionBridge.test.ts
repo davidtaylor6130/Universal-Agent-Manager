@@ -77,6 +77,21 @@ it('rejects broken chunks without returning a partial chat or retrying the origi
   expect(fetch).toHaveBeenCalledTimes(2)
 })
 
+it('rejects oversized response transfers before allocating or fetching chunks', async () => {
+  window.history.replaceState(null, '', '/companion')
+  window.localStorage.setItem('uam-companion-token', 'test-token')
+  const fetch = vi.fn().mockResolvedValueOnce({
+    ok: true,
+    json: async () => ({ uamTransfer: { id: 'transfer', totalBytes: 32 * 1024 * 1024 + 1 } }),
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  const result = await sendToCEF({ action: 'getChatMessages' })
+
+  expect(result).toMatchObject({ ok: false, error: 'Response is too large to load on this device.' })
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
 it('loads up to four chunks concurrently, accepts out-of-order replies and waits before the deleting final chunk', async () => {
   window.history.replaceState(null, '', '/companion')
   window.localStorage.setItem('uam-companion-token', 'test-token')
