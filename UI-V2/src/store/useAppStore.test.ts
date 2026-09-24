@@ -252,6 +252,29 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toEqual([])
   })
 
+  it('preserves the sessions array during optimistic CEF selection and rollback', async () => {
+    let failSelection: ((errorCode: number, errorMessage: string) => void) | undefined
+    window.cefQuery = ({ request, onFailure }) => {
+      if (JSON.parse(request).action === 'selectSession') failSelection = onFailure
+    }
+    const sessions = [
+      { id: 'chat-1', name: 'Chat 1', viewMode: 'chat' as const, folderId: 'default', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'chat-2', name: 'Chat 2', viewMode: 'chat' as const, folderId: 'default', createdAt: new Date(), updatedAt: new Date() },
+    ]
+    useAppStore.setState({ sessions, activeSessionId: 'chat-1' })
+
+    useAppStore.getState().setActiveSession('chat-2')
+    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
+    expect(useAppStore.getState().sessions).toBe(sessions)
+
+    expect(failSelection).toBeDefined()
+    failSelection?.(1, 'Selection failed')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+    expect(useAppStore.getState().sessions).toBe(sessions)
+  })
+
   it('ignores stale successful selection responses before hydrating messages', async () => {
     const now = new Date()
     const finishSelection = new Map<string, () => void>()

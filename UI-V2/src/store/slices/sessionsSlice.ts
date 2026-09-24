@@ -326,14 +326,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = 'selectSession'
         const requestId = createRequestId('selectSession')
         rememberPendingRequest(requestKey, requestId)
-        const openedAt = new Date()
-        const previousSession = id ? get().sessions.find((s) => s.id === id) : undefined
-        set((state) => ({
-          activeSessionId: id,
-          sessions: state.sessions.map((s) =>
-            id && s.id === id ? { ...s, lastOpenedAt: openedAt } : s
-          ),
-        }))
+        set({ activeSessionId: id })
         sendToCEF({ action: 'selectSession', payload: { chatId: id ?? '' }, requestId }).then((resp) => {
           if (resp.ok) {
 			if (!isLatestPendingRequest(requestKey, resp.requestId)) return
@@ -346,14 +339,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             return
           }
 
-          set((state) => ({
-            activeSessionId: previousActiveSessionId,
-            sessions: previousSession
-              ? state.sessions.map((s) =>
-                  id && s.id === id ? { ...s, lastOpenedAt: previousSession.lastOpenedAt } : s
-                )
-              : state.sessions,
-          }))
+          set({ activeSessionId: previousActiveSessionId })
           pendingRequestIdsByKey.delete(requestKey)
         })
         return
