@@ -10,7 +10,9 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <sstream>
+#include <unordered_set>
 
 namespace uam
 {
@@ -47,6 +49,19 @@ namespace uam
 			const std::filesystem::path directory = SessionDirectory(app, chat.id);
 			return FileSignature(directory / "control.json") + ":" +
 			    FileSignature(directory / "history.jsonl");
+		}
+
+		std::optional<std::unordered_set<std::string>> ExistingSessionIds(const AppState& app)
+		{
+			std::unordered_set<std::string> result;
+			std::error_code error;
+			const std::filesystem::path root = app.data_root / "computer-use";
+			std::filesystem::directory_iterator entries(root, error);
+			if (error == std::errc::no_such_file_or_directory) return result;
+			if (error) return std::nullopt;
+			for (; entries != std::filesystem::directory_iterator(); entries.increment(error))
+				result.insert(entries->path().filename().string());
+			return error ? std::nullopt : std::optional<std::unordered_set<std::string>>(std::move(result));
 		}
 
 		ComputerUseRuntimeState ReadState(const AppState& app, const ChatSession& chat)
@@ -145,6 +160,8 @@ namespace uam
 	bool ComputerUseService::Poll(AppState& app)
 	{
 		bool changed = false;
+		const std::optional<std::unordered_set<std::string>> existing_session_ids =
+		    ExistingSessionIds(app);
 		for (ChatSession& chat : app.chats)
 		{
 			if (!uam::computer_use::AvailableForChat(chat))
@@ -163,6 +180,11 @@ namespace uam
 				changed = app.computer_use_by_chat_id.erase(chat.id) > 0 || changed;
 				continue;
 			}
+			const bool has_prior_state = app.computer_use_by_chat_id.contains(chat.id) ||
+			    chat.computer_use_enabled;
+			if (existing_session_ids.has_value() && !existing_session_ids->contains(chat.id) &&
+			    !has_prior_state)
+				continue;
 			const std::string source_signature = SourceSignature(app, chat);
 			const auto current = app.computer_use_by_chat_id.find(chat.id);
 			if (current != app.computer_use_by_chat_id.end() &&

@@ -61,6 +61,43 @@ UAM_TEST(ComputerUseArmedStateSurvivesPollBeforeTargetApproval)
 	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(chat.id).state, std::string("armed"));
 }
 
+UAM_TEST(ComputerUsePollSkipsUnbackedChatsAndTracksExternalSessionChanges)
+{
+	TempDir temp("uam-computer-use-poll-discovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	for (int index = 0; index < 600; ++index)
+	{
+		ChatSession chat;
+		chat.id = "unrelated-chat-" + std::to_string(index);
+		chat.provider_id = "claude-cli";
+		chat.computer_use_backend = "uam";
+		app.chats.push_back(std::move(chat));
+	}
+	ChatSession tracked;
+	tracked.id = "tracked-chat";
+	tracked.provider_id = "claude-cli";
+	tracked.computer_use_backend = "uam";
+	app.chats.push_back(tracked);
+
+	UAM_ASSERT(!uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.computer_use_by_chat_id.empty());
+
+	const fs::path directory = temp.root / "computer-use" / tracked.id;
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json",
+	    R"({"state":"running","targetId":"42","targetProcessId":"7"})" "\n"));
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.chats.back().computer_use_enabled);
+	UAM_ASSERT_EQ(app.chats.back().computer_use_target_id, std::string("42"));
+
+	UAM_ASSERT(fs::remove_all(directory) > 0);
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(!app.chats.back().computer_use_enabled);
+	UAM_ASSERT(app.chats.back().computer_use_target_id.empty());
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(tracked.id).state, std::string("stopped"));
+}
+
 UAM_TEST(ComputerUseTrustedTaskPersistsAndNamesApplicationsSafely)
 {
 	TempDir temp("uam-computer-use-task");
