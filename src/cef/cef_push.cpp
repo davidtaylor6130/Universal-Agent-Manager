@@ -385,7 +385,19 @@ namespace uam
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
+		const auto fingerprint_started = std::chrono::steady_clock::now();
 		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		const auto fingerprint_finished = std::chrono::steady_clock::now();
+		static auto last_slow_fingerprint_report = std::chrono::steady_clock::time_point::min();
+		const auto fingerprint_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fingerprint_finished - fingerprint_started);
+		if (fingerprint_ms >= std::chrono::milliseconds(50) &&
+		    (last_slow_fingerprint_report == std::chrono::steady_clock::time_point::min() ||
+		     fingerprint_finished - last_slow_fingerprint_report >= std::chrono::seconds(5)))
+		{
+			uam::diagnostics::Write("[performance] State fingerprint took " + std::to_string(fingerprint_ms.count()) +
+			                        " ms across " + std::to_string(app.chats.size()) + " chats.");
+			last_slow_fingerprint_report = fingerprint_finished;
+		}
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		bool has_payload = false;
 		const std::string message = BuildStatePatchMessage(app, fingerprint_state, &has_payload);
