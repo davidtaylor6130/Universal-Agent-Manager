@@ -665,9 +665,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             aria-hidden={!activeExpanded}
             {...(!activeExpanded ? { inert: '' } : {})}
           >
-            {searchModel.activeSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-            ))}
+            {searchModel.activeSessionIds.map((id) => {
+              const activeSession = sessionsById.get(id)
+              const project = folders.find((folder) => folder.id === activeSession?.folderId)?.name ?? 'Unsorted'
+              const workspace = activeSession?.workspaceDirectory?.trim().split(/[\\/]/).filter(Boolean).pop() || 'Local workspace'
+              return <SessionItem key={id} sessionId={id} session={activeSession} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} activityLayout activityContext={`${project} · ${workspace}`} onSessionClick={handleSessionClick} />
+            })}
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
             <button

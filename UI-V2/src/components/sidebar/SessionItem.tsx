@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
-  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
+  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check, ChevronRight,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -68,6 +68,8 @@ interface SessionItemProps {
   session?: Session
   familySessionIds?: string[]
   selected?: boolean
+  activityLayout?: boolean
+  activityContext?: string
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
@@ -96,7 +98,7 @@ export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
   }
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, onSessionClick }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityContext, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -179,8 +181,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
-  const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
-  const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
+  const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
+  const lastOpenedLabel = formatSidebarTime(activityDate)
+  const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
   const paneNumbers = paneIndexes.map((index) => index + 1)
@@ -265,7 +268,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className="relative flex min-h-[26px] items-center gap-1.5 px-2.5 py-1 rounded-md mx-1 cursor-pointer transition-all duration-100"
+        className={`relative flex ${activityLayout ? 'min-h-[67px] gap-2.5 px-3 py-2' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
         style={{
           background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
           boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
@@ -327,7 +330,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         )}
         {!editing && showProviderIcon && sessionSummary.providerId && (
           <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
-            <ProviderLogo providerId={sessionSummary.providerId} size={16} />
+            <ProviderLogo providerId={sessionSummary.providerId} size={activityLayout ? 24 : 16} />
           </span>
         )}
         {!editing && isPinned && (
@@ -360,8 +363,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           />
         ) : (
           <div className="min-w-0 flex-1">
-            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
-            {showWorktreePath && sessionSummary.worktreeDirectory && (
+            <span className={`block truncate ${activityLayout ? 'text-sm font-medium' : 'text-[13px]'}`} style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            {activityLayout ? (
+              <span className="block truncate text-[11px]" title={activityContext} style={{ color: 'var(--text-3)' }}>{activityContext}</span>
+            ) : showWorktreePath && sessionSummary.worktreeDirectory && (
               <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
                 {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
               </span>
@@ -371,11 +376,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
-            <div className="ml-auto flex items-center gap-1 transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0">
+            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 flex-col items-end gap-0.5' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
+              {activityLayout && (
+                <>
+                  {lifecycleStatus?.type === 'processing' && <span className="session-status session-status--processing" aria-hidden="true"><span /></span>}
+                  {lifecycleStatus?.type === 'attention' && <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-hidden="true">{sidebarStatusIcon(lifecycleStatus.kind)}</span>}
+                  {lifecycleStatus?.type === 'done' && <Check size={14} aria-hidden style={{ color: 'var(--accent)' }} />}
+                  <span className="text-[11px]" style={{ color: lifecycleStatus?.type === 'attention' ? 'var(--yellow)' : lifecycleStatus?.type === 'done' ? 'var(--accent)' : 'var(--text-2)' }}>
+                    {lifecycleStatus?.type === 'processing' ? 'Running' : lifecycleStatus?.type === 'attention' ? 'Needs input' : 'Ready to review'}
+                  </span>
+                </>
+              )}
               {lastOpenedLabel && (
                 <span
-                  className="max-w-[58px] truncate text-[10px] tabular-nums"
-                  title={lastOpenedTitle}
+                  className={`${activityLayout ? 'max-w-[130px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
+                  title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
                     lineHeight: 1,
@@ -384,22 +399,23 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   {lastOpenedLabel}
                 </span>
               )}
-              {lifecycleStatus?.type === 'processing' && (
+              {!activityLayout && lifecycleStatus?.type === 'processing' && (
                 <span className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
                   <span />
                 </span>
               )}
-              {lifecycleStatus?.type === 'attention' && (
+              {!activityLayout && lifecycleStatus?.type === 'attention' && (
                 <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={ATTENTION_LABELS[lifecycleStatus.kind]} title={ATTENTION_LABELS[lifecycleStatus.kind]}>
                   {sidebarStatusIcon(lifecycleStatus.kind)}
                 </span>
               )}
-              {lifecycleStatus?.type === 'done' && (
+              {!activityLayout && lifecycleStatus?.type === 'done' && (
                 <span className="session-status session-status--idle" aria-label="Done" title="Done">
                   <span />
                 </span>
               )}
             </div>
+            {activityLayout && <ChevronRight size={18} aria-hidden className="shrink-0 transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} />}
             <div
               data-testid={`session-actions-${sessionId}`}
               style={isCompanionContext() ? { display: 'none' } : undefined}

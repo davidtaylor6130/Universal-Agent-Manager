@@ -859,6 +859,31 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('uses the larger Activity layout only for Active chats', () => {
+    useAppStore.setState({
+      sessions: [
+        { ...makeSession(1), id: 'active', name: 'Build fixes', workspaceDirectory: '/workspaces/uam', updatedAt: now },
+        { ...makeSession(2), id: 'pinned', name: 'Pinned chat', isPinned: true },
+      ],
+    })
+    act(() => useAppStore.getState().setCliBinding('active', { processing: true }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
+    const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
+    expect(active?.className).toContain('min-h-[67px]')
+    expect(active?.textContent).toContain('Project · uam')
+    expect(active?.textContent).toContain('Running')
+    expect(active?.querySelectorAll('.session-status--processing')).toHaveLength(1)
+    expect(pinned?.className).toContain('min-h-[26px]')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('collapses Active chats and keeps an attention strip that expands the section', () => {
     act(() => {
       useAppStore.getState().setCliBinding('chat-1', { processing: true })
