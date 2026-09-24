@@ -6283,9 +6283,9 @@ describe('useAppStore Gemini CLI slice', () => {
       expect(await companionStore.getState().sendAcpPrompt('chat-1', 'sixth')).toBe(true)
       expect(companionStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['fifth', 'sixth'])
       expect(requests.slice(0, 3).map((request) => request.payload)).toEqual([
-        expect.objectContaining({ chatId: 'chat-1', limit: 200, deferToolCallContent: true }),
+        expect.objectContaining({ chatId: 'chat-1', limit: 50, deferToolCallContent: true }),
         { chatId: 'chat-1', limit: 100, before: 2, deferToolCallContent: true },
-        expect.objectContaining({ chatId: 'chat-1', limit: 200, deferToolCallContent: true }),
+        expect.objectContaining({ chatId: 'chat-1', limit: 50, deferToolCallContent: true }),
       ])
     } finally {
       vi.unstubAllGlobals()

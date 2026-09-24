@@ -27,6 +27,44 @@ function openWorkspaceActions(host: HTMLElement) {
 }
 
 describe('ChatView', () => {
+  it('renders a smaller companion window on initial load and after switching chats', () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const firstSession = { ...useAppStore.getState().sessions[0], importedReadOnly: true }
+    const secondSession = { ...firstSession, id: 'chat-2', name: 'Second chat' }
+    const buildMessages = (chatId: string) => Array.from({ length: 60 }, (_, index) => ({
+      id: `${chatId}-message-${index}`,
+      sessionId: chatId,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `${chatId} message ${index}`,
+      createdAt: new Date(index),
+    }))
+    useAppStore.setState({
+      sessions: [firstSession, secondSession],
+      messages: { 'chat-1': buildMessages('chat-1'), 'chat-2': buildMessages('chat-2') },
+      acpBindingBySessionId: {
+        'chat-1': useAppStore.getState().acpBindingBySessionId['chat-1'],
+        'chat-2': { ...useAppStore.getState().acpBindingBySessionId['chat-1'], sessionId: 'native-2' },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={firstSession} />))
+    expect(host.textContent).not.toContain('chat-1 message 0')
+    expect(host.textContent).toContain('chat-1 message 59')
+    expect(host.textContent).toContain('Show earlier messages')
+
+    act(() => root.render(<ChatView session={secondSession} />))
+    expect(host.textContent).not.toContain('chat-2 message 0')
+    expect(host.textContent).toContain('chat-2 message 59')
+
+    act(() => root.unmount())
+    host.remove()
+    window.history.pushState({}, '', previousPath)
+  })
+
   it('builds work metadata from the visible turn boundary and preserves its full summary', () => {
     const messages: Message[] = Array.from({ length: 400 }, (_, index) => ({
       id: `message-${index}`,

@@ -45,6 +45,7 @@ function normalizePermissionChangeResult(result: boolean | PermissionChangeResul
 }
 
 const INITIAL_RENDERED_MESSAGES = 200
+const COMPANION_INITIAL_RENDERED_MESSAGES = 50
 const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
@@ -582,7 +583,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
-  const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
+  const [renderedMessageCount, setRenderedMessageCount] = useState(() => isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
@@ -935,7 +936,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setBranchingMessageIndex(null)
     setMessageBranchError('')
     setClaudePlanPrompt(null)
-    setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
+    setRenderedMessageCount(isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
     setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')

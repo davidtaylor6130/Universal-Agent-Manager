@@ -167,7 +167,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       action: 'getChatMessages',
       payload: {
         chatId,
-        ...(isCompanionContext() ? { limit: 200 } : {}),
+        ...(isCompanionContext() ? { limit: 50 } : {}),
         ...(isCompanionContext() ? { deferToolCallContent: true } : {}),
         ...(refreshNative ? { refreshNative: true } : {}),
         messagesDigest: force || current.messages[chatId] === undefined
