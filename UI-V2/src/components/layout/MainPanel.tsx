@@ -61,6 +61,9 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   onClose: (leafId: string, sessionId: string) => void
 }) {
   const view = session.importedReadOnly ? 'chat' : session.viewMode
+  const hasLoadedContent = useAppStore((s) => view === 'chat'
+    ? Boolean(s.messages[session.id]?.length)
+    : Boolean(s.cliTranscriptBySessionId[session.id]?.content))
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
     useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
@@ -229,7 +232,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       )}
 
       {/* View content */}
-      <div key={`${session.id}:${view}`} className="uam-pane-glide flex-1 overflow-hidden" data-pane-content={session.id} data-view={view}>
+      <div key={`${session.id}:${view}`} className={`${hasLoadedContent && !multiPane ? 'uam-pane-glide ' : ''}flex-1 overflow-hidden`} data-pane-content={session.id} data-view={view}>
         {view === 'chat'
           ? <ChatView session={session} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}

@@ -537,7 +537,7 @@ describe('MainPanel', () => {
     act(() => useAppStore.setState({ activeSessionId: 'chat-3' }))
     expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['chat-3', 'chat-2'])
     const selectedContent = host.querySelector<HTMLElement>('[data-pane-content="chat-3"]')
-    expect(selectedContent?.classList.contains('uam-pane-glide')).toBe(true)
+    expect(selectedContent?.classList.contains('uam-pane-glide')).toBe(false)
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
     expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(readChatGridLayout().root)[1].id)
@@ -546,7 +546,7 @@ describe('MainPanel', () => {
     host.remove()
   })
 
-  it('glides content when switching between chat and terminal views', async () => {
+  it('glides loaded full-size content, but not an empty chat or terminal', async () => {
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -558,11 +558,36 @@ describe('MainPanel', () => {
     const root = createRoot(host)
     act(() => root.render(<MainPanel />))
 
-    expect(host.querySelector('[data-pane-content="chat-1"]')?.getAttribute('data-view')).toBe('chat')
+    const chatContent = host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')
+    expect(chatContent?.getAttribute('data-view')).toBe('chat')
+    expect(chatContent?.classList.contains('uam-pane-glide')).toBe(false)
     await act(async () => (host.querySelector('button[aria-label="Terminal fallback"]') as HTMLButtonElement).click())
     const terminalContent = host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')
     expect(terminalContent?.getAttribute('data-view')).toBe('cli')
-    expect(terminalContent?.classList.contains('uam-pane-glide')).toBe(true)
+    expect(terminalContent?.classList.contains('uam-pane-glide')).toBe(false)
+
+    act(() => useAppStore.setState({ cliTranscriptBySessionId: { 'chat-1': { terminalId: 'terminal-1', content: 'ready' } } }))
+    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-1"]')?.classList.contains('uam-pane-glide')).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('glides a loaded chat selected into a full-size pane', () => {
+    useAppStore.setState((state) => ({
+      sessions: [...state.sessions, { ...state.sessions[0], id: 'chat-2', name: 'Loaded chat' }],
+      messages: {
+        'chat-1': [],
+        'chat-2': [{ id: 'message-2', sessionId: 'chat-2', role: 'user', content: 'Hello', createdAt: new Date() }],
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+    expect(host.querySelector<HTMLElement>('[data-pane-content="chat-2"]')?.classList.contains('uam-pane-glide')).toBe(true)
 
     act(() => root.unmount())
     host.remove()

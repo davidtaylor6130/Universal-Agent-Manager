@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
-  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check, ChevronRight,
+  ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -250,7 +250,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
   return (
     <div
-      className={`relative group${activityLayout ? ' uam-active-row-glide' : ''}`}
+      className="relative group"
       draggable={!editing}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy'
@@ -267,7 +267,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className={`relative flex ${activityLayout ? 'min-h-[67px] gap-2.5 px-3 py-2' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
+        className={`relative flex ${activityLayout ? 'min-h-[53px] gap-2.5 px-3 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
         style={{
           background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
           boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
@@ -375,20 +375,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
-            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 flex-col items-end gap-0.5' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
-              {activityLayout && (
-                <>
-                  {lifecycleStatus?.type === 'processing' && <span className="session-status session-status--processing" aria-hidden="true"><span /></span>}
-                  {lifecycleStatus?.type === 'attention' && <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-hidden="true">{sidebarStatusIcon(lifecycleStatus.kind)}</span>}
-                  {lifecycleStatus?.type === 'done' && <Check size={14} aria-hidden style={{ color: 'var(--accent)' }} />}
-                  <span className="text-[11px]" style={{ color: lifecycleStatus?.type === 'attention' ? 'var(--yellow)' : lifecycleStatus?.type === 'done' ? 'var(--accent)' : 'var(--text-2)' }}>
-                    {lifecycleStatus?.type === 'processing' ? 'Running' : lifecycleStatus?.type === 'attention' ? 'Needs input' : 'Ready to review'}
-                  </span>
-                </>
-              )}
+            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 self-stretch flex-col items-end justify-between py-1' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
               {lastOpenedLabel && (
                 <span
-                  className={`${activityLayout ? 'max-w-[130px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
+                  className={`${activityLayout ? 'max-w-[100px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
                   title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
@@ -396,6 +386,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   }}
                 >
                   {lastOpenedLabel}
+                </span>
+              )}
+              {activityLayout && (
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px]" style={{ color: lifecycleStatus?.type === 'attention' ? 'var(--yellow)' : lifecycleStatus?.type === 'done' ? 'var(--accent)' : 'var(--text-2)' }}>
+                  {lifecycleStatus?.type === 'processing' && <span className="session-status session-status--processing" aria-hidden="true"><span /></span>}
+                  {lifecycleStatus?.type === 'attention' && <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-hidden="true">{sidebarStatusIcon(lifecycleStatus.kind)}</span>}
+                  {lifecycleStatus?.type === 'done' && <Check size={14} aria-hidden />}
+                  {lifecycleStatus?.type === 'processing' ? 'Running' : lifecycleStatus?.type === 'attention' ? 'Needs input' : 'Ready to review'}
                 </span>
               )}
               {!activityLayout && lifecycleStatus?.type === 'processing' && (
@@ -414,7 +412,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </span>
               )}
             </div>
-            {activityLayout && <ChevronRight size={18} aria-hidden className="shrink-0 transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} />}
             <div
               data-testid={`session-actions-${sessionId}`}
               style={isCompanionContext() ? { display: 'none' } : undefined}

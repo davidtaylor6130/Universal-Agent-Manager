@@ -859,7 +859,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('uses the larger Activity layout only for Active chats', () => {
+  it('uses the compact two-line Activity layout only for Active chats', () => {
     useAppStore.setState({
       sessions: [
         { ...makeSession(1), id: 'active', name: 'Build fixes', workspaceDirectory: '/workspaces/uam', updatedAt: now },
@@ -874,7 +874,7 @@ describe('FolderTree', () => {
 
     const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
     const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
-    expect(active?.className).toContain('min-h-[67px]')
+    expect(active?.className).toContain('min-h-[53px]')
     expect(active?.textContent).toContain('Project · uam')
     expect(active?.textContent).toContain('Running')
     expect(active?.querySelectorAll('.session-status--processing')).toHaveLength(1)
