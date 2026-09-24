@@ -37,7 +37,8 @@ class StateSerializer
 	/// Serialise one bounded message page without serialising the rest of the session.
 	static nlohmann::json SerializeMessagePage(const ChatSession& session,
 	                                           std::size_t limit,
-	                                           std::optional<std::size_t> before);
+	                                           std::optional<std::size_t> before,
+	                                           bool defer_tool_call_content = false);
 
 	/// Build the full persisted tool-call detail returned on demand.
 	static std::string ToolCallContentForFrontend(const ToolCall& tool_call);

@@ -168,6 +168,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       payload: {
         chatId,
         ...(isCompanionContext() ? { limit: 200 } : {}),
+        ...(isCompanionContext() ? { deferToolCallContent: true } : {}),
         ...(refreshNative ? { refreshNative: true } : {}),
         messagesDigest: force || current.messages[chatId] === undefined
           ? ''
@@ -395,7 +396,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
       const response = await sendToCEF<ChatMessagesResponse>({
         action: 'getChatMessages',
-        payload: { chatId: id, limit: 100, before },
+        payload: { chatId: id, limit: 100, before, deferToolCallContent: true },
       })
       const data = response.data
       if (!response.ok) return fail(response.error || 'Could not load earlier messages.')

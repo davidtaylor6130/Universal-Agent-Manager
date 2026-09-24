@@ -10044,6 +10044,33 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 
 }
 
+UAM_TEST(CompanionMessagePagesDeferPersistedToolOutput)
+{
+	ChatSession chat;
+	Message assistant{MessageRole::Assistant, "Done"};
+	for (int index = 0; index < 200; ++index)
+	{
+		ToolCall tool;
+		tool.id = "tool-" + std::to_string(index);
+		tool.name = "Read file";
+		tool.result_text.assign(32 * 1024, static_cast<char>('a' + index % 26));
+		tool.status = "completed";
+		assistant.tool_calls.push_back(std::move(tool));
+	}
+	chat.messages.push_back(std::move(assistant));
+
+	const nlohmann::json page = uam::StateSerializer::SerializeMessagePage(chat, 200, std::nullopt, true);
+	UAM_ASSERT(page.dump().size() < 200 * 1024U);
+	for (const nlohmann::json& tool : page["messages"][0]["toolCalls"])
+	{
+		UAM_ASSERT(tool.value("contentDeferred", false));
+		UAM_ASSERT(!tool.contains("content"));
+	}
+	const nlohmann::json content = uam::StateSerializer::ToolCallContentPageForFrontend(
+		chat.messages[0].tool_calls[0].result_text, 0);
+	UAM_ASSERT_EQ(content.value("content", "").size(), 32U * 1024U);
+}
+
 UAM_TEST(ToolOutputPagesAreBoundedNavigableAndUtf8Safe)
 {
 	constexpr std::size_t page_bytes = 128 * 1024;

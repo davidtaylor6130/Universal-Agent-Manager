@@ -67,12 +67,13 @@ namespace
 
 	nlohmann::json SerializeChatMessagesResult(
 	    const ChatSession& chat, std::string_view known_digest,
-	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page)
+	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
+	    bool defer_tool_call_content)
 	{
 		if (page.has_value())
 		{
 			nlohmann::json result = uam::StateSerializer::SerializeMessagePage(
-			    chat, page->first, page->second);
+			    chat, page->first, page->second, defer_tool_call_content);
 			result["chatId"] = chat.id;
 			result["unchanged"] = !page->second.has_value() && !known_digest.empty() &&
 			                     known_digest == result.value("messagesDigest", "");
@@ -200,6 +201,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string known_digest = payload.value("messagesDigest", "");
+	const bool defer_tool_call_content = payload.value("deferToolCallContent", false);
 	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
 	if (payload.contains("limit") || payload.contains("before"))
 	{
@@ -254,7 +256,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	     provider_id == uam::provider_ids::kCodexCli);
 	if (!hydrate_native_chat)
 	{
-		cb->Success(SerializeChatMessagesResult(*chat, known_digest, page).dump());
+		cb->Success(SerializeChatMessagesResult(*chat, known_digest, page, defer_tool_call_content).dump());
 		return;
 	}
 
@@ -321,7 +323,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		              502, uam::strings::NonEmptyOrFallback(
 		                       transcript->error, "Native chat history is not available yet."));
 	    },
-		    [this, browser, chat_snapshot, host_snapshot, known_digest, original_digest, request, transcript, page](
+		    [this, browser, chat_snapshot, host_snapshot, known_digest, original_digest, request, transcript, page,
+		     defer_tool_call_content](
 	        uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    const auto pending = m_nativeHistoryRequests.find(chat_snapshot.id);
@@ -380,7 +383,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 		    }
 		    response = uam::query_handler_async::AsyncSuccess(
-			    SerializeChatMessagesResult(*current, known_digest, page));
+			    SerializeChatMessagesResult(*current, known_digest, page, defer_tool_call_content));
 	    })))
 	{
 		m_nativeHistoryRequests.erase(chat_id);

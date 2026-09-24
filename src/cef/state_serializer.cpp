@@ -286,7 +286,8 @@ namespace uam
 			return result;
 		}
 
-	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call)
+	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call,
+	                                             bool defer_tool_call_content = false)
 	{
 		constexpr std::size_t kInlineToolContentMaxBytes = 64 * 1024;
 		nlohmann::json tool_json;
@@ -298,7 +299,9 @@ namespace uam
 		                                 (!tool_call.args_json.empty() && !tool_call.result_text.empty()
 		                                      ? std::string_view("Arguments:\n\n\nResult:\n").size()
 		                                      : 0);
-		const bool content_deferred = content_size > kInlineToolContentMaxBytes;
+		const bool content_deferred = defer_tool_call_content
+		    ? content_size > 0
+		    : content_size > kInlineToolContentMaxBytes;
 		tool_json["contentDeferred"] = content_deferred;
 		if (content_deferred)
 			tool_json["contentDigest"] = std::to_string(std::hash<std::string>{}(tool_call.args_json)) + ":" +
@@ -372,7 +375,8 @@ namespace uam
 			};
 		}
 
-		nlohmann::json SerializeMessageForFrontend(const Message& message)
+		nlohmann::json SerializeMessageForFrontend(const Message& message,
+		                                           bool defer_tool_call_content = false)
 		{
 			nlohmann::json message_json;
 			message_json["role"] = RoleStr(message.role);
@@ -415,7 +419,7 @@ namespace uam
 				nlohmann::json tool_calls = JsonArrayWithCapacity(message.tool_calls.size());
 				for (const ToolCall& tool_call : message.tool_calls)
 				{
-					tool_calls.push_back(SerializeToolCallForFrontend(tool_call));
+					tool_calls.push_back(SerializeToolCallForFrontend(tool_call, defer_tool_call_content));
 				}
 				message_json["toolCalls"] = std::move(tool_calls);
 			}
@@ -1520,7 +1524,8 @@ namespace uam
 
 	nlohmann::json StateSerializer::SerializeMessagePage(const ChatSession& session,
 	                                                     std::size_t limit,
-	                                                     std::optional<std::size_t> before)
+	                                                     std::optional<std::size_t> before,
+	                                                     bool defer_tool_call_content)
 	{
 		const std::size_t total_count = session.messages.size();
 		const std::size_t end = std::min(before.value_or(total_count), total_count);
@@ -1528,7 +1533,7 @@ namespace uam
 		nlohmann::json messages = JsonArrayWithCapacity(end - start);
 		for (std::size_t index = start; index < end; ++index)
 		{
-			messages.push_back(SerializeMessageForFrontend(session.messages[index]));
+			messages.push_back(SerializeMessageForFrontend(session.messages[index], defer_tool_call_content));
 		}
 
 		return {
