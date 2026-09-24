@@ -339,6 +339,7 @@ UAM_TEST(RemoteRunnerClientRejectsMalformedResultsBeforeUpdatingSessionState)
 	    {"poll", {{"stdoutCursor", -1}}},
 	    {"poll", {{"stderrCursor", 1.5}}},
 	    {"poll", {{"stdoutBase64", "eA=="}, {"stdoutCursor", 0}}},
+	    {"poll", {{"stdoutBase64", "eA=="}}},
 	    {"poll", {{"exitCode", 4294967296ULL}}},
 	    {"poll", {{"running", false}, {"stdoutBase64", "eA=="}, {"stderrBase64", "!"}}},
 	    {"start", {{"inputSequence", "bad"}}},
