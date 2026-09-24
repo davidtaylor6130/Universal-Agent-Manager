@@ -2242,6 +2242,31 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(state.sessions.map((session) => session.id)).toEqual(['chat-1', 'chat-2'])
   })
 
+  it('retains bootstrap runtime metadata when a newer patch arrives first', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.appVersion = 'V9.9.9'
+    initial.runnerProtocolVersion = 3
+    let finishInitial: () => void = () => { throw new Error('initial state was not requested') }
+    testWindow.cefQuery = ({ onSuccess }) => {
+      finishInitial = () => onSuccess(JSON.stringify(initial))
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    cefStore.setState({ appVersion: 'V0.0.0', runnerProtocolVersion: 0 })
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2 } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+
+    finishInitial()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(cefStore.getState().appVersion).toBe('V9.9.9')
+    expect(cefStore.getState().runnerProtocolVersion).toBe(3)
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+  })
+
   it('ignores stale no-op pin patches without replacing session state', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

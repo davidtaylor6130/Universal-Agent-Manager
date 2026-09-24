@@ -687,6 +687,15 @@ export const useAppStore = create<AppState>((set, get) => {
           if (deserialized.theme) {
             persistTheme(deserialized.theme, get().customThemes)
           }
+        } else if (
+          (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
+          (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
+        ) {
+          // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
+          set({
+            appVersion: sanitized.appVersion || current.appVersion,
+            runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
+          })
         }
       }
     })
