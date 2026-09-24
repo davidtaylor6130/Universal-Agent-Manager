@@ -144,12 +144,15 @@ jobs:
             ${{ runner.os }}-${{ matrix.arch }}-uam-deps-
 
       - run: npm --prefix UI-V2 ci
+      - name: Install static zlib (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install zlib:x64-windows-static
       - name: Configure native Release tests (macOS)
         if: runner.os == 'macOS'
         run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - name: Configure native Release tests (Windows x64)
         if: runner.os == 'Windows'
-        run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts"
+        run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/tests --config Release --parallel 4
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure
       - name: Package macOS review build
