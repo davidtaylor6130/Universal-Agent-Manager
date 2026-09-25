@@ -12883,6 +12883,46 @@ UAM_TEST(ChatRepositoryAdoptsOnlyUnchangedHydratedMessages)
 	UAM_ASSERT(current.messages.empty());
 }
 
+UAM_TEST(ChatRepositoryRefreshesSummaryDigestAfterLoadedTranscriptChanges)
+{
+	TempDir temp("uam-chat-summary-digest");
+	ChatSession chat;
+	chat.id = "summary-digest";
+	chat.title = "Remote chat";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = chat.created_at;
+	chat.messages.push_back(Message{MessageRole::User, "first"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> initial = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(initial.has_value());
+	chat.persisted_messages_digest = initial->persisted_messages_digest;
+	chat.messages.push_back(Message{MessageRole::Assistant, "second"});
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	const std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(summary.has_value() && full.has_value());
+	UAM_ASSERT_EQ(summary->persisted_message_count, static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, full->persisted_messages_digest);
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, std::string("2026-01-01T00:00:01.000Z:2"));
+	const fs::path cache_path = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	auto corrupt_cache = [&]()
+	{
+		nlohmann::json cached = nlohmann::json::parse(ReadFile(cache_path));
+		cached["persisted_messages_digest"] = initial->persisted_messages_digest;
+		UAM_ASSERT(uam::io::WriteTextFile(cache_path, cached.dump(2)));
+	};
+	corrupt_cache();
+	const std::vector<ChatSession> sidebar = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(sidebar.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(sidebar.front().persisted_messages_digest, full->persisted_messages_digest);
+	corrupt_cache();
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(reopened.has_value());
+	UAM_ASSERT_EQ(reopened->persisted_messages_digest, full->persisted_messages_digest);
+}
+
 UAM_TEST(SaveNativeTranscriptPreservesDetailsAndCommitsBeforeReplacingLiveChat)
 {
 	TempDir temp("uam-native-transcript-save");

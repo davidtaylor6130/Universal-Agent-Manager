@@ -1371,6 +1371,11 @@ namespace
 		{
 			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 		}
+		if (expected_source_size > 0 &&
+		    chat.persisted_messages_digest != SummaryDigest(chat, chat.persisted_message_count))
+		{
+			return {std::nullopt, "contains a stale message digest"};
+		}
 
 		if (!include_messages && expected_source_size == 0 && path.extension() == ".json")
 		{
@@ -1678,7 +1683,9 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetBool(root, "uamControlEnabled", chat.uam_control_enabled);
 
 	std::size_t persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
-	std::string persisted_messages_digest = chat.persisted_messages_digest;
+	std::string persisted_messages_digest = chat.messages_loaded
+	    ? SummaryDigest(chat, persisted_message_count)
+	    : chat.persisted_messages_digest;
 	bool preserve_existing_primary_as_backup = true;
 	if (chat.messages_loaded && !chat.messages.empty())
 	{
