@@ -3,13 +3,15 @@ import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { AlertTriangle, X, Zap } from 'lucide-react'
+import { AlertTriangle, X } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
-import { sendToCEF, isCefContext } from '../../ipc/cefBridge'
+import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
-import { readTerminalSteerDraft, writeTerminalSteerDraft } from '../../utils/composerDraftStorage'
+import { resolveDocumentTheme } from '../../utils/themeStorage'
+import { useResolvedTheme } from '../../hooks/useTheme'
 
 interface CLIViewProps {
   session: Session
@@ -39,29 +41,6 @@ function decodeReplayData(data: string): Uint8Array | string {
   }
 }
 
-function normalizeLifecycleState(
-  value: unknown,
-  running: boolean,
-  turnState?: string
-): CliLifecycleState {
-  if (
-    value === 'disabled' ||
-    value === 'stopped' ||
-    value === 'idle' ||
-    value === 'busy' ||
-    value === 'shuttingDown'
-  ) {
-    return value
-  }
-
-  if (!running) return 'stopped'
-  return turnState === 'busy' ? 'busy' : 'idle'
-}
-
-function lifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
-  return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
-}
-
 function terminalTheme(isDark: boolean) {
   return {
     background:   isDark ? '#0b0b0e' : '#f0f0f5',
@@ -88,45 +67,29 @@ function terminalTheme(isDark: boolean) {
   }
 }
 
-// Mock data for dev mode only
-const MOCK_WELCOME = [
-  '\x1b[38;5;208m┌─────────────────────────────────────────┐\x1b[0m',
-  '\x1b[38;5;208m│\x1b[0m  UAM CLI — Universal Agent Manager      \x1b[38;5;208m│\x1b[0m',
-  '\x1b[38;5;208m│\x1b[0m  Connected to C++ backend via CEF       \x1b[38;5;208m│\x1b[0m',
-  '\x1b[38;5;208m└─────────────────────────────────────────┘\x1b[0m',
-  '',
-  '\x1b[38;5;245mSession:\x1b[0m ' + '\x1b[38;5;69m{SESSION_NAME}\x1b[0m',
-  '',
-]
-
 export function CLIView({ session }: CLIViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null)
   const termInstanceRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const theme = useAppStore((s) => s.theme)
+  const customThemes = useAppStore((s) => s.customThemes)
+  const resolvedTheme = useResolvedTheme(theme, customThemes)
   const providers = useAppStore((s) => s.providers)
   const copilotVersionStatus = useAppStore((s) =>
     s.cliVersionManager.providers.find((provider) => provider.providerId === COPILOT_CLI_PROVIDER_ID)?.status ?? 'unknown'
   )
-  const cliBinding = useAppStore(useShallow((s) => s.cliBindingBySessionId[session.id]))
-  const cliTranscript = useAppStore(useShallow((s) => s.cliTranscriptBySessionId[session.id]))
+  const cliBinding = useAppStore(useShallow((s) => {
+    const binding = s.cliBindingBySessionId[session.id]
+    return { terminalId: binding?.terminalId, running: binding?.running, lastError: binding?.lastError }
+  }))
   const setCliBinding = useAppStore((s) => s.setCliBinding)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
-  const [steerDraft, setSteerDraft] = useState(() => readTerminalSteerDraft(session.id))
-  const [steerSubmitting, setSteerSubmitting] = useState(false)
   const [terminalStartAttempt, setTerminalStartAttempt] = useState(0)
   const [dismissedTerminalError, setDismissedTerminalError] = useState('')
-  const pendingSteerWasSeenRef = useRef(false)
-  const steerInFlightRef = useRef(false)
   const copilotCompatibilityRetryPendingRef = useRef(false)
-  const currentSessionIdRef = useRef(session.id)
   const currentProviderId = session.providerId?.trim() || DEFAULT_PROVIDER_ID
   const providerSupported = providers.some((provider) => provider.id === currentProviderId)
-  const effectiveTerminalId = cliBinding?.terminalId || cliTranscript?.terminalId || ''
-  const steerPending = Boolean(cliBinding?.pendingSteer)
-  const steerWaiting = steerSubmitting || (steerPending && !cliBinding?.lastError)
-  const steerActionLabel = steerWaiting ? 'Steering…' : steerPending ? 'Retry steer' : 'Steer now'
   const visibleTerminalError =
     cliBinding?.lastError && cliBinding.lastError !== dismissedTerminalError
       ? cliBinding.lastError
@@ -134,24 +97,9 @@ export function CLIView({ session }: CLIViewProps) {
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
 
   useEffect(() => {
-    writeTerminalSteerDraft(session.id, steerDraft)
-  }, [session.id, steerDraft])
-
-  useEffect(() => {
-    currentSessionIdRef.current = session.id
-    steerInFlightRef.current = false
     copilotCompatibilityRetryPendingRef.current = false
-    setSteerSubmitting(false)
     setDismissedTerminalError('')
   }, [currentProviderId, session.id])
-
-  useEffect(() => {
-    if (cliBinding?.pendingSteer) pendingSteerWasSeenRef.current = true
-    else if (pendingSteerWasSeenRef.current) {
-      pendingSteerWasSeenRef.current = false
-      setSteerDraft('')
-    }
-  }, [cliBinding?.pendingSteer])
 
   useEffect(() => {
     const compatibilityCheckFinished =
@@ -168,55 +116,25 @@ export function CLIView({ session }: CLIViewProps) {
     }
   }, [cliBinding?.lastError, dismissedTerminalError])
 
-  const steerTerminal = async () => {
-    const text = steerDraft.trim()
-    if (!text || steerInFlightRef.current || !isCefContext()) return
-    const sourceSessionId = session.id
-    setDismissedTerminalError('')
-    steerInFlightRef.current = true
-    setSteerSubmitting(true)
-    try {
-      const response = await sendToCEF<StartCliTerminalResponse>({
-        action: 'steerCliTerminal',
-        payload: {
-          chatId: cliBinding?.boundChatId ?? sourceSessionId,
-          terminalId: cliBinding?.terminalId ?? '',
-          text,
-          retry: Boolean(cliBinding?.pendingSteer),
-        },
-      })
-      if (!response.ok) {
-        setCliBinding(sourceSessionId, { lastError: response.error ?? 'Failed to steer terminal.' })
-        return
-      }
-      const pendingSteer = Boolean(response.data?.pendingSteer)
-      setCliBinding(sourceSessionId, { pendingSteer, lastError: response.data?.lastError ?? '' })
-      if (!pendingSteer && currentSessionIdRef.current === sourceSessionId) {
-        setSteerDraft('')
-      }
-    } finally {
-      if (currentSessionIdRef.current === sourceSessionId) {
-        steerInFlightRef.current = false
-        setSteerSubmitting(false)
-      }
-    }
-  }
-
   useEffect(() => {
     if (!providerSupported) return
     if (!terminalRef.current) return
 
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
+    // Replay once on attachment; live output reaches xterm through uam-cli-output.
+    const state = useAppStore.getState()
+    const cliTranscript = state.cliTranscriptBySessionId[session.id]
+    const effectiveTerminalId = state.cliBindingBySessionId[session.id]?.terminalId || cliTranscript?.terminalId || ''
+    const isDark = resolveDocumentTheme(state.theme, state.customThemes) === 'dark'
 
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", monospace',
       fontSize: 13,
-      lineHeight: 1.5,
+      lineHeight: 1,
       cursorBlink: true,
       cursorStyle: 'block',
       theme: terminalTheme(isDark),
+      minimumContrastRatio: 4.5,
       allowTransparency: true,
-      convertEol: true,
       scrollback: 5000,
     })
 
@@ -233,6 +151,7 @@ export function CLIView({ session }: CLIViewProps) {
       fitAddonRef.current = fitAddon
 
       if (isCefContext()) {
+        const attachmentId = createRequestId('terminal-view')
         let cancelled = false
         let resizeAnimationFrame: number | null = null
         let bestKnownTerminalId = effectiveTerminalId
@@ -260,6 +179,7 @@ export function CLIView({ session }: CLIViewProps) {
             payload: {
               chatId,
               terminalId,
+              attachmentId,
             },
           }).catch((e) => console.error('[CEF] stopCliTerminal error:', e))
         }
@@ -289,6 +209,7 @@ export function CLIView({ session }: CLIViewProps) {
         payload: {
           chatId: session.id,
           terminalId: effectiveTerminalId,
+          attachmentId,
           rows: term.rows,
           cols: term.cols,
           },
@@ -324,8 +245,8 @@ export function CLIView({ session }: CLIViewProps) {
           if (data) {
             const running = Boolean(data.running)
             retryCopilotAfterCompatibilityCheck(data.lastError ?? '')
-            const lifecycleState = normalizeLifecycleState(data.lifecycleState, running, data.turnState)
-            const processing = lifecycleIsProcessing(lifecycleState)
+            const lifecycleState = normalizeCliLifecycleState(data.lifecycleState, running, data.turnState)
+            const processing = cliLifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
             boundChatId: data.sourceChatId ?? session.id,
@@ -334,7 +255,7 @@ export function CLIView({ session }: CLIViewProps) {
             processing,
             active: lifecycleState === 'idle' && running,
             pendingSteer: Boolean(data.pendingSteer),
-            turnState: processing ? 'busy' : 'idle',
+            turnState: lifecycleState === 'unknown' ? 'unknown' : processing ? 'busy' : 'idle',
             lastError: data.lastError ?? '',
           })
 
@@ -361,38 +282,43 @@ export function CLIView({ session }: CLIViewProps) {
         const onData = term.onData((data) => {
           if (cancelled) return
           const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-          sendToCEF({
+          void sendToCEF({
             action: 'writeCliInput',
-          payload: { chatId: binding?.boundChatId ?? session.id, terminalId: binding?.terminalId ?? '', data },
+            payload: { chatId: binding?.boundChatId ?? session.id, terminalId: binding?.terminalId ?? '', data },
+          }).then((response) => {
+            if (!cancelled && !response.ok && useAppStore.getState().cliBindingBySessionId[session.id]?.terminalId === binding?.terminalId) {
+              setCliBinding(session.id, { lastError: response.error || 'Terminal input could not be delivered.' })
+            }
+          })
         })
-      })
 
-        // Resize observer — notify C++ of terminal dimension changes.
-        const resizeObserver = new ResizeObserver(() => {
-          if (resizeAnimationFrame !== null) {
-            cancelAnimationFrame(resizeAnimationFrame)
-          }
-          resizeAnimationFrame = requestAnimationFrame(() => {
-            resizeAnimationFrame = null
-            if (cancelled) return
-            fitAddon.fit()
-            const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-            sendToCEF({
+        // xterm emits only when the character grid changes, including refits outside the observer.
+        const onResize = term.onResize(({ rows, cols }) => {
+          if (cancelled) return
+          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          void sendToCEF({
             action: 'resizeCliTerminal',
             payload: {
               chatId: binding?.boundChatId ?? session.id,
               terminalId: binding?.terminalId ?? '',
-              rows: term.rows,
-              cols: term.cols,
+              rows,
+              cols,
             },
-          }).catch((e) => console.error('[CEF] resizeCliTerminal error:', e))
+          })
         })
-      })
+        const resizeObserver = new ResizeObserver(() => {
+          if (resizeAnimationFrame !== null) cancelAnimationFrame(resizeAnimationFrame)
+          resizeAnimationFrame = requestAnimationFrame(() => {
+            resizeAnimationFrame = null
+            if (!cancelled) fitAddon.fit()
+          })
+        })
         if (terminalRef.current) resizeObserver.observe(terminalRef.current)
 
         return () => {
           cancelled = true
           onData.dispose()
+          onResize.dispose()
           window.removeEventListener('uam-cli-output', onCliOutput)
           resizeObserver.disconnect()
           if (resizeAnimationFrame !== null) {
@@ -413,55 +339,10 @@ export function CLIView({ session }: CLIViewProps) {
         }
       }
 
-    // ----- Dev/mock path -----
-    const welcome = MOCK_WELCOME.map((line) =>
-      line.replace('{SESSION_NAME}', session.name)
-    )
-    welcome.forEach((line) => term.writeln(line))
-
-    let lineBuffer = ''
-    const MOCK_OUTPUTS: Record<string, string> = {
-      ls: '\x1b[34mbin\x1b[0m  \x1b[34mbuild\x1b[0m  \x1b[32mCMakeLists.txt\x1b[0m  \x1b[32mREADME.md\x1b[0m  \x1b[34msrc\x1b[0m  \x1b[34mtests\x1b[0m',
-      pwd: '/Users/user/projects/uam',
-      'uname -a': 'Darwin macbook.local 25.3.0 Darwin Kernel Version 25.3.0',
-      help: '\x1b[38;5;208mAvailable: \x1b[0mls, pwd, uname, clear, help',
-      clear: '\x1b[2J\x1b[H',
-    }
-
-    term.onData((data) => {
-      if (data === '\r') {
-        term.write('\r\n')
-        const cmd = lineBuffer.trim()
-        lineBuffer = ''
-        if (cmd) {
-          const out = MOCK_OUTPUTS[cmd]
-          if (out === '\x1b[2J\x1b[H') {
-            term.write(out)
-          } else if (out) {
-            term.writeln(out)
-          } else {
-            term.writeln(`\x1b[31mbash: ${cmd}: command not found\x1b[0m`)
-          }
-        }
-        term.write('\x1b[38;5;245m$ \x1b[0m')
-      } else if (data === '\x7f') {
-        if (lineBuffer.length > 0) {
-          lineBuffer = lineBuffer.slice(0, -1)
-          term.write('\b \b')
-        }
-      } else if (data >= ' ') {
-        lineBuffer += data
-        term.write(data)
-      }
-    })
-
-    const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => fitAddon.fit())
-    })
-    if (terminalRef.current) resizeObserver.observe(terminalRef.current)
-
+    term.writeln('Open this chat in the desktop app to use the provider terminal.')
     return () => {
-      resizeObserver.disconnect()
+      termInstanceRef.current = null
+      fitAddonRef.current = null
       term.dispose()
     }
   }, [currentProviderId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session, provider, support, and explicit retry
@@ -469,10 +350,10 @@ export function CLIView({ session }: CLIViewProps) {
   // Refit and recolor the live terminal on theme change.
   useEffect(() => {
     if (termInstanceRef.current?.options) {
-      termInstanceRef.current.options.theme = terminalTheme(document.documentElement.getAttribute('data-theme') !== 'light')
+      termInstanceRef.current.options.theme = terminalTheme(resolvedTheme === 'dark')
     }
     requestAnimationFrame(() => fitAddonRef.current?.fit())
-  }, [theme])
+  }, [resolvedTheme])
 
   if (!providerSupported) {
     return (
@@ -494,12 +375,6 @@ export function CLIView({ session }: CLIViewProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div
-        className="flex-shrink-0 px-3 py-1.5 text-[11px]"
-        style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
-      >
-        Terminal permissions are provider-managed. Approve or deny requests in the terminal.
-      </div>
       {!!visibleTerminalError && (
         <div
           className="flex-shrink-0 px-3 py-2 text-xs"
@@ -565,41 +440,7 @@ export function CLIView({ session }: CLIViewProps) {
       >
         <div ref={terminalRef} className="h-full" />
       </div>
-      {(cliBinding?.processing || cliBinding?.pendingSteer) && (
-        <div
-          className="flex flex-shrink-0 items-center gap-2 px-3 py-2"
-          style={{
-            border: '1px solid var(--border-bright)',
-            borderRadius: 10,
-            margin: '0 24px 20px',
-            background: 'var(--surface)',
-            width: 'calc(100% - 48px)',
-          }}
-        >
-          <input
-            aria-label="Terminal steering prompt"
-            value={steerDraft}
-            onChange={(event) => setSteerDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') void steerTerminal() }}
-            placeholder="Interrupt and send a new instruction"
-            className="min-w-0 flex-1 text-xs"
-            style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', padding: '7px 9px' }}
-          />
-          <button
-            type="button"
-            title="Interrupt the terminal turn and send this prompt next"
-            aria-label={steerWaiting ? 'Steering terminal prompt' : steerPending ? 'Retry terminal steer' : 'Steer terminal now'}
-            aria-busy={steerWaiting}
-            disabled={!steerDraft.trim() || steerWaiting}
-            onClick={() => void steerTerminal()}
-            className="uam-composer-action h-[30px] px-3 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
-            style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--yellow) 48%, var(--border-bright))', background: 'color-mix(in srgb, var(--yellow) 12%, var(--surface))', color: 'var(--yellow)' }}
-          >
-            <Zap size={13} className={steerSubmitting ? 'animate-pulse' : undefined} aria-hidden />
-            {steerActionLabel}
-          </button>
-        </div>
-      )}
+
     </div>
   )
 }

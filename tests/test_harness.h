@@ -39,17 +39,12 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
-#include "common/provider/codex/codex_options.h"
-#include "common/provider/codex/cli/codex_session_index.h"
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
-#include "common/provider/gemini/base/gemini_history_loader.h"
 #endif
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
-#include "common/provider/runtime/provider_runtime_internal.h"
-#include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 #include "common/runtime/acp/acp_attention_kind.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_content.h"

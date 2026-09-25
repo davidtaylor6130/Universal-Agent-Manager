@@ -152,11 +152,13 @@ struct DictationEvent
 {
 	DictationEventType type = DictationEventType::End;
 	std::string text;
+	std::string dictation_id{};
 };
 
 struct DictationOptions
 {
 	std::string locale;
+	std::string dictation_id;
 };
 
 /// <summary>
@@ -168,7 +170,8 @@ class IPlatformDictationService
   public:
 	virtual ~IPlatformDictationService() = default;
 	virtual bool Start(const DictationOptions& options, std::string* error_out = nullptr) = 0;
-	virtual void Stop() = 0;
+	/// Stops the matching recording; an empty ID forces application shutdown cleanup.
+	virtual void Stop(std::string_view dictation_id = {}) = 0;
 	virtual bool IsRunning() const = 0;
 	virtual std::vector<DictationEvent> PollEvents() = 0;
 };

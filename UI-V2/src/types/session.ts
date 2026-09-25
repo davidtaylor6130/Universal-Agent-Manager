@@ -2,7 +2,7 @@ import type { MemoryLevel } from './memory'
 
 export type ViewMode = 'chat' | 'cli'
 
-export type ComputerUseControlState = 'running' | 'paused' | 'stopped'
+export type ComputerUseControlState = 'armed' | 'running' | 'paused' | 'stopped'
 export type ComputerUseBackend = 'auto' | 'provider' | 'uam'
 export type ComputerUseEffectiveBackend = 'provider' | 'uam'
 

@@ -286,6 +286,7 @@ export function normalizeCliLifecycleState(
   processing?: boolean
 ): CliLifecycleState {
   if (
+    value === 'unknown' ||
     value === 'disabled' ||
     value === 'stopped' ||
     value === 'idle' ||
@@ -298,6 +299,8 @@ export function normalizeCliLifecycleState(
   if (!running) {
     return 'stopped'
   }
+
+  if (turnState === 'unknown') return 'unknown'
 
   if (turnState === 'busy' || processing) {
     return 'busy'
@@ -473,6 +476,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
     existing.processingStartedAtMs === next.processingStartedAtMs &&
+    existing.promptActionError === next.promptActionError &&
     existing.lastError === next.lastError &&
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
@@ -529,13 +533,13 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
     chat.cliTerminal.turnState,
     chat.cliTerminal.processing
   )
-  const processing = Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState)
+  const processing = lifecycleState !== 'unknown' && (Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState))
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
     running,
     lifecycleState,
-    turnState: processing ? 'busy' : 'idle',
+    turnState: lifecycleState === 'unknown' ? 'unknown' : processing ? 'busy' : 'idle',
     processing,
     readySinceLastSelect: Boolean(chat.cliTerminal.readySinceLastSelect),
     active: lifecycleState === 'idle' && running,
@@ -569,10 +573,11 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing
-      ? previous?.processing
+      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0)
         ? previous.processingStartedAtMs ?? Date.now()
         : Date.now()
       : null,
+    promptActionError: previous?.promptActionError,
     lastError: acp?.lastError ?? '',
     recentStderr: acp?.recentStderr ?? '',
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
@@ -698,11 +703,11 @@ export function sameArrayEntries<T>(existing: T[], next: T[]) {
 
 function cppMessageCreatedAtMillis(message: CppMessage) {
   if (!message.createdAt) {
-    return Date.now()
+    return 0
   }
 
   const timestamp = Date.parse(message.createdAt)
-  return Number.isFinite(timestamp) ? timestamp : Date.now()
+  return Number.isFinite(timestamp) ? timestamp : 0
 }
 
 function cppMessagesEquivalent(existing: Message, next: CppMessage) {
@@ -710,6 +715,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
+    (existing.modelId ?? '') === (next.modelId ?? '') &&
     (existing.thoughts ?? '') === (next.thoughts ?? '') &&
     (existing.planSummary ?? '') === (next.planSummary ?? '') &&
     planEntriesEquivalent(existing.planEntries ?? [], next.planEntries ?? []) &&
@@ -718,7 +724,9 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
+		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
+		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
     (existing.checkpointParentSha ?? '') === (next.checkpointParentSha ?? '') &&
     existing.createdAt.getTime() === cppMessageCreatedAtMillis(next)
@@ -727,21 +735,25 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
 
 export function buildMessageFromCpp(chatId: string, message: CppMessage, index: number): Message {
   const createdAtMillis = cppMessageCreatedAtMillis(message)
+  const attachments = messageAttachments(message)
   return {
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
     role: message.role,
     content: message.content,
     providerId: message.providerId,
+    modelId: message.modelId,
     thoughts: message.thoughts ?? '',
     planSummary: message.planSummary ?? '',
-    planEntries: message.planEntries ?? [],
-    toolCalls: message.toolCalls ?? [],
-    blocks: message.blocks ?? [],
-    attachments: messageAttachments(message),
+    planEntries: message.planEntries?.length ? message.planEntries : undefined,
+    toolCalls: message.toolCalls?.length ? message.toolCalls : undefined,
+    blocks: message.blocks?.length ? message.blocks : undefined,
+    attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
+		acpPromptNotSent: Boolean(message.acpPromptNotSent),
 		prioritySteer: Boolean(message.prioritySteer),
+		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,
     checkpointParentSha: message.checkpointParentSha,
     createdAt: new Date(createdAtMillis),
@@ -755,6 +767,16 @@ export function reconcileCppMessages(
   authoritative = false
 ): Message[] {
   const existing = existingMessages ?? []
+  if (!authoritative && existing[existing.length - 1]?.isStreaming) {
+    let hasEarlierStreamingPlaceholder = false
+    for (let index = 0; index < existing.length - 1; index += 1) {
+      if (existing[index].isStreaming) {
+        hasEarlierStreamingPlaceholder = true
+        break
+      }
+    }
+    if (!hasEarlierStreamingPlaceholder && cppMessages.length <= existing.length - 1) return existing
+  }
   const existingRealMessages = existing.filter((message) => !message.isStreaming)
   const hasStreamingPlaceholder = existing.some((message) => message.isStreaming)
 
@@ -805,6 +827,7 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.status === other.status &&
       tool.content === other.content &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
+      (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
       (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')

@@ -2,9 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronRight, Library } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
+import { createRequestId } from '../../ipc/cefBridge'
 import { ViewportMenu } from '../ui'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
 
+export const COLLECTION_MOVE_FAILURE_EVENT = 'uam-collection-move-failure'
+export type CollectionMoveFailure = { id: string; time: string; message: string; detail: string }
+
+/** Moves a resource through the store actions and reports failures to the shell after rollback. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
   const { resourceCollections, addResourceReference, removeResourceReference } = useAppStore.getState()
   const memberships = resourceCollections.flatMap((collection) => collection.references
@@ -13,18 +18,33 @@ export async function moveResourceToCollection(collectionId: string | null, type
   const alreadyInTarget = memberships.some((membership) => membership.collectionId === collectionId)
   const removed = []
 
-  for (const membership of memberships.filter((item) => item.collectionId !== collectionId)) {
-    if (!await removeResourceReference(membership.collectionId, membership.referenceId)) {
-      await Promise.all(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
-      return false
+  try {
+    for (const membership of memberships.filter((item) => item.collectionId !== collectionId)) {
+      if (!await removeResourceReference(membership.collectionId, membership.referenceId)) {
+        throw new Error('Could not remove the original collection membership.')
+      }
+      removed.push(membership)
     }
-    removed.push(membership)
-  }
-  if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) {
-    await Promise.all(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
+    if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) {
+      throw new Error('Could not add the destination collection membership.')
+    }
+    return true
+  } catch (error) {
+    const restored = await Promise.allSettled(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
+    const restorationFailed = restored.some((result) => result.status === 'rejected' || !result.value)
+    window.dispatchEvent(new CustomEvent<CollectionMoveFailure>(COLLECTION_MOVE_FAILURE_EVENT, {
+      detail: {
+        id: createRequestId('collection-move-failure'),
+        time: new Date().toISOString(),
+        message: `Could not move "${label}".`,
+        detail: [
+          error instanceof Error ? error.message : 'Collection move failed.',
+          restorationFailed ? 'Some memberships could not be restored. Check collections before retrying.' : 'Check collection membership and try again.',
+        ].join(' '),
+      },
+    }))
     return false
   }
-  return true
 }
 
 export const moveFolderToCollection = (collectionId: string | null, target: string, label: string) =>

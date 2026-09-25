@@ -1,3 +1,4 @@
+import { isCompanionContext } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
@@ -12,6 +13,7 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
   chatPaneColors,
+  activateExistingChatPane,
   readChatGridLayout,
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
@@ -66,6 +68,8 @@ interface SessionItemProps {
   session?: Session
   familySessionIds?: string[]
   selected?: boolean
+  activityLayout?: boolean
+  activityContext?: string
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
@@ -80,8 +84,8 @@ const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
   generic: 'Input needed',
 }
 
-function sidebarStatusIcon(kind: AcpAttentionKind) {
-  const props = { size: 12, 'aria-hidden': true } as const
+export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
+  const props = { size, 'aria-hidden': true } as const
   switch (kind) {
     case 'question': return <HelpCircle {...props} />
     case 'plan': return <ClipboardList {...props} />
@@ -94,7 +98,7 @@ function sidebarStatusIcon(kind: AcpAttentionKind) {
   }
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, onSessionClick }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityContext, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -125,12 +129,41 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
   const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
+  const isSelectedChat = useAppStore((s) => s.activeSessionId === sessionId)
   const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
     return displayedChatStatus(cliBindings, acpBindings)
   }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const selectChat = () => {
+    const state = useAppStore.getState()
+    const sessions = state.sessions
+    const clickedSession = session ?? sessions.find((candidate) => candidate.id === sessionId)
+    const branchRootId = clickedSession?.branchRootChatId || clickedSession?.parentChatId || clickedSession?.id
+    if (clickedSession && branchRootId === sessionId) {
+      const compareLength = (a: Session, b: Session) =>
+        (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
+        (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
+        b.id.localeCompare(a.id)
+      const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
+      let longestChat: Session | undefined
+      for (const candidate of sessions) {
+        const isInFamily = familyIds
+          ? familyIds.has(candidate.id)
+          : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
+        if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
+          longestChat = candidate
+        }
+      }
+      const chatId = longestChat?.id ?? sessionId
+      activateExistingChatPane(chatId)
+      if (state.activeSessionId !== chatId) setActiveSession(chatId)
+      return
+    }
+    activateExistingChatPane(sessionId)
+    if (state.activeSessionId !== sessionId) setActiveSession(sessionId)
+  }
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
   const deleteSessions = useAppStore((s) => s.deleteSessions)
@@ -148,8 +181,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
-  const lastOpenedLabel = formatSidebarTime(sessionLastOpenedAt)
-  const lastOpenedTitle = formatSidebarTimeTitle(sessionLastOpenedAt)
+  const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
+  const lastOpenedLabel = formatSidebarTime(activityDate)
+  const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
   const paneNumbers = paneIndexes.map((index) => index + 1)
@@ -223,27 +257,27 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
         event.stopPropagation()
       }}
-      style={{ animation: 'fadeIn 0.12s ease-out' }}
     >
       <div
         ref={rowRef}
         role="button"
         tabIndex={0}
-        aria-current={isActive ? 'page' : undefined}
+        aria-current={isSelectedChat ? 'page' : undefined}
         aria-label={`Open chat ${sessionName}`}
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className="relative flex min-h-[26px] items-center gap-1.5 px-2.5 py-1 rounded-md mx-1 cursor-pointer transition-all duration-100"
+        className={`relative flex ${activityLayout ? 'min-h-[53px] gap-2.5 px-3 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
         style={{
           background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
           boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
         }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
-          if (!isActive) setActiveSession(sessionId)
+          selectChat()
         }}
         onDoubleClick={() => {
+          if (isCompanionContext()) return
           setEditing(true)
           setEditValue(sessionName)
         }}
@@ -251,12 +285,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.target !== event.currentTarget || editing) return
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            if (!isActive) setActiveSession(sessionId)
-          } else if (event.key === 'F2') {
+            selectChat()
+          } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
             setEditValue(sessionName)
-          } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          } else if (!isCompanionContext() && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
             event.preventDefault()
             const rect = event.currentTarget.getBoundingClientRect()
             menuReturnFocusRef.current = event.currentTarget
@@ -271,12 +305,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
         onContextMenu={(e) => {
           e.preventDefault()
+          if (isCompanionContext()) return
           menuReturnFocusRef.current = e.currentTarget
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
-        {selected && (
-          <span role="img" aria-label="Selected for bulk actions" className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
+        {(selected || (isCompanionContext() && isSelectedChat)) && (
+          <span role="img" aria-label={selected ? 'Selected for bulk actions' : 'Selected chat'} className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
             <Check size={12} aria-hidden />
           </span>
         )}
@@ -294,7 +329,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         )}
         {!editing && showProviderIcon && sessionSummary.providerId && (
           <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
-            <ProviderLogo providerId={sessionSummary.providerId} size={16} />
+            <ProviderLogo providerId={sessionSummary.providerId} size={activityLayout ? 24 : 16} />
           </span>
         )}
         {!editing && isPinned && (
@@ -327,8 +362,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           />
         ) : (
           <div className="min-w-0 flex-1">
-            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
-            {showWorktreePath && sessionSummary.worktreeDirectory && (
+            <span className={`block truncate ${activityLayout ? 'text-sm font-medium' : 'text-[13px]'}`} style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            {activityLayout ? (
+              <span className="block truncate text-[11px]" title={activityContext} style={{ color: 'var(--text-3)' }}>{activityContext}</span>
+            ) : showWorktreePath && sessionSummary.worktreeDirectory && (
               <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
                 {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
               </span>
@@ -338,11 +375,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
-            <div className="ml-auto flex items-center gap-1 transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0">
+            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 self-stretch flex-col items-end justify-between py-1' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
               {lastOpenedLabel && (
                 <span
-                  className="max-w-[58px] truncate text-[10px] tabular-nums"
-                  title={lastOpenedTitle}
+                  className={`${activityLayout ? 'max-w-[100px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
+                  title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
                     lineHeight: 1,
@@ -351,17 +388,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   {lastOpenedLabel}
                 </span>
               )}
-              {lifecycleStatus?.type === 'processing' && (
+              {activityLayout && (
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px]" style={{ color: lifecycleStatus?.type === 'attention' ? 'var(--yellow)' : lifecycleStatus?.type === 'done' ? 'var(--accent)' : 'var(--text-2)' }}>
+                  {lifecycleStatus?.type === 'processing' && <span className="session-status session-status--processing" aria-hidden="true"><span /></span>}
+                  {lifecycleStatus?.type === 'attention' && <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-hidden="true">{sidebarStatusIcon(lifecycleStatus.kind)}</span>}
+                  {lifecycleStatus?.type === 'done' && <Check size={14} aria-hidden />}
+                  {lifecycleStatus?.type === 'processing' ? 'Running' : lifecycleStatus?.type === 'attention' ? 'Needs input' : 'Ready to review'}
+                </span>
+              )}
+              {!activityLayout && lifecycleStatus?.type === 'processing' && (
                 <span className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
                   <span />
                 </span>
               )}
-              {lifecycleStatus?.type === 'attention' && (
+              {!activityLayout && lifecycleStatus?.type === 'attention' && (
                 <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={ATTENTION_LABELS[lifecycleStatus.kind]} title={ATTENTION_LABELS[lifecycleStatus.kind]}>
                   {sidebarStatusIcon(lifecycleStatus.kind)}
                 </span>
               )}
-              {lifecycleStatus?.type === 'done' && (
+              {!activityLayout && lifecycleStatus?.type === 'done' && (
                 <span className="session-status session-status--idle" aria-label="Done" title="Done">
                   <span />
                 </span>
@@ -369,6 +414,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             </div>
             <div
               data-testid={`session-actions-${sessionId}`}
+              style={isCompanionContext() ? { display: 'none' } : undefined}
               className={`absolute right-2.5 flex items-center gap-0.5 transition-opacity duration-100 ${
                 menuPos
                   ? 'opacity-100 pointer-events-auto'

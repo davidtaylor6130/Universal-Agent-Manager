@@ -3,7 +3,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/utils/uuid.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -61,11 +61,11 @@ namespace uam
 
 		bool Validate(const AgentRun& run, std::string* error_out)
 		{
-			const bool valid = uam::codex::IsCanonicalUuid(run.id) &&
+			const bool valid = uam::uuid::IsCanonicalUuid(run.id) &&
 			                   SafeReference(run.root_chat_id, false) && SafeReference(run.transcript_chat_id) &&
 			                   SafeReference(run.goal_id) &&
-			                   (run.parent_run_id.empty() || uam::codex::IsCanonicalUuid(run.parent_run_id)) &&
-			                   (run.resumed_from_run_id.empty() || uam::codex::IsCanonicalUuid(run.resumed_from_run_id)) &&
+			                   (run.parent_run_id.empty() || uam::uuid::IsCanonicalUuid(run.parent_run_id)) &&
+			                   (run.resumed_from_run_id.empty() || uam::uuid::IsCanonicalUuid(run.resumed_from_run_id)) &&
 			                   SafeReference(run.agent_id, false) && SafeReference(run.provider_id, false) &&
 			                   SafeText(run.model_id, kMaxIdBytes) && SafeText(run.definition_hash, kMaxIdBytes) &&
 			                   SafeText(run.definition_snapshot, kMaxSnapshotBytes) && !run.definition_snapshot.empty() &&

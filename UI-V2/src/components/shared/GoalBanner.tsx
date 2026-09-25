@@ -35,21 +35,23 @@ function statusLabel(status: Goal['status']): string {
   }
 }
 
-function blockerKindLabel(kind = ''): string {
-	const normalized = kind.toLowerCase()
+function blockerKindLabel(goal: Goal): string {
+	const normalized = `${goal.lastBlockerKind ?? ''} ${goal.lastBlocker ?? ''}`.toLowerCase()
 	if (normalized.includes('permission') || normalized.includes('access')) return 'Needs access'
 	if (normalized.includes('input') || normalized.includes('user')) return 'Needs input'
 	if (normalized.includes('token') || normalized.includes('budget')) return 'Budget reached'
 	if (normalized.includes('remote') || normalized.includes('connection') || normalized.includes('host')) return 'Needs connection'
+	if (normalized.includes('process exited during an active turn')) return 'Needs connection'
 	if (normalized === 'transient') return 'Temporary issue'
 	return 'Blocked'
 }
 
 function blockerNextAction(goal: Goal): string {
-	const kind = goal.lastBlockerKind?.toLowerCase() ?? ''
+	const kind = `${goal.lastBlockerKind ?? ''} ${goal.lastBlocker ?? ''}`.toLowerCase()
 	if (kind.includes('permission') || kind.includes('access')) return 'Approve or deny the request, then resume.'
 	if (kind.includes('token') || kind.includes('budget')) return 'Increase the token budget, then resume.'
 	if (kind.includes('remote') || kind.includes('connection') || kind.includes('host')) return 'Reconnect the host, then resume.'
+	if (kind.includes('process exited during an active turn')) return 'Reconnect the host, then resume.'
 	if (kind === 'transient') return 'Retry when the dependency is available.'
 	if (goal.currentStep?.trim()) return readablePlanItem(goal.currentStep)
 	return 'Resolve the blocker, then resume.'
@@ -169,7 +171,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
   const menuId = useId()
   const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
-	const blockerLabel = blockerKindLabel(goal.lastBlockerKind)
+	const blockerLabel = blockerKindLabel(goal)
 	const blockerAction = blockerDisplay ? blockerNextAction(goal) : ''
   const tone = statusTone(goal.status)
   const completedCount = goal.completedItems?.length ?? 0
@@ -270,7 +272,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
       )}
 
       {/* All goal actions consolidated into one overflow menu */}
-      {goal.status !== 'complete' && <div ref={menuRef} className="relative flex-shrink-0">
+      <div ref={menuRef} className="relative flex-shrink-0">
         <Tooltip label="Goal actions">
           <button
             ref={triggerRef}
@@ -299,21 +301,21 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
             style={{ minWidth: 150, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
           >
             {goal.status === 'active' && (
-              <MenuItem icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />
+              <MenuItem disabled={resumePending} icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />
             )}
             {goal.status === 'active' && onPause && (
-              <MenuItem icon={<Pause size={14} aria-hidden />} label="Pause goal" onClick={() => { setMenuOpen(false); onPause() }} />
+              <MenuItem disabled={resumePending} icon={<Pause size={14} aria-hidden />} label="Pause goal" onClick={() => { setMenuOpen(false); onPause() }} />
             )}
-            {goal.status !== 'active' && onResume && (
+            {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
               <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label={resumePending ? 'Resuming…' : 'Resume goal'} onClick={() => { setMenuOpen(false); onResume() }} />
             )}
-            {goal.executionOwner !== 'provider' && onEdit && (
-              <MenuItem icon={<Pencil size={14} aria-hidden />} label="Edit goal" onClick={() => { setMenuOpen(false); setEditing(true) }} />
+            {!isComplete && goal.executionOwner !== 'provider' && onEdit && (
+              <MenuItem disabled={resumePending} icon={<Pencil size={14} aria-hidden />} label="Edit goal" onClick={() => { setMenuOpen(false); setEditing(true) }} />
             )}
-            <MenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
+            <MenuItem disabled={resumePending} icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
           </ViewportMenu>
         )}
-      </div>}
+      </div>
       {editing && onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} />}
     </div>
   )

@@ -97,6 +97,7 @@ namespace uam::base64
 	inline bool Decode(std::string_view input, std::string& out)
 	{
 		out.clear();
+		out.reserve(input.size() - input.size() / 4);
 
 		int value = 0;
 		int bits = -8;

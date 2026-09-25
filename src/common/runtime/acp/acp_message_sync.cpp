@@ -20,6 +20,7 @@ Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session)
 	Message message;
 	message.role = MessageRole::Assistant;
 	message.provider = MessageProviderId(session);
+	message.model_id = session.current_model_id;
 	message.created_at = AcpTimestampNow();
 	chat.messages.push_back(std::move(message));
 	session.current_assistant_message_index = static_cast<int>(chat.messages.size()) - 1;
@@ -35,16 +36,11 @@ bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::
 	}
 
 	const bool starts_new_block = AppendThoughtTurnEvent(session, chunk);
-	if (Message* message = CurrentAssistantMessage(chat, session))
-	{
-		AppendThoughtText(message->thoughts, chunk, starts_new_block);
-		(void)SyncMessageBlocksFromTurnEvents(*message, session);
-		chat.updated_at = AcpTimestampNow();
-		return true;
-	}
-
-	AppendThoughtText(session.pending_assistant_thoughts, chunk, starts_new_block);
-	return false;
+	Message& message = EnsureAssistantMessage(chat, session);
+	AppendThoughtText(message.thoughts, chunk, starts_new_block);
+	(void)SyncMessageBlocksFromTurnEvents(message, session);
+	chat.updated_at = AcpTimestampNow();
+	return true;
 }
 
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
@@ -91,6 +87,7 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	persisted.id = tool_call.id;
 	persisted.name = uam::strings::NonEmptyOrFallback(tool_call.title, uam::strings::NonEmptyOrFallback(tool_call.kind, tool_call.id));
 	persisted.status = tool_call.status;
+	persisted.args_json = tool_call.args_json;
 	persisted.result_text = tool_call.content;
 	if (!tool_call.permission_review_reason.empty())
 	{
@@ -138,23 +135,31 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 		return false;
 	}
 
-	Message* message = CurrentAssistantMessage(chat, session);
-	if (message == nullptr)
-	{
-		if (!create_if_missing)
-		{
-			return false;
-		}
-
-		message = &EnsureAssistantMessage(chat, session);
-	}
-
 	bool changed = false;
 	for (const AcpToolCallState& tool_call : session.tool_calls)
 	{
+		if (tool_call.id.empty()) continue;
+		Message* message = nullptr;
+		const std::unordered_map<std::string, int>::const_iterator owner = session.tool_call_message_indices.find(tool_call.id);
+		if (owner != session.tool_call_message_indices.end())
+		{
+			const int index = owner->second;
+			if (index < 0 || index >= static_cast<int>(chat.messages.size()) ||
+			    chat.messages[static_cast<std::size_t>(index)].role != MessageRole::Assistant) continue;
+			message = &chat.messages[static_cast<std::size_t>(index)];
+		}
+		else
+		{
+			message = CurrentAssistantMessage(chat, session);
+			if (message == nullptr && create_if_missing) message = &EnsureAssistantMessage(chat, session);
+			if (message == nullptr) continue;
+			session.tool_call_message_indices.emplace(tool_call.id, session.current_assistant_message_index);
+		}
 		changed |= UpsertPersistedToolCall(message->tool_calls, tool_call);
 	}
-	changed |= SyncMessageBlocksFromTurnEvents(*message, session);
+	// Earlier segments retain their own blocks when a late tool result arrives after a steer.
+	if (Message* message = CurrentAssistantMessage(chat, session))
+		changed |= SyncMessageBlocksFromTurnEvents(*message, session);
 	if (changed)
 	{
 		chat.updated_at = AcpTimestampNow();
@@ -162,18 +167,32 @@ bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& sess
 	return changed;
 }
 
+namespace
+{
+	bool FinalizeActiveAcpToolCalls(ChatSession& chat, AcpSessionState& session, const char* status)
+	{
+		bool changed = false;
+		for (AcpToolCallState& tool_call : session.tool_calls)
+		{
+			if (uam::acp_statuses::IsActiveStatus(tool_call.status))
+			{
+				tool_call.status = status;
+				changed = true;
+			}
+		}
+		// Completed tools retained after a turn must not create another assistant on stop.
+		return SyncAcpToolCallsToAssistantMessage(chat, session, changed) || changed;
+	}
+}
+
 bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session)
 {
-	bool changed = false;
-	for (AcpToolCallState& tool_call : session.tool_calls)
-	{
-		if (uam::acp_statuses::IsActiveStatus(tool_call.status))
-		{
-			tool_call.status = uam::acp_statuses::kCancelled;
-			changed = true;
-		}
-	}
-	return changed && SyncAcpToolCallsToAssistantMessage(chat, session, true);
+	return FinalizeActiveAcpToolCalls(chat, session, uam::acp_statuses::kCancelled);
+}
+
+bool FinalizeActiveAcpToolCallsAsFailed(ChatSession& chat, AcpSessionState& session)
+{
+	return FinalizeActiveAcpToolCalls(chat, session, uam::acp_statuses::kFailed);
 }
 
 MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& entry)

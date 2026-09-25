@@ -32,8 +32,10 @@ struct ChatStorageDeleteResult
 class ChatRepository
 {
   public:
-	/// <summary>Saves one chat session to disk.</summary>
-	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat);
+	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
+	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
+	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
+	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
 	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Loads locally persisted chat sessions from disk.</summary>
@@ -44,9 +46,12 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
+	/// <summary>Adopts a validated hydrated transcript without replacing live chat metadata.</summary>
+	static bool AdoptHydratedMessagesIfUnchanged(ChatSession& current, ChatSession&& loaded,
+	                                             std::size_t expected_count, std::string_view expected_digest);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
 
   private:
-	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists);
+	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false);
 };

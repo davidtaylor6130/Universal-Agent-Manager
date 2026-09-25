@@ -14,5 +14,7 @@ namespace uam
 		static bool Poll(AppState& app);
 		static bool SetControlState(AppState& app, const std::string& chat_id, std::string_view state,
 		    std::string* error = nullptr);
+		static bool PersistTrustedTask(AppState& app, const std::string& chat_id,
+		    std::string_view prompt, std::string* error = nullptr);
 	};
 } // namespace uam

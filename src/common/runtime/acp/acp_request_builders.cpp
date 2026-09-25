@@ -2,12 +2,9 @@
 
 #include "common/config/approval_modes.h"
 #include "computer_use/computer_use_mcp_config.h"
-#include "common/provider/codex/codex_options.h"
 #include "common/runtime/acp/acp_content.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
-#include "common/runtime/acp/acp_request_defaults.h"
-#include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <cctype>
@@ -18,47 +15,6 @@
 
 namespace uam::acp_detail
 {
-
-nlohmann::json BuildInitializeRequest(int request_id)
-{
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
-	                                  {
-	                                      {"protocolVersion", 1},
-	                                      {"clientCapabilities", nlohmann::json::object()},
-	                                      {"clientInfo", uam::acp_request_defaults::ClientInfo()},
-	                                  });
-}
-
-nlohmann::json BuildCodexInitializeRequest(int request_id)
-{
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
-	                                  {
-	                                      {"clientInfo", uam::acp_request_defaults::ClientInfo()},
-	                                      {"capabilities",
-	                                       {
-	                                           {"experimentalApi", true},
-	                                       }},
-	                                  });
-}
-
-nlohmann::json BuildCodexInitializedNotification()
-{
-	return uam::acp_json_rpc::Notification(uam::acp_methods::kInitialized, nullptr);
-}
-
-nlohmann::json BuildCodexModelListRequest(int request_id)
-{
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kModelList, nlohmann::json::object());
-}
-
-nlohmann::json BuildCodexRateLimitsReadRequest(int request_id)
-{
-	return {
-	    {"jsonrpc", uam::acp_json_rpc::kVersion},
-	    {"id", request_id},
-	    {"method", uam::acp_methods::kAccountRateLimitsRead},
-	};
-}
 
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat)
 {
@@ -88,43 +44,6 @@ nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& sess
 	                                      {"cwd", cwd},
 	                                      {"mcpServers", chat == nullptr ? nlohmann::json::array() : uam::computer_use::AcpMcpServers(*chat)},
 	                                  });
-}
-
-nlohmann::json BuildCodexThreadStartRequest(int request_id, const ChatSession& chat, const std::string& cwd)
-{
-	nlohmann::json params = uam::acp_request_defaults::CodexThreadStartParams(cwd);
-
-	const std::string model_id = uam::strings::Trim(chat.model_id);
-	if (!model_id.empty())
-	{
-		params["model"] = model_id;
-	}
-
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kThreadStart, std::move(params));
-}
-
-nlohmann::json BuildCodexThreadResumeRequest(int request_id, const ChatSession& chat, const std::string& cwd)
-{
-	nlohmann::json params = uam::acp_request_defaults::CodexThreadResumeParams(chat.native_session_id, cwd);
-
-	const std::string model_id = uam::strings::Trim(chat.model_id);
-	if (!model_id.empty())
-	{
-		params["model"] = model_id;
-	}
-
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kThreadResume, std::move(params));
-}
-
-nlohmann::json BuildGeminiSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd, bool load_session_supported)
-{
-	const std::string resume_id = ValidGeminiResumeId(chat);
-	if (!resume_id.empty() && load_session_supported)
-	{
-		return BuildLoadSessionRequest(request_id, resume_id, cwd, &chat);
-	}
-
-	return BuildNewSessionRequest(request_id, cwd, &chat);
 }
 
 bool TextContainsAnyCaseInsensitive(std::string_view text, std::initializer_list<std::string_view> needles)
@@ -176,28 +95,6 @@ bool AcpSessionCanSendQueuedPrompt(const AcpSessionState& session)
 	return ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpCanSendPromptWithoutSessionId() || !session.session_id.empty();
 }
 
-bool GeminiErrorLooksLikeInvalidSessionId(const std::string& error_message, const std::string& error_data)
-{
-	const std::string text = error_message + "\n" + error_data;
-	return TextContainsAnyCaseInsensitive(text, {
-	                                           "invalid session identifier",
-	                                           "use --list-sessions",
-	                                       });
-}
-
-nlohmann::json BuildCodexSessionSetupRequest(int request_id, const ChatSession& chat, const std::string& cwd)
-{
-	const std::string resume_id = ValidCodexResumeId(chat);
-	if (resume_id.empty())
-	{
-		return BuildCodexThreadStartRequest(request_id, chat, cwd);
-	}
-
-	ChatSession resume_chat = chat;
-	resume_chat.native_session_id = resume_id;
-	return BuildCodexThreadResumeRequest(request_id, resume_chat, cwd);
-}
-
 nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id, const std::string& text, const std::string& reasoning_effort)
 {
 	nlohmann::json params = {
@@ -211,59 +108,11 @@ nlohmann::json BuildPromptRequest(int request_id, const std::string& session_id,
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionPrompt, std::move(params));
 }
 
-nlohmann::json BuildCodexTurnStartRequest(int request_id, const std::string& thread_id, const std::string& text, const ChatSession& chat, const std::string& active_model_id)
-{
-	nlohmann::json params = {
-	    {"threadId", thread_id},
-	    {"input", nlohmann::json::array({uam::acp_content::CodexTextInputPart(text)})},
-	};
-
-	const std::string model_id = uam::strings::Trim(chat.model_id);
-	const std::string collaboration_model_id = model_id.empty() ? uam::strings::Trim(active_model_id) : model_id;
-	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(chat.reasoning_effort);
-	const std::string service_tier = uam::codex::NormalizeServiceTier(chat.service_tier);
-	if (!model_id.empty())
-	{
-		params["model"] = model_id;
-	}
-	if (!reasoning_effort.empty())
-	{
-		params["effort"] = reasoning_effort;
-	}
-	if (chat.service_tier_explicit) params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
-
-	const std::string app_mode_id = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
-	const std::string requested_mode_id = app_mode_id == uam::approval_modes::kPlanApprovalMode ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;
-	if (!collaboration_model_id.empty())
-	{
-		nlohmann::json settings = {
-		    {"model", collaboration_model_id},
-		    {"reasoning_effort", uam::nlohmann_json::StringOrNull(reasoning_effort)},
-		    {"developer_instructions", nullptr},
-		};
-		params["collaborationMode"] = {
-		    {"mode", requested_mode_id},
-		    {"settings", std::move(settings)},
-		};
-	}
-
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kTurnStart, std::move(params));
-}
-
 nlohmann::json BuildCancelNotification(const std::string& session_id)
 {
 	return uam::acp_json_rpc::Notification(uam::acp_methods::kSessionCancel, {
 	                                                                             {"sessionId", session_id},
 	                                                                         });
-}
-
-nlohmann::json BuildCodexTurnInterruptRequest(int request_id, const std::string& thread_id, const std::string& turn_id)
-{
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kTurnInterrupt,
-	                                  {
-	                                      {"threadId", thread_id},
-	                                      {"turnId", turn_id},
-	                                  });
 }
 
 nlohmann::json BuildSetConfigOptionRequest(int request_id, const std::string& session_id, const std::string& config_id, const std::string& value)

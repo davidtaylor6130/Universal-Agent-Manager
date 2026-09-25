@@ -1,12 +1,14 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Columns2, MessageSquare, Rows2, SquareTerminal, X } from 'lucide-react'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Columns2, MessageSquare, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
-import { IconButton, StatusDot, Tooltip } from '../ui'
+import { IconButton, Notice, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
+import type { Message } from '../../types/message'
+import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
@@ -50,35 +52,68 @@ const PushStatusDot = memo(function PushStatusDot() {
   )
 })
 
-const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, multiPane, onActivate, onClose }: {
+function hasNonBlankChatContent(messages: Message[] | undefined) {
+  return Boolean(messages?.some((message) =>
+    Boolean(message.content.trim() || message.thoughts?.trim() || message.planSummary?.trim()) ||
+    Boolean(message.blocks?.some((block) => 'text' in block && Boolean(block.text?.trim())))))
+}
+
+const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, multiPane, glide, onActivate, onClose }: {
   session: Session
   active: boolean
   leafId: string
   paneIndex: number
   multiPane: boolean
+  glide: boolean
   onActivate: (leafId: string, sessionId?: string) => void
   onClose: (leafId: string, sessionId: string) => void
 }) {
-  const [view, setView] = useState<'chat' | 'cli'>(session.importedReadOnly ? 'chat' : session.viewMode)
-  const acpBinding = useAppStore((s) => s.acpBindingBySessionId[session.id])
-  const cliBinding = useAppStore((s) => s.cliBindingBySessionId[session.id])
+  const view = session.importedReadOnly ? 'chat' : session.viewMode
+  const setView = (requestedView: 'chat' | 'cli') => {
+    const nextView = session.importedReadOnly ? 'chat' : requestedView
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
+      current.id === session.id && current.viewMode !== nextView ? { ...current, viewMode: nextView } : current
+    ) }))
+    writeChatViewMode(session.id, nextView)
+  }
+  const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const canStopAcpRuntime = useAppStore((s) => {
+    if (view !== 'chat' || session.importedReadOnly) return false
+    const acp = s.acpBindingBySessionId[session.id]
+    return Boolean(acp?.running && acp.lifecycleState === 'ready' &&
+      !acp.processing && !acp.pendingPermission && !acp.pendingUserInput)
+  })
+  const stopAcpSession = useAppStore((s) => s.stopAcpSession)
+  const [stopRuntimeError, setStopRuntimeError] = useState('')
+  useEffect(() => setStopRuntimeError(''), [session.id])
+  const cliSwitchLocked = useAppStore((s) => {
+    const acpBinding = s.acpBindingBySessionId[session.id]
+    const cliBinding = s.cliBindingBySessionId[session.id]
+    return Boolean(
+      cliBinding?.lifecycleState === 'shuttingDown' ||
+      (!cliBinding?.running &&
+        (acpBinding?.processing || acpBinding?.lifecycleState === 'waitingPermission'))
+    )
+  })
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
-  const cliSwitchLocked = Boolean(
-    acpBinding?.processing ||
-      acpBinding?.lifecycleState === 'waitingPermission' ||
-      cliBinding?.processing ||
-      cliBinding?.lifecycleState === 'busy' ||
-      cliBinding?.lifecycleState === 'shuttingDown'
-  )
+  const executionHosts = useAppStore((s) => s.executionHosts)
   const paneColor = chatPaneColors[paneIndex]
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
+  const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
+  const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
+    ? `Remote · ${executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId}`
+    : 'Local'
 
   useEffect(() => {
-    if (session.importedReadOnly) writeChatViewMode(session.id, 'chat')
-    setView(session.importedReadOnly ? 'chat' : session.viewMode)
+    if (session.importedReadOnly) {
+      writeChatViewMode(session.id, 'chat')
+      if (session.viewMode !== 'chat') useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
+        current.id === session.id ? { ...current, viewMode: 'chat' } : current
+      ) }))
+    }
   }, [session.id, session.importedReadOnly, session.viewMode])
 
   return (
@@ -106,16 +141,15 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         {/* Session name */}
         <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight" title={session.name}>
           <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
-          {workspaceLabel && (
-            <span
-              data-testid={`chat-workspace-${session.id}`}
-              className="uam-chat-pane__workspace truncate text-[10px] font-normal"
-              style={{ color: 'var(--text-3)' }}
-              title={workspaceDirectory}
-            >
-              {workspaceLabel}
-            </span>
-          )}
+          <span
+            data-testid={`chat-workspace-${session.id}`}
+            className="uam-chat-pane__workspace flex min-w-0 text-[10px] font-normal"
+            style={{ color: 'var(--text-3)' }}
+            title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
+          >
+            {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
+            <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>
+          </span>
         </div>
 
         <div
@@ -129,7 +163,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             <button
               type="button"
               onClick={() => {
-                writeChatViewMode(session.id, 'chat')
+                if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
               }}
               aria-label="Chat view"
@@ -152,7 +186,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
               aria-pressed={view === 'cli'}
               onClick={() => {
                 if (!session.importedReadOnly && !cliSwitchLocked) {
-                  writeChatViewMode(session.id, 'cli')
                   setView('cli')
                 }
               }}
@@ -169,6 +202,22 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
+        {canStopAcpRuntime && (
+          <IconButton
+            icon={<PowerOff size={14} aria-hidden />}
+            label="Stop runtime"
+            tooltip="Stop the idle runtime for this chat"
+            tooltipSide="bottom"
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              setStopRuntimeError('')
+              void stopAcpSession(session.id).then((ok) => {
+                if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+              }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+            }}
+          />
+        )}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
@@ -181,14 +230,16 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
 
       </div>
 
+      {stopRuntimeError && (
+        <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
+          {stopRuntimeError}
+        </Notice>
+      )}
+
       {/* View content */}
-      <div className="flex-1 overflow-hidden">
+      <div key={`${session.id}:${view}`} className={`${glide && !multiPane ? 'uam-pane-glide ' : ''}flex-1 overflow-hidden`} data-pane-content={session.id} data-view={view}>
         {view === 'chat'
-          ? <ChatView session={session} onOpenTerminalFallback={() => {
-              if (session.importedReadOnly || cliSwitchLocked) return
-              writeChatViewMode(session.id, 'cli')
-              setView('cli')
-            }} />
+          ? <ChatView session={session} />
           : <Suspense fallback={<div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>Loading terminal…</div>}><CLIView session={session} /></Suspense>}
       </div>
     </div>
@@ -218,21 +269,49 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
 export function MainPanel() {
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const previousActiveSessionId = useRef<string | null>(activeSessionId)
+  const [glideSessionId, setGlideSessionId] = useState<string | null>(null)
   const lastAppliedStateRevision = useAppStore((s) => s.lastAppliedStateRevision)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const unloadSessionMessages = useAppStore((s) => s.unloadSessionMessages)
   const [layout, setLayout] = useState<ChatGridLayout>(readChatGridLayout)
   const [dropTargetPane, setDropTargetPane] = useState<string | null>(null)
   const leaves = chatGridLeaves(layout.root)
   const visibleIds = leaves.map((leaf) => leaf.sessionId)
+  useLayoutEffect(() => {
+    const previousId = previousActiveSessionId.current
+    const state = useAppStore.getState()
+    const activeSession = state.sessions.find((session) => session.id === activeSessionId)
+    const previousSession = state.sessions.find((session) => session.id === previousId)
+    setGlideSessionId(
+      activeSessionId && previousId && activeSessionId !== previousId &&
+      (activeSession?.importedReadOnly || activeSession?.viewMode === 'chat') &&
+      (previousSession?.importedReadOnly || previousSession?.viewMode === 'chat') &&
+      hasNonBlankChatContent(state.messages[activeSessionId]) &&
+      hasNonBlankChatContent(state.messages[previousId])
+        ? activeSessionId
+        : null,
+    )
+    previousActiveSessionId.current = activeSessionId
+  }, [activeSessionId])
   const visibleAcpSignatures = useAppStore(useShallow((s) => visibleIds.map((id) => {
     const binding = id ? s.acpBindingBySessionId[id] : undefined
     return `${binding?.processing ? 1 : 0}:${binding?.turnSerial ?? 0}`
   })))
   const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
+  const previousVisibleIds = useRef(new Set(visibleIds.filter(Boolean)))
+  const pendingEvictionIds = useRef(new Set<string>())
 
   useEffect(() => writeChatGridLayout(layout), [layout])
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
+  useEffect(() => useAppStore.subscribe((state) => {
+    for (const id of pendingEvictionIds.current) {
+      if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) continue
+      pendingEvictionIds.current.delete(id)
+      state.unloadSessionMessages(id)
+    }
+  }), [])
 
   useEffect(() => {
     if (isCefContext() && lastAppliedStateRevision < 0) return
@@ -278,6 +357,21 @@ export function MainPanel() {
   }, [loadSessionMessages, visibleIds.join('|')])
 
   useEffect(() => {
+    const current = new Set(visibleIds.filter(Boolean))
+    for (const id of previousVisibleIds.current) {
+      if (current.has(id)) continue
+      const state = useAppStore.getState()
+      if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) {
+        pendingEvictionIds.current.add(id)
+      } else {
+        unloadSessionMessages(id)
+      }
+    }
+    for (const id of current) pendingEvictionIds.current.delete(id)
+    previousVisibleIds.current = current
+  }, [unloadSessionMessages, visibleIds.join('|')])
+
+  useEffect(() => {
     const previous = previousVisibleAcp.current
     const current = new Map<string, { processing: boolean; turnSerial: number }>()
     for (const id of visibleIds) {
@@ -313,8 +407,8 @@ export function MainPanel() {
 
   const clearChat = useCallback((leafId: string, sessionId: string) => {
     setLayout((current) => clearChatLeaf(current, leafId))
-    if (activeSessionId === sessionId) setActiveSession(null)
-  }, [activeSessionId, setActiveSession])
+    if (useAppStore.getState().activeSessionId === sessionId) setActiveSession(null)
+  }, [setActiveSession])
 
   const closePane = useCallback((leafId: string) => {
     setLayout((current) => {
@@ -327,7 +421,7 @@ export function MainPanel() {
   const pane = (leafId: string, index: number, sessionId: string) => {
     const session = sessions.find((candidate) => candidate.id === sessionId)
     return session
-      ? <ChatPane key={session.id} session={session} active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} onClose={clearChat} />
+      ? <ChatPane key={session.id} session={session} active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} glide={glideSessionId === session.id} onActivate={selectPane} onClose={clearChat} />
       : <EmptyPane active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} />
   }
 

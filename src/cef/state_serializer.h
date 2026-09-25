@@ -7,6 +7,9 @@
 // once CMake has run FetchContent.
 #include <nlohmann/json.hpp>
 
+#include <optional>
+#include <string_view>
+
 namespace uam
 {
 
@@ -20,20 +23,31 @@ namespace uam
 class StateSerializer
 {
   public:
-	/// Serialise the full application state.
-	static nlohmann::json Serialize(const AppState& app);
+	/// Serialise the application state, optionally omitting loaded chat messages.
+	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
 	/// Serialise a compact state summary for push fingerprinting.
 	static nlohmann::json SerializeFingerprint(const AppState& app);
 
-	/// Number of loaded chat transcripts deeply hashed by the last fingerprint pass.
-	static std::size_t LastFingerprintMessageDigestCountForTests();
-
 	/// Serialise a single chat session (messages included).
 	static nlohmann::json SerializeSession(const ChatSession& session);
 
+	/// Return the message digest used in serialized chat state.
+	static std::string MessageDigest(const ChatSession& session);
+
+	/// Serialise one bounded message page without serialising the rest of the session.
+	static nlohmann::json SerializeMessagePage(const ChatSession& session,
+	                                           std::size_t limit,
+	                                           std::optional<std::size_t> before,
+	                                           bool defer_tool_call_content = false,
+	                                           std::string_view known_digest = {});
+
 	/// Build the full persisted tool-call detail returned on demand.
 	static std::string ToolCallContentForFrontend(const ToolCall& tool_call);
+
+	/// Return one bounded, UTF-8-safe page of tool-call output.
+	static nlohmann::json ToolCallContentPageForFrontend(std::string_view content,
+	                                                     std::size_t offset);
 
 	/// Serialise a single folder.
 	static nlohmann::json SerializeFolder(const ChatFolder& folder);

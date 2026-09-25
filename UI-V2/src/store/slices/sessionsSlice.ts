@@ -1,9 +1,10 @@
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
+import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
 import type { McpServerConfiguration } from '../cpp/types'
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
@@ -14,46 +15,10 @@ import {
   normalizeCliProviderIdAlias,
   providerCapabilities,
 } from '../../utils/providerMetadata'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
-  AGENT_MODE_IDS,
-  cefPayloadOrRawResponse,
-  clampedFiniteNumberOr,
-  DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
-  DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
-  DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
-  DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
-  DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
-  defaultEditorFileAssociations,
-  emptyCliVersionManager,
-  emptyMemoryActivity,
-  finiteNumberOr,
-  failedGitWorktreeResult,
-  isAllowedAcpModelId,
-  isRecord,
-  MAX_MEMORY_IDLE_DELAY_SECONDS,
-  MAX_MEMORY_RECALL_BUDGET_BYTES,
-  MIN_MEMORY_IDLE_DELAY_SECONDS,
-  MIN_MEMORY_RECALL_BUDGET_BYTES,
-  normalizeAcpApprovalMode,
-  normalizeCodexReasoningEffort,
-  normalizeCodexServiceTier,
-  normalizeMemoryLevel,
-  normalizeGoalMaxLoopIterations,
-  normalizeAcpSetupInactivityTimeoutSeconds,
-  normalizeAcpTurnOutputLimitMiB,
-  providerChatDefaultsForNewChat,
-  sanitizeAttachment,
-  sanitizeEditorFileAssociations,
-  sanitizeEditorPresetId,
-  sanitizeGitWorktreeResult,
-  sanitizeGitWorktreeStatus,
-  sanitizeProviderChatDefaults,
-  sanitizeProviderChatDefaultsMap,
-  sanitizeVcsCommitResult,
-  sanitizeVcsCommitStatus,
-  stringOr,
-} from '../cpp/sanitizers'
-import {
+  attachmentsEquivalent,
+  buildMessageFromCpp,
   clearPendingRequest,
   cliLifecycleIsProcessing,
   isLatestPendingRequest,
@@ -93,10 +58,10 @@ import type {
   VcsFileDiffResponse,
   VcsType,
 } from '../cpp/types'
-
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 import { removeChatsFromGrid, writeChatViewMode } from '../../utils/chatGridStorage'
 import { removeComposerDrafts } from '../../utils/composerDraftStorage'
+import { discardPendingPushesForChats, discardPendingTranscriptPushesForChat } from '../push/pushBuffers'
 
 const initialFolders = [
   {
@@ -144,15 +109,18 @@ function computerUseFailure(error?: string): ComputerUseActionResult {
   return error ? { ok: false, error } : { ok: false }
 }
 
-function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
+export function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
   return Object.fromEntries(Object.entries(values).filter(([id]) => !deletedIds.has(id)))
 }
 
-function deleteSessionsFromState(state: AppState, deletedIds: Set<string>, selectedChatId?: string | null): Partial<AppState> {
+export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>, selectedChatId?: string | null): Partial<AppState> {
   const sessions = state.sessions.filter((session) => !deletedIds.has(session.id))
+  const requestedSelection = selectedChatId !== undefined ? selectedChatId : state.activeSessionId
   return {
     sessions,
     messages: withoutDeletedKeys(state.messages, deletedIds),
+    historyStartIndexBySessionId: withoutDeletedKeys(state.historyStartIndexBySessionId, deletedIds),
+    chatHistoryErrorBySessionId: withoutDeletedKeys(state.chatHistoryErrorBySessionId, deletedIds),
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
     activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
     goalModeByChatId: withoutDeletedKeys(state.goalModeByChatId, deletedIds),
@@ -162,11 +130,10 @@ function deleteSessionsFromState(state: AppState, deletedIds: Set<string>, selec
     cliTranscriptBySessionId: withoutDeletedKeys(state.cliTranscriptBySessionId, deletedIds),
     markdownStoreAttachedBySessionId: withoutDeletedKeys(state.markdownStoreAttachedBySessionId, deletedIds),
     repositoryReviewBySessionId: withoutDeletedKeys(state.repositoryReviewBySessionId, deletedIds),
-    activeSessionId: selectedChatId !== undefined
-      ? selectedChatId
-      : state.activeSessionId && deletedIds.has(state.activeSessionId)
-        ? (sessions[0]?.id ?? null)
-        : state.activeSessionId,
+    uamAgentsBySessionId: withoutDeletedKeys(state.uamAgentsBySessionId, deletedIds),
+    activeSessionId: requestedSelection === null || sessions.some((session) => session.id === requestedSelection)
+      ? requestedSelection
+      : (sessions[0]?.id ?? null),
   }
 }
 
@@ -185,18 +152,24 @@ function clearPendingProviderChatDefaults(requestId?: string) {
 export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
   let intentionalSelectionRevision = 0
   const loadedMessagesDigestByChatId = new Map<string, string>()
+  const messageHydrationGenerationByChatId = new Map<string, number>()
 
-  const requestChatMessagesFromCef = (chatId: string, force = false) => {
+  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false) => {
     if (!isCefContext() || !chatId) return
     const current = get()
     const messagesAtRequestStart = current.messages[chatId]
+    const bindingAtRequestStart = current.acpBindingBySessionId[chatId]
     const requestKey = `getChatMessages:${chatId}`
     const requestId = createRequestId('getChatMessages')
+    const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
-    void sendToCEF<ChatMessagesResponse>({
+    return sendToCEF<ChatMessagesResponse>({
       action: 'getChatMessages',
       payload: {
         chatId,
+        ...(isCompanionContext() ? { limit: 50 } : {}),
+        ...(isCompanionContext() ? { deferToolCallContent: true } : {}),
+        ...(refreshNative ? { refreshNative: true } : {}),
         messagesDigest: force || current.messages[chatId] === undefined
           ? ''
           : loadedMessagesDigestByChatId.get(chatId) ?? '',
@@ -205,25 +178,94 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     }).then((response) => {
       if (!isLatestPendingRequest(requestKey, response.requestId)) return
       clearPendingRequest(requestKey, response.requestId)
+      if ((messageHydrationGenerationByChatId.get(chatId) ?? 0) !== hydrationGeneration ||
+          !get().sessions.some((session) => session.id === chatId)) return
       if (!response.ok || !response.data) {
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
-        set({ statusLine: `Failed to load chat history for ${chatName}: ${response.error ?? 'The chat history response was empty.'}` })
-        return
+        set((state) => ({
+          chatHistoryErrorBySessionId: {
+            ...state.chatHistoryErrorBySessionId,
+            [chatId]: response.error ?? `Failed to load chat history for ${chatName}.`,
+          },
+        }))
+        return false as const
       }
 
       const data = response.data
       if (data.chatId && data.chatId !== chatId) return
-      if (data.unchanged) return
+      if (data.unchanged) {
+        set((state) => {
+          if (!state.chatHistoryErrorBySessionId[chatId]) return state
+          const chatHistoryErrorBySessionId = { ...state.chatHistoryErrorBySessionId }
+          delete chatHistoryErrorBySessionId[chatId]
+          return { chatHistoryErrorBySessionId }
+        })
+        return
+      }
       if (!Array.isArray(data.messages)) return
 
+      if (isCompanionContext() && data.startIndex !== undefined) {
+        const start = data.startIndex
+        const total = data.totalCount
+        if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(total) ||
+            total === undefined || start + data.messages.length !== total) return false as const
+        const page = data.messages.map((message, index) => buildMessageFromCpp(chatId, message, start + index))
+        loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
+        set((state) => ({
+          messages: { ...state.messages, [chatId]: page },
+          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: start },
+          sessions: state.sessions.map((candidate) => candidate.id === chatId
+            ? { ...candidate, messageCount: total, messagesDigest: data.messagesDigest ?? '' }
+            : candidate),
+          chatHistoryErrorBySessionId: Object.fromEntries(
+            Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== chatId)
+          ),
+        }))
+        return
+      }
+
       set((state) => {
-        if (force && state.messages[chatId] !== messagesAtRequestStart) return state
-        const nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [], force)
-        if (nextMessages.length === data.messages!.length && !nextMessages.some((message) => message.isStreaming)) {
+        let streamedTail: Message | undefined
+        if (force && state.messages[chatId] !== messagesAtRequestStart) {
+          const existing = state.messages[chatId] ?? []
+          const start = messagesAtRequestStart ?? []
+          const binding = state.acpBindingBySessionId[chatId]
+          const tail = existing[existing.length - 1]
+          const startTail = start[start.length - 1]
+          const assistantIndex = binding?.turnAssistantMessageIndex ?? -1
+          const nativeAssistant = data.messages?.[assistantIndex]
+          const sameTurn = binding && bindingAtRequestStart &&
+            binding.turnSerial === bindingAtRequestStart.turnSerial &&
+            binding.sessionId === bindingAtRequestStart.sessionId &&
+            binding.threadId === bindingAtRequestStart.threadId &&
+            binding.providerId === bindingAtRequestStart.providerId
+          const unchangedPrefix = existing.length === start.length
+            ? existing.slice(0, -1).every((message, index) => message === start[index]) &&
+              (startTail?.isStreaming || assistantIndex === existing.length - 1)
+            : existing.length === start.length + 1 && start.every((message, index) => message === existing[index])
+          // Only streaming tail updates may coexist with authoritative missing message positions.
+          // Edits, new turns and unrelated replacements retain the strict stale-response guard.
+          if (!sameTurn || !unchangedPrefix || tail?.role !== 'assistant' ||
+              !(tail.isStreaming || startTail?.isStreaming) || nativeAssistant?.role !== 'assistant' ||
+              assistantIndex !== data.messages!.length - 1 ||
+              !(tail.content.startsWith(nativeAssistant.content) || nativeAssistant.content.startsWith(tail.content))) return state
+          streamedTail = tail
+        }
+        let nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [], force)
+        if (streamedTail) {
+          nextMessages = [...nextMessages]
+          const index = nextMessages.length - 1
+          const nativeAssistant = nextMessages[index]
+          nextMessages[index] = { ...nativeAssistant,
+            content: streamedTail.content.length > nativeAssistant.content.length ? streamedTail.content : nativeAssistant.content,
+            isStreaming: streamedTail.isStreaming,
+          }
+        }
+        if (!streamedTail && nextMessages.length === data.messages!.length && !nextMessages.some((message) => message.isStreaming)) {
           loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
         }
         const messagesChanged = nextMessages !== state.messages[chatId]
-        const nextDigest = data.messagesDigest ?? ''
+        const nextDigest = streamedTail ? '' : data.messagesDigest ?? ''
         const sessions = nextDigest
           ? state.sessions.map((candidate) =>
               candidate.id === chatId && (candidate.messagesDigest ?? '') !== nextDigest
@@ -232,8 +274,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             )
           : state.sessions
         const sessionsChanged = sessions !== state.sessions && sessions.some((candidate, index) => candidate !== state.sessions[index])
+        const chatHistoryErrorBySessionId = state.chatHistoryErrorBySessionId[chatId]
+          ? (() => {
+              const next = { ...state.chatHistoryErrorBySessionId }
+              delete next[chatId]
+              return next
+            })()
+          : state.chatHistoryErrorBySessionId
+        const historyErrorChanged = chatHistoryErrorBySessionId !== state.chatHistoryErrorBySessionId
 
-        if (!messagesChanged && !sessionsChanged) return state
+        if (!messagesChanged && !sessionsChanged && !historyErrorChanged) return state
         return {
           ...(messagesChanged ? {
             messages: {
@@ -242,6 +292,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             },
           } : {}),
           ...(sessionsChanged ? { sessions } : {}),
+          ...(historyErrorChanged ? { chatHistoryErrorBySessionId } : {}),
         }
       })
     })
@@ -253,6 +304,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     activeSessionId: (inCef ? null : 's1') as string | null,
     lastAppliedStateRevision: -1,
     messages: {} as Record<string, Message[]>,
+    historyStartIndexBySessionId: {} as Record<string, number>,
+    chatHistoryErrorBySessionId: {} as Record<string, string>,
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
     acpBindingBySessionId: {} as Record<string, AcpBinding>,
@@ -266,7 +319,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
-    appVersion: 'V4.8.0',
+    appVersion: `V${packageVersion}`,
     runnerProtocolVersion: 0,
     updateChecksEnabled: true,
     updateLastCheckedAt: '',
@@ -292,23 +345,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     statusLine: '',
 
     setActiveSession: (id: string | null) => {
-      if (get().activeSessionId === id) return
       intentionalSelectionRevision += 1
+      if (get().activeSessionId === id) return
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
         const requestKey = 'selectSession'
         const requestId = createRequestId('selectSession')
         rememberPendingRequest(requestKey, requestId)
-        const openedAt = new Date()
-        const previousSession = id ? get().sessions.find((s) => s.id === id) : undefined
-        set((state) => ({
-          activeSessionId: id,
-          sessions: state.sessions.map((s) =>
-            id && s.id === id ? { ...s, lastOpenedAt: openedAt } : s
-          ),
-        }))
+        set({ activeSessionId: id })
         sendToCEF({ action: 'selectSession', payload: { chatId: id ?? '' }, requestId }).then((resp) => {
           if (resp.ok) {
+			if (!isLatestPendingRequest(requestKey, resp.requestId)) return
             clearPendingRequest(requestKey, resp.requestId)
             if (id) requestChatMessagesFromCef(id)
             return
@@ -318,14 +365,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             return
           }
 
-          set((state) => ({
-            activeSessionId: previousActiveSessionId,
-            sessions: previousSession
-              ? state.sessions.map((s) =>
-                  id && s.id === id ? { ...s, lastOpenedAt: previousSession.lastOpenedAt } : s
-                )
-              : state.sessions,
-          }))
+          set({ activeSessionId: previousActiveSessionId })
           pendingRequestIdsByKey.delete(requestKey)
         })
         return
@@ -343,6 +383,60 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     loadSessionMessages: requestChatMessagesFromCef,
+
+    loadOlderSessionMessages: async (id: string) => {
+      if (!isCompanionContext()) return false
+      const before = get().historyStartIndexBySessionId[id] ?? 0
+      if (before <= 0 || !get().messages[id]) return false
+      const fail = (error: string) => {
+        set((state) => ({ chatHistoryErrorBySessionId: {
+          ...state.chatHistoryErrorBySessionId, [id]: error,
+        } }))
+        return false
+      }
+      const response = await sendToCEF<ChatMessagesResponse>({
+        action: 'getChatMessages',
+        payload: { chatId: id, limit: 100, before, deferToolCallContent: true },
+      })
+      const data = response.data
+      if (!response.ok) return fail(response.error || 'Could not load earlier messages.')
+      if (!data || !Array.isArray(data.messages) ||
+          !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined ||
+          data.startIndex < 0 || data.startIndex + data.messages.length !== before) return fail('The earlier message page was invalid.')
+      if (data.messagesDigest !== loadedMessagesDigestByChatId.get(id)) return fail('Chat history changed while loading. Retry to refresh it.')
+      const page = data.messages.map((message, index) => buildMessageFromCpp(id, message, data.startIndex! + index))
+      let added = false
+      set((state) => {
+        if (state.historyStartIndexBySessionId[id] !== before || !state.messages[id]) return state
+        added = true
+        return {
+          messages: { ...state.messages, [id]: [...page, ...state.messages[id]] },
+          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [id]: data.startIndex! },
+          chatHistoryErrorBySessionId: Object.fromEntries(
+            Object.entries(state.chatHistoryErrorBySessionId).filter(([chatId]) => chatId !== id)
+          ),
+        }
+      })
+      return added
+    },
+
+    unloadSessionMessages: (id: string) => {
+      const current = get()
+      if (current.acpBindingBySessionId[id]?.processing || current.cliBindingBySessionId[id]?.processing) return
+      messageHydrationGenerationByChatId.set(id, (messageHydrationGenerationByChatId.get(id) ?? 0) + 1)
+      discardPendingTranscriptPushesForChat(id)
+      if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id]) return
+      loadedMessagesDigestByChatId.delete(id)
+      const messages = { ...current.messages }
+      const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
+      const cliTranscriptBySessionId = { ...current.cliTranscriptBySessionId }
+      const chatHistoryErrorBySessionId = { ...current.chatHistoryErrorBySessionId }
+      delete messages[id]
+      delete historyStartIndexBySessionId[id]
+      delete cliTranscriptBySessionId[id]
+      delete chatHistoryErrorBySessionId[id]
+      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
+    },
 
     addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
       const current = get()
@@ -390,6 +484,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		if (chatId) writeChatViewMode(chatId, viewMode)
         let appliedViewMode = viewMode === 'chat'
         set((state) => ({
+          ...(isCompanionContext() && chatId ? { activeSessionId: chatId } : {}),
           isNewChatModalOpen: false,
           newChatFolderId: null,
           sessions: viewMode === 'chat' ? state.sessions : state.sessions.map((session) => {
@@ -438,20 +533,34 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    retryFailedMessage: async (id: string, messageIndex: number) => {
+      if (!isCefContext()) return { ok: false, error: 'Retry requires the desktop runtime.' }
+      const response = await sendToCEF({ action: 'retryFailedMessage', payload: { chatId: id, messageIndex } })
+      if (response.ok) await requestChatMessagesFromCef(id, true)
+      return { ok: response.ok, error: response.error }
+    },
+
     branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
       if (isCefContext()) {
-        const response = await sendToCEF<{ chatId?: string }>({
+        const operationId = createRequestId('branch')
+        const payload = {
+          chatId: id,
+          messageIndex,
+          ...(content === undefined ? {} : { content }),
+          ...(operationId ? { operationId } : {}),
+        }
+        let response = await sendToCEF<{ chatId?: string; warning?: string }>({
           action: 'branchFromMessage',
-          payload: {
-            chatId: id,
-            messageIndex,
-            ...(content === undefined ? {} : { content }),
-          },
+          payload,
         })
+        if (!response.ok && operationId && /connection lost|action may have reached|timed out/i.test(response.error ?? '')) {
+          response = await sendToCEF<{ chatId?: string; warning?: string }>({ action: 'branchFromMessage', payload })
+        }
         if (!response.ok) {
           console.error('[CEF] branchFromMessage failed:', response.error)
           return null
         }
+        if (response.data?.warning) set({ statusLine: response.data.warning })
         return response.data?.chatId?.trim() || null
       }
 
@@ -566,13 +675,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true) => {
       if (isCefContext()) {
+        const selectionRevision = selectChat ? ++intentionalSelectionRevision : intentionalSelectionRevision
         const response = await sendToCEF<OpenNativeSessionChatResponse>({
           action: 'openNativeSessionChat',
           payload: {
             chatId: sourceChatId,
             nativeSessionId,
             title,
-            selectChat,
+            selectChat: false,
+            refreshHistory: !selectChat,
           },
         })
 
@@ -582,7 +693,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         }
 
         const chatId = response.data?.chatId?.trim() ?? ''
-        if (chatId) requestChatMessagesFromCef(chatId)
+        if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
+        if (chatId && selectChat) get().setActiveSession(chatId)
+        else if (chatId) requestChatMessagesFromCef(chatId)
         return chatId || null
       }
 
@@ -838,7 +951,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             set((state) => ({
               sessions: state.sessions.map((s) => (s.id === id ? {
                 ...s,
-                name: previousSession.name,
+                name: s.name === name ? previousSession.name : s.name,
                 updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
               } : s)),
             }))
@@ -1324,7 +1437,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true },
       ]
       if (!isCefContext()) {
-        set((state) => ({ uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: builtIns } }))
+        set((state) => state.sessions.some((session) => session.id === id)
+          ? { uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: builtIns } }
+          : state)
         return true
       }
       const requestKey = `listUamAgents:${id}`
@@ -1349,7 +1464,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           })
         : builtIns
       if (isLatestPendingRequest(requestKey, response.requestId)) {
-        set((state) => ({ uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: agents } }))
+        set((state) => state.sessions.some((session) => session.id === id)
+          ? { uamAgentsBySessionId: { ...state.uamAgentsBySessionId, [id]: agents } }
+          : state)
       }
       clearPendingRequest(requestKey, response.requestId)
       return true
@@ -1442,9 +1559,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if ((session.computerUseEnabled ?? false) === enabled) return computerUseSuccess
-	  if (enabled && (session.computerUseEffectiveBackend ?? 'uam') === 'uam') {
-		return computerUseFailure('Ask the AI to use Computer Use. UAM will ask you once to approve its chosen target.')
-      }
       if (isCefContext()) {
         const response = await sendToCEF({ action: 'setChatComputerUseEnabled', payload: { chatId: id, enabled } })
         if (!response.ok) return computerUseFailure(response.error)
@@ -1828,14 +1942,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    refreshCliProviderVersion: async (providerId?: string): Promise<boolean> => {
-      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? '') || GEMINI_CLI_PROVIDER_ID
+    refreshCliProviderVersion: async (providerId?: string, executionHostId?: string): Promise<boolean> => {
+      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? GEMINI_CLI_PROVIDER_ID)
       if (!targetProviderId) return false
 
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'refreshCliProviderVersion',
-          payload: { providerId: targetProviderId },
+          payload: { providerId: targetProviderId, ...(executionHostId?.trim() ? { executionHostId: executionHostId.trim() } : {}) },
           requestId: createRequestId('refreshCliProviderVersion'),
         })
         return response.ok
@@ -1844,7 +1958,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return false
     },
 
-    applyCliProviderVersion: async (providerId: string, version: string): Promise<boolean> => {
+    applyCliProviderVersion: async (providerId: string, version: string, executionHostId?: string): Promise<boolean> => {
       const targetProviderId = normalizeCliProviderIdAlias(providerId)
       const targetVersion = version.trim()
       if (!targetProviderId || !targetVersion) return false
@@ -1852,7 +1966,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'applyCliProviderVersion',
-          payload: { providerId: targetProviderId, version: targetVersion },
+          payload: { providerId: targetProviderId, version: targetVersion, ...(executionHostId?.trim() ? { executionHostId: executionHostId.trim() } : {}) },
           requestId: createRequestId('applyCliProviderVersion'),
         })
         return response.ok
@@ -1867,18 +1981,29 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const existingIds = new Set(get().sessions.map((session) => session.id))
       const chatIds = [...new Set(ids.map((id) => id.trim()).filter((id) => id && existingIds.has(id)))]
       if (chatIds.length === 0) return false
+	  const selectionRevisionAtStart = intentionalSelectionRevision
 
       let selectedChatId: string | null | undefined
       if (isCefContext()) {
-        const response = await sendToCEF<{ selectedChatId?: string | null }>({
+        const response = await sendWhenRemoteStopSettles<{ selectedChatId?: string | null; deletedChatIds?: string[] }>({
           action: 'deleteSessions',
           payload: { chatIds },
         })
         if (!response.ok) return false
-        selectedChatId = response.data?.selectedChatId
+		if (intentionalSelectionRevision === selectionRevisionAtStart) {
+		  selectedChatId = response.data?.selectedChatId
+		}
+		const authoritativeIds = response.data?.deletedChatIds
+		if (Array.isArray(authoritativeIds)) {
+		  chatIds.splice(0, chatIds.length, ...authoritativeIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()))
+		}
       }
 
       const deletedIds = new Set(chatIds)
+      for (const id of deletedIds) {
+        messageHydrationGenerationByChatId.set(id, (messageHydrationGenerationByChatId.get(id) ?? 0) + 1)
+      }
+      discardPendingPushesForChats(deletedIds)
       set((state) => deleteSessionsFromState(state, deletedIds, selectedChatId))
       removeChatsFromGrid(deletedIds)
       removeComposerDrafts(deletedIds)
@@ -1894,7 +2019,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const processing = binding.processing ?? existingBinding?.processing ?? false
         const lifecycleState =
           binding.lifecycleState ??
-          existingBinding?.lifecycleState ??
+          (binding.turnState === 'unknown' ? 'unknown' : existingBinding?.lifecycleState) ??
           normalizeCliLifecycleState(undefined, running, turnState, processing)
         let nextTranscripts = state.cliTranscriptBySessionId
         const existingTranscript = state.cliTranscriptBySessionId[sessionId]
@@ -1927,10 +2052,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               boundChatId: binding.boundChatId ?? existingBinding?.boundChatId ?? sessionId,
               running,
               lifecycleState,
-              turnState: cliLifecycleIsProcessing(lifecycleState) ? 'busy' : turnState,
-              processing: processing || cliLifecycleIsProcessing(lifecycleState),
+              turnState: lifecycleState === 'unknown' ? 'unknown' : cliLifecycleIsProcessing(lifecycleState) ? 'busy' : turnState,
+              processing: lifecycleState !== 'unknown' && (processing || cliLifecycleIsProcessing(lifecycleState)),
               readySinceLastSelect: binding.readySinceLastSelect ?? existingBinding?.readySinceLastSelect ?? false,
-              active: binding.active ?? existingBinding?.active ?? false,
+              active: lifecycleState !== 'unknown' && (binding.active ?? existingBinding?.active ?? false),
               pendingSteer: binding.pendingSteer ?? existingBinding?.pendingSteer ?? false,
               lastError: binding.lastError ?? existingBinding?.lastError ?? '',
             },
@@ -1969,14 +2094,27 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!prompt) {
         return false
       }
+      const actionErrorId = createRequestId('sendAcpPrompt')
+      set((state) => {
+        const binding = state.acpBindingBySessionId[sessionId]
+        return binding?.promptActionError ? { acpBindingBySessionId: {
+          ...state.acpBindingBySessionId,
+          [sessionId]: { ...binding, promptActionError: undefined },
+        } } : state
+      })
       const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
       const state = get()
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
       const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
+      const userMessageIndex = Math.max((state.historyStartIndexBySessionId[sessionId] ?? 0) + (state.messages[sessionId]?.length ?? 0),
+        state.sessions.find((session) => session.id === sessionId)?.messageCount ?? 0)
 
       if (isCefContext()) {
+        const requestKey = `sendAcpPrompt:${sessionId}`
+        rememberPendingRequest(requestKey, actionErrorId)
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
+          requestId: actionErrorId,
           payload: {
             chatId: sessionId,
             text: prompt,
@@ -1988,7 +2126,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             steerNow,
           },
         })
+        const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
+        clearPendingRequest(requestKey, actionErrorId)
+		if (!get().sessions.some((session) => session.id === sessionId)) return false
         if (!response.ok) {
+          if (!ownsAttempt) return false
           set((state) => ({
             acpBindingBySessionId: {
               ...state.acpBindingBySessionId,
@@ -2025,10 +2167,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
                   pendingUserInput: null,
                   agentInfo: null,
                 }),
-                lifecycleState: 'error',
-                processing: false,
-                processingStartedAtMs: null,
-                lastError: response.error ?? 'Failed to send ACP prompt.',
+                promptActionError: { id: actionErrorId, message: response.error || 'Failed to send ACP prompt.' },
               },
             },
           }))
@@ -2036,7 +2175,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         }
         set((state) => {
           const existing = state.messages[sessionId] ?? []
-          const alreadyHydrated = existing[existing.length - 1]?.role === 'user' && existing[existing.length - 1]?.content === prompt
+          const sentAttachments = messageAttachments({ markdownStoreFiles, attachments })
+          const hydratedUser = existing[userMessageIndex - (state.historyStartIndexBySessionId[sessionId] ?? 0)]
+          const alreadyHydrated = hydratedUser?.role === 'user' && hydratedUser.content === prompt &&
+            attachmentsEquivalent(hydratedUser.attachments ?? [], sentAttachments)
           const messages = appendUserMessage && !alreadyHydrated
             ? {
                 ...state.messages,
@@ -2045,16 +2187,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
                   sessionId,
                   role: 'user' as const,
                   content: prompt,
-                  attachments: [
-                    ...markdownStoreFiles.map((filePath) => ({
-                      id: filePath,
-                      name: filePath.split(/[\\/]/).pop() || filePath,
-                      type: 'markdown-store',
-                      size: 0,
-                      path: filePath,
-                    })),
-                    ...attachments,
-                  ],
+                  attachments: sentAttachments,
                   createdAt: new Date(),
                 }],
               }
@@ -2084,7 +2217,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             processing: false,
             readySinceLastSelect: false,
             processingStartedAtMs: null,
-            lastError: 'Structured chat requires the desktop app.',
+            promptActionError: { id: actionErrorId, message: 'Structured chat requires the desktop app.' },
+            lastError: '',
             recentStderr: '',
             lastExitCode: null,
             diagnostics: [],

@@ -25,16 +25,47 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
     dismiss: vi.fn(),
     dismissAll: vi.fn(),
     applyCliProviderVersion: vi.fn(async () => true),
-    applyRemoteHelperUpdate: vi.fn(async () => true),
+    installCliProviderVersion: vi.fn(async () => true),
+    applyRemoteHelperUpdate: vi.fn(async () => ({ ok: true })),
     remoteHelperUpdatingId: '',
     providerStates: [],
     providerTaskRunning: false,
     providerUpdateResults: [],
+    providerCheckErrors: [],
+    dismissProviderCheckError: vi.fn(),
+    refreshCliProviderVersion: vi.fn(async () => true),
     ...overrides,
+    hasProviderCheckErrors: overrides.hasProviderCheckErrors ?? (overrides.providerCheckErrors?.length ?? 0) > 0,
   }
 }
 
 describe('UpdatesPanel', () => {
+  it('routes same-provider remote items and update-all to their own hosts', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const base = monitor().updates[0]
+    const state = monitor({ updates: [base, ...['alpha', 'beta'].map((executionHostId) => ({ ...base, id: JSON.stringify([executionHostId, base.providerId]), executionHostId, name: `Codex · ${executionHostId}` })),
+      { id: 'helper', remoteHostId: 'alpha', name: 'Alpha SSH helper', currentVersion: '1', latestVersion: '2', url: '', installable: true }],
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+    await act(async () => (host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]') as HTMLButtonElement).click())
+    expect(state.applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0', 'beta')
+    await act(async () => (host.querySelector('button[aria-label="Dismiss Codex · alpha 0.130.0"]') as HTMLButtonElement).click())
+    expect(state.dismiss).toHaveBeenCalledWith(JSON.stringify(['alpha', 'codex-cli']), '0.130.0')
+    vi.mocked(state.applyCliProviderVersion).mockClear()
+    await act(async () => (host.querySelector('button[aria-label="Update everything"]') as HTMLButtonElement).click())
+    expect(vi.mocked(state.installCliProviderVersion).mock.calls.map((call) => call.slice(0, 3))).toEqual([
+      ['codex-cli', '0.130.0', undefined], ['codex-cli', '0.130.0', 'alpha'], ['codex-cli', '0.130.0', 'beta'],
+    ])
+    expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('alpha')
+    const providerState = { providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'installing' as const, message: '', running: true, lastCommand: '', lastOutput: '' }
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerStates: [{ ...providerState, executionHostId: 'alpha' }], providerTaskRunning: true }} onClose={vi.fn()} />))
+    expect(host.querySelector('button[aria-label="Update Codex · alpha to 0.130.0"]')?.textContent).toContain('Updating')
+    expect(host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]')?.textContent).toContain('Install update')
+    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')?.textContent).toContain('Install update')
+    act(() => root.unmount())
+  })
+
   it('shows current/latest versions and exposes update and dismiss actions', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
@@ -74,6 +105,10 @@ describe('UpdatesPanel', () => {
     })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
+    act(() => (host.querySelector('button[aria-label="Dismiss update error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await act(async () => (host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
     act(() => root.unmount())
   })
 
@@ -96,6 +131,45 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
+  it.each(['single', 'all'] as const)('keeps a fallback notice when a %s helper update has no error detail', async (mode) => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [{ id: 'remote-helper-lab', remoteHostId: 'lab', name: 'Homelab SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }],
+      applyRemoteHelperUpdate: vi.fn(async () => ({ ok: false, error: '  ' })),
+    })
+    try {
+      await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+      const label = mode === 'all' ? 'Update everything' : 'Update Homelab SSH helper to 4.9.0-alpha-19'
+      await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Homelab SSH helper')
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(mode === 'all' ? 'Check its update status' : 'Check its SSH connection')
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
+  it('updates every installable item from one button', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({
+      updates: [
+        ...monitor().updates,
+        { id: 'remote-helper-lab', remoteHostId: 'lab', name: 'Homelab SSH helper', currentVersion: '4.9.0-alpha-10', latestVersion: '4.9.0-alpha-11', url: '', installable: true },
+      ],
+    })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    await act(async () => {
+      ;(host.querySelector('button[aria-label="Update everything"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(state.installCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0', undefined, expect.any(AbortSignal))
+    expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('lab')
+    act(() => root.unmount())
+  })
+
   it('renders accessible icon-only footer actions and their loading state', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
@@ -112,7 +186,6 @@ describe('UpdatesPanel', () => {
     const checking = host.querySelector('button[aria-label="Checking for updates"]') as HTMLButtonElement
     expect(checking.disabled).toBe(true)
     expect(checking.getAttribute('aria-busy')).toBe('true')
-    expect(checking.querySelector('.animate-spin')).toBeTruthy()
     act(() => root.unmount())
   })
 
@@ -125,6 +198,8 @@ describe('UpdatesPanel', () => {
 
     await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], hasCatalog: false, error: 'Offline' })} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Could not confirm update status')
+    act(() => (host.querySelector('button[aria-label="Dismiss update check error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.textContent).not.toContain('Everything is up to date')
     act(() => root.unmount())
   })
@@ -175,7 +250,7 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
-  it('shows the completed provider install result after its update row disappears', async () => {
+  it('dismisses a failed provider install after its update row disappears', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const state = monitor({
@@ -198,6 +273,34 @@ describe('UpdatesPanel', () => {
     expect(panel.className).toContain('max-w-full')
     expect(output.className).toContain('max-w-full')
     expect(output.className).toContain('break-all')
+    act(() => (host.querySelector('button[aria-label="Dismiss OpenCode update error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    act(() => root.unmount())
+  })
+
+  it('shows a retryable remote check failure without claiming an empty catalog is current', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const failure = { providerId: 'codex-cli', executionHostId: 'alpha', name: 'Codex · Alpha', message: 'SSH connection timed out.' }
+    const state = monitor({ updates: [], providerCheckErrors: [failure] })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex · Alpha version check failed')
+    expect(host.textContent).toContain('SSH connection timed out.')
+    expect(host.textContent).not.toContain('Everything is up to date')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Retry Codex · Alpha version check"]')!.click())
+    expect(state.refreshCliProviderVersion).toHaveBeenCalledExactlyOnceWith('codex-cli', 'alpha')
+    vi.mocked(state.refreshCliProviderVersion).mockResolvedValueOnce(false)
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Retry Codex · Alpha version check"]')!.click())
+    expect(host.textContent).toContain('Codex · Alpha check could not be started.')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Retry Codex · Alpha version check"]')!.click())
+    expect(host.textContent).not.toContain('Codex · Alpha check could not be started.')
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss Codex · Alpha version check error"]')!.click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.textContent).not.toContain('Everything is up to date')
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerCheckErrors: [], checking: true }} onClose={vi.fn()} />))
+    expect(host.textContent).toContain('Checking for updates')
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerCheckErrors: [], hasProviderCheckErrors: false }} onClose={vi.fn()} />))
+    expect(host.textContent).toContain('Everything is up to date')
     act(() => root.unmount())
   })
 

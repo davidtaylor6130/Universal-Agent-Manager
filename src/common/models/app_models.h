@@ -35,6 +35,7 @@ struct ToolCall
 	bool is_sub_agent = false;
 	std::string sub_agent_id;
 	std::string sub_agent_title;
+	bool operator==(const ToolCall&) const = default;
 };
 
 struct MessagePlanEntry
@@ -63,6 +64,61 @@ struct MessageAttachment
 	bool copied = false;
 };
 
+namespace uam
+{
+	/// <summary>
+	/// A bounded follow-up prompt persisted until the ACP runtime accepts it for delivery.
+	/// </summary>
+	struct AcpQueuedUserPromptState
+	{
+		std::string text;
+		std::string uam_agent_id = "build";
+		std::string uam_agent_definition_hash;
+		std::string uam_agent_definition_snapshot;
+		std::string uam_agent_instructions;
+		std::vector<std::string> uam_agent_skills;
+		std::vector<std::string> uam_agent_delegates;
+		std::string uam_agent_workspace_access = "write";
+		std::string uam_agent_execution_capability = "uam-prompt-injected";
+		std::vector<std::string> markdown_store_files;
+		std::vector<std::string> markdown_store_prompt_blocks;
+		std::vector<MessageAttachment> attachments;
+		bool append_user_message = true;
+		bool prepared_for_delivery = false;
+		int prepared_user_message_count = 0;
+		bool goal_mode = false;
+		std::string goal_id;
+		bool computer_use_mode = false;
+		bool priority_steer = false;
+	};
+
+	/// <summary>
+	/// A remote JSON-RPC interaction response retained until the output delivery
+	/// containing its request is durably acknowledged.
+	/// </summary>
+	struct AcpRemoteInteractionResponseState
+	{
+		std::string request_id_json;
+		std::string response_json;
+	};
+
+	/// <summary>
+	/// Outgoing request correlation retained until the provider response is persisted.
+	/// </summary>
+	struct AcpRemotePendingRequestState
+	{
+		int request_id = 0;
+		std::string method;
+		std::string delivery_id;
+		std::string payload;
+		int user_message_index = -1;
+		int turn_serial = 0;
+		std::string provider_turn_id;
+		bool response_consumed = false;
+		bool operator==(const AcpRemotePendingRequestState&) const = default;
+	};
+}
+
 /// <summary>
 /// One persisted chat message payload.
 /// </summary>
@@ -89,6 +145,10 @@ struct Message
 	std::vector<std::string> markdown_store_files;
 	std::vector<std::string> markdown_store_prompt_blocks;
 	std::vector<MessageAttachment> attachments;
+	/// <summary>Runtime model used for this response; absent for legacy or unknown history.</summary>
+	std::string model_id;
+	bool continues_turn = false;
+	bool acp_prompt_not_sent = false;
 };
 
 /// <summary>
@@ -201,10 +261,44 @@ struct ChatSession
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
 	bool remote_turn_reconnect_pending = false;
+	// Conservatively remains true from remote proxy launch until helper process
+	// removal is confirmed. This is independent of whether a turn is active.
+	bool remote_process_exists = false;
+	// Persisted until a previously requested idle remote stop is confirmed.
+	bool remote_stop_cleanup_pending = false;
+	// Persisted from a stop-then-restart request until the replacement prompt is
+	// durably delivered or the abandoned restart is cleaned up after relaunch.
+	bool remote_restart_pending = false;
+	// Capability required to reattach to or control the helper-owned process.
+	std::string remote_process_control_token;
+	std::uintmax_t remote_delivered_stdout_cursor = 0;
+	std::uintmax_t remote_delivered_stderr_cursor = 0;
+	bool remote_source_exit_pending = false;
+	int remote_source_exit_code = -1;
+	// Stable for the lifetime of a remote provider session so a replacement GUI
+	// bridge can recreate the local side of the provider's existing MCP channel.
+	std::string remote_uam_control_channel_id;
+	// Responses are retained until the output batch containing their requests is
+	// durably acknowledged. One batch can contain multiple interaction requests.
+	std::vector<uam::AcpRemoteInteractionResponseState> remote_interaction_responses;
+	// Protocol-3 input delivery state. The transport owns the wire envelope and
+	// acknowledgement; runtime persists the exact payload and stable delivery id.
+	std::string remote_prompt_delivery_session_id;
+	std::string remote_prompt_delivery_id;
+	std::string remote_prompt_delivery_payload;
+	std::vector<uam::AcpRemotePendingRequestState> remote_pending_requests;
+	int remote_next_request_id = 1;
+	std::string remote_active_turn_id;
+	int remote_turn_serial = 0;
+	int remote_turn_user_message_index = -1;
+	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
+	std::string branch_operation_id;
+	std::string branch_retry_error;
 	std::string folder_id;
 	std::string title;
 	std::string created_at;
@@ -225,6 +319,8 @@ struct ChatSession
 	bool imported_read_only = false;
 	std::string approval_mode;
 	std::string uam_agent_id = "build";
+	// Provider and definition identity last dispatched as prompt context.
+	std::string last_prompt_agent_definition_hash;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
@@ -362,6 +458,14 @@ struct ExecutionHost
 	std::string last_seen_at;
 	std::string runner_directory;
 	int runner_protocol_version = 0;
+	bool operator==(const ExecutionHost&) const = default;
+};
+
+struct ComputerUseApplicationRule
+{
+	std::string identity_kind;
+	std::string identity;
+	bool operator==(const ComputerUseApplicationRule&) const = default;
 };
 
 /// <summary>
@@ -369,6 +473,8 @@ struct ExecutionHost
 /// </summary>
 struct AppSettings
 {
+	bool computer_use_allowlist_enabled = false;
+	std::vector<ComputerUseApplicationRule> computer_use_allowed_applications;
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::string provider_extra_flags;
 	int cli_idle_timeout_seconds = 600;
@@ -428,33 +534,11 @@ struct AsyncProcessTaskState
 {
 	std::atomic<bool> completed{false};
 	ProcessExecutionResult result;
+	std::optional<bool> remote_helper_connected;
 	std::chrono::steady_clock::time_point launch_time;
 	std::string provider_id;
 	int64_t estimated_input_tokens = 0;
 };
-
-struct PendingRuntimeCall
-{
-	std::string chat_id;
-	std::string resume_session_id;
-	std::string provider_id_snapshot;
-	std::string native_history_chats_dir_snapshot;
-	std::vector<std::string> session_ids_before;
-	std::string command_preview;
-	std::shared_ptr<AsyncProcessTaskState> state;
-	std::unique_ptr<std::jthread> worker;
-};
-
-inline void ResetPendingRuntimeCall(PendingRuntimeCall& call)
-{
-	if (call.worker != nullptr)
-	{
-		call.worker->request_stop();
-		call.worker.reset();
-	}
-
-	call.state.reset();
-}
 
 /// <summary>
 /// Converts a message role enum into persisted text.

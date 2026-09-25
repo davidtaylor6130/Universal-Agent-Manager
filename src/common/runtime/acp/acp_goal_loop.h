@@ -12,6 +12,8 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session, ChatSession& chat, std::string_view lifecycle_state, CefRefPtr<CefBrowser> browser, bool continue_goal_loop = true);
+/// Records the current runtime's elapsed turn time once, before completion or cancellation resets it.
+bool RecordAcpTurnDuration(AcpSessionState& session, ChatSession& chat);
 bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, double now_seconds);
 bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollPendingGoalIterations(AppState& app);

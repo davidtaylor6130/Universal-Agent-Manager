@@ -5,7 +5,6 @@
 #include "common/config/approval_modes.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_levels.h"
-#include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"

@@ -31,11 +31,16 @@ export interface AvailableUpdate {
   id: string
   providerId?: string
   remoteHostId?: string
+  executionHostId?: string
   name: string
   currentVersion: string
   latestVersion: string
   url: string
   installable: boolean
+}
+
+export function cliProviderUpdateId(providerId: string, executionHostId?: string): string {
+  return executionHostId ? JSON.stringify([executionHostId, providerId]) : providerId
 }
 
 function cleanVersion(value: string): string {
@@ -54,8 +59,8 @@ export function compareVersions(left: string, right: string): number {
     if (difference !== 0) return difference
   }
   if (!aPre || !bPre) return aPre ? -1 : bPre ? 1 : 0
-  const aParts = aPre.split('.')
-  const bParts = bPre.split('.')
+  const aParts = aPre.split(/[.-]/)
+  const bParts = bPre.split(/[.-]/)
   for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
     if (aParts[index] === undefined) return -1
     if (bParts[index] === undefined) return 1
@@ -238,7 +243,7 @@ export function availableUpdates(
     })
   }
 
-  for (const state of versionManager.providers) {
+  for (const state of [...versionManager.providers, ...(versionManager.remoteProviders ?? [])]) {
     const catalogProvider = catalog.providers[state.providerId]
     const latest = state.installMethod === 'homebrew-formula' || state.installMethod === 'homebrew-cask'
       ? catalogProvider?.homebrew
@@ -248,12 +253,14 @@ export function availableUpdates(
     const latestVersion = cleanVersion(latest?.version ?? '')
     if (!latestVersion) continue
     if (compareVersions(latestVersion, currentVersion) <= 0) continue
-    if (dismissedVersions[state.providerId] === latestVersion) continue
+    const id = cliProviderUpdateId(state.providerId, state.executionHostId)
+    if (dismissedVersions[id] === latestVersion) continue
     const provider = providers.find((entry) => entry.id === state.providerId)
     updates.push({
-      id: state.providerId,
+      id,
       providerId: state.providerId,
-      name: provider?.shortName || provider?.name || state.providerId,
+      ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
+      name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
       currentVersion,
       latestVersion,
       url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId]?.npmPackage ?? ''}`,

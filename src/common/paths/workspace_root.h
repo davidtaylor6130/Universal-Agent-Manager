@@ -88,7 +88,7 @@ namespace uam::paths
 		}
 		if (!IsControllerLocalWorkspace(chat) &&
 		    !uam::strings::IsBlank(chat.workspace_directory))
-			return std::filesystem::path(uam::strings::Trim(chat.workspace_directory));
+			return PathFromUtf8(uam::strings::Trim(chat.workspace_directory));
 
 		std::filesystem::path workspace_root;
 

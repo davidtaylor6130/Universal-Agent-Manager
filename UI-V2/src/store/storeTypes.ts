@@ -33,6 +33,7 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsType,
+  ComputerUseAllowedApplication,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
@@ -48,6 +49,8 @@ export interface AppState {
   activeSessionId: string | null
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
+  historyStartIndexBySessionId: Record<string, number>
+  chatHistoryErrorBySessionId: Record<string, string>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
@@ -89,6 +92,8 @@ export interface AppState {
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
+  computerUseAllowlistEnabled: boolean
+  computerUseAllowedApplications: ComputerUseAllowedApplication[]
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string
@@ -99,6 +104,8 @@ export interface AppState {
   theme: StoredTheme
   customThemes: CustomTheme[]
   workingDisplayMode: 'compact' | 'verbose'
+  expandWorkTraces: boolean
+  collapsibleWorkSections: boolean
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
   isSettingsOpen: boolean
@@ -130,9 +137,12 @@ export interface AppState {
 
   // Session actions
   setActiveSession: (id: string | null) => void
-  loadSessionMessages: (id: string, force?: boolean) => void
+  loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
+  loadOlderSessionMessages: (id: string) => Promise<boolean>
+  unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
+  retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
@@ -162,8 +172,8 @@ export interface AppState {
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
-  refreshCliProviderVersion: (providerId?: string) => Promise<boolean>
-  applyCliProviderVersion: (providerId: string, version: string) => Promise<boolean>
+  refreshCliProviderVersion: (providerId?: string, executionHostId?: string) => Promise<boolean>
+  applyCliProviderVersion: (providerId: string, version: string, executionHostId?: string) => Promise<boolean>
   browseMarkdownStoreDirectory: (currentValue: string) => Promise<string | null>
   setMarkdownStoreDirectory: (directory: string) => Promise<boolean>
   openMarkdownStore: () => Promise<boolean>
@@ -261,6 +271,8 @@ export interface AppState {
   // UI actions
   setTheme: (theme: StoredTheme) => void
   setWorkingDisplayMode: (mode: 'compact' | 'verbose') => void
+  setExpandWorkTraces: (expanded: boolean) => void
+  setCollapsibleWorkSections: (enabled: boolean) => void
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>

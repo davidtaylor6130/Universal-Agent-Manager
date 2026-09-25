@@ -14,6 +14,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "app/uam_control_service.h"
 #include "common/utils/base64.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -315,8 +317,8 @@ namespace
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory),
-		    host.runner_version);
+		                               host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
 		std::vector<std::filesystem::path> committed;
 		std::size_t index = 0;
 		for (const nlohmann::json& item : items)
@@ -397,8 +399,8 @@ namespace
 			const std::string relative = ".UAM/attachments/" + chat_id + "/" +
 			    uam::time::SystemEpochMicrosecondsTokenNow() + "-" +
 			    std::to_string(index) + "-" + attachment.name;
-			const std::filesystem::path target(uam::execution_hosts::JoinRemotePath(
-			    host.platform, workspace_root, relative));
+			const std::filesystem::path target = uam::paths::PathFromUtf8(
+			    uam::execution_hosts::JoinRemotePath(host.platform, workspace_root, relative));
 			std::string error;
 			if (!client.UploadFile("attachment-" + std::to_string(index) + "-" +
 			                       uam::time::SystemEpochMicrosecondsTokenNow(),
@@ -677,16 +679,16 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 	{
 		if (execution_host->runner_status != "ready" ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(execution_host->platform,
-		        workspace_root.string()))
+		        uam::paths::Utf8PathString(workspace_root)))
 		{
 			cb->Failure(409, "The selected remote runner or workspace is not ready.");
 			return;
 		}
 		auto result = std::make_shared<RemoteAttachmentResult>();
-		uam::query_handler_async::RunAsyncCefQuery(
+		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
 		    cb,
 		    [items = *items, host = *execution_host, chat_id,
-		     workspace = workspace_root.string(), result]()
+		     workspace = uam::paths::Utf8PathString(workspace_root), result]()
 		    {
 			    *result = StageRemoteAttachments(items, host, chat_id, workspace);
 			    return result->ok
@@ -880,7 +882,11 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 	}
 
 	std::string error;
-	if (!uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error))
+	const bool is_uam_control_request = request_id.rfind("uam-control:", 0) == 0;
+	const bool resolved = is_uam_control_request
+		? uam::UamControlService::ResolveApproval(m_app, chat_id, request_id, answers, &error)
+		: uam::ResolveAcpUserInput(m_app, chat_id, request_id, answers, &error);
+	if (!resolved)
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resolve ACP user input request."));
 		return;
@@ -893,7 +899,20 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	uam::StopAcpSession(m_app, chat_id);
+	if (!uam::StopAcpSession(m_app, chat_id))
+	{
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+		if (session != nullptr && session->remote_stop_pending)
+		{
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(R"({"pending":true})");
+			return;
+		}
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(409, FailureDetailOrFallback(
+		    m_app.status_line, "Failed to stop the structured runtime."));
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -912,7 +931,7 @@ void UamQueryHandler::HandleWriteClipboardText(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 
-	uam::query_handler_async::RunAsyncCefQuery(cb, [text]() {
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [text]() {
 		std::string error;
 		if (!WriteNativeClipboardText(text, &error))
 		{

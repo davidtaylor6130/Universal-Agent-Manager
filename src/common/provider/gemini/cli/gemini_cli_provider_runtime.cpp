@@ -1,4 +1,5 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
 #include "common/chat/chat_ids.h"
@@ -80,6 +81,34 @@ namespace
 
 } // namespace
 
+const ProviderCliPolicy* GeminiCliProviderRuntime::CliVersionPolicy() const
+{
+	static constexpr ProviderCliPolicy policy
+	{
+		.provider_id = uam::provider_ids::kGeminiCli,
+		.npm_package = "@google/gemini-cli",
+		.fallback_title = "Gemini CLI",
+		.executable_name = "gemini",
+		.version_probe_command = "gemini --version",
+		.homebrew_package = "gemini-cli",
+		.preferred_version = "latest",
+		.fallback_version = "0.55.1",
+		.minimum_version = "0.55.1",
+		.version_policy = ProviderCliVersionPolicy::MinimumSemver,
+		.verified_at = "2026-08-27",
+	};
+	return &policy;
+}
+
+bool GeminiCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+    const uam::acp_detail::AcpResponseFailureDetails& details) const
+{
+	using namespace uam::acp_detail;
+	if (!TextContainsAnyCaseInsensitive(details.failure.message + "\n" + details.error_data,
+	        {"invalid session identifier", "use --list-sessions"})) return false;
+	return RetrySessionNewAfterInvalidLoad(app, session, chat, details);
+}
+
 const char* GeminiCliProviderRuntime::RuntimeId() const
 {
 	return uam::provider_ids::kGeminiCli;
@@ -122,11 +151,6 @@ bool GeminiCliProviderRuntime::SupportsGeminiJsonHistory(const ProviderProfile&)
 }
 
 bool GeminiCliProviderRuntime::UsesLocalHistory(const ProviderProfile&) const
-{
-	return false;
-}
-
-bool GeminiCliProviderRuntime::UsesInternalEngine(const ProviderProfile&) const
 {
 	return false;
 }

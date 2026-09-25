@@ -6,6 +6,7 @@
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/utils/range_utils.h"
 
 #include <array>
@@ -18,10 +19,6 @@ namespace
 	    uam::approval_modes::kPlanApprovalMode,
 	});
 
-	std::vector<std::string> ClaudeFlagsFromSettings(const AppSettings& settings)
-	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
-	}
 
 	bool ShouldPassClaudePermissionMode(std::string_view approval_mode)
 	{
@@ -47,6 +44,23 @@ namespace
 	}
 } // namespace
 
+const ProviderCliPolicy* ClaudeCliProviderRuntime::CliVersionPolicy() const
+{
+	static constexpr ProviderCliPolicy policy
+	{
+		.provider_id = uam::provider_ids::kClaudeCli,
+		.npm_package = "@anthropic-ai/claude-code",
+		.fallback_title = "Claude Code",
+		.executable_name = "claude",
+		.version_probe_command = "claude --version",
+		.homebrew_package = "claude-code",
+		.homebrew_cask = true,
+		.preferred_version = "latest",
+		.provider_managed = true,
+	};
+	return &policy;
+}
+
 const char* ClaudeCliProviderRuntime::RuntimeId() const
 {
 	return uam::provider_ids::kClaudeCli;
@@ -65,7 +79,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendClaudeModeArgs(argv, chat, provider_settings);
-	uam::provider_runtime_internal::AppendArgs(argv, ClaudeFlagsFromSettings(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
 	return argv;
 }
 
@@ -129,6 +143,25 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSta
 	return nullptr;
 }
 
+bool ClaudeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+    const nlohmann::json& message, const CefRefPtr<CefBrowser>& browser) const
+{
+	using namespace uam::acp_detail;
+	try
+	{
+		HandleClaudeMessage(app, session, chat, message, browser);
+		MarkAcpRuntimeActivity(session);
+	}
+	catch (const std::exception& ex)
+	{
+		const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
+		AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0,
+		                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
+		InvalidateAcpTransport(app, session, chat, error_message);
+	}
+	return true;
+}
+
 void ClaudeCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
 	(void)session;
@@ -160,18 +193,6 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionS
 {
 	out_method.clear();
 	return nullptr;
-}
-
-bool ClaudeCliProviderRuntime::OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const
-{
-	session.current_mode_id = mode_id;
-	return false;
-}
-
-bool ClaudeCliProviderRuntime::OnAcpSetModelLocally(uam::AcpSessionState& session, const std::string& model_id) const
-{
-	session.current_model_id = model_id;
-	return false;
 }
 
 const IProviderRuntime& GetClaudeCliProviderRuntime()

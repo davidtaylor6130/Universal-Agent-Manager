@@ -2,7 +2,7 @@
 
 #include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
-#include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
@@ -62,13 +62,8 @@ namespace
 
 	std::optional<std::string> RealNativeSessionIdForLinking(const ChatSession& chat)
 	{
-		const std::string native_session_id = NormalizeNativeSessionId(chat.native_session_id);
-		if (native_session_id.empty() || IsLocalDraftChatIdValue(native_session_id))
-		{
-			return std::nullopt;
-		}
-
-		if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) && !uam::codex::IsValidThreadId(native_session_id))
+		const std::string native_session_id = ProviderRuntimeRegistry::ResolveById(chat.provider_id).OnAcpValidateResumeId(chat);
+		if (native_session_id.empty())
 		{
 			return std::nullopt;
 		}

@@ -1,26 +1,33 @@
 #pragma once
 
+#include "cef/companion_server.h"
+#include <memory>
+#include <stop_token>
+
 #include "cef/cef_includes.h"
 #include "common/state/app_state.h"
 #include <nlohmann/json.hpp>
 
 #include <string>
 #include <string_view>
+#include <unordered_map>
+
+namespace uam::query_handler_async { struct AsyncCefResult; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
 /// Registered with CefMessageRouterBrowserSide so that every call to
 /// window.cefQuery({ request: JSON, onSuccess, onFailure }) arrives here.
 ///
-/// All actions are dispatched synchronously on the CEF UI thread.
-/// Long-running work (streaming, terminal I/O) is handled by the existing
-/// runtime services — this handler only queues the work and responds.
+/// Dispatches actions on the CEF UI thread and offloads blocking operations.
+/// Async workers capture snapshots; completions stop when this handler is destroyed.
 /// </summary>
 class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 {
   public:
 	explicit UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url);
-	~UamQueryHandler() override = default;
+	~UamQueryHandler() override;
+	void StartCompanion(CefRefPtr<CefBrowser> browser);
 
 	bool OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id, const CefString& request, bool persistent, CefRefPtr<Callback> callback) override;
 
@@ -28,6 +35,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 
   private:
 	uam::AppState& m_app;
+	CefRefPtr<UamCompanionServer> m_companion;
+	// Workers hold weak references so queued callbacks cannot outlive this handler.
+	std::shared_ptr<void> m_asyncLifetime = std::make_shared<char>();
+	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_nativeHistoryRequests;
 	std::string m_trustedUiIndexUrl;
 	using ActionHandler = void (UamQueryHandler::*)(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback>);
 	bool DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -38,8 +49,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetToolCallContent(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	uam::query_handler_async::AsyncCefResult FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot = nullptr);
 	void HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -58,6 +71,15 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetComputerUseControl(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleListComputerUseApplications(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleCheckComputerUsePermissions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleRequestComputerUsePermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleOpenComputerUseSystemSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetCompanionSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

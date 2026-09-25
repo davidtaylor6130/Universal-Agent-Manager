@@ -38,6 +38,7 @@ id_ed25519
 /UI-V2/.vite/
 /UI-V2/coverage/
 /.UAM
+/wayfinder/progress.md
 
 compile_commands.json
 /.cache
@@ -59,3 +60,4 @@ compile_commands.json
 /.agents
 /.playwright-mcp/
 *.log
+__pycache__/

@@ -165,8 +165,12 @@ namespace uam::remote
 		        {"runnerVersion", runner_version}, {"platform", PlatformName()},
 		        {"architecture", ArchitectureName()},
 		        {"capabilities", {{"computerUse", false},
-		                          {"directoryBrowsing", state != nullptr},
-		                          {"fileCopy", state != nullptr},
+			                          {"directoryBrowsing", state != nullptr},
+			                          {"fileCopy", state != nullptr},
+			                          {"processInputAcknowledgement", state != nullptr},
+			                          {"processOutputAcknowledgement", state != nullptr},
+			                          {"channelOutputAcknowledgement", state != nullptr},
+		                          {"leasedChannelTake", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

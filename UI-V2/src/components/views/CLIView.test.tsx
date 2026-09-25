@@ -1,12 +1,15 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLIView } from './CLIView'
 import { useAppStore } from '../../store/useAppStore'
 
 const xtermState = vi.hoisted(() => ({
+  resizeByInstance: [] as Array<(size: { rows: number; cols: number }) => void>,
+  resizeObservers: [] as Array<() => void>,
   constructCount: 0,
   disposeCount: 0,
+  inputByInstance: [] as Array<(data: string) => void>,
   writesByInstance: [] as Array<Array<string | Uint8Array>>,
   optionsByInstance: [] as Array<{ theme?: { background?: string } }>,
 }))
@@ -32,7 +35,12 @@ vi.mock('@xterm/xterm', () => ({
     dispose() {
       xtermState.disposeCount += 1
     }
-    onData() {
+    onResize(callback: (size: { rows: number; cols: number }) => void) {
+      xtermState.resizeByInstance[this.index] = callback
+      return { dispose() {} }
+    }
+    onData(callback: (data: string) => void) {
+      xtermState.inputByInstance[this.index] = callback
       return { dispose() {} }
     }
   },
@@ -49,6 +57,7 @@ type TestWindow = Window & typeof globalThis & {
 }
 
 class TestResizeObserver {
+  constructor(callback: () => void) { xtermState.resizeObservers.push(callback) }
   observe() {}
   disconnect() {}
 }
@@ -78,8 +87,11 @@ describe('CLIView', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+    xtermState.resizeByInstance = []
+    xtermState.resizeObservers = []
     xtermState.constructCount = 0
     xtermState.disposeCount = 0
+    xtermState.inputByInstance = []
     xtermState.writesByInstance = []
     xtermState.optionsByInstance = []
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
@@ -93,7 +105,7 @@ describe('CLIView', () => {
     delete (window as TestWindow).cefQuery
   })
 
-  it('detaches a terminal returned after unmount without writing stale binding state', async () => {
+  it('scopes late cleanup to its old attachment after a replacement view mounts', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     let resolveStart: ((response: string) => void) | null = null
     ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
@@ -133,8 +145,17 @@ describe('CLIView', () => {
       root.unmount()
     })
 
+    const completeOldStart = resolveStart
+    const replacement = createRoot(host)
+    await act(async () => { replacement.render(<CLIView session={session} />) })
+    const startRequests = requests.filter((request) => request.action === 'startCliTerminal')
+    expect(startRequests[1]?.payload?.attachmentId).not.toBe(startRequests[0]?.payload?.attachmentId)
     await act(async () => {
-      resolveStart?.(JSON.stringify({
+      resolveStart?.(JSON.stringify({ terminalId: 'term-new', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle' }))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      completeOldStart?.(JSON.stringify({
         terminalId: 'term-late',
         sourceChatId: 'chat-1',
         running: true,
@@ -146,12 +167,19 @@ describe('CLIView', () => {
     })
 
     const stopRequests = requests.filter((request) => request.action === 'stopCliTerminal')
+    const attachmentId = requests.find((request) => request.action === 'startCliTerminal')?.payload?.attachmentId
+    expect(attachmentId).toEqual(expect.any(String))
+    expect(attachmentId).not.toBe('')
+    expect(stopRequests.every((request) => request.payload?.attachmentId === attachmentId)).toBe(true)
     expect(stopRequests.length).toBeGreaterThanOrEqual(2)
     expect(stopRequests[stopRequests.length - 1]?.payload).toMatchObject({
       chatId: 'chat-1',
       terminalId: 'term-late',
     })
-    expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
+    expect(useAppStore.getState().cliBindingBySessionId['chat-1']?.terminalId).toBe('term-new')
+    await act(async () => { replacement.unmount() })
+    expect(requests.filter((request) => request.action === 'stopCliTerminal').at(-1)?.payload?.attachmentId)
+      .toBe(startRequests[1]?.payload?.attachmentId)
 
     host.remove()
   })
@@ -268,86 +296,6 @@ describe('CLIView', () => {
     host.remove()
   })
 
-  it('preserves and atomically submits a terminal-fallback steering prompt', async () => {
-    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request)
-      requests.push(parsed)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: false, lastError: '' }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: true, lastError: '' }))
-      } else onSuccess('{}')
-    }
-    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
-    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Change direction')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => { (host.querySelector('button[aria-label="Steer terminal now"]') as HTMLButtonElement).click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
-    expect(requests.find((request) => request.action === 'steerCliTerminal')?.payload).toMatchObject({ chatId: 'chat-1', terminalId: 'term-1', text: 'Change direction', retry: false })
-    expect(input.value).toBe('Change direction')
-    const pendingButton = host.querySelector('button[aria-label="Steering terminal prompt"]') as HTMLButtonElement
-    expect(pendingButton.textContent).toContain('Steering…')
-    expect(pendingButton.disabled).toBe(true)
-
-    await act(async () => { useAppStore.getState().setCliBinding('chat-1', { pendingSteer: false, processing: true }); await Promise.resolve() })
-    expect(input.value).toBe('')
-    await act(async () => {
-      root.unmount()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    host.remove()
-  })
-
-  it('retries a failed pending steer and clears the draft when accepted', async () => {
-    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request)
-      requests.push(parsed)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: true, lastError: 'Steer timed out.' }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        onSuccess(JSON.stringify({ pendingSteer: false, lastError: '' }))
-      } else onSuccess('{}')
-    }
-    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
-    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Try again')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const retryButton = host.querySelector('button[aria-label="Retry terminal steer"]') as HTMLButtonElement
-    expect(retryButton.textContent).toContain('Retry steer')
-    expect(retryButton.disabled).toBe(false)
-
-    await act(async () => { retryButton.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    expect(requests.find((request) => request.action === 'steerCliTerminal')?.payload).toMatchObject({
-      chatId: 'chat-1',
-      terminalId: 'term-1',
-      text: 'Try again',
-      retry: true,
-    })
-    expect(input.value).toBe('')
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
   it('retries a transient terminal startup failure without remounting', async () => {
     let startCalls = 0
     ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
@@ -405,102 +353,16 @@ describe('CLIView', () => {
     host.remove()
   })
 
-  it('shows the same terminal error again when a retry fails the same way', async () => {
+  it('delivers terminal output without React commits or terminal restarts', async () => {
+    let failInput = false
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
-      const parsed = JSON.parse(request)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: true, lastError: 'Steer timed out.' }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        onFailure(1, 'Steer timed out.')
-      } else onSuccess('{}')
-    }
-    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
-    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss terminal error"]')?.click())
-    expect(host.textContent).not.toContain('Steer timed out.')
-    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Try again')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('button[aria-label="Retry terminal steer"]')?.click()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    expect(host.textContent).toContain('Steer timed out.')
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('surfaces a terminal steer request failure', async () => {
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {
-      const parsed = JSON.parse(request)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: false, lastError: '' }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        onFailure(1, 'Could not steer terminal.')
-      } else onSuccess('{}')
-    }
-    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
-    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Try something else')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      ;(host.querySelector('button[aria-label="Steer terminal now"]') as HTMLButtonElement).click()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-
-    expect(host.textContent).toContain('Could not steer terminal.')
-    expect(input.value).toBe('Try something else')
-
-    act(() => {
-      ;(host.querySelector('button[aria-label="Dismiss terminal error"]') as HTMLButtonElement).click()
-    })
-    expect(host.textContent).not.toContain('Could not steer terminal.')
-
-    act(() => {
-      useAppStore.getState().setCliBinding('chat-1', {
-        lastError: 'Could not steer terminal.',
-      })
-    })
-    expect(host.textContent).not.toContain('Could not steer terminal.')
-
-    act(() => {
-      useAppStore.getState().setCliBinding('chat-1', { lastError: '' })
-    })
-    act(() => {
-      useAppStore.getState().setCliBinding('chat-1', {
-        lastError: 'Could not steer terminal.',
-      })
-    })
-    expect(host.textContent).toContain('Could not steer terminal.')
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('does not restart a bound terminal when its transcript identity hydrates', async () => {
-    const requests: Array<{ action: string }> = []
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request)
       requests.push(parsed)
       if (parsed.action === 'startCliTerminal') {
         onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle', turnState: 'idle', lastError: '' }))
-      } else onSuccess('{}')
+      } else if (parsed.action === 'writeCliInput' && failInput) onFailure(500, 'Terminal input could not be delivered.')
+      else onSuccess('{}')
     }
     useAppStore.setState({
       providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
@@ -512,22 +374,51 @@ describe('CLIView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
+    const onRender = vi.fn()
+    await act(async () => { root.render(<Profiler id="terminal" onRender={onRender}><CLIView session={session} /></Profiler>); await new Promise((resolve) => setTimeout(resolve, 0)) })
 
+    const rawInput = '\x1b[A\x03'
+    xtermState.inputByInstance[0](rawInput)
+    expect(requests.find((request) => request.action === 'writeCliInput')?.payload).toEqual({
+      chatId: 'chat-1', terminalId: 'term-1', data: rawInput,
+    })
+    for (let index = 0; index < 20; index++) xtermState.resizeObservers[0]()
+    expect(requests.filter((request) => request.action === 'resizeCliTerminal')).toHaveLength(0)
+    xtermState.resizeByInstance[0]({ rows: 30, cols: 100 })
+    expect(requests.filter((request) => request.action === 'resizeCliTerminal').map(({ payload }) => payload)).toEqual([
+      { chatId: 'chat-1', terminalId: 'term-1', rows: 30, cols: 100 },
+    ])
+    onRender.mockClear()
     await act(async () => {
+      window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: { sessionId: session.id, terminalId: 'term-1', data: '\x1b[32moutput\r\n' } }))
       useAppStore.setState({ cliTranscriptBySessionId: { 'chat-1': { terminalId: 'term-1', content: 'output' } } })
       await Promise.resolve()
     })
 
+    for (let index = 0; index < 20; index += 1) {
+      act(() => useAppStore.setState((state) => ({ cliBindingBySessionId: {
+        ...state.cliBindingBySessionId,
+        'chat-1': { ...state.cliBindingBySessionId['chat-1'], processing: index % 2 === 0, turnState: index % 2 === 0 ? 'busy' : 'idle', lifecycleState: index % 2 === 0 ? 'busy' : 'idle' },
+      } })))
+    }
+
     expect(requests.filter((request) => request.action === 'startCliTerminal')).toHaveLength(1)
     expect(requests.filter((request) => request.action === 'stopCliTerminal')).toHaveLength(0)
     expect(xtermState.constructCount).toBe(1)
+    expect(onRender).not.toHaveBeenCalled()
+    expect(Array.from(xtermState.writesByInstance[0][0] as Uint8Array)).toEqual(Array.from(new TextEncoder().encode('\x1b[32moutput\r\n')))
+
+    failInput = true
+    await act(async () => { xtermState.inputByInstance[0]('x'); await Promise.resolve() })
+    expect(host.textContent).toContain('Terminal input could not be delivered.')
+    act(() => (host.querySelector('[aria-label="Dismiss terminal error"]') as HTMLButtonElement).click())
+    expect(host.textContent).not.toContain('Terminal input could not be delivered.')
 
     act(() => root.unmount())
     host.remove()
   })
 
-  it('updates the live terminal palette when the app theme changes', async () => {
+  it.each(['light', 'paper'] as const)('updates the live terminal palette for %s', async (theme) => {
     ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request)
       if (parsed.action === 'startCliTerminal') {
@@ -547,9 +438,9 @@ describe('CLIView', () => {
     const liveTerminalIndex = xtermState.constructCount - 1
     expect(xtermState.optionsByInstance[liveTerminalIndex].theme?.background).toBe('#0b0b0e')
 
-    document.documentElement.setAttribute('data-theme', 'light')
+    document.documentElement.setAttribute('data-theme', theme)
     await act(async () => {
-      useAppStore.setState({ theme: 'light' })
+      useAppStore.setState({ theme })
       await Promise.resolve()
     })
     expect(xtermState.optionsByInstance[liveTerminalIndex].theme?.background).toBe('#f0f0f5')
@@ -582,147 +473,4 @@ describe('CLIView', () => {
     host.remove()
   })
 
-  it('submits a terminal steer only once before the submitting state rerenders', async () => {
-    const requests: Array<{ action: string }> = []
-    const finishSteers: Array<(response: string) => void> = []
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request)
-      requests.push(parsed)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', pendingSteer: false, lastError: '' }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        finishSteers.push(onSuccess)
-      }
-    }
-    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
-    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
-
-    const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Steer only once')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const steer = host.querySelector('button[aria-label="Steer terminal now"]') as HTMLButtonElement
-    act(() => {
-      steer.click()
-      steer.click()
-    })
-
-    expect(requests.filter((request) => request.action === 'steerCliTerminal')).toHaveLength(1)
-    await act(async () => {
-      finishSteers.forEach((finish) => finish(JSON.stringify({ pendingSteer: false, lastError: '' })))
-      await Promise.resolve()
-    })
-    await act(async () => {
-      root.unmount()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    host.remove()
-  })
-
-  it('does not let a steer finishing in another chat clear the current draft', async () => {
-    let finishSteer: ((response: string) => void) | null = null
-    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request)
-      if (parsed.action === 'startCliTerminal') {
-        onSuccess(JSON.stringify({
-          terminalId: `term-${parsed.payload.chatId}`,
-          sourceChatId: parsed.payload.chatId,
-          running: true,
-          lifecycleState: 'busy',
-          turnState: 'busy',
-          pendingSteer: false,
-          lastError: '',
-        }))
-      } else if (parsed.action === 'steerCliTerminal') {
-        finishSteer = onSuccess
-      } else onSuccess('{}')
-    }
-    useAppStore.setState({
-      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
-    })
-    const first = { id: 'chat-1', name: 'First', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const second = { ...first, id: 'chat-2', name: 'Second' }
-    useAppStore.setState({
-      cliBindingBySessionId: {
-        'chat-1': { terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
-        'chat-2': { terminalId: 'term-2', sourceChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
-      },
-    })
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    await act(async () => { root.render(<CLIView session={first} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-
-    let input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'First steer')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      ;(host.querySelector('button[aria-label="Steer terminal now"]') as HTMLButtonElement).click()
-    })
-    await act(async () => { root.render(<CLIView session={second} />); await new Promise((resolve) => setTimeout(resolve, 0)) })
-    input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'Second steer')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      finishSteer?.(JSON.stringify({ pendingSteer: false, lastError: '' }))
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-
-    expect(input.value).toBe('Second steer')
-
-    await act(async () => {
-      root.unmount()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    host.remove()
-  })
-
-  it('restores terminal steer drafts per chat across navigation and remount', async () => {
-    const values = new Map<string, string>()
-    vi.stubGlobal('localStorage', {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
-      removeItem: (key: string) => values.delete(key),
-      clear: () => values.clear(),
-    })
-    useAppStore.setState({
-      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
-      cliBindingBySessionId: {
-        'chat-1': { terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
-        'chat-2': { terminalId: 'term-2', sourceChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, pendingSteer: false, lastError: '' },
-      },
-    })
-    const first = { id: 'chat-1', name: 'First', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
-    const second = { ...first, id: 'chat-2', name: 'Second' }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    const typeDraft = (value: string) => {
-      const input = host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-
-    await act(async () => { root.render(<CLIView key={first.id} session={first} />); await Promise.resolve() })
-    act(() => typeDraft('First terminal draft'))
-    await act(async () => { root.render(<CLIView key={second.id} session={second} />); await Promise.resolve() })
-    act(() => typeDraft('Second terminal draft'))
-    await act(async () => { root.render(<CLIView key={first.id} session={first} />); await Promise.resolve() })
-    expect((host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement).value).toBe('First terminal draft')
-
-    await act(async () => { root.unmount(); await Promise.resolve() })
-    const remounted = createRoot(host)
-    await act(async () => { remounted.render(<CLIView key={second.id} session={second} />); await Promise.resolve() })
-    expect((host.querySelector('input[aria-label="Terminal steering prompt"]') as HTMLInputElement).value).toBe('Second terminal draft')
-
-    await act(async () => { remounted.unmount(); await Promise.resolve() })
-    host.remove()
-  })
 })

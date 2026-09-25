@@ -7,8 +7,6 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
-#include "common/provider/codex/cli/codex_session_index.h"
-#include "common/provider/provider_ids.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
@@ -35,20 +33,6 @@ namespace uam
 double LatestCliTransportActivityTime(const uam::CliTerminalState& terminal)
 {
 	return std::max(terminal.last_user_input_time_s, terminal.last_ai_output_time_s);
-}
-
-bool ProviderRecentOutputIndicatesInputPrompt(const ProviderProfile& provider, std::string_view recent_output)
-{
-	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCodexCli))
-	{
-		return CodexCliRecentOutputIndicatesInputPrompt(recent_output);
-	}
-	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
-	{
-		return CopilotCliRecentOutputIndicatesInputPrompt(recent_output);
-	}
-
-	return FallbackCliRecentOutputIndicatesInputPrompt(recent_output);
 }
 
 std::string AsyncNativeChatLoadTaskKey(std::string_view provider_id, const std::filesystem::path& chats_dir)
@@ -154,13 +138,14 @@ bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app, uam::CliTermina
 		return false;
 	}
 
-	if (static_cast<int>(synced_chat->messages.size()) <= previous_message_count)
+	const std::size_t synced_message_count = synced_chat->messages_loaded ? synced_chat->messages.size() : synced_chat->persisted_message_count;
+	if (synced_message_count <= static_cast<std::size_t>(previous_message_count))
 	{
 		return false;
 	}
 
 	uam::MarkCliTerminalTurnIdle(terminal);
-	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_synced_history", &terminal, "message_count=" + std::to_string(synced_chat->messages.size()));
+	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_synced_history", &terminal, "message_count=" + std::to_string(synced_message_count));
 
 	if (synced_chat->id != selected_chat_id)
 	{
@@ -248,188 +233,6 @@ bool TryAttachNativeSessionFromHistory(uam::AppState& app, uam::CliTerminalState
 	return true;
 }
 
-bool ShouldAttemptOpenCodeLocalHistoryRebind(const ProviderProfile& terminal_provider, const uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)
-{
-	if (!uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) || terminal.session_ids_before.empty())
-	{
-		return false;
-	}
-
-	const std::string attached_session_id = CliTerminalAttachedSessionId(terminal);
-	if (attached_session_id.empty())
-	{
-		return true;
-	}
-
-	return !NativeSessionLinkService().SessionIdExistsInLoadedChats(matching_chats, attached_session_id);
-}
-
-bool ShouldPollOpenCodeLocalHistoryRebind(const ProviderProfile& terminal_provider, const uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)
-{
-	return ShouldAttemptOpenCodeLocalHistoryRebind(terminal_provider, terminal, matching_chats) || terminal.session_ids_before.empty();
-}
-
-bool PersistRebindDiscoveredSession(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, ChatSession* previous_chat, std::string_view discovered, std::string_view previous_session_id, std::string_view event_kind)
-{
-	const NativeSessionLinkService native_session_linker;
-
-	ChatSession persisted_previous_chat = *previous_chat;
-	uam::provider_ids::NormalizeLegacyLocalHistoryChatProvider(persisted_previous_chat.provider_id, terminal_provider.id);
-
-	if (native_session_linker.IsLocalDraftChatId(previous_chat->id) && !native_session_linker.HasRealNativeSessionId(*previous_chat))
-	{
-		if (!ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, persisted_previous_chat, std::string(discovered)))
-		{
-			return false;
-		}
-	}
-	else
-	{
-		persisted_previous_chat.native_session_id = std::string(discovered);
-		persisted_previous_chat.updated_at = uam::time::TimestampNow();
-		if (!ChatRepository::SaveChat(app.data_root, persisted_previous_chat))
-		{
-			return false;
-		}
-	}
-
-	*previous_chat = persisted_previous_chat;
-	terminal.attached_session_id = std::string(discovered);
-	app.resolved_native_sessions_by_chat_id[previous_chat->id] = std::string(discovered);
-	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", event_kind, &terminal, "previous_session_id=" + std::string(previous_session_id) + ", discovered=" + std::string(discovered));
-	return true;
-}
-
-bool TryAttachOpenCodeLocalHistorySessionFromChatFile(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, const std::vector<ChatSession>& matching_chats)
-{
-	if (!uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli))
-	{
-		return false;
-	}
-
-	const std::string previous_chat_id = CliTerminalAttachedChatId(terminal);
-	ChatSession* previous_chat = ChatDomainService().FindChatById(app, previous_chat_id);
-	if (previous_chat == nullptr)
-	{
-		return false;
-	}
-
-	const NativeSessionLinkService native_session_linker;
-	const std::string previous_workspace_directory = previous_chat->workspace_directory;
-	const std::string previous_session_id = CliTerminalAttachedSessionId(terminal);
-
-	const auto loaded_match = std::ranges::find_if(matching_chats, [&](const ChatSession& chat) {
-		if (uam::strings::Trim(chat.id) != previous_chat_id)
-		{
-			return false;
-		}
-
-		if (!previous_workspace_directory.empty() && !FolderDirectoryMatches(chat.workspace_directory, previous_workspace_directory))
-		{
-			return false;
-		}
-
-		return native_session_linker.HasRealNativeSessionId(chat);
-	});
-
-	if (loaded_match == matching_chats.end())
-	{
-		return false;
-	}
-
-	const std::string discovered = native_session_linker.RealNativeSessionId(*loaded_match);
-	if (discovered.empty() || discovered == previous_session_id)
-	{
-		return false;
-	}
-
-	if (!PersistRebindDiscoveredSession(app, terminal_provider, terminal, previous_chat, discovered, previous_session_id, "local_history_session_rebound_from_chat_file"))
-	{
-		return false;
-	}
-
-	return true;
-}
-
-bool LocalHistoryChatMatchesTerminalProvider(const ChatSession& chat, const ProviderProfile& terminal_provider)
-{
-	return uam::provider_ids::IsLegacyOpenCodeLocalHistoryProviderId(chat.provider_id, terminal_provider.id);
-}
-
-bool TryAttachLocalHistorySessionFromChats(uam::AppState& app, const ProviderProfile& terminal_provider, uam::CliTerminalState& terminal, const std::vector<ChatSession>& local_chats)
-{
-	const std::string previous_chat_id = CliTerminalAttachedChatId(terminal);
-	ChatSession* previous_chat = ChatDomainService().FindChatById(app, previous_chat_id);
-	if (previous_chat == nullptr)
-	{
-		return false;
-	}
-
-	const NativeSessionLinkService native_session_linker;
-	if (!native_session_linker.IsLocalDraftChatId(previous_chat->id) && !LocalHistoryChatMatchesTerminalProvider(*previous_chat, terminal_provider))
-	{
-		return false;
-	}
-
-	std::vector<ChatSession> matching_chats;
-	matching_chats.reserve(local_chats.size());
-	const std::string previous_workspace_directory = previous_chat->workspace_directory;
-
-	for (const ChatSession& local_chat : local_chats)
-	{
-		if (!LocalHistoryChatMatchesTerminalProvider(local_chat, terminal_provider))
-		{
-			continue;
-		}
-
-		if (!previous_workspace_directory.empty() && !FolderDirectoryMatches(local_chat.workspace_directory, previous_workspace_directory))
-		{
-			continue;
-		}
-
-		matching_chats.push_back(local_chat);
-	}
-
-	if (!ShouldAttemptOpenCodeLocalHistoryRebind(terminal_provider, terminal, matching_chats))
-	{
-		return TryAttachOpenCodeLocalHistorySessionFromChatFile(app, terminal_provider, terminal, matching_chats);
-	}
-	const std::unordered_set<std::string> blocked_ids = BlockedNativeSessionIdsForTerminal(app, terminal);
-
-	const std::string attached_session_id = CliTerminalAttachedSessionId(terminal);
-	if (!attached_session_id.empty() && native_session_linker.SessionIdExistsInLoadedChats(matching_chats, attached_session_id))
-	{
-		return false;
-	}
-
-	const std::vector<std::string> candidates = native_session_linker.CollectNewSessionIds(matching_chats, terminal.session_ids_before);
-	const std::string discovered = native_session_linker.PickFirstUnblockedSessionId(candidates, blocked_ids);
-	if (discovered.empty())
-	{
-		return false;
-	}
-
-	const std::string previous_session_id = CliTerminalAttachedSessionId(terminal);
-
-	if (!PersistRebindDiscoveredSession(app, terminal_provider, terminal, previous_chat, discovered, previous_session_id, "local_history_session_rebound"))
-	{
-		return false;
-	}
-
-	return true;
-}
-
-bool UpdateNativeHistorySnapshotDigestIfChanged(uam::CliTerminalState& terminal, std::string_view native_snapshot_digest)
-{
-	if (native_snapshot_digest == terminal.last_native_history_snapshot_digest)
-	{
-		return false;
-	}
-
-	terminal.last_native_history_snapshot_digest.assign(native_snapshot_digest);
-	return true;
-}
-
 void StopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTerminalState& terminal, bool was_shutting_down)
 {
 	uam::StopCliTerminal(terminal);
@@ -479,6 +282,11 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 
 bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::CliTerminalState& terminal, bool preserve_selection)
 {
+	if (!terminal.running)
+	{
+		return false;
+	}
+
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
 	constexpr double kInputReadyFallbackSeconds = 1.5;
 	constexpr int kReadBudgetChunksPerTick = 72;
@@ -489,17 +297,13 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	const ChatSession* terminal_chat = FindChatForCliTerminal(app, terminal);
 	const bool terminal_is_controller_local = terminal_chat != nullptr &&
 	    uam::paths::IsControllerLocalWorkspace(*terminal_chat);
-	const int previous_chat_message_count = (terminal_chat != nullptr) ? static_cast<int>(terminal_chat->messages.size()) : -1;
+	const int previous_chat_message_count = terminal_chat != nullptr ? static_cast<int>(terminal_chat->messages_loaded ? terminal_chat->messages.size() : terminal_chat->persisted_message_count) : -1;
 	const bool terminal_uses_native_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
 	const std::filesystem::path terminal_native_history_chats_dir = (terminal_chat != nullptr) ? ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat) : std::filesystem::path{};
 
 	const IPlatformTerminalRuntime& platform_terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 
-	if (!terminal.running)
-	{
-		return false;
-	}
 	std::string input_error;
 	if (terminal.input_writer != nullptr && terminal.input_writer->FailureOrStall(&input_error))
 	{
@@ -547,7 +351,6 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			terminal.last_output_time_s = now;
 			terminal.last_activity_time_s = now;
 			terminal.last_ai_output_time_s = now;
-			changed = true;
 			output_for_frontend.append(buffer, static_cast<std::size_t>(read_bytes));
 			continue;
 		}
@@ -598,8 +401,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
 	}
 
-	const bool terminal_uses_codex_cli = uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kCodexCli);
-	const bool prompt_indicates_idle = ProviderRecentOutputIndicatesInputPrompt(terminal_provider, terminal.current_turn_output_bytes);
+	const bool prompt_indicates_idle = ProviderRuntimeRegistry::Resolve(terminal_provider).RecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes);
 	if (uam::CliTerminalPromptConfirmsTurnIdle(terminal, prompt_indicates_idle, !output_for_frontend.empty(), GetAppTimeSeconds()))
 	{
 		uam::MarkCliTerminalTurnIdle(terminal);
@@ -632,43 +434,31 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	const bool sync_interval_elapsed = now - terminal.last_sync_time_s > kCliNativeHistoryRefreshIntervalSeconds;
 	const bool should_refresh_native_history = terminal_uses_native_history && sync_interval_elapsed;
-	if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && terminal_uses_codex_cli && CliTerminalAttachedSessionId(terminal).empty() && sync_interval_elapsed)
+	if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && CliTerminalAttachedSessionId(terminal).empty() && sync_interval_elapsed)
 	{
 		terminal.last_sync_time_s = now;
-		ChatSession* codex_chat = FindChatForCliTerminal(app, terminal);
-		if (codex_chat == nullptr)
+		ChatSession* native_chat = FindChatForCliTerminal(app, terminal);
+		if (native_chat == nullptr)
 		{
 			return changed;
 		}
 
 		const std::filesystem::path workspace_root =
-		    uam::paths::ResolveControllerWorkspaceRootPath(app, *codex_chat);
-		const std::string discovered = uam::codex::PickNewSessionId(terminal.session_ids_before, workspace_root);
+		    uam::paths::ResolveControllerWorkspaceRootPath(app, *native_chat);
+		const std::string discovered = ProviderRuntimeRegistry::Resolve(terminal_provider).DiscoverInteractiveSessionId(terminal.session_ids_before, workspace_root);
 		if (!discovered.empty())
 		{
-			codex_chat->native_session_id = discovered;
-			codex_chat->updated_at = uam::time::TimestampNow();
+			native_chat->native_session_id = discovered;
+			native_chat->updated_at = uam::time::TimestampNow();
 			terminal.attached_session_id = discovered;
-			app.resolved_native_sessions_by_chat_id[codex_chat->id] = discovered;
-			(void)ProviderRuntime::SaveHistory(terminal_provider, app.data_root, *codex_chat);
-			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "codex_session_rebound", &terminal, "discovered=" + discovered);
-			changed = true;
-		}
-	}
-	else if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && uam::provider_ids::IsCliProviderAliasOf(terminal_provider.id, uam::provider_ids::kOpenCodeCli) && sync_interval_elapsed)
-	{
-		const std::vector<ChatSession> local_now = ChatRepository::LoadLocalChatSummaries(app.data_root);
-		const bool retry_without_snapshot = terminal.session_ids_before.empty();
-		if (!retry_without_snapshot)
-		{
-			terminal.last_sync_time_s = now;
-		}
-		if (ShouldPollOpenCodeLocalHistoryRebind(terminal_provider, terminal, local_now) && TryAttachLocalHistorySessionFromChats(app, terminal_provider, terminal, local_now))
-		{
-			if (retry_without_snapshot)
+			app.resolved_native_sessions_by_chat_id[native_chat->id] = discovered;
+			if (!ProviderRuntime::SaveHistory(terminal_provider, app.data_root, *native_chat))
 			{
-				terminal.last_sync_time_s = now;
+				app.pending_chat_save_at_by_chat_id[native_chat->id] = now + 1.0;
+				uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_save_failed", &terminal,
+				                          "Could not save the native session link; retrying.");
 			}
+			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "discovered=" + discovered);
 			changed = true;
 		}
 	}
@@ -687,17 +477,20 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 			if (!native_load_error.empty())
 			{
-				app.status_line = "Native chat refresh failed: " + native_load_error;
-				changed = true;
+				LogCliDiagnosticEvent(app, "sync_native_history", "native_load_failed", &terminal, native_load_error);
 			}
 
-			if (has_loaded_snapshot && native_load_error.empty() && UpdateNativeHistorySnapshotDigestIfChanged(terminal, native_snapshot_digest))
+			if (has_loaded_snapshot && native_load_error.empty() && native_snapshot_digest != terminal.last_native_history_snapshot_digest)
 			{
-				changed |= TryAttachNativeSessionFromHistory(app, terminal, native_now);
+				changed = true;
+				(void)TryAttachNativeSessionFromHistory(app, terminal, native_now);
 
 				const std::string preferred_id = CliTerminalSyncTargetId(terminal);
-				changed |= uam::SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection);
-				changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
+				if (uam::SyncChatsFromLoadedNative(app, std::move(native_now), preferred_id, preserve_selection))
+				{
+					terminal.last_native_history_snapshot_digest = native_snapshot_digest;
+					(void)TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
+				}
 			}
 		}
 		else
@@ -705,13 +498,17 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			const std::vector<ChatSession> native_now = ChatHistorySyncService().LoadNativeSessionChats(terminal_native_history_chats_dir, terminal_provider);
 			const std::string native_snapshot_digest = NativeHistorySnapshotDigest(native_now);
 
-			if (UpdateNativeHistorySnapshotDigestIfChanged(terminal, native_snapshot_digest))
+			if (native_snapshot_digest != terminal.last_native_history_snapshot_digest)
 			{
-				changed |= TryAttachNativeSessionFromHistory(app, terminal, native_now);
+				changed = true;
+				(void)TryAttachNativeSessionFromHistory(app, terminal, native_now);
 
 				const std::string preferred_id = CliTerminalSyncTargetId(terminal);
-				changed |= uam::SyncChatsFromNative(app, preferred_id, preserve_selection);
-				changed |= TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
+				if (uam::SyncChatsFromNative(app, preferred_id, preserve_selection))
+				{
+					terminal.last_native_history_snapshot_digest = native_snapshot_digest;
+					(void)TryMarkCliTurnCompleteFromSyncedHistory(app, terminal, previous_chat_message_count, selected_chat_id);
+				}
 			}
 		}
 	}
@@ -719,7 +516,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	return changed;
 }
 
-bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
+bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool terminal_ui_visible)
 {
 	constexpr double kShutdownFallbackSeconds = 2.5;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -733,8 +530,7 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app)
 			continue;
 		}
 
-		const bool selected_terminal = (!selected_chat_id.empty() && CliTerminalMatchesChatId(*terminal, selected_chat_id));
-		const double min_poll_interval_s = selected_terminal ? 0.05 : 0.25;
+		const double min_poll_interval_s = terminal_ui_visible && terminal->ui_attached ? 0.016 : 0.25;
 
 		if (terminal->last_polled_time_s > 0.0 && (now - terminal->last_polled_time_s) < min_poll_interval_s)
 		{

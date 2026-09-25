@@ -1,10 +1,18 @@
 import { ArrowUpCircle, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
+import { Notice } from '../ui/Notice'
 
 export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onClose: () => void }) {
   const [installError, setInstallError] = useState('')
+  const [checkError, setCheckError] = useState('')
+  const [updatingAll, setUpdatingAll] = useState(false)
+  const batchRef = useRef<AbortController | null>(null)
+  useEffect(() => () => batchRef.current?.abort(), [])
+
+  const checkFailure = monitor.error || checkError
+	const installableUpdates = monitor.updates.filter((update) => update.remoteHostId || (update.providerId && update.installable))
   const checked = monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt) : null
   const checkedLabel = checked && !Number.isNaN(checked.getTime())
     ? `Last checked ${checked.toLocaleString()}`
@@ -17,59 +25,108 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
       className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] max-w-full shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
-      <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: 'var(--text)' }}>
             <ArrowUpCircle size={16} /> Updates
           </div>
           <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{checkedLabel}</div>
         </div>
-        <div className="flex items-center gap-1">
+        <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
+        <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-1">
+          {installableUpdates.length > 0 && (
+            <Button
+              size="sm"
+              variant="primary"
+              leadingIcon={<Download size={14} aria-hidden />}
+              aria-label="Update everything"
+              loading={updatingAll}
+              disabled={updatingAll || monitor.providerTaskRunning || Boolean(monitor.remoteHelperUpdatingId)}
+              onClick={async () => {
+                if (batchRef.current) return
+                const batch = new AbortController()
+                batchRef.current = batch
+                setUpdatingAll(true)
+                setInstallError('')
+                try {
+                  for (const update of installableUpdates) {
+                    if (batch.signal.aborted) break
+                    const result = update.remoteHostId
+                      ? await monitor.applyRemoteHelperUpdate(update.remoteHostId)
+                      : { ok: await monitor.installCliProviderVersion(update.providerId!, update.latestVersion, update.executionHostId, batch.signal) }
+                    if (!result.ok) {
+                      if (!batch.signal.aborted) setInstallError(`Updates stopped at ${update.name}. ${result.error?.trim() || 'Check its update status before trying again.'}`)
+                      break
+                    }
+                  }
+                } catch {
+                  if (!batch.signal.aborted) setInstallError('Updates stopped. Check update status before trying again.')
+                } finally {
+                  batchRef.current = null
+                  if (!batch.signal.aborted) setUpdatingAll(false)
+                }
+              }}
+            >
+              {updatingAll ? 'Updating…' : 'Update everything'}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
-            leadingIcon={<RefreshCw size={14} className={monitor.checking ? 'animate-spin' : ''} aria-hidden />}
+            leadingIcon={<RefreshCw size={14} aria-hidden />}
             aria-label={monitor.checking ? 'Checking for updates' : 'Check for updates'}
             aria-busy={monitor.checking}
-            disabled={monitor.checking}
-            onClick={() => { void monitor.checkNow() }}
+            disabled={monitor.checking || updatingAll}
+            onClick={() => { setCheckError(''); void monitor.checkNow() }}
           >
             {monitor.checking ? 'Checking…' : 'Check again'}
           </Button>
-          <IconButton icon={<X size={16} />} label="Close updates" onClick={onClose} />
         </div>
       </header>
 
       <div className="min-w-0 flex-1 overflow-y-auto p-4">
-        {monitor.error && (
-          <div role="alert" className="mb-3 rounded-lg p-3 text-xs" style={{ color: 'var(--red)', border: '1px solid var(--red)', background: 'var(--surface-up)' }}>
-            {monitor.error}
-          </div>
+        {checkFailure && (
+          <Notice key={`check:${monitor.lastCheckedAt}:${checkFailure}`} tone="error" title="Update check failed" dismissLabel="Dismiss update check error">
+            {checkFailure}
+          </Notice>
         )}
         {installError && (
-          <div role="alert" className="mb-3 rounded-lg p-3 text-xs" style={{ color: 'var(--red)', border: '1px solid var(--red)', background: 'var(--surface-up)' }}>
+          <Notice key={`install:${installError}`} tone="error" title="Update failed" dismissLabel="Dismiss update error" onDismiss={() => setInstallError('')}>
             {installError}
-          </div>
+          </Notice>
         )}
 
-        {monitor.providerUpdateResults.length > 0 && (
+        {monitor.providerCheckErrors.map((result) => (
+          <Notice
+            key={`check:${JSON.stringify([result.executionHostId, result.providerId])}:${result.message}`}
+            tone="error"
+            title={`${result.name} version check failed`}
+            dismissLabel={`Dismiss ${result.name} version check error`}
+            onDismiss={() => monitor.dismissProviderCheckError(result)}
+            actions={<Button size="sm" variant="ghost" leadingIcon={<RefreshCw size={14} aria-hidden />}
+              aria-label={`Retry ${result.name} version check`} disabled={monitor.checking || monitor.providerTaskRunning}
+              onClick={async () => {
+                setCheckError('')
+                if (!await monitor.refreshCliProviderVersion(result.providerId, result.executionHostId)) {
+                  setCheckError(`${result.name} check could not be started. Check its SSH connection and try again.`)
+                }
+              }}>Retry check</Button>}
+          >
+            {result.message}
+          </Notice>
+        ))}
+
+        {monitor.providerUpdateResults.some((result) => result.status === 'failed') && (
           <div className="mb-3 grid min-w-0 max-w-full gap-2">
-            {monitor.providerUpdateResults.map((result) => (
-              <div
-                key={result.providerId}
-                role={result.status === 'failed' ? 'alert' : 'status'}
-                className="min-w-0 max-w-full rounded-lg p-3 text-xs"
-                style={{
-                  color: result.status === 'failed' ? 'var(--red)' : 'var(--green)',
-                  border: `1px solid ${result.status === 'failed' ? 'var(--red)' : 'var(--green)'}`,
-                  background: 'var(--surface-up)',
-                }}
+            {monitor.providerUpdateResults.filter((result) => result.status === 'failed').map((result) => (
+              <Notice
+                key={`${JSON.stringify([result.executionHostId || '', result.providerId])}:${result.message}`}
+                tone="error"
+                title={`${result.name} update failed`}
+                dismissLabel={`Dismiss ${result.name} update error`}
               >
-                <div className="font-semibold">
-                  {result.name} update {result.status === 'failed' ? 'failed' : 'completed'}
-                </div>
                 <div className="mt-1" style={{ color: 'var(--text-2)' }}>
-                  {result.message || (result.status === 'failed' ? 'The installer returned an error.' : `Installed ${result.installedVersion}.`)}
+                  {result.message || 'The installer returned an error.'}
                 </div>
                 {result.output && (
                   <details className="mt-2 min-w-0 max-w-full">
@@ -79,17 +136,17 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                     </pre>
                   </details>
                 )}
-              </div>
+              </Notice>
             ))}
           </div>
         )}
 
         {monitor.updates.length === 0 ? monitor.checking ? (
           <div role="status" className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-            <RefreshCw size={24} className="animate-spin" />
+            <RefreshCw size={24} />
             <div className="text-sm" style={{ color: 'var(--text-2)' }}>Checking for updates…</div>
           </div>
-        ) : monitor.error ? (
+        ) : checkFailure || monitor.hasProviderCheckErrors ? (
           <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
             <ArrowUpCircle size={24} />
             <div className="text-sm" style={{ color: 'var(--text-2)' }}>Could not confirm update status</div>
@@ -124,7 +181,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
               </div>
             </div>
             {monitor.updates.map((update) => {
-              const providerState = monitor.providerStates.find((state) => state.providerId === update.providerId)
+              const providerState = monitor.providerStates.find((state) => state.providerId === update.providerId && (state.executionHostId || '') === (update.executionHostId || ''))
               const providerRunning = Boolean(providerState?.running)
               return (
                 <article
@@ -156,11 +213,12 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                         leadingIcon={<Download size={14} aria-hidden />}
                         aria-label={`Update ${update.name} to ${update.latestVersion}`}
                         loading={monitor.remoteHelperUpdatingId === update.remoteHostId}
-                        disabled={Boolean(monitor.remoteHelperUpdatingId) && monitor.remoteHelperUpdatingId !== update.remoteHostId}
+                        disabled={updatingAll || (Boolean(monitor.remoteHelperUpdatingId) && monitor.remoteHelperUpdatingId !== update.remoteHostId)}
                         onClick={async () => {
                           setInstallError('')
-                          if (!await monitor.applyRemoteHelperUpdate(update.remoteHostId!)) {
-                            setInstallError(`${update.name} update failed. Check its SSH connection and bundled helper in Remote Hosts.`)
+                          const result = await monitor.applyRemoteHelperUpdate(update.remoteHostId!)
+                          if (!result.ok) {
+                            setInstallError(`${update.name} update failed. ${result.error?.trim() || 'Check its SSH connection and bundled helper in Remote Hosts.'}`)
                           }
                         }}
                       >
@@ -173,10 +231,10 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                         leadingIcon={<Download size={14} aria-hidden />}
                         aria-label={`Update ${update.name} to ${update.latestVersion}`}
                         loading={providerRunning}
-                        disabled={monitor.providerTaskRunning && !providerRunning}
+                        disabled={updatingAll || (monitor.providerTaskRunning && !providerRunning)}
                         onClick={async () => {
                           setInstallError('')
-                          if (!await monitor.applyCliProviderVersion(update.providerId!, update.latestVersion)) {
+                          if (!await monitor.applyCliProviderVersion(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])) {
                             setInstallError(`${update.name} update could not be started. Finish active provider work and try again.`)
                           }
                         }}

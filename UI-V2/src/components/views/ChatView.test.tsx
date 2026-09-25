@@ -1,8 +1,11 @@
+import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildUamAgentCycle, ChatView, matchesUamAgentCycleShortcut } from './ChatView'
+import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
+import type { Message } from '../../types/message'
+import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -24,11 +27,73 @@ function openWorkspaceActions(host: HTMLElement) {
 }
 
 describe('ChatView', () => {
+  it('renders a smaller companion window on initial load and after switching chats', () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const firstSession = { ...useAppStore.getState().sessions[0], importedReadOnly: true }
+    const secondSession = { ...firstSession, id: 'chat-2', name: 'Second chat' }
+    const buildMessages = (chatId: string) => Array.from({ length: 60 }, (_, index) => ({
+      id: `${chatId}-message-${index}`,
+      sessionId: chatId,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `${chatId} message ${index}`,
+      createdAt: new Date(index),
+    }))
+    useAppStore.setState({
+      sessions: [firstSession, secondSession],
+      messages: { 'chat-1': buildMessages('chat-1'), 'chat-2': buildMessages('chat-2') },
+      acpBindingBySessionId: {
+        'chat-1': useAppStore.getState().acpBindingBySessionId['chat-1'],
+        'chat-2': { ...useAppStore.getState().acpBindingBySessionId['chat-1'], sessionId: 'native-2' },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={firstSession} />))
+    expect(host.textContent).not.toContain('chat-1 message 0')
+    expect(host.textContent).toContain('chat-1 message 59')
+    expect(host.textContent).toContain('Show earlier messages')
+
+    act(() => root.render(<ChatView session={secondSession} />))
+    expect(host.textContent).not.toContain('chat-2 message 0')
+    expect(host.textContent).toContain('chat-2 message 59')
+
+    act(() => root.unmount())
+    host.remove()
+    window.history.pushState({}, '', previousPath)
+  })
+
+  it('builds work metadata from the visible turn boundary and preserves its full summary', () => {
+    const messages: Message[] = Array.from({ length: 400 }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: 'chat-1',
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: '',
+      processingTimeMs: index === 200 ? 7000 : index === 201 ? 3000 : 0,
+      createdAt: new Date(index),
+    }))
+
+    const sections = buildVisibleWorkSections(messages, 201)
+    const firstVisibleSection = sections.get(201)!
+
+    expect(sections.size).toBe(200)
+    expect(sections.has(0)).toBe(false)
+    expect(firstVisibleSection.firstIndex).toBe(200)
+    expect(firstVisibleSection.id).toBe('message-200')
+    expect(firstVisibleSection.workedSeconds).toBe(7)
+    expect(firstVisibleSection.hasAssistant).toBe(true)
+  })
+
   beforeEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+    removeComposerDrafts(['chat-1', 'chat-2'])
     useAppStore.setState({
       workingDisplayMode: 'verbose',
+      collapsibleWorkSections: true,
+      expandWorkTraces: true,
       folders: [
         {
           id: 'default',
@@ -51,8 +116,10 @@ describe('ChatView', () => {
         },
       ],
       activeSessionId: 'chat-1',
+      historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
+      defaultGoalTokenBudgetByChatId: {},
       favoriteUamAgentIds: [],
       providerChatDefaults: {},
       uamAgentCycleShortcut: 'shift+tab',
@@ -83,6 +150,7 @@ describe('ChatView', () => {
           },
         ],
       },
+      chatHistoryErrorBySessionId: {},
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
         { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' },
@@ -154,6 +222,242 @@ describe('ChatView', () => {
     })
   })
 
+  it('shows scoped chat hydration errors with a retry action', () => {
+    const retry = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({
+      chatHistoryErrorBySessionId: { 'chat-1': 'Remote transcript could not be read.' },
+      loadSessionMessages: retry,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Remote transcript could not be read.')
+    act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry') as HTMLButtonElement).click())
+    expect(retry).toHaveBeenCalledWith('chat-1', true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps retry loading isolated when switching chats before completion', async () => {
+    const completions = new Map<string, () => void>()
+    const retry = vi.fn((chatId: string) => new Promise<boolean>((resolve) => {
+      completions.set(chatId, () => resolve(true))
+    }))
+    const secondSession = { ...useAppStore.getState().sessions[0], id: 'chat-2', name: 'Second Session' }
+    useAppStore.setState({
+      sessions: [...useAppStore.getState().sessions, secondSession],
+      chatHistoryErrorBySessionId: {
+        'chat-1': 'First transcript failed.',
+        'chat-2': 'Second transcript failed.',
+      },
+      loadSessionMessages: retry,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const retryButton = () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry') as HTMLButtonElement
+    act(() => retryButton().click())
+    expect(retry).toHaveBeenCalledWith('chat-1', true)
+
+    act(() => root.render(<ChatView session={secondSession} />))
+    act(() => retryButton().click())
+    expect(retry).toHaveBeenCalledWith('chat-2', true)
+    await act(async () => {
+      completions.get('chat-1')?.()
+      await Promise.resolve()
+    })
+    expect(retryButton().getAttribute('aria-busy')).toBe('true')
+    await act(async () => {
+      completions.get('chat-2')?.()
+      await Promise.resolve()
+    })
+    expect(retryButton().getAttribute('aria-busy')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the same rejected prompt again after dismissal and retains its draft', async () => {
+    useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': {
+      ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null,
+      turnEvents: [], toolCalls: [],
+    } } }))
+    vi.stubGlobal('cefQuery', ({ request, onSuccess, onFailure }: { request: string; onSuccess: (text: string) => void; onFailure: (code: number, text: string) => void }) => {
+      if (JSON.parse(request).action === 'sendAcpPrompt') onFailure(500, 'Native session is busy.')
+      else onSuccess('{}')
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Retry this prompt')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const send = async () => act(async () => {
+      host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+    await send()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Native session is busy.')
+    act(() => (host.querySelector('[aria-label="Dismiss composer error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await send()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Native session is busy.')
+    expect(textarea.value).toBe('Retry this prompt')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the owning runtime status across native activity and ACP handoff', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped', pendingPermission: null },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const expectStatus = (label: string, color: string) => {
+      const trigger = host.querySelector<HTMLButtonElement>('.uam-provider-model-trigger')!
+      expect(trigger.title.endsWith(` · ${label}`)).toBe(true)
+      expect((trigger.lastElementChild as HTMLElement).style.background).toBe(color)
+    }
+    expectStatus('Stopped', 'var(--text-3)')
+    for (const processing of [false, true, false]) {
+      act(() => useAppStore.setState({
+        cliBindingBySessionId: {
+          'chat-1': { terminalId: 'term-1', boundChatId: 'chat-1', running: true, lifecycleState: processing ? 'busy' : 'idle', turnState: processing ? 'busy' : 'idle', processing, readySinceLastSelect: false, active: !processing, lastError: '' },
+        },
+      }))
+      expectStatus(processing ? 'Running' : 'Ready', processing ? 'var(--blue)' : 'var(--green)')
+    }
+    act(() => useAppStore.getState().setCliBinding('chat-1', { lifecycleState: 'unknown', turnState: 'unknown' }))
+    expectStatus('Connected', 'var(--text-3)')
+    act(() => useAppStore.setState((state) => ({
+      cliBindingBySessionId: { 'chat-1': { ...state.cliBindingBySessionId['chat-1'], running: false, lifecycleState: 'stopped' } },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: true, processing: true, lifecycleState: 'waitingPermission' } },
+    })))
+    expectStatus('Permission', 'var(--yellow)')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the selected real agent outside the draft and sends multiline text without the prefix', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const setSessionUamAgent = vi.fn((id: string, agentId: string) => {
+      useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, uamAgentId: agentId } : session) }))
+      return Promise.resolve(true)
+    })
+    useAppStore.setState((state) => ({
+      sendAcpPrompt,
+      setSessionUamAgent,
+      uamAgentsBySessionId: { 'chat-1': [...state.uamAgentsBySessionId['chat-1'], { id: 'custom-accessibility-reviewer', description: 'Real workspace agent', builtIn: false }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const render = () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    act(render)
+    const textarea = host.querySelector('textarea')!
+    const prefix = () => host.querySelector<HTMLButtonElement>('.uam-composer-agent button')!
+    expect(prefix().textContent).toBe('Build')
+    expect(host.querySelector('.uam-composer-agent')?.textContent).toBe('Build')
+    expect(prefix().closest('.uam-composer-input-row')).toBe(textarea.parentElement)
+    const agent = host.querySelector<HTMLElement>('.uam-composer-agent')!
+    for (const scrollTop of [12, 60, 0]) {
+      textarea.scrollTop = scrollTop
+      textarea.dispatchEvent(new Event('scroll'))
+      expect(agent.style.transform).toBe(`translateY(${-scrollTop}px)`)
+    }
+
+    expect(host.querySelector('.uam-composer-agent')?.nextElementSibling).toBe(textarea)
+    expect(host.querySelector('.uam-composer-agent-separator')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Options"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Inspect this file\nthen report findings')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => prefix().click())
+    expect(setSessionUamAgent).not.toHaveBeenCalled()
+    const agentChoice = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Custom Accessibility Reviewer'))!
+    await act(async () => { agentChoice.click(); await Promise.resolve() })
+    act(render)
+    expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'custom-accessibility-reviewer')
+    expect(prefix().textContent).toBe('Custom Accessibility Reviewer')
+    expect(prefix().title).toBe('UAM agent: Custom Accessibility Reviewer')
+    expect(textarea.value).toBe('Inspect this file\nthen report findings')
+    const shiftEnter = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => textarea.dispatchEvent(shiftEnter))
+    expect(shiftEnter.defaultPrevented).toBe(false)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Inspect this file\nthen report findings', [])
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens short permission, memory and reasoning chips without toggling and respects a new runtime lock', () => {
+    const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
+    const setSessionMemoryLevel = vi.fn(() => Promise.resolve(true))
+    const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli', modelId: 'gpt-5.4', reasoningEffort: 'high', memoryLevel: 'balanced' as const, commandSafetyTier: 'off' as const })),
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'codex-cli', protocolKind: 'codex-app-server', currentModelId: 'gpt-5.4', availableModels: [{ id: 'gpt-5.4', name: 'GPT-5.4', description: '', supportedReasoningEfforts: ['low', 'high'] }], processing: false, lifecycleState: 'ready', pendingPermission: null } },
+      setSessionCodexOptions, setSessionMemoryLevel, setSessionCommandSafetyTier,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    for (const [label, value] of [['Permissions', 'Default'], ['Memory', 'Balanced'], ['Reasoning', 'High']]) {
+      const button = host.querySelector<HTMLButtonElement>(`.uam-composer-status-chips [aria-label="${label}"]`)!
+      expect(button.textContent).toContain(value)
+      act(() => button.click())
+      const menu = document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)!
+      expect(menu).toBeTruthy()
+      expect(setSessionCodexOptions).not.toHaveBeenCalled()
+      expect(setSessionMemoryLevel).not.toHaveBeenCalled()
+      expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
+      if (label === 'Memory') expect(menu.textContent).toContain('Use default')
+      act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    }
+    act(() => host.querySelector<HTMLButtonElement>('.uam-composer-status-chips [aria-label="Reasoning"]')!.click())
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true } } })))
+    const low = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Reasoning"] [role="option"]')).find((option) => option.textContent?.startsWith('Low'))!
+    act(() => low.click())
+    expect(setSessionCodexOptions).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLButtonElement>('.uam-composer-status-chips [aria-label="Reasoning"]')?.disabled).toBe(true)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('attributes historical messages from recorded provider, model and time', () => {
+    const historical = { ...useAppStore.getState().messages['chat-1'][1], providerId: 'codex-cli', modelId: 'historical-model' }
+    const time = historical.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    expect(reviewAssistantLabel('Codex', historical)).toBe(`Codex · historical-model · ${time}`)
+    expect(reviewAssistantLabel('Codex', { ...historical, modelId: '', createdAt: new Date(NaN) })).toBe('Codex')
+    const prompt = useAppStore.getState().messages['chat-1'][0]
+    useAppStore.setState({ messages: { 'chat-1': [prompt, historical] }, acpBindingBySessionId: {} })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('article.conversation-turn--assistant')?.getAttribute('aria-label')).toBe(`Codex · historical-model · ${time}`)
+    expect(host.querySelector('time.conversation-turn-start')?.textContent).toBe(`Codex · historical-model · ${prompt.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`)
+    expect(host.querySelector('article.conversation-turn--assistant footer')?.textContent).not.toContain('historical-model')
+    expect(host.querySelector('article.conversation-turn--assistant button[aria-label="Copy message"]')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('builds the agent shortcut cycle from ordered selectable favorites only', () => {
     const agents = [
       { id: 'build', description: '', builtIn: true },
@@ -200,6 +504,31 @@ describe('ChatView', () => {
     expect(exactShortcut.defaultPrevented).toBe(true)
     expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'reviewer')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not submit Enter while an IME composition is active', () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '未確定')
+    act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+
+    const composingEnter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => textarea.dispatchEvent(composingEnter))
+
+    expect(composingEnter.defaultPrevented).toBe(false)
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })
@@ -340,6 +669,61 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('debounces composer draft storage while typing', () => {
+    vi.useFakeTimers()
+    const setItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem,
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+
+    for (const value of ['a', 'ab', 'abc']) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+    }
+
+    expect(setItem).not.toHaveBeenCalled()
+    act(() => window.dispatchEvent(new Event('pagehide')))
+    expect(setItem).toHaveBeenCalledTimes(1)
+    setItem.mockClear()
+    act(() => vi.advanceTimersByTime(250))
+    expect(setItem).toHaveBeenCalledTimes(1)
+
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('does not rewrite a composer draft after its chat is deleted', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'discard me')
+    act(() => textarea.dispatchEvent(new Event('input', { bubbles: true })))
+
+    await act(async () => { await useAppStore.getState().deleteSession('chat-1') })
+    act(() => root.unmount())
+
+    expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+    host.remove()
+  })
+
   it('recomputes exact isolated-chat changes after renderer state is lost and reports diff failures', async () => {
     const comparisonRef = 'b'.repeat(40)
     const rangeStatus = {
@@ -428,7 +812,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('offers a jump to the latest message only while scrolled away from the bottom', () => {
+  it('offers a jump to the latest message only while scrolled away from the bottom', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -447,7 +831,10 @@ describe('ChatView', () => {
       scrollTop: { configurable: true, writable: true, value: 100 },
     })
 
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     const jumpButton = host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null
     expect(jumpButton).not.toBeNull()
     expect(transcript.classList.contains('relative')).toBe(true)
@@ -455,11 +842,17 @@ describe('ChatView', () => {
     expect(jumpButton?.parentElement?.classList.contains('z-10')).toBe(true)
 
     transcript.scrollTop = 800
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
 
     transcript.scrollTop = 100
-    act(() => transcript.dispatchEvent(new Event('scroll', { bubbles: true })))
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
     act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
@@ -502,10 +895,12 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('uses the composer action as Stop while the runtime is processing', async () => {
+  it('uses the composer action as Cancel turn while the runtime is processing', async () => {
+    const cancelAcpTurn = vi.fn(() => Promise.resolve(true))
     const stopAcpSession = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       stopAcpSession,
+      cancelAcpTurn,
       sessions: state.sessions.map((session) => ({ ...session, commandSafetyTier: 'off' as const })),
     }))
 
@@ -517,23 +912,24 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Stop runtime') as HTMLButtonElement
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.title === 'Cancel turn') as HTMLButtonElement
     expect(stopButton).toBeTruthy()
     expect(host.querySelector('[data-mode-chip="Permissions: Default"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Permissions: Default"]')).toBeNull()
     expect(host.querySelector('.uam-composer-toolbar .uam-composer-status-chips [data-mode-chip="Permissions: Default"]')).toBeTruthy()
     expect(host.querySelector('.uam-composer-surface')).toBeTruthy()
-    expect(host.querySelector('[data-mode-chip="Permissions: Default"] .uam-mode-chip__label--compact')?.textContent).toBe('Default')
+    expect(host.querySelector('[data-mode-chip="Permissions: Default"] button')?.textContent).toBe('Default')
     expect(host.querySelector('[aria-label="Chat settings"]')).toBeNull()
     expect(stopButton.classList.contains('shrink-0')).toBe(true)
-    expect(host.textContent).not.toContain('Working ')
+    expect(host.textContent).toContain('Working ')
 
     await act(async () => {
       stopButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
     })
 
-    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+    expect(cancelAcpTurn).toHaveBeenCalledWith('chat-1')
+    expect(stopAcpSession).not.toHaveBeenCalled()
 
     act(() => {
       root.unmount()
@@ -541,8 +937,10 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('shows one quiet startup indicator until the first turn event arrives', async () => {
+  it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
+    vi.useFakeTimers()
     useAppStore.setState((state) => ({
+      expandWorkTraces: true,
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -560,7 +958,11 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     expect(host.querySelectorAll('[data-testid="turn-starting"]')).toHaveLength(1)
-    expect(host.querySelector('[data-testid="turn-starting"]')?.textContent).toContain('Starting')
+    expect(host.querySelector('[data-testid="turn-starting"]')?.textContent).toContain('Working 0s')
+    expect(host.querySelector('[data-testid="turn-starting"] [aria-label="Collapse work trace"]')).toBeNull()
+    expect(host.querySelectorAll('[aria-label="Processing"]')).toHaveLength(0)
+    act(() => vi.advanceTimersByTime(2000))
+    expect(host.querySelector('[data-testid="turn-starting"]')?.textContent).toContain('Working 2s')
 
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -568,7 +970,8 @@ describe('ChatView', () => {
           ...state.acpBindingBySessionId,
           'chat-1': {
             ...state.acpBindingBySessionId['chat-1'],
-            turnEvents: [{ type: 'assistant_text', text: 'First token' }],
+            toolCalls: [{ id: 'first-tool', title: 'Inspect workspace', kind: 'read', status: 'running', content: '' }],
+            turnEvents: [{ type: 'assistant_text', text: 'First token' }, { type: 'thought', text: 'Checking the files' }, { type: 'tool_call', toolCallId: 'first-tool' }],
           },
         },
       }))
@@ -576,13 +979,34 @@ describe('ChatView', () => {
     })
     expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
     expect(host.textContent).toContain('First token')
-
+    expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+    expect(host.textContent).toContain('Inspect workspace')
+    expect(host.textContent).toContain('Checking the files')
+    expect(host.textContent).toContain('Working 2s')
+    expect(host.querySelectorAll('[data-processing-step="true"]')).toHaveLength(0)
+    expect(host.querySelector('[aria-label="Processing"]')).toBeNull()
+    expect(host.querySelector('time.conversation-turn-start')?.getAttribute('datetime')).toBe('2026-01-01T00:00:00.000Z')
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: {
+      ...state.acpBindingBySessionId,
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false },
+    } })))
+    const completedText = host.querySelector('[data-testid="working-summary"]')?.textContent
+    expect(completedText).toContain('Worked for')
+    act(() => vi.advanceTimersByTime(3000))
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toBe(completedText)
+    expect(host.querySelector('[data-processing-step="true"]')).toBeNull()
     act(() => root.unmount())
+    vi.useRealTimers()
     host.remove()
   })
 
-  it('clears local steering state if a queued steer request does not immediately start a new turn', async () => {
-    const steerQueuedAcpPrompt = vi.fn(async () => true)
+  it.each(['accepted', 'rejected', 'error'] as const)('releases steering controls after a %s request within the same turn', async (outcome) => {
+    let completeSteer!: (ok: boolean) => void
+    let failSteer!: () => void
+    const steerQueuedAcpPrompt = vi.fn(() => new Promise<boolean>((resolve, reject) => {
+      completeSteer = resolve
+      failSteer = () => reject(new Error('Request failed'))
+    }))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -624,10 +1048,14 @@ describe('ChatView', () => {
     expect(steerQueuedAcpPrompt).toHaveBeenCalledWith(sessionId, 0)
     expect(steerButton.disabled).toBe(true)
 
+    act(() => vi.advanceTimersByTime(6000))
+    expect((host.querySelector(steerButtonSelector) as HTMLButtonElement).disabled).toBe(true)
     await act(async () => {
-      vi.advanceTimersByTime(6000)
+      if (outcome === 'error') failSteer()
+      else completeSteer(outcome === 'accepted')
       await Promise.resolve()
     })
+    expect(useAppStore.getState().acpBindingBySessionId[sessionId].turnSerial).toBe(3)
 
     const clearedSteerButton = host.querySelector(steerButtonSelector) as HTMLButtonElement
     expect(clearedSteerButton.disabled).toBe(false)
@@ -841,7 +1269,7 @@ describe('ChatView', () => {
     const revertButton = host.querySelector('button[aria-label="Revert to message in new branch"]')
     expect(editButton).toBeTruthy()
     expect(revertButton).toBeTruthy()
-    expect(editButton?.parentElement?.classList.contains('uam-message-frame__actions')).toBe(true)
+    expect(editButton?.parentElement?.classList.contains('conversation-turn__actions')).toBe(true)
 
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
@@ -857,6 +1285,165 @@ describe('ChatView', () => {
     await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('uses absolute indices for actions on a paged chat', async () => {
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    useAppStore.setState((state) => ({
+      branchFromMessage,
+      historyStartIndexBySessionId: { 'chat-1': 7 },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false,
+          processingStartedAtMs: null, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    await act(async () => host.querySelector('button[aria-label="Revert to message in new branch"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 7, undefined)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    { notSent: true, interrupted: true, expectedRetry: true },
+    { notSent: false, interrupted: true, expectedRetry: true },
+    { notSent: false, interrupted: false, expectedRetry: true },
+  ])('retries a latest user message without substantive output (notSent=$notSent, interrupted=$interrupted)', async ({ notSent, interrupted, expectedRetry }) => {
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    useAppStore.setState((state) => ({
+      retryFailedMessage,
+      branchFromMessage,
+      messages: {
+        ...state.messages,
+        'chat-1': [{ ...state.messages['chat-1'][0], interrupted, acpPromptNotSent: notSent }],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false,
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const actionLabel = expectedRetry ? 'Retry message' : 'Revert to message in new branch'
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)).toBeTruthy()
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)!.click()
+    })
+    if (expectedRetry) {
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+      expect(branchFromMessage).not.toHaveBeenCalled()
+    } else {
+      expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+    }
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    { name: 'delivered empty assistant placeholder', assistant: {}, notSent: false, expectedRetry: true },
+    { name: 'empty assistant placeholder', assistant: {}, notSent: true, expectedRetry: true },
+    { name: 'assistant text', assistant: { content: 'Partial response' }, notSent: true, expectedRetry: false },
+    { name: 'assistant thought', assistant: { thoughts: 'Partial thought' }, notSent: true, expectedRetry: false },
+    { name: 'assistant tool call', assistant: { toolCalls: [{ id: 'tool-1', title: 'Read', kind: 'read', status: 'completed', content: '' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant plan', assistant: { planEntries: [{ content: 'Inspect', priority: 'high', status: 'pending' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant block', assistant: { blocks: [{ type: 'assistant_text' as const, text: 'Partial response' }] }, notSent: true, expectedRetry: false },
+    { name: 'assistant attachment', assistant: { attachments: [{ id: 'attachment-1', name: 'image.png', type: 'image/png', size: 1 }] }, notSent: true, expectedRetry: false },
+  ])('retries in place only when trailing output is empty ($name)', async ({ assistant, notSent, expectedRetry }) => {
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    useAppStore.setState((state) => ({
+      retryFailedMessage,
+      branchFromMessage,
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { ...state.messages['chat-1'][0], interrupted: true, acpPromptNotSent: notSent },
+          {
+            id: 'm-2',
+            sessionId: 'chat-1',
+            role: 'assistant',
+            content: '',
+            createdAt: new Date('2026-01-01T00:00:01.000Z'),
+            ...assistant,
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const actionLabel = expectedRetry ? 'Retry message' : 'Revert to message in new branch'
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)).toBeTruthy()
+    expect(host.textContent).toContain(notSent ? 'Message was not sent' : 'Response interrupted')
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>(`button[aria-label="${actionLabel}"]`)!.click()
+    })
+    if (expectedRetry) {
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+      expect(branchFromMessage).not.toHaveBeenCalled()
+    } else {
+      expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+    }
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('branches an edited message even when its response is empty', async () => {
+    const branchFromMessage = vi.fn(async () => 'branch-1')
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    useAppStore.setState((state) => ({
+      branchFromMessage,
+      retryFailedMessage,
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { ...state.messages['chat-1'][0], interrupted: true, acpPromptNotSent: false },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: '', createdAt: new Date('2026-01-01T00:00:01.000Z') },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const editButton = host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!
+    act(() => editButton.click())
+    const editTextarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Edited prompt')
+      editTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')?.click()
+    })
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt')
+    expect(retryFailedMessage).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })
@@ -922,7 +1509,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('const ok = true')
     expect(host.textContent).not.toContain('Tool call:')
     expect(host.textContent).toContain('Search symbols')
-    expect(host.textContent).toContain('Thinking')
+    expect(host.textContent).toContain('Thoughts')
     expect(host.textContent).toContain('Need to inspect the workspace first.')
     expect(host.textContent).not.toContain('Persisted thought should not duplicate while turn events are active.')
     expect(host.textContent).toContain('After tool.')
@@ -935,20 +1522,20 @@ describe('ChatView', () => {
 
     const streamText = host.textContent ?? ''
     expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Search symbols'))
-    expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Thinking'))
-    expect(streamText.indexOf('Thinking')).toBeLessThan(streamText.indexOf('Search symbols'))
+    expect(streamText.indexOf('Before tool.')).toBeLessThan(streamText.indexOf('Thoughts'))
+    expect(streamText.indexOf('Thoughts')).toBeLessThan(streamText.indexOf('Search symbols'))
     expect(streamText.indexOf('Search symbols')).toBeLessThan(streamText.indexOf('Read file'))
     expect(streamText.indexOf('Read file')).toBeLessThan(streamText.indexOf('After tool.'))
     const thinkingBlock = host.querySelector('[data-testid="thinking-block"]') as HTMLDetailsElement | null
     expect(host.querySelectorAll('[data-testid="thinking-block"]')).toHaveLength(1)
     expect(thinkingBlock?.tagName).toBe('DETAILS')
-    expect(thinkingBlock?.textContent).toContain('Thinking')
+    expect(thinkingBlock?.textContent).toContain('Thoughts')
     expect(thinkingBlock?.textContent).toContain('Need to inspect the workspace first.')
     expect(thinkingBlock?.hasAttribute('open')).toBe(false)
     expect(thinkingBlock?.dataset.active).toBe('false')
     expect(host.querySelector('.uam-tool-row')?.getAttribute('data-active')).toBe('true')
     expect(host.querySelector('.uam-tool-row__kind')?.textContent).toBe('Tool')
-    expect(host.querySelector('.uam-message-frame.is-streaming')).not.toBeNull()
+    expect(host.querySelector('.conversation-turn[data-streaming="true"]')).not.toBeNull()
     expect(host.querySelector('.uam-runtime-status')).toBeNull()
     expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
 
@@ -964,7 +1551,7 @@ describe('ChatView', () => {
       toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(document.body.textContent).toContain('Searching workspace symbols')
-    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('fixed')
+    expect(document.body.querySelector('[role="dialog"]')?.parentElement?.className).toContain('tool-details-backdrop')
     expect(document.body.querySelector('[role="dialog"]')?.parentElement?.parentElement).toBe(document.body)
 
     const closeToolButton = document.body.querySelector('button[aria-label="Close tool details"]')
@@ -1218,35 +1805,22 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Codex needs input')
-    expect(host.textContent).toContain('Which scope?')
-    expect(host.textContent).toContain('Focused')
-    expect(host.textContent).toContain('Any extra detail?')
-
-    const focusedButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Focused'))
-    const noteInput = host.querySelector('input[aria-label="Any extra detail?"]') as HTMLInputElement | null
-    const submitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
-    expect(focusedButton).toBeTruthy()
+    expect(host.textContent).toContain('Answer questions')
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Which scope?')
+    expect(dialog.textContent).toContain('Focused')
+    expect(dialog.textContent).not.toContain('Any extra detail?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    act(() => Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Next')!.click())
+    const noteInput = dialog.querySelector<HTMLInputElement>('input[aria-label="Any extra detail?"]')!
     expect(noteInput).toBeTruthy()
-    expect(submitButton).toBeTruthy()
-
-    await act(async () => {
-      focusedButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      if (noteInput) {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-        setter?.call(noteInput, 'Extra context')
-        noteInput.dispatchEvent(new Event('input', { bubbles: true }))
-      }
-      await Promise.resolve()
+    act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(noteInput, 'Extra context')
+      noteInput.dispatchEvent(new Event('input', { bubbles: true }))
     })
-
-    const enabledSubmitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Submit')
-    expect((enabledSubmitButton as HTMLButtonElement | undefined)?.disabled).toBe(false)
-
-    await act(async () => {
-      enabledSubmitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
+    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
+    expect(submitButton.disabled).toBe(false)
+    await act(async () => { submitButton.click(); await Promise.resolve() })
 
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', '11', {
       scope: ['Focused'],
@@ -1256,6 +1830,43 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows MCP questions and goal approval in the chat and returns the chosen answer', async () => {
+    const resolveAcpUserInput = vi.fn(() => Promise.resolve(true))
+    const pendingInput = (requestId: string, id: string, question: string, options: string[], isOther: boolean) => ({
+      requestId, itemId: '', status: 'pending', questions: [{ id, header: id === 'goalCreate' ? 'Goal' : 'Question',
+        question, isOther, isSecret: false, options: options.map((label) => ({ label, description: '' })) }],
+    })
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'waitingUserInput',
+          turnEvents: [], pendingUserInput: pendingInput('uam-control:question-1', 'userQuestion',
+            'Which browser should I use?', ['Firefox', 'Safari'], true) },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    let dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Which browser should I use?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:question-1', { userQuestion: ['Firefox'] })
+
+    act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId,
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingUserInput: pendingInput(
+        'uam-control:goal-1', 'goalCreate', 'Allow OpenCode to create this goal?', ['Allow', 'Deny'], false) },
+    } })))
+    dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(dialog.textContent).toContain('Allow OpenCode to create this goal?')
+    act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:goal-1', { goalCreate: ['Allow'] })
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -1289,33 +1900,26 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const answerButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Focused'))
-    act(() => answerButton?.click())
-    const submitButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Submit')
-    expect(submitButton?.disabled).toBe(false)
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    const answerButton = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!
+    act(() => answerButton.click())
+    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
+    expect(submitButton.disabled).toBe(false)
 
-    act(() => {
-      submitButton?.click()
-      submitButton?.click()
-    })
+    act(() => { submitButton.click(); submitButton.click() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
-    expect(answerButton?.disabled).toBe(true)
-    expect(submitButton?.disabled).toBe(true)
+    expect(answerButton.closest('fieldset')?.disabled).toBe(true)
+    expect(submitButton.disabled).toBe(true)
 
-    await act(async () => {
-      finishResponse?.(false)
-      await Promise.resolve()
-    })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
-    expect(submitButton?.disabled).toBe(false)
+    await act(async () => { finishResponse?.(false); await Promise.resolve() })
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
+    expect(submitButton.disabled).toBe(false)
 
     resolveAcpUserInput.mockResolvedValueOnce(true)
-    await act(async () => {
-      submitButton?.click()
-      await Promise.resolve()
-    })
+    await act(async () => { submitButton.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
-    expect(submitButton?.disabled).toBe(true)
+    expect(document.body.querySelector('[role="dialog"].qr-dialog')).toBeNull()
+    expect(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Answers submitted')?.disabled).toBe(true)
 
     act(() => root.unmount())
     host.remove()
@@ -1395,19 +1999,127 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shares one live work section across native steering and keeps its collapse choice after completion', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    useAppStore.setState((state) => ({
+      workingDisplayMode: 'compact', expandWorkTraces: true,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'original-user', sessionId: 'chat-1', role: 'user', content: 'Review recovery', createdAt },
+        { id: 'before-steer', sessionId: 'chat-1', role: 'assistant', content: 'Before steering', thoughts: 'Earlier reasoning', createdAt },
+        { id: 'native-steer', sessionId: 'chat-1', role: 'user', content: 'Include SSH', continuesTurn: true, prioritySteer: true, createdAt },
+        { id: 'after-steer', sessionId: 'chat-1', role: 'assistant', content: 'After steering', thoughts: 'Later reasoning', createdAt },
+      ] },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], processing: true, turnSerial: 4,
+        turnUserMessageIndex: 0, turnAssistantMessageIndex: 3,
+        turnEvents: [{ type: 'assistant_text', text: 'After steering' }, { type: 'thought', text: 'Later reasoning' }],
+      } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelectorAll('time.conversation-turn-start')).toHaveLength(1)
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Working ')
+    expect(host.querySelectorAll('article.conversation-turn--user')).toHaveLength(2)
+    expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+    expect(host.textContent).toContain('Earlier reasoning')
+    expect(host.textContent).toContain('Later reasoning')
+    expect(host.textContent).toContain('Before steering')
+    expect(host.textContent).toContain('After steering')
+    expect(host.textContent).toContain('Include SSH')
+    act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: {},
+      messages: { ...state.messages, 'chat-1': [...state.messages['chat-1'],
+        { id: 'next-user', sessionId: 'chat-1', role: 'user', content: 'New request', prioritySteer: true, createdAt },
+        { id: 'next-answer', sessionId: 'chat-1', role: 'assistant', content: 'Next answer', thoughts: 'New section reasoning', createdAt },
+      ] },
+    })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+    expect(host.querySelectorAll('time.conversation-turn-start')).toHaveLength(2)
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(2)
+    expect(host.textContent).not.toContain('Earlier reasoning')
+    expect(host.textContent).not.toContain('Later reasoning')
+    expect(host.textContent).not.toContain('Before steering')
+    expect(host.textContent).not.toContain('Include SSH')
+    expect(host.textContent).toContain('New section reasoning')
+    expect(host.textContent).toContain('After steering')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand work trace"]')!.click())
+    expect(host.textContent).toContain('Earlier reasoning')
+    expect(host.textContent).toContain('Later reasoning')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps work sections expanded when section collapsing is disabled', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    useAppStore.setState((state) => ({
+      collapsibleWorkSections: false,
+      expandWorkTraces: false,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'user', sessionId: 'chat-1', role: 'user', content: 'Original request', createdAt },
+        { id: 'first-answer', sessionId: 'chat-1', role: 'assistant', content: 'Earlier answer', createdAt },
+        { id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Steer request', continuesTurn: true, prioritySteer: true, createdAt },
+        { id: 'last-answer', sessionId: 'chat-1', role: 'assistant', content: 'Final answer', createdAt },
+      ] },
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+    expect(host.textContent).toContain('Earlier answer')
+    expect(host.textContent).toContain('Steer request')
+    expect(host.textContent).toContain('Final answer')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps steering and earlier output visible while a turn is still running', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    useAppStore.setState((state) => ({
+      expandWorkTraces: false,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'user', sessionId: 'chat-1', role: 'user', content: 'Original request', createdAt },
+        { id: 'first-answer', sessionId: 'chat-1', role: 'assistant', content: 'Earlier answer', createdAt },
+        { id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Steer request', continuesTurn: true, prioritySteer: true, createdAt },
+        { id: 'last-answer', sessionId: 'chat-1', role: 'assistant', content: 'Final answer', createdAt },
+      ] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 3 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Earlier answer')
+    expect(host.textContent).toContain('Steer request')
+    act(() => useAppStore.setState({ acpBindingBySessionId: {} }))
+    expect(host.textContent).not.toContain('Earlier answer')
+    expect(host.textContent).not.toContain('Steer request')
+    expect(host.textContent).toContain('Final answer')
+    act(() => root.unmount())
+    host.remove()
+  })
+
 	it('keeps a steer visibly tied to the response it interrupted', () => {
 		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
 			messages: {
 				...state.messages,
 				'chat-1': [
 					{
 						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
-						content: 'I was changing the remote helper.', interrupted: true,
+						content: 'I was changing the remote helper.', thoughts: 'Checking the helper.', interrupted: true,
 						createdAt: new Date('2026-01-01T00:00:01.000Z'),
 					},
 					{
 						id: 'steer', sessionId: 'chat-1', role: 'user',
 						content: 'Keep the work local.', prioritySteer: true,
+						attachments: [{ id: 'steer-file', name: 'scope.txt', type: 'file', size: 5, path: '/tmp/scope.txt' }],
 						createdAt: new Date('2026-01-01T00:00:02.000Z'),
 					},
 				],
@@ -1420,11 +2132,104 @@ describe('ChatView', () => {
 		const root = createRoot(host)
 		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
+		expect(host.textContent).toContain('Response interrupted')
+		const steer = host.querySelector('article.conversation-turn--user')
+		expect(steer?.textContent).toContain('Keep the work local.')
+		expect(steer?.textContent).toContain('/tmp/scope.txt')
+		expect(steer?.querySelector('[aria-label="Copy message"]')).toBeTruthy()
+		expect(steer?.querySelector('[aria-label="Edit message in new branch"]')).toBeTruthy()
 		const text = host.textContent ?? ''
-		expect(text).toContain('Response interrupted')
-		expect(host.querySelector('[role="separator"][aria-label="Steered during this response"]')).toBeTruthy()
-		expect(text.indexOf('Response interrupted')).toBeLessThan(text.indexOf('Steered during this response'))
-		expect(text.indexOf('Steered during this response')).toBeLessThan(text.indexOf('Keep the work local.'))
+		expect(text.indexOf('I was changing the remote helper.')).toBeLessThan(text.indexOf('Response interrupted'))
+		expect(text.indexOf('Response interrupted')).toBeLessThan(text.indexOf('Keep the work local.'))
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
+	it('keeps a live tool-first response visible after its normal steer message', () => {
+		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'interrupted-answer', sessionId: 'chat-1', role: 'assistant',
+						content: 'Earlier response.', thoughts: 'Earlier work.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'steer', sessionId: 'chat-1', role: 'user', content: 'Keep it local.', prioritySteer: true,
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+					{
+						id: 'live-answer', sessionId: 'chat-1', role: 'assistant', content: '', isStreaming: true,
+						createdAt: new Date('2026-01-01T00:00:03.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {
+				...state.acpBindingBySessionId,
+				'chat-1': {
+					...state.acpBindingBySessionId['chat-1'],
+					processing: true,
+					pendingPermission: null,
+					turnEvents: [{ type: 'thought', text: 'Current live reasoning.' }],
+					turnUserMessageIndex: 1,
+					turnAssistantMessageIndex: 2,
+					turnSerial: 2,
+				},
+			},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+		expect(Array.from(host.querySelectorAll('article')).filter((article) =>
+			article.textContent?.includes('Current live reasoning.')
+		)).toHaveLength(1)
+		const steer = host.querySelector('article.conversation-turn--user')
+		expect(steer?.textContent).toContain('Keep it local.')
+		expect(host.textContent?.match(/Keep it local\./g)).toHaveLength(1)
+		expect(host.textContent!.indexOf('Response interrupted')).toBeLessThan(host.textContent!.indexOf('Keep it local.'))
+		expect(host.textContent!.indexOf('Keep it local.')).toBeLessThan(host.textContent!.indexOf('Current live reasoning.'))
+
+		act(() => root.unmount())
+		host.remove()
+	})
+
+	it('renders an attachment-only steer as a normal user message', () => {
+		useAppStore.setState((state) => ({
+			workingDisplayMode: 'compact',
+			messages: {
+				...state.messages,
+				'chat-1': [
+					{
+						id: 'attachment-host', sessionId: 'chat-1', role: 'assistant',
+						content: 'Interrupted response.', thoughts: 'Earlier work.', interrupted: true,
+						createdAt: new Date('2026-01-01T00:00:01.000Z'),
+					},
+					{
+						id: 'attachment-steer', sessionId: 'chat-1', role: 'user', content: '',
+						prioritySteer: true,
+						attachments: [{ id: 'scope', name: 'scope.txt', type: 'file', size: 1, path: '/tmp/scope.txt' }],
+						createdAt: new Date('2026-01-01T00:00:02.000Z'),
+					},
+				],
+			},
+			acpBindingBySessionId: {},
+		}))
+
+		const host = document.createElement('div')
+		document.body.appendChild(host)
+		const root = createRoot(host)
+		act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+		const steer = host.querySelector('article.conversation-turn--user')
+		expect(steer?.textContent).toContain('/tmp/scope.txt')
+		expect(steer?.querySelector('[aria-label="Edit message in new branch"]')).toBeTruthy()
+		expect(host.querySelectorAll('article.conversation-turn--user')).toHaveLength(1)
+		expect(host.textContent!.indexOf('Response interrupted')).toBeLessThan(host.textContent!.indexOf('/tmp/scope.txt'))
 
 		act(() => root.unmount())
 		host.remove()
@@ -1487,7 +2292,7 @@ describe('ChatView', () => {
     if (optionsButton.getAttribute('aria-expanded') === 'true') {
       act(() => optionsButton.click())
     }
-    expect(document.body.querySelector('button[aria-label="Permissions"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Permissions"]')).toBeTruthy()
     expect(document.body.querySelector('button[aria-label="Auto Decide safety"]')).toBeNull()
     expect(setSessionCommandSafetyTier).toHaveBeenCalledTimes(1)
 
@@ -1631,6 +2436,50 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('toggles Computer Use from slash and composer options without opening its settings modal', async () => {
+    const setSessionComputerUseEnabled = vi.fn(() => Promise.resolve({ ok: true as const }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, computerUseEffectiveBackend: 'provider' as const })),
+      setSessionComputerUseEnabled,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/computer')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(setSessionComputerUseEnabled).toHaveBeenCalledWith('chat-1', true)
+    expect(document.body.querySelector('[role="dialog"][aria-label="Computer use"]')).toBeNull()
+
+    openComposerOptions(host)
+    const computerOption = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes('Computer use')) as HTMLButtonElement
+    expect(computerOption).toBeTruthy()
+    await act(async () => { computerOption.click(); await Promise.resolve() })
+    expect(setSessionComputerUseEnabled).toHaveBeenCalledWith('chat-1', true)
+    expect(document.body.querySelector('[role="dialog"][aria-label="Computer use"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('labels an enabled Computer Use chat as awaiting target approval until MCP grants one', () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, computerUseEnabled: true, computerUseTargetId: '', computerUse: { enabled: true, state: 'armed', history: [] } })),
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('[data-mode-chip="Computer use: awaiting target approval"]')).toBeTruthy()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('always offers /skills and exposes only favorite collision-safe skill commands', async () => {
     const attachMarkdownStoreEntry = vi.fn()
     useAppStore.setState({
@@ -1749,6 +2598,8 @@ describe('ChatView', () => {
     expect(submenu.textContent).not.toContain('/create-pr')
     expect(submenu.textContent).not.toContain('3aa611dd')
     expect(submenu.textContent).not.toContain('eb8349e5')
+    expect(textarea.getAttribute('aria-controls')?.split(' ')).toContain(submenu.id)
+    expect(submenu.contains(document.getElementById(textarea.getAttribute('aria-activedescendant') ?? ''))).toBe(true)
     act(() => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(attachMarkdownStoreEntry).toHaveBeenCalledWith('chat-1', expect.objectContaining({ id: 'one' }))
     act(() => root.unmount())
@@ -1779,8 +2630,11 @@ describe('ChatView', () => {
     expect(releaseMenu.textContent).toContain('/notes')
     expect(releaseMenu.textContent).toContain('/github')
     const github = releaseMenu.querySelector('[aria-haspopup="menu"]') as HTMLElement
-    act(() => github.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(document.body.querySelector('[aria-label="Release/GitHub skills"]')?.textContent).toContain('/release')
+    act(() => github.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    const githubMenu = document.body.querySelector('[aria-label="Release/GitHub skills"]') as HTMLElement
+    expect(githubMenu.textContent).toContain('/release')
+    expect(githubMenu.contains(document.getElementById(textarea.getAttribute('aria-activedescendant') ?? ''))).toBe(true)
+    expect(githubMenu.querySelector('.is-selected')).toBe(githubMenu.querySelector('[role="menuitem"]'))
     act(() => root.unmount())
     host.remove()
   })
@@ -1817,7 +2671,7 @@ describe('ChatView', () => {
     useAppStore.setState({ isSettingsOpen: false })
   })
 
-  it('keeps Codex reasoning and speed in the + menu and always shows the reasoning effort', async () => {
+  it('opens reasoning and speed choices directly without changing their values', async () => {
     const setSessionCodexOptions = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -1856,8 +2710,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[data-mode-chip="Reasoning: Low"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Reasoning: Low"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Disable Reasoning: Low"]')).toBeNull()
-    expect(host.querySelector('button[aria-label="Disable Speed: Flex"]')).toBeTruthy()
-    openComposerOptions(host)
+    expect(host.querySelector('button[aria-label="Speed"]')).toBeTruthy()
 
     const reasoning = document.body.querySelector('button[aria-label="Reasoning"]') as HTMLButtonElement
     const speed = document.body.querySelector('button[aria-label="Speed"]') as HTMLButtonElement
@@ -2047,10 +2900,10 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[1]} />))
 
     expect(host.querySelector('[aria-label="Chat branches"]')).toBeNull()
-    const branchPoint = host.querySelector('[data-message-kind="user"]')
+    const branchPoint = host.querySelector('.conversation-turn--user')
     const navigation = branchPoint?.querySelector('[aria-label="Message branches"]')
     expect(navigation?.textContent).toContain('2 / 3')
-    expect(navigation?.classList.contains('uam-message-frame__actions')).toBe(true)
+    expect(navigation?.classList.contains('conversation-turn__branches')).toBe(true)
     expect(branchPoint?.querySelector('button[aria-label="Edit message in new branch"]')).toBeTruthy()
     expect(branchPoint?.querySelector('button[aria-label="Revert to message in new branch"]')).toBeTruthy()
     act(() => (navigation?.querySelector('button[aria-label="Previous message branch"]') as HTMLButtonElement).click())
@@ -2370,7 +3223,7 @@ describe('ChatView', () => {
     act(() => {
       modelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/tmp/project')
+	expect(discoverProviderModels).not.toHaveBeenCalled()
 
     expect(document.body.textContent).not.toContain('CLI default')
     expect(document.body.textContent).toContain('Qwen3.6 35B A3B Q4')
@@ -2762,7 +3615,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-	expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
+	expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -2821,7 +3674,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeTruthy()
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -2838,7 +3691,7 @@ describe('ChatView', () => {
       }))
     })
 
-    expect(host.querySelector('button[aria-label="Disable Provider Plan"]')).toBeNull()
+    expect(host.querySelector('[data-mode-chip="Provider Plan"] button')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -2896,9 +3749,12 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const yoloChip = host.querySelector('button[aria-label="Disable YOLO"]') as HTMLButtonElement
+    const yoloChip = host.querySelector('[data-mode-chip="YOLO"] button') as HTMLButtonElement
     expect(yoloChip).toBeTruthy()
     act(() => yoloChip.click())
+    expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'yolo')
+    const defaultPermission = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Permissions"] [role="option"]')).find((option) => option.textContent?.startsWith('Default'))!
+    act(() => defaultPermission.click())
     expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'off')
     expect(useAppStore.getState().sessions[0]).toMatchObject({ approvalMode: 'plan', reasoningEffort: 'high', serviceTier: 'flex', memoryLevel: 'strict' })
 
@@ -2949,13 +3805,16 @@ describe('ChatView', () => {
     act(() => (host.querySelector('button[aria-label="Dismiss Claude structured mode warning"]') as HTMLButtonElement).click())
     expect(host.textContent).not.toContain('Claude structured mode cannot surface interactive permission')
 
-    const planButton = host.querySelector('button[aria-label="Disable Provider Plan"]') as HTMLButtonElement | null
+    const planButton = host.querySelector('[data-mode-chip="Provider Plan"] button') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
 
     act(() => {
       planButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
+    expect(setSessionApprovalMode).not.toHaveBeenCalled()
+    const defaultMode = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Provider mode"] [role="option"]')).find((option) => option.textContent?.startsWith('Default'))!
+    act(() => defaultMode.click())
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
 
     act(() => {
@@ -3160,7 +4019,7 @@ describe('ChatView', () => {
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(host.textContent).toContain('Goal: next message')
+    expect(host.querySelector('[data-mode-chip="Goal: next message"]')).toBeTruthy()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement | null
     act(() => {
@@ -3187,6 +4046,82 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('refreshes the /goal action when an active goal arrives after mount', async () => {
+    const updateGoalStatus = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState({ updateGoalStatus })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => useAppStore.setState((state) => ({
+      goalsByChatId: {
+        ...state.goalsByChatId,
+        'chat-1': [{
+          id: 'late-goal', chatId: 'chat-1', objective: 'Late goal', status: 'active' as const,
+          tokenBudget: 0, tokensUsed: 0, blockedTurnCount: 0, completedItems: [], remainingItems: [],
+          currentStep: '', createdAt: new Date(), updatedAt: new Date(),
+        }],
+      },
+      activeGoalIdByChatId: { ...state.activeGoalIdByChatId, 'chat-1': 'late-goal' },
+    })))
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/goal')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(updateGoalStatus).toHaveBeenCalledWith('chat-1', 'late-goal', 'paused')
+    expect(host.textContent).not.toContain('Goal: next message')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('blocks banner mutations while a new goal is being created', () => {
+    const setGoal = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>(() => {}))
+    const removeGoal = vi.fn(() => Promise.resolve({ ok: true }))
+    useAppStore.setState((state) => ({
+      setGoal,
+      removeGoal,
+      goalsByChatId: {
+        'chat-1': [{
+          id: 'goal-existing', chatId: 'chat-1', objective: 'Existing goal', status: 'active' as const,
+          tokenBudget: 0, tokensUsed: 0, blockedTurnCount: 0, completedItems: [], remainingItems: [],
+          currentStep: '', createdAt: new Date(), updatedAt: new Date(),
+        }],
+      },
+      activeGoalIdByChatId: { 'chat-1': 'goal-existing' },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const textarea = host.querySelector('textarea')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/goal Replacement goal')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(setGoal).toHaveBeenCalledTimes(1)
+
+    act(() => (host.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement).click())
+    const deleteGoal = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Delete goal') as HTMLButtonElement
+    expect(deleteGoal.disabled).toBe(true)
+    act(() => deleteGoal.click())
+    expect(removeGoal).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -3231,6 +4166,37 @@ describe('ChatView', () => {
 	  host.remove()
 	})
 
+	it('keeps provider goal input usable when creation rejects', async () => {
+	  const setGoal = vi.fn(() => Promise.reject(new Error('bridge closed')))
+	  useAppStore.setState((state) => ({
+		setGoal,
+		providerChatDefaults: { ...state.providerChatDefaults, 'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
+		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
+	  }))
+
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+	  const textarea = host.querySelector('textarea')!
+	  act(() => {
+		Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/ralph Keep this draft')
+		textarea.dispatchEvent(new Event('input', { bubbles: true }))
+	  })
+	  await act(async () => {
+		host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+		await Promise.resolve()
+	  })
+
+	  expect(setGoal).toHaveBeenCalledTimes(1)
+	  expect(host.textContent).toContain('Failed to create goal.')
+	  expect(textarea.value).toBe('/ralph Keep this draft')
+	  expect(textarea.disabled).toBe(false)
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
 	it('submits a multi-line /goal command', async () => {
 	  const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
 	  const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
@@ -3259,7 +4225,8 @@ describe('ChatView', () => {
 
   it('renders active goal pause/delete controls and paused goal resume control', async () => {
     const updateGoalStatus = vi.fn(() => Promise.resolve({ ok: true }))
-    const removeGoal = vi.fn(() => Promise.resolve({ ok: true }))
+    let finishRemove: ((result: { ok: boolean; error?: string }) => void) | undefined
+    const removeGoal = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finishRemove = resolve }))
     let finishResume: ((result: { ok: boolean; error?: string }) => void) | undefined
     const resumeGoal = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((resolve) => { finishResume = resolve }))
     const goal = {
@@ -3317,6 +4284,7 @@ describe('ChatView', () => {
       pauseButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(updateGoalStatus).toHaveBeenCalledWith('chat-1', 'goal-1', 'paused')
+    await act(async () => { await Promise.resolve() })
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -3345,6 +4313,16 @@ describe('ChatView', () => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(removeGoal).toHaveBeenCalledWith('chat-1', 'goal-1')
+    openGoalMenu()
+    act(() => {
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(removeGoal).toHaveBeenCalledTimes(1)
+    openGoalMenu()
+    await act(async () => {
+      finishRemove?.({ ok: true })
+      await Promise.resolve()
+    })
 
     act(() => {
       useAppStore.setState((state) => ({
@@ -3363,7 +4341,12 @@ describe('ChatView', () => {
     })
     openGoalMenu()
     expect(menuItem('Resume goal')).toBeUndefined()
-    expect(menuItem('Delete goal')).toBeUndefined()
+    expect(menuItem('Delete goal')).toBeTruthy()
+
+    act(() => {
+      menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(removeGoal).toHaveBeenLastCalledWith('chat-1', 'goal-1')
 
     openComposerOptions(host)
     const newGoalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
@@ -3372,7 +4355,7 @@ describe('ChatView', () => {
       newGoalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(resumeGoal).toHaveBeenCalledTimes(1)
-    expect(host.textContent).toContain('Goal: next message')
+    expect(host.querySelector('[data-mode-chip="Goal: next message"]')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -3427,13 +4410,13 @@ describe('ChatView', () => {
     expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'balanced')
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('button[aria-label="Disable Memory Balanced"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory Balanced"] button')).toBeTruthy()
 
     act(() => { (document.body.querySelector('button[aria-label="Memory"]') as HTMLButtonElement).click() })
     const strict = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Strict')) as HTMLButtonElement
     act(() => strict.click())
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('button[aria-label="Disable Memory Strict"]')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory Strict"] button')).toBeTruthy()
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
@@ -3487,7 +4470,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Thinking')
+    expect(host.textContent).toContain('Thoughts')
     expect(host.textContent).toContain('Persisted reasoning')
     expect(host.textContent).toContain('with detail.')
     expect(host.textContent).toContain('Before tool. After tool.')
@@ -3646,6 +4629,54 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each(['live', 'saved'])('loads deferred output for a %s tool with its source context', async (source) => {
+    const previousCefQuery = window.cefQuery
+    window.cefQuery = ({ request, onSuccess }) => {
+      expect(JSON.parse(request)).toMatchObject({
+        action: 'getToolCallContent',
+        payload: { chatId: 'chat-1', toolCallId: 'tool-1', offset: source === 'live' ? Number.MAX_SAFE_INTEGER : 0, ...(source === 'saved' ? { messageIndex: 8 } : {}) },
+      })
+      onSuccess(JSON.stringify({ content: 'Active output page', offset: 0, nextOffset: 18, previousOffset: 0, lastOffset: 0, totalBytes: 18, hasPrevious: false, hasMore: false }))
+    }
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          toolCalls: state.acpBindingBySessionId['chat-1'].toolCalls.map((tool) =>
+            tool.id === 'tool-1' ? { ...tool, content: '', contentDeferred: true } : tool
+          ),
+        },
+      },
+    }))
+
+    if (source === 'saved') useAppStore.setState((state) => ({
+      historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, 'chat-1': 7 },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready',
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [],
+      } },
+      messages: { ...state.messages, 'chat-1': state.messages['chat-1'].map((message, index) => index === 1 ? {
+        ...message, toolCalls: [{ id: 'tool-1', title: 'Saved result', kind: 'read', status: 'completed', content: '', contentDeferred: true }],
+      } : message) },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const toolButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes(source === 'live' ? 'Search symbols' : 'Saved result'))
+    await act(async () => {
+      toolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain('Active output page')
+
+    act(() => root.unmount())
+    host.remove()
+    window.cefQuery = previousCefQuery
+  })
+
   it('renders persisted ordered message blocks instead of regrouping assistant fields', () => {
     useAppStore.setState((state) => {
       const currentMessages = state.messages['chat-1'] ?? []
@@ -3775,9 +4806,8 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    const goalReviewFrame = host.querySelector('[data-message-kind="goal-review"]')
+    const goalReviewFrame = host.querySelector('article[aria-label="Goal Reviewer"]')
     expect(goalReviewFrame).not.toBeNull()
-    expect(goalReviewFrame?.textContent).toContain('Goal Reviewer')
     expect(goalReviewFrame?.querySelector('[data-testid="goal-review-block"]')).not.toBeNull()
     expect(goalReviewFrame?.textContent).not.toContain('{"decision"')
     expect(goalReviewFrame?.textContent).not.toContain('Grouped fallback content should not render.')
@@ -3860,7 +4890,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Thinking')
+    expect(host.textContent).toContain('Thoughts')
     expect(host.textContent).toContain('Reasoning')
     expect(host.textContent).toContain('Inspecting files.')
     expect(host.textContent).toContain('Summary')
@@ -4129,14 +5159,14 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form')
-      expect(form?.textContent).toContain('Gemini ACP error')
-      expect(form?.textContent).not.toContain('OpenCode ACP error')
+      expect(form?.textContent).toContain('Gemini ACP:')
+      expect(form?.textContent).not.toContain('OpenCode ACP:')
       expect(form?.textContent).toContain('Internal ACP failure')
-      expect(form?.textContent).toContain('Diagnostics')
-      expect(form?.textContent).toContain('Exit code: 137')
-      expect(form?.textContent).toContain('jsonrpc_error')
-      expect(form?.textContent).toContain('stderr stack trace')
-      const copyErrorButton = Array.from(form?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Copy error')
+      expect(form?.textContent).not.toContain('Diagnostics')
+      expect(form?.textContent).not.toContain('Exit code: 137')
+      expect(form?.textContent).not.toContain('jsonrpc_error')
+      expect(form?.textContent).not.toContain('stderr stack trace')
+      const copyErrorButton = form?.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')
       expect(copyErrorButton).toBeTruthy()
       await act(async () => {
         copyErrorButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -4145,8 +5175,11 @@ describe('ChatView', () => {
       expect(writeText).toHaveBeenCalled()
       expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
       expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
+      expect(writeText.mock.calls[0][0]).toContain('Exit code: 137')
+      expect(writeText.mock.calls[0][0]).toContain('jsonrpc_error')
+      expect(writeText.mock.calls[0][0]).toContain('error.data={"cause":"boom"}')
       const text = host.textContent ?? ''
-      expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP error'))
+      expect(text.indexOf('After tool.')).toBeLessThan(text.indexOf('Gemini ACP:'))
       const dismissErrorButton = form?.querySelector<HTMLButtonElement>('button[aria-label="Dismiss composer error"]')
       expect(dismissErrorButton).toBeTruthy()
       act(() => dismissErrorButton?.click())
@@ -4172,10 +5205,9 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('offers provider check, settings, and terminal recovery for structured runtime failures', async () => {
+  it('keeps runtime recovery compact and dismisses only its visible error', async () => {
     const refreshCliProviderVersion = vi.fn().mockResolvedValue(true)
     const setSettingsOpen = vi.fn()
-    const openTerminalFallback = vi.fn()
     useAppStore.setState((state) => ({
       refreshCliProviderVersion,
       setSettingsOpen,
@@ -4184,14 +5216,37 @@ describe('ChatView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} onOpenTerminalFallback={openTerminalFallback} />))
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    await act(async () => { (host.querySelector('button[aria-label="Check provider CLI"]') as HTMLButtonElement).click(); await Promise.resolve() })
-    act(() => (host.querySelector('button[aria-label="Open CLI settings"]') as HTMLButtonElement).click())
-    await act(async () => { (host.querySelector('button[aria-label="Open fallback terminal"]') as HTMLButtonElement).click(); await Promise.resolve() })
-    expect(refreshCliProviderVersion).toHaveBeenCalledWith('gemini-cli')
-    expect(setSettingsOpen).toHaveBeenCalledWith(true)
-    expect(openTerminalFallback).toHaveBeenCalledOnce()
+    const error = host.querySelector('[aria-label="Dismiss composer error"]')!.closest('[role="alert"]') as HTMLElement
+    expect(error.textContent).toContain('Provider failed to launch.')
+    expect(error.getAttribute('style')).toContain('var(--red) 42%')
+    expect(error.getAttribute('style')).toContain('var(--red) 9%')
+    expect(error.querySelectorAll('button')).toHaveLength(2)
+    expect(error.querySelector('[aria-expanded]')).toBeNull()
+    expect(host.querySelector('[aria-label="Check provider CLI"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Open CLI settings"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Open fallback terminal"]')).toBeNull()
+    const before = useAppStore.getState()
+    act(() => (error.querySelector('[aria-label="Dismiss composer error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[aria-label="Dismiss composer error"]')).toBeNull()
+    expect(host.textContent).toContain('Command safety warning')
+    expect(useAppStore.getState().acpBindingBySessionId).toBe(before.acpBindingBySessionId)
+    expect(useAppStore.getState().messages).toBe(before.messages)
+    expect(useAppStore.getState().sessions).toBe(before.sessions)
+    expect(refreshCliProviderVersion).not.toHaveBeenCalled()
+    expect(setSettingsOpen).not.toHaveBeenCalled()
+
+    const updateError = (lastError: string) => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lastError } },
+    })))
+    updateError('Provider failed to launch.')
+    expect(host.querySelector('[aria-label="Dismiss composer error"]')).toBeNull()
+    updateError('Connection lost.')
+    expect(host.querySelector('[aria-label="Dismiss composer error"]')?.closest('[role="alert"]')?.textContent).toContain('Connection lost.')
+    updateError('')
+    updateError('Provider failed to launch.')
+    expect(host.querySelector('[aria-label="Dismiss composer error"]')?.closest('[role="alert"]')?.textContent).toContain('Provider failed to launch.')
 
     act(() => root.unmount())
     host.remove()
@@ -4271,6 +5326,55 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('keeps tool events and initial text in one assistant message when a stream placeholder trails the durable turn', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          state.messages['chat-1'][0],
+          { ...state.messages['chat-1'][1], content: 'Initial text.' },
+          {
+            id: 'stream-chat-1',
+            sessionId: 'chat-1',
+            role: 'assistant' as const,
+            content: 'Initial text.',
+            createdAt: new Date('2026-01-01T00:00:02.000Z'),
+            isStreaming: true,
+          },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [
+            { type: 'assistant_text', text: 'Initial text.' },
+            { type: 'tool_call', toolCallId: 'tool-1' },
+          ],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 2,
+          pendingPermission: null,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const assistantFrames = host.querySelectorAll('.conversation-turn--assistant')
+    expect(assistantFrames).toHaveLength(1)
+    expect(assistantFrames[0].textContent).toContain('Initial text.')
+    expect(assistantFrames[0].textContent).toContain('Search symbols')
+
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -4393,6 +5497,62 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each(['user', 'assistant'] as const)('keeps original section metadata when the visible window starts at a %s', (role) => {
+    useAppStore.setState((state) => ({
+      workingDisplayMode: 'compact', expandWorkTraces: true,
+      messages: { ...state.messages, 'chat-1': [
+        { id: 'hidden-original', sessionId: 'chat-1', role: 'user', content: 'Original request', providerId: 'gemini-cli', modelId: 'original-model', createdAt: new Date(0) },
+        { id: 'boundary', sessionId: 'chat-1', role, content: 'Visible continuation', continuesTurn: role === 'user', providerId: 'codex-cli', modelId: 'later-model', createdAt: new Date(1000) },
+        { id: 'answer', sessionId: 'chat-1', role: 'assistant', content: 'Visible answer', thoughts: 'Visible reasoning', createdAt: new Date(2000) },
+        ...Array.from({ length: 198 }, (_, index) => ({ id: `event-${index}`, sessionId: 'chat-1', role: 'system' as const, content: `Event ${index}`, createdAt: new Date(index + 3000) })),
+      ] }, acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).not.toContain('Original request')
+    expect(host.querySelectorAll('time.conversation-turn-start')).toHaveLength(1)
+    expect(host.querySelector('time.conversation-turn-start')?.getAttribute('datetime')).toBe(new Date(0).toISOString())
+    expect(host.querySelector('time.conversation-turn-start')?.textContent).toContain('Gemini · original-model')
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
+    expect(host.textContent).not.toContain('Visible reasoning')
+    act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Show earlier messages')!.click())
+    expect(host.textContent).toContain('Original request')
+    expect(host.querySelectorAll('time.conversation-turn-start')).toHaveLength(1)
+    expect(host.querySelectorAll('[data-testid="working-summary"]')).toHaveLength(1)
+    expect(host.textContent).not.toContain('Visible reasoning')
+    expect(host.textContent).toContain('Visible answer')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a steer as a user message when earlier history is outside the rendered window', () => {
+    useAppStore.setState((state) => ({
+      workingDisplayMode: 'compact',
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { id: 'host', sessionId: 'chat-1', role: 'assistant', content: 'Hidden host', thoughts: 'Old work', createdAt: new Date(0) },
+          { id: 'boundary-steer', sessionId: 'chat-1', role: 'user', content: 'Visible steer', prioritySteer: true, attachments: [{ id: 'scope', name: 'scope.txt', type: 'file', size: 1, path: '/tmp/scope.txt' }], createdAt: new Date(1) },
+          ...Array.from({ length: 199 }, (_, index) => ({ id: `system-${index}`, sessionId: 'chat-1', role: 'system' as const, content: `Event ${index}`, createdAt: new Date(index + 2) })),
+        ],
+      },
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Visible steer')
+    expect(host.textContent).toContain('/tmp/scope.txt')
+    expect(host.querySelector('article.conversation-turn--user')?.textContent).toContain('Visible steer')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not duplicate a completed fallback already represented by persisted assistant text', () => {
     useAppStore.setState((state) => ({
       messages: {
@@ -4459,6 +5619,172 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each([
+    { workingDisplayMode: 'compact', placement: 'tool-first' },
+    { workingDisplayMode: 'verbose', placement: 'tool-first' },
+    { workingDisplayMode: 'compact', placement: 'assistant' },
+    { workingDisplayMode: 'compact', placement: 'pending-message' },
+    { workingDisplayMode: 'compact', placement: 'fallback' },
+  ] as const)('keeps child disclosure through $workingDisplayMode/$placement completion', async ({ workingDisplayMode, placement }) => {
+    const originalOpen = useAppStore.getState().openSubAgentSession
+    const savedAssistant = useAppStore.getState().messages['chat-1'][1]
+    const tool = { id: 'child-tool', title: 'Reviewer', kind: 'sub-agent', status: 'running', content: '', isSubAgent: true, subAgentId: 'native-child' }
+    useAppStore.setState((state) => ({
+      workingDisplayMode,
+      expandWorkTraces: true,
+      openSubAgentSession: vi.fn(async () => 'child-chat'),
+      sessions: [...state.sessions, { ...state.sessions[0], id: 'child-chat', name: 'Child' }],
+      messages: { ...state.messages, 'chat-1': placement === 'pending-message' ? state.messages['chat-1'].slice(0, 1) : state.messages['chat-1'], 'child-chat': [{ id: 'child-answer', sessionId: 'child-chat', role: 'assistant', content: 'Child transcript', createdAt: new Date() }] },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], processing: true,
+        turnUserMessageIndex: placement === 'fallback' ? -1 : 0, turnAssistantMessageIndex: placement === 'fallback' ? -1 : 1,
+        toolCalls: [tool], turnEvents: [...(placement === 'assistant' ? [{ type: 'assistant_text' as const, text: 'Delegating.' }] : []), { type: 'tool_call', toolCallId: tool.id }],
+      } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const selector = workingDisplayMode === 'compact' ? '.conversation-work__subagent' : '.uam-subagent-panel'
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      await act(async () => {
+        const panel = host.querySelector<HTMLDetailsElement>(selector)!
+        if (workingDisplayMode === 'compact') panel.querySelector('summary')!.click()
+        else { panel.open = true; panel.dispatchEvent(new Event('toggle', { bubbles: true })) }
+      })
+      expect(host.textContent).toContain('Child transcript')
+      await act(async () => useAppStore.setState((state) => ({
+        messages: { ...state.messages, 'chat-1': [state.messages['chat-1'][0], {
+          ...savedAssistant, content: 'Finished',
+          blocks: [{ type: 'tool_call', toolCallId: tool.id }, { type: 'assistant_text', text: 'Finished' }],
+          toolCalls: [{ ...tool, status: 'completed' }],
+        }] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [], toolCalls: [],
+        } },
+      })))
+      expect(host.querySelector<HTMLDetailsElement>(selector)?.open).toBe(true)
+      expect(host.textContent).toContain('Child transcript')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ openSubAgentSession: originalOpen })
+    }
+  })
+
+  it.each([
+    { workingDisplayMode: 'compact', placement: 'tool-first' },
+    { workingDisplayMode: 'verbose', placement: 'tool-first' },
+    { workingDisplayMode: 'compact', placement: 'assistant' },
+    { workingDisplayMode: 'compact', placement: 'pending' },
+    { workingDisplayMode: 'compact', placement: 'fallback' },
+  ] as const)('keeps a collapsed $workingDisplayMode/$placement trace through recovery, completion and a new turn', async ({ workingDisplayMode, placement }) => {
+    const tool = { id: 'trace-tool', title: 'Inspect workspace', kind: 'read', status: 'running', content: '' }
+    const savedAssistant = useAppStore.getState().messages['chat-1'][1]
+    useAppStore.setState((state) => ({
+      workingDisplayMode, expandWorkTraces: true,
+      messages: { ...state.messages, 'chat-1': placement === 'pending' ? state.messages['chat-1'].slice(0, 1) : state.messages['chat-1'] },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], processing: true, turnSerial: 1,
+        turnUserMessageIndex: placement === 'fallback' ? -1 : 0, turnAssistantMessageIndex: ['pending', 'fallback'].includes(placement) ? -1 : 1,
+        toolCalls: [tool], turnEvents: [...(placement === 'assistant' ? [{ type: 'assistant_text' as const, text: 'Inspecting.' }] : []), { type: 'tool_call', toolCallId: tool.id }],
+      } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+      expect(host.textContent).toContain(tool.title)
+      await act(async () => useAppStore.setState((state) => ({
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], sessionId: 'recovered-native-session',
+        } },
+      })))
+      expect(host.querySelector('[aria-label="Collapse work trace"]')).toBeNull()
+      await act(async () => useAppStore.setState((state) => ({
+        messages: { ...state.messages, 'chat-1': [state.messages['chat-1'][0], {
+          ...savedAssistant, content: 'Finished',
+          blocks: [{ type: 'tool_call', toolCallId: tool.id }, { type: 'assistant_text', text: 'Finished' }],
+          toolCalls: [{ ...tool, status: 'completed' }],
+        }] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: false, turnAssistantMessageIndex: 1, turnEvents: [], toolCalls: [],
+        } },
+      })))
+      expect(host.querySelector('[aria-label="Collapse work trace"]')).not.toBeNull()
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+      expect(host.querySelector('[aria-label="Expand work trace"]')).not.toBeNull()
+      expect(host.textContent).not.toContain(tool.title)
+      expect(host.textContent).toContain('Finished')
+      await act(async () => useAppStore.setState((state) => ({
+        messages: { ...state.messages, 'chat-1': [...state.messages['chat-1'], { ...state.messages['chat-1'][0], id: 'next-user', content: 'Continue' }] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: true, turnSerial: 2,
+          turnUserMessageIndex: 2, turnAssistantMessageIndex: 3,
+          toolCalls: [{ ...tool, id: 'next-tool', title: 'Next inspection' }], turnEvents: [{ type: 'tool_call', toolCallId: 'next-tool' }],
+        } },
+      })))
+      expect(host.querySelectorAll('[aria-label="Expand work trace"]')).toHaveLength(1)
+      expect(host.querySelectorAll('[aria-label="Collapse work trace"]')).toHaveLength(0)
+      expect(host.textContent).toContain('Next inspection')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it.each(['compact', 'verbose'] as const)('keeps individual %s thought choices through group toggles and completion', async (workingDisplayMode) => {
+    const events = [
+      { type: 'thought' as const, text: 'First thought.' },
+      { type: 'permission_request' as const, requestId: 'answered-permission' },
+      { type: 'thought' as const, text: 'Second thought.' },
+    ]
+    useAppStore.setState((state) => ({
+      workingDisplayMode, expandWorkTraces: true,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], processing: true, turnSerial: 1,
+        turnUserMessageIndex: 0, turnAssistantMessageIndex: 1, toolCalls: [], turnEvents: events,
+      } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const thoughts = () => host.querySelectorAll<HTMLDetailsElement>('.conversation-work__thought, .uam-thinking-block')
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect([...thoughts()].map((row) => row.open)).toEqual([false, false])
+      act(() => thoughts()[1].querySelector('summary')!.click())
+      expect([...thoughts()].map((row) => row.open)).toEqual([false, true])
+      await act(async () => useAppStore.setState((state) => ({
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [...events.slice(0, 2), { type: 'thought', text: 'Second thought. More reasoning.' }],
+        } },
+      })))
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand work trace"]')!.click())
+      expect([...thoughts()].map((row) => row.open)).toEqual([false, true])
+      await act(async () => useAppStore.setState((state) => ({
+        messages: { ...state.messages, 'chat-1': [state.messages['chat-1'][0], {
+          ...state.messages['chat-1'][1], content: 'Finished',
+          blocks: [{ type: 'thought', text: 'First thought.' }, { type: 'thought', text: 'Second thought. More reasoning.' }, { type: 'assistant_text', text: 'Finished' }],
+        }] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [],
+        } },
+      })))
+      expect([...thoughts()].map((row) => row.open)).toEqual([false, true])
+      act(() => thoughts()[1].querySelector('summary')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse work trace"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand work trace"]')!.click())
+      expect([...thoughts()].map((row) => row.open)).toEqual([false, false])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('expands multiple sub-agent chats inline without replacing the current chat', async () => {
@@ -4572,12 +5898,12 @@ describe('ChatView', () => {
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
     await act(async () => {
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(5000)
       await Promise.resolve()
     })
     expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(1)
     expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
-    expect(loadSessionMessages).toHaveBeenCalledWith('agent-chat')
+    expect(loadSessionMessages).toHaveBeenCalledWith('agent-chat', false, true)
 
     act(() => {
       root.unmount()
@@ -4633,7 +5959,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('No separate transcript')
     expect(host.textContent).toContain('Gemini did not expose a child session ID')
-    expect(host.textContent).toContain('Transcript unavailable: Sub-agent chat history is unavailable.')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Sub-agent chat history is unavailable.')
     expect(openSubAgentSession).toHaveBeenCalledOnce()
     expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'missing-child', undefined, false)
 
@@ -5083,6 +6409,95 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('keeps restored ready attachments after the initial draft save', async () => {
+    writeChatComposerDraft('chat-1', {
+      text: '',
+      attachments: [{ id: 'restored', name: 'restored.png', type: 'image', size: 4, path: '/tmp/restored.png' }],
+    })
+    vi.useFakeTimers()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    await act(async () => { vi.advanceTimersByTime(300); await Promise.resolve() })
+    expect(host.textContent).toContain('restored.png')
+    expect(readChatComposerDraft('chat-1').attachments).toEqual([expect.objectContaining({ id: 'restored' })])
+    act(() => root.unmount())
+    host.remove()
+    vi.useRealTimers()
+  })
+
+  it('keeps an attachment that finishes staging after switching chats', async () => {
+    let finishStaging: ((attachments: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void) | undefined
+    const stageChatAttachments = vi.fn((_sessionId, items) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => {
+      finishStaging = resolve
+    }))
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({
+      sessions: [first, second],
+      stageChatAttachments,
+      messages: { ...state.messages, 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' },
+      },
+    }))
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ChatView key={first.id} session={first} />))
+
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['data'], 'late.png', { type: 'image/png' })
+    Object.defineProperty(file, 'path', { value: '/tmp/late.png', configurable: true })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    const attachmentId = stageChatAttachments.mock.calls[0][1][0].id
+
+    await act(async () => root.render(<ChatView key={second.id} session={second} />))
+    await act(async () => finishStaging?.([{
+      id: attachmentId,
+      name: 'late.png',
+      type: 'image',
+      size: 4,
+      path: '.UAM/attachments/chat-1/late.png',
+    }]))
+
+    expect(readChatComposerDraft(first.id).attachments).toEqual([
+      expect.objectContaining({ id: attachmentId, name: 'late.png' }),
+    ])
+
+    act(() => root.unmount())
+    host.remove()
+    removeComposerDrafts([first.id, second.id])
+  })
+
+  it('does not restore a removed attachment after staging finishes in another chat', async () => {
+    let finishStaging: ((attachments: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void) | undefined
+    const stageChatAttachments = vi.fn((_sessionId, items) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => { finishStaging = resolve }))
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({ sessions: [first, second], stageChatAttachments, messages: { ...state.messages, 'chat-2': [] } }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ChatView key={first.id} session={first} />))
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['data'], 'removed.png', { type: 'image/png' })
+    Object.defineProperty(file, 'path', { value: '/tmp/removed.png', configurable: true })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    const attachmentId = stageChatAttachments.mock.calls[0][1][0].id
+    act(() => (host.querySelector('button[aria-label="Remove removed.png attachment"]') as HTMLButtonElement).click())
+    await act(async () => root.render(<ChatView key={second.id} session={second} />))
+    await act(async () => finishStaging?.([{ id: attachmentId, name: 'removed.png', type: 'image', size: 4, path: '/tmp/removed.png' }]))
+    expect(readChatComposerDraft(first.id).attachments).toEqual([])
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('does not block normal text paste in the composer', async () => {
     const stageChatAttachments = vi.fn((_sessionId, items) => Promise.resolve([
       {
@@ -5235,7 +6650,12 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('omits the provider group when Gemini is the only available provider for the chat', () => {
+  it.each(['/', '/companion'])('allows model selection with one provider at %s', (path) => {
+    const originalDiscovery = useAppStore.getState().discoverProviderModels
+    const discover = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ discoverProviderModels: discover })
+    window.history.replaceState(null, '', path)
+    useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null } } }))
     useAppStore.setState({
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
@@ -5250,23 +6670,29 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1')
+    else expect(discover).not.toHaveBeenCalled()
+
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
     expect(selector).toBeTruthy()
+    expect(selector.disabled).toBe(false)
     act(() => selector.click())
     expect(document.body.querySelector('[role="group"][aria-label="Provider"]')).toBeNull()
 
     act(() => {
       root.unmount()
     })
+    useAppStore.setState({ discoverProviderModels: originalDiscovery })
     host.remove()
+    window.history.replaceState(null, '', '/')
   })
 
   it('keeps stopped dictation as a draft and only submits when Send stops it', async () => {
-    const requests: Array<{ action: string; payload?: { locale?: string } }> = []
+    const requests: Array<{ action: string; payload?: { locale?: string; dictationId?: string } }> = []
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
     let completeDictationStart: (() => void) | undefined
     window.cefQuery = vi.fn(({ request, onSuccess }) => {
-      const parsed = JSON.parse(request) as { action: string; payload?: { locale?: string } }
+      const parsed = JSON.parse(request) as { action: string; payload?: { locale?: string; dictationId?: string } }
       requests.push(parsed)
       if (parsed.action === 'startDictation') {
         completeDictationStart = () => onSuccess('{}')
@@ -5328,16 +6754,25 @@ describe('ChatView', () => {
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Listening')
     expect(textarea.disabled).toBe(true)
 
+    act(() => window.dispatchEvent(new CustomEvent('uam-dictation', {
+      detail: { type: 'dictation', dictationId: 'previous-recording', event: 'interim', text: 'Wrong pane' },
+    })))
+    expect(textarea.value).toBe('Please')
+    act(() => window.dispatchEvent(new CustomEvent('uam-dictation', {
+      detail: { type: 'dictation', dictationId: 'previous-recording', event: 'end' },
+    })))
+    expect(host.querySelector('button[aria-label="Stop dictation"]')).toBeTruthy()
+
     act(() => {
-      window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'interim', text: 'write' },
-      }))
+      const parsed = parseUamPushPayload({ type: 'dictation', dictationId: requests.filter((request) => request.action === 'startDictation').at(-1)?.payload?.dictationId, event: 'interim', text: 'write' })
+      expect(parsed.ok).toBe(true)
+      if (parsed.ok) window.dispatchEvent(new CustomEvent('uam-dictation', { detail: parsed.message }))
     })
     expect(textarea.value).toBe('Please write')
 
     act(() => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'final', text: 'write tests' },
+        detail: { type: 'dictation', dictationId: requests.filter((request) => request.action === 'startDictation').at(-1)?.payload?.dictationId, event: 'final', text: 'write tests' },
       }))
     })
     expect(textarea.value).toBe('Please write tests')
@@ -5355,7 +6790,7 @@ describe('ChatView', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'end' },
+        detail: { type: 'dictation', dictationId: requests.filter((request) => request.action === 'startDictation').at(-1)?.payload?.dictationId, event: 'end' },
       }))
       await Promise.resolve()
     })
@@ -5374,12 +6809,17 @@ describe('ChatView', () => {
       ;(host.querySelector('button[aria-label="Send prompt"]') as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(requests.filter((request) => request.action === 'stopDictation')).toHaveLength(2)
+    const starts = requests.filter((request) => request.action === 'startDictation')
+    const stops = requests.filter((request) => request.action === 'stopDictation')
+    expect(stops).toHaveLength(2)
+    expect(starts[0].payload?.dictationId).toEqual(expect.any(String))
+    expect(starts[1].payload?.dictationId).not.toBe(starts[0].payload?.dictationId)
+    expect(stops.map((request) => request.payload?.dictationId)).toEqual(starts.map((request) => request.payload?.dictationId))
     expect(sendAcpPrompt).not.toHaveBeenCalled()
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'end' },
+        detail: { type: 'dictation', dictationId: requests.filter((request) => request.action === 'startDictation').at(-1)?.payload?.dictationId, event: 'end' },
       }))
       await Promise.resolve()
     })
@@ -5393,7 +6833,12 @@ describe('ChatView', () => {
 
   it('surfaces native dictation permission errors without submitting partial text', async () => {
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
-    window.cefQuery = vi.fn(({ onSuccess }) => onSuccess('{}'))
+    let dictationId = ''
+    window.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'startDictation') dictationId = parsed.payload.dictationId
+      onSuccess('{}')
+    })
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -5419,7 +6864,7 @@ describe('ChatView', () => {
     })
     act(() => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'error', message: 'Microphone permission was denied.' },
+        detail: { type: 'dictation', dictationId, event: 'error', message: 'Microphone permission was denied.' },
       }))
     })
     expect(host.querySelector('[role="alert"][data-dictation-state="error"]')?.textContent).toContain('Microphone permission was denied.')
@@ -5440,7 +6885,7 @@ describe('ChatView', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-dictation', {
-        detail: { type: 'dictation', event: 'end' },
+        detail: { type: 'dictation', dictationId, event: 'end' },
       }))
       await Promise.resolve()
     })

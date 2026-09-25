@@ -130,7 +130,7 @@ void UamQueryHandler::HandleExportLocalChats(
 	}
 
 	const std::filesystem::path data_root = m_app.data_root;
-	RunAsyncCefQuery(cb, [data_root, bundle_path]() {
+	RunAsyncCefQuery(m_asyncLifetime, cb, [data_root, bundle_path]() {
 		return AsyncSuccess(SerializeExportResult(
 		    uam::LocalChatBundleService::Export(data_root, bundle_path)));
 	});
@@ -154,7 +154,7 @@ void UamQueryHandler::HandleImportLocalChats(
 	auto import_result = std::make_shared<uam::LocalChatBundleImportResult>();
 	auto imported_summaries = std::make_shared<std::vector<ChatSession>>();
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(
+	RunAsyncCefQuery(m_asyncLifetime,
 	    cb,
 	    [data_root, bundle_path, import_result, imported_summaries]() {
 		    *import_result = uam::LocalChatBundleService::Import(data_root, bundle_path);

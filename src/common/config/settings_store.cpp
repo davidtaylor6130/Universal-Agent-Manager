@@ -76,6 +76,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
+	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
+	constexpr std::string_view kComputerUseAllowedApplicationsKey = "computer_use_allowed_applications";
 
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
@@ -120,6 +122,26 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			else if (key == kActiveProviderIdKey)
 			{
 				saw_active_provider = !uam::strings::IsBlank(uam::DecodeLineValue(value));
+			}
+			else if (key == kExecutionHostsKey)
+			{
+				const nlohmann::json hosts = nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false);
+				if (!hosts.is_array()) return false;
+				for (const nlohmann::json& host : hosts)
+				{
+					const nlohmann::json* protocol = uam::nlohmann_json::FindField(host, "runnerProtocolVersion");
+					if (protocol == nullptr) continue;
+					const std::optional<int> version = uam::nlohmann_json::IntValueStrict(*protocol);
+					if (!version || *version < 0) return false;
+				}
+				try
+				{
+					(void)uam::execution_hosts::Parse(hosts);
+				}
+				catch (const nlohmann::json::exception&)
+				{
+					return false;
+				}
 			}
 		}
 		return saw_setting && (!saw_format_version || (saw_active_provider && saw_complete));
@@ -486,6 +508,15 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
 		uam::settings::NormalizeUamAgentPreferences(settings);
+		std::vector<ComputerUseApplicationRule> allowed;
+		for (const ComputerUseApplicationRule& rule : settings.computer_use_allowed_applications)
+		{
+			const std::string kind = uam::strings::ToLowerAscii(uam::strings::Trim(rule.identity_kind));
+			const std::string identity = uam::strings::Trim(rule.identity);
+			if ((kind == "bundleid" || kind == "executablepath") && !identity.empty())
+				allowed.push_back({kind, identity});
+		}
+		settings.computer_use_allowed_applications = std::move(allowed);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
 		settings.permission_reviewer_provider_id = NormalizeProviderId(settings.permission_reviewer_provider_id);
@@ -557,6 +588,11 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
+	nlohmann::json allowed = nlohmann::json::array();
+	for (const auto& rule : normalized.computer_use_allowed_applications)
+		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
+	WriteEncodedSetting(lines, kComputerUseAllowedApplicationsKey, allowed.dump());
 	WriteRawSetting(lines, kSettingsCompleteKey, "1");
 	return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
 }
@@ -776,6 +812,19 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kUamAgentCycleShortcutKey)
 		{
 			settings.uam_agent_cycle_shortcut = decoded_value;
+		}
+		else if (key == kComputerUseAllowlistEnabledKey)
+		{
+			settings.computer_use_allowlist_enabled = uam::parse::BoolOr(value, settings.computer_use_allowlist_enabled);
+		}
+		else if (key == kComputerUseAllowedApplicationsKey)
+		{
+			settings.computer_use_allowed_applications.clear();
+			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
+			if (parsed.is_array())
+				for (const auto& item : parsed)
+					if (item.is_object())
+						settings.computer_use_allowed_applications.push_back({item.value("identityKind", ""), item.value("identity", "")});
 		}
 	}
 

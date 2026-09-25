@@ -8,6 +8,12 @@ void UamQueryHandler::HandleStartDictation(CefRefPtr<CefBrowser> /*browser*/, co
 {
 	DictationOptions options;
 	options.locale = payload.value("locale", "");
+	options.dictation_id = payload.value("dictationId", "");
+	if (options.dictation_id.empty() || options.dictation_id.size() > 128)
+	{
+		cb->Failure(400, "Invalid dictation recording ID.");
+		return;
+	}
 	if (options.locale.size() > 64)
 	{
 		cb->Failure(400, "Dictation locale is too long.");
@@ -23,8 +29,14 @@ void UamQueryHandler::HandleStartDictation(CefRefPtr<CefBrowser> /*browser*/, co
 	cb->Success(R"({"started":true})");
 }
 
-void UamQueryHandler::HandleStopDictation(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleStopDictation(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	PlatformServicesFactory::Instance().dictation_service.Stop();
+	const std::string dictation_id = payload.value("dictationId", "");
+	if (dictation_id.empty() || dictation_id.size() > 128)
+	{
+		cb->Failure(400, "Invalid dictation recording ID.");
+		return;
+	}
+	PlatformServicesFactory::Instance().dictation_service.Stop(dictation_id);
 	cb->Success(R"({"stopped":true})");
 }

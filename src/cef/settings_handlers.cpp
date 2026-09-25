@@ -12,6 +12,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <string>
@@ -85,7 +87,7 @@ namespace
 	std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
 	{
 		const std::string requested = NormalizeCliVersionProviderId(uam::nlohmann_json::TrimmedStringValue(payload, {"providerId"}));
-		if (!requested.empty())
+		if (payload.contains("providerId"))
 		{
 			return requested;
 		}
@@ -97,6 +99,57 @@ namespace
 		}
 
 		return FallbackCliVersionProviderId(app.settings.active_provider_id);
+	}
+
+	std::filesystem::path CompanionConfigPath(const uam::AppState& app)
+	{
+		return app.data_root / "companion.json";
+	}
+
+	bool ReadCompanionConfig(const uam::AppState& app, nlohmann::json& config)
+	{
+		std::string text;
+		if (!uam::io::TryReadTextFile(CompanionConfigPath(app), text)) return false;
+		try
+		{
+			config = nlohmann::json::parse(text);
+			return config.is_object();
+		}
+		catch (const nlohmann::json::exception&)
+		{
+			return false;
+		}
+	}
+
+	bool WriteCompanionConfig(const uam::AppState& app, const nlohmann::json& config)
+	{
+		return uam::io::WriteTextFileWithBackup(CompanionConfigPath(app), config.dump(2) + "\n");
+	}
+
+	std::string CompanionUrl(const nlohmann::json& config)
+	{
+		const std::string origin = config.contains("origin") && config["origin"].is_string()
+			? uam::strings::Trim(config["origin"].get<std::string>()) : std::string{};
+		if (!origin.empty()) return origin + "/companion";
+		std::string port = "58948";
+		if (config.contains("port"))
+		{
+			if (config["port"].is_string()) port = config["port"].get<std::string>();
+			else if (config["port"].is_number_integer()) port = std::to_string(config["port"].get<int>());
+		}
+		return "http://127.0.0.1:" + port + "/companion";
+	}
+
+	nlohmann::json CompanionSettingsResponse(const nlohmann::json& config)
+	{
+		const bool configured = config.is_object() && config.contains("token_file") && config["token_file"].is_string();
+		const bool enabled = config.contains("enabled") && config["enabled"].is_boolean() && config["enabled"].get<bool>();
+		return {
+			{"configured", configured},
+			{"enabled", enabled},
+			{"url", CompanionUrl(config)},
+			{"restartRequired", true},
+		};
 	}
 } // namespace
 
@@ -368,6 +421,16 @@ void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	for (const char* field : {"providerId", "executionHostId"})
+	{
+		if (payload.contains(field) && (!payload[field].is_string() || uam::strings::Trim(payload[field].get_ref<const std::string&>()).empty()))
+		{
+			cb->Failure(400, std::string(field) + " must be a nonempty string.");
+			return;
+		}
+	}
+	const std::string execution_host_id = uam::nlohmann_json::TrimmedStringValue(payload, {"executionHostId"});
+
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
 	if (ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
 	{
@@ -375,24 +438,45 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 		return;
 	}
 
-	ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, provider_id, true);
+	std::string error;
+	if (!ProviderCliCompatibilityService().StartProviderVersionCheck(m_app, provider_id, true, execution_host_id, &error))
+	{
+		cb->Failure(400, FailureDetailOrFallback(error, "Failed to start provider CLI check."));
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleRefreshAllCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json&, CefRefPtr<Callback> cb)
 {
-	ProviderCliCompatibilityService().StartVersionCheck(m_app, true);
+	ProviderCliCompatibilityService().StartVersionCheck(m_app, true, true);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	for (const char* field : {"providerId", "executionHostId"})
+	{
+		if (payload.contains(field) && (!payload[field].is_string() || uam::strings::Trim(payload[field].get_ref<const std::string&>()).empty()))
+		{
+			cb->Failure(400, std::string(field) + " must be a nonempty string.");
+			return;
+		}
+	}
+	const std::string execution_host_id = uam::nlohmann_json::TrimmedStringValue(payload, {"executionHostId"});
+
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
+	if (provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
+	{
+		cb->Failure(400, "Unsupported provider: " + provider_id);
+		return;
+	}
+
 	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
-	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error))
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id))
 	{
 		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -425,4 +509,62 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config))
+	{
+		cb->Success(nlohmann::json{{"configured", false}, {"enabled", false}, {"url", ""}, {"restartRequired", true}}.dump());
+		return;
+	}
+	cb->Success(CompanionSettingsResponse(config).dump());
+}
+
+void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
+	if (!enabled)
+	{
+		cb->Failure(400, "enabled must be a boolean.");
+		return;
+	}
+
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	{
+		cb->Failure(409, "Phone access is not configured.");
+		return;
+	}
+	config["enabled"] = *enabled;
+	if (!WriteCompanionConfig(m_app, config))
+	{
+		cb->Failure(500, "Failed to persist phone access settings.");
+		return;
+	}
+	cb->Success(CompanionSettingsResponse(config).dump());
+}
+
+void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	{
+		cb->Failure(409, "Phone access is not configured.");
+		return;
+	}
+	std::string token;
+	if (!uam::io::TryReadTextFile(config["token_file"].get<std::string>(), token))
+	{
+		cb->Failure(404, "Phone access token is unavailable.");
+		return;
+	}
+	token = uam::strings::Trim(token);
+	if (token.size() != 64 || token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+	{
+		cb->Failure(404, "Phone access token is invalid or unavailable.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"token", token}, {"url", CompanionUrl(config)}}.dump());
 }

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, X } from 'lucide-react'
 import { IconButton } from './IconButton'
+import './notice-motion.css'
 
 export type NoticeTone = 'info' | 'success' | 'warning' | 'error'
 

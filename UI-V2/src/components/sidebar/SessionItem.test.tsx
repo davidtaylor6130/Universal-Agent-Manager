@@ -207,6 +207,109 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('selects sibling chats inside the active branch family', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 8 }
+    useAppStore.setState({
+      sessions: [rootSession, branchSession],
+      activeSessionId: 'chat-root',
+      setActiveSession,
+    })
+    const familySessionIds = ['chat-root', 'chat-branch']
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch" session={branchSession} familySessionIds={familySessionIds} />
+    </>))
+
+    const rootRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    const branchRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-branch"]')!
+    expect(rootRow.getAttribute('aria-current')).toBe('page')
+    expect(branchRow.hasAttribute('aria-current')).toBe(false)
+    act(() => branchRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch')
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-branch' }))
+    expect(rootRow.hasAttribute('aria-current')).toBe(false)
+    expect(branchRow.getAttribute('aria-current')).toBe('page')
+    act(() => rootRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(setActiveSession).toHaveBeenLastCalledWith('chat-branch')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('selects the longest provided branch without filtering or sorting all chats', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchA = {
+      ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T10:00:00Z'),
+    }
+    const branchB = {
+      ...makeSession(), id: 'chat-branch-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T11:00:00Z'),
+    }
+    const branchC = {
+      ...makeSession(), id: 'chat-branch-c', parentChatId: 'chat-root', branchRootChatId: 'chat-root',
+      messageCount: 8, updatedAt: new Date('2026-09-20T11:00:00Z'),
+    }
+    const unrelated = { ...makeSession(), id: 'unrelated-chat', messageCount: 100 }
+    const sessions = new Proxy([rootSession, branchA, branchC, branchB, unrelated], {
+      get(target, property, receiver) {
+        if (property === 'filter' || property === 'sort') throw new Error(`unexpected ${String(property)} on full chat list`)
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    useAppStore.setState({ sessions, activeSessionId: 'unrelated-chat', setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <SessionItem
+        sessionId="chat-root"
+        session={rootSession}
+        familySessionIds={['chat-root', 'chat-branch-a', 'chat-branch-b', 'chat-branch-c']}
+      />,
+    ))
+
+    const rootRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    act(() => rootRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch-b')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('marks only the exact active chat in the companion branch list', () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    useAppStore.setState({ sessions: [rootSession, branchSession], activeSessionId: 'chat-root' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch']} />
+      <SessionItem sessionId="chat-branch" session={branchSession} familySessionIds={['chat-root', 'chat-branch']} />
+    </>))
+
+    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeNull()
+
+    act(() => useAppStore.setState({ activeSessionId: 'chat-branch' }))
+    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeNull()
+    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+    window.history.pushState({}, '', previousPath)
+  })
+
   it('keeps a failed delete confirmation visible with its error', async () => {
     useAppStore.setState({ deleteSessions: vi.fn(async () => false) })
     const { host, root } = renderSessionItem()
@@ -374,6 +477,49 @@ describe('SessionItem status icons', () => {
     expect(menu.textContent).not.toContain('Show in pane')
     expect(menu.querySelector('button[aria-label^="Show Chat 1 in pane"]')).toBeNull()
     expect(menu.textContent).toContain('Rename')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('activates an existing pane when selecting a chat from another pane', () => {
+    const setActiveSession = vi.fn()
+    let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+    const leaves = chatGridLeaves(layout.root)
+    layout = setChatInLeaf(setChatInLeaf(layout, 'chat-1', leaves[0].id), 'chat-2', leaves[1].id)
+    writeChatGridLayout({ ...layout, activeLeafId: leaves[1].id })
+    useAppStore.setState({ activeSessionId: 'chat-2', setActiveSession })
+
+    const { host, root } = renderSessionItem()
+    const sessionRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')!
+    act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    expect(readChatGridLayout().activeLeafId).toBe(leaves[0].id)
+    expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not activate a sibling pane when the resolved branch is already active', () => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchSession = { ...makeSession(), id: 'chat-branch', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 8 }
+    let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+    const leaves = chatGridLeaves(layout.root)
+    layout = setChatInLeaf(setChatInLeaf(layout, 'chat-root', leaves[0].id), 'chat-other', leaves[1].id)
+    writeChatGridLayout({ ...layout, activeLeafId: leaves[1].id })
+    useAppStore.setState({ sessions: [rootSession, branchSession], activeSessionId: 'chat-branch', setActiveSession })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch']} />))
+    const sessionRow = host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!
+    act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+
+    expect(readChatGridLayout().activeLeafId).toBe(leaves[1].id)
+    expect(setActiveSession).not.toHaveBeenCalled()
 
     act(() => root.unmount())
     host.remove()

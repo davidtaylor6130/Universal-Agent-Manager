@@ -48,6 +48,8 @@ namespace uam
 	  public:
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
 		GitWorktreeOperationResult CreateForChat(AppState& app, ChatSession& chat) const;
+		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
+		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;
 		GitWorktreeOperationResult DiscardChatChanges(AppState& app, ChatSession& chat) const;
 		GitWorktreeOperationResult PortChatChanges(AppState& app, ChatSession& chat) const;
 		bool CanCheckpointTurn(const AppState& app, const ChatSession& chat, std::string* reason_out = nullptr, std::stop_token stop_token = {}) const;

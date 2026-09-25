@@ -6,6 +6,7 @@
 namespace uam::acp_detail
 {
 
+bool SendDeferredCodexInterruptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 void MergeCodexRateLimitSnapshot(AcpSessionState& session, const nlohmann::json& snapshot);
 void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser);
 

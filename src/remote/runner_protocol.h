@@ -10,8 +10,17 @@
 namespace uam::remote
 {
 	class RunnerState;
-	inline constexpr int kRunnerProtocolVersion = 2;
+	inline constexpr int kRunnerProtocolVersion = 3;
 	inline constexpr std::size_t kMaxRunnerFrameBytes = 1024 * 1024;
+
+	inline std::string RunnerEndpointName(std::string_view runner_version,
+	                                     int protocol_version = kRunnerProtocolVersion)
+	{
+		// Protocol 2 runners predate versioned endpoints and always serve uam.sock.
+		if (protocol_version == 2) return "uam";
+		return "uam-" + std::string(runner_version) + "-p" +
+		       std::to_string(protocol_version);
+	}
 
 	enum class FrameReadResult
 	{
