@@ -2110,10 +2110,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const Message message = chat->messages[user_index];
 		if (message.role != MessageRole::User)
 			return reject("Retry requires a user message with no assistant output.");
+		if (!message.provider.empty() && message.provider != chat->provider_id)
+			return reject("Reconnect the original native session before retrying.");
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (!chat->branch_root_chat_id.empty() && chat->native_session_id.empty() &&
+		    !chat->remote_process_exists && !chat->remote_turn_reconnect_pending &&
+		    !chat->remote_restart_pending && !chat->remote_stop_cleanup_pending &&
+		    chat->remote_active_turn_id.empty() && chat->remote_pending_requests.empty() &&
+		    chat->remote_prompt_delivery_id.empty() && chat->remote_prompt_delivery_payload.empty() &&
+		    chat->acp_queued_prompts.empty() && chat->acp_dispatched_queued_prompt_count == 0 &&
+		    chat->messages.back().role == MessageRole::User &&
+		    (session == nullptr || (!session->running && !session->processing &&
+		                            !session->reconnect_pending && !session->recovering_remote_turn &&
+		                            !session->recovering_remote_process && !session->remote_stop_pending &&
+		                            !session->remote_stop_unconfirmed)))
+			return RetryLastAcpPrompt(app, chat_id, error_out);
 		if (session == nullptr || !session->running || !session->session_ready || session->session_id.empty() ||
-		    session->session_id != chat->native_session_id || session->provider_id != chat->provider_id ||
-		    (!message.provider.empty() && message.provider != chat->provider_id))
+		    session->session_id != chat->native_session_id || session->provider_id != chat->provider_id)
 			return reject("Reconnect the original native session before retrying.");
 		if (AcpSessionHasBlockingRuntimeWork(*session) || AcpSessionHasPendingCancel(*session) ||
 		    session->reconnect_pending || session->remote_stop_pending || session->remote_stop_unconfirmed ||
