@@ -609,6 +609,44 @@ UAM_TEST(RemoteRunnerExecutesOnlyValidatedTypedProcessRequests)
 	UAM_ASSERT(removed.value("ok", false));
 }
 
+UAM_TEST(WindowsRemoteRunnerStartsWhenTemporaryDirectoryIsUnavailable)
+{
+#if defined(_WIN32)
+	TempDir workspace("uam-runner-spool-location");
+	TempDir temporary("uam-runner-temporary-location");
+	ScopedEnvVar tmp("TMP", temporary.root.string());
+	ScopedEnvVar temp("TEMP", temporary.root.string());
+	uam::remote::RunnerState state;
+	std::error_code remove_error;
+	fs::remove_all(temporary.root, remove_error);
+	UAM_ASSERT(!remove_error);
+	const nlohmann::json started = uam::remote::HandleRunnerRequest(
+	    {{"id", "start-no-temp"}, {"type", "process.start"},
+	     {"sessionId", "no-temp"}, {"controlToken", kProcessControlToken},
+	     {"cwd", workspace.root.string()},
+	     {"argv", nlohmann::json::array({"cmd.exe", "/d", "/s", "/c", "exit /b 0"})}},
+	    "test-version", &state);
+	UAM_ASSERT(started.value("ok", false));
+	bool exited = false;
+	for (int attempt = 0; attempt < 100 && !exited; ++attempt)
+	{
+		const nlohmann::json polled = uam::remote::HandleRunnerRequest(
+		    {{"id", "poll-no-temp"}, {"type", "process.poll"},
+		     {"sessionId", "no-temp"}, {"controlToken", kProcessControlToken}},
+		    "test-version", &state);
+		UAM_ASSERT(polled.value("ok", false));
+		exited = !polled["result"].value("running", true);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(exited);
+	const nlohmann::json removed = uam::remote::HandleRunnerRequest(
+	    {{"id", "remove-no-temp"}, {"type", "process.remove"},
+	     {"sessionId", "no-temp"}, {"controlToken", kProcessControlToken}},
+	    "test-version", &state);
+	UAM_ASSERT(removed.value("ok", false));
+#endif
+}
+
 UAM_TEST(RemoteRunnerReplaysPolledOutputUntilItIsAcknowledged)
 {
 #if defined(__APPLE__)

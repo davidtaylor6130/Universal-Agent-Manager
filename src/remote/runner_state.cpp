@@ -454,7 +454,15 @@ namespace uam::remote
 	    : m_maxSpoolBytesPerStream(max_spool_bytes_per_stream)
 	{
 		std::error_code error;
-		m_spoolDirectory = std::filesystem::temp_directory_path(error) /
+		std::filesystem::path spool_root;
+#if defined(_WIN32)
+		// Windows can clean Temp while the detached runner service is still alive.
+		spool_root = ProcessService().ResolveCurrentExecutablePath().parent_path();
+		if (spool_root.empty()) return;
+#else
+		spool_root = std::filesystem::temp_directory_path(error);
+#endif
+		m_spoolDirectory = spool_root /
 		                   ("uam-runner-spool-" + ProcessService().GenerateUuid());
 		if (!error && std::filesystem::create_directory(m_spoolDirectory, error))
 			std::filesystem::permissions(
