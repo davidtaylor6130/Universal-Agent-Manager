@@ -194,6 +194,22 @@ describe('backend state reconciliation', () => {
     expect(next.pendingPermission?.safetyRisk).toBe('warn_high')
   })
 
+  it('keeps the native idle shutdown deadline through sanitization and reconciliation', () => {
+    const chat: CppChat = {
+      id: 'chat-1', title: 'Chat', folderId: '', providerId: 'codex-cli',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      acpSession: sanitizeCppAcpSession({ running: true, lifecycleState: 'ready',
+        idleShutdownAtMs: 1_000_000, idleShutdownTimeoutSeconds: 600 }),
+    }
+    const previous = acpBindingFromCppChat(chat, undefined)
+    expect(previous.idleShutdownAtMs).toBe(1_000_000)
+    const next = acpBindingFromCppChat({ ...chat, acpSession: sanitizeCppAcpSession({
+      running: true, lifecycleState: 'processing',
+    }) }, previous)
+    expect(next).not.toBe(previous)
+    expect(next.idleShutdownAtMs).toBeUndefined()
+  })
+
   it('sanitizes and reconciles provider usage updates', () => {
     const usage = {
       tokenUsage: {

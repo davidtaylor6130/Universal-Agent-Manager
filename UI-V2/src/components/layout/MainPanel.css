@@ -2,6 +2,21 @@
   animation: uam-pane-glide-in 200ms ease-out both;
 }
 
+.uam-runtime-stop-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.uam-runtime-stop-timer {
+  position: absolute;
+  inset: -7px;
+  width: 28px;
+  height: 28px;
+  transform: rotate(-90deg);
+}
+
 @keyframes uam-pane-glide-in {
   from {
     transform: translateX(8px);

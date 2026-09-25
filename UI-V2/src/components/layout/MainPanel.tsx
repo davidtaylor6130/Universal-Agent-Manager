@@ -11,6 +11,7 @@ import type { Message } from '../../types/message'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
+const HIDDEN_RUNTIME_STOP = { visible: false, disabled: true, deadline: undefined, timeout: undefined }
 import {
   chatGridLeaves,
   chatPaneColors,
@@ -77,12 +78,29 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     writeChatViewMode(session.id, nextView)
   }
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
-  const canStopAcpRuntime = useAppStore((s) => {
-    if (view !== 'chat' || session.importedReadOnly) return false
+  const runtimeStopState = useAppStore(useShallow((s) => {
+    if (view !== 'chat' || session.importedReadOnly) return HIDDEN_RUNTIME_STOP
     const acp = s.acpBindingBySessionId[session.id]
-    return Boolean(acp?.running && acp.lifecycleState === 'ready' &&
-      !acp.processing && !acp.pendingPermission && !acp.pendingUserInput)
-  })
+    return {
+      visible: Boolean(acp?.running),
+      disabled: acp?.lifecycleState !== 'ready' || Boolean(acp?.processing),
+      deadline: acp?.idleShutdownAtMs,
+      timeout: acp?.idleShutdownTimeoutSeconds,
+    }
+  }))
+  const [runtimeClockMs, setRuntimeClockMs] = useState(Date.now)
+  useEffect(() => {
+    if (!runtimeStopState.visible || runtimeStopState.disabled || !runtimeStopState.deadline) return
+    setRuntimeClockMs(Date.now())
+    const interval = window.setInterval(() => setRuntimeClockMs(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [runtimeStopState.visible, runtimeStopState.disabled, runtimeStopState.deadline])
+  const idleSecondsLeft = runtimeStopState.deadline
+    ? Math.max(0, Math.ceil((runtimeStopState.deadline - runtimeClockMs) / 1000))
+    : null
+  const idleFraction = idleSecondsLeft !== null && runtimeStopState.timeout
+    ? Math.min(1, idleSecondsLeft / runtimeStopState.timeout)
+    : null
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
   useEffect(() => setStopRuntimeError(''), [session.id])
@@ -202,14 +220,27 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
-        {canStopAcpRuntime && (
+        {runtimeStopState.visible && (
           <IconButton
-            icon={<PowerOff size={14} aria-hidden />}
+            icon={<span className="uam-runtime-stop-icon">
+              <PowerOff size={14} aria-hidden />
+              {!runtimeStopState.disabled && idleFraction !== null && (
+                <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
+                  <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2"
+                    strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
+                </svg>
+              )}
+            </span>}
             label="Stop runtime"
-            tooltip="Stop the idle runtime for this chat"
+            tooltip={runtimeStopState.disabled
+              ? 'Available when this turn finishes'
+              : idleSecondsLeft !== null
+                ? `Stop runtime · automatic shutdown in ${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
+                : 'Stop this chat’s runtime'}
             tooltipSide="bottom"
             variant="danger"
             size="sm"
+            disabled={runtimeStopState.disabled}
             onClick={() => {
               setStopRuntimeError('')
               void stopAcpSession(session.id).then((ok) => {

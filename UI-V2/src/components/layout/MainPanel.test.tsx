@@ -201,7 +201,7 @@ describe('MainPanel', () => {
     host.remove()
   })
 
-  it('shows the idle runtime stop action in the chat header only while it can stop', async () => {
+  it('disables runtime stop during a turn and shows the idle shutdown countdown afterward', async () => {
     const originalStop = useAppStore.getState().stopAcpSession
     const stopAcpSession = vi.fn(() => Promise.resolve(true))
     useAppStore.setState({ stopAcpSession })
@@ -211,14 +211,22 @@ describe('MainPanel', () => {
     act(() => root.render(<MainPanel />))
 
     const stopButton = () => host.querySelector<HTMLButtonElement>('.uam-chat-pane__header button[aria-label="Stop runtime"]')
-    expect(stopButton()).toBeNull()
+    expect(stopButton()?.querySelector('.lucide-power-off')).toBeTruthy()
+    expect(stopButton()?.disabled).toBe(true)
+    stopButton()?.click()
+    expect(stopAcpSession).not.toHaveBeenCalled()
     act(() => useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
-        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false },
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false,
+          idleShutdownAtMs: Date.now() + 600_000, idleShutdownTimeoutSeconds: 600,
+        },
       },
     })))
     expect(stopButton()?.querySelector('.lucide-power-off')).toBeTruthy()
+    expect(stopButton()?.disabled).toBe(false)
+    expect(stopButton()?.querySelector('.uam-runtime-stop-timer circle')).toBeTruthy()
     expect(host.querySelector('.uam-composer-action[title="Stop runtime"]')).toBeNull()
     await act(async () => { stopButton()?.click(); await Promise.resolve() })
     expect(stopAcpSession).toHaveBeenCalledWith('chat-1')

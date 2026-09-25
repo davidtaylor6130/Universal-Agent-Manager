@@ -368,6 +368,8 @@ export interface CppAcpSession {
   threadId?: string
   running?: boolean
   processing?: boolean
+  idleShutdownAtMs?: number
+  idleShutdownTimeoutSeconds?: number
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
   lifecycleState?: AcpLifecycleState | string
@@ -748,6 +750,8 @@ export interface AcpBinding {
   running: boolean
   lifecycleState: AcpLifecycleState
   processing: boolean
+  idleShutdownAtMs?: number
+  idleShutdownTimeoutSeconds?: number
   readySinceLastSelect: boolean
   attentionKind?: AcpAttentionKind | null
   processingStartedAtMs: number | null
