@@ -395,6 +395,34 @@ namespace uam::remote
 
 	namespace
 	{
+	#if defined(__APPLE__) || defined(__linux__)
+		void AddInteractiveCliPaths()
+		{
+			const char* home = std::getenv("HOME");
+			if (home == nullptr || *home == '\0') return;
+			std::string path = std::getenv("PATH") != nullptr ? std::getenv("PATH") : "/usr/bin:/bin";
+			const std::filesystem::path home_path(home);
+			const auto append = [&](const std::filesystem::path& directory)
+			{
+				std::error_code error;
+				if (std::filesystem::is_directory(directory, error))
+				{
+					if (!path.empty()) path.push_back(':');
+					path += directory.string();
+				}
+			};
+			for (const char* relative : {".local/bin", ".npm-global/bin", ".volta/bin",
+			                             ".asdf/shims", ".bun/bin", ".nvm/current/bin"})
+				append(home_path / relative);
+			const std::filesystem::path nvm_versions = home_path / ".nvm/versions/node";
+			std::error_code error;
+			for (std::filesystem::directory_iterator it(nvm_versions, error), end;
+			     !error && it != end; it.increment(error))
+				append(it->path() / "bin");
+			(void)setenv("PATH", path.c_str(), 1);
+		}
+	#endif
+
 		int RunTerminalProcessInternal(const std::string& encoded_spec, bool private_launch)
 		{
 			std::optional<DecodedProxySpec> spec = DecodeProxySpec(encoded_spec);
@@ -451,6 +479,7 @@ namespace uam::remote
 			if (chdir(spec->working_directory.c_str()) != 0) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
 				if (setenv(entry.first.c_str(), entry.second.c_str(), 1) != 0) return 70;
+			if (!private_launch) AddInteractiveCliPaths();
 			std::vector<char*> native_arguments;
 			native_arguments.reserve(spec->argv.size() + 1);
 			for (std::string& argument : spec->argv) native_arguments.push_back(argument.data());

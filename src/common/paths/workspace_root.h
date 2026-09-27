@@ -86,9 +86,15 @@ namespace uam::paths
 		{
 			return {};
 		}
-		if (!IsControllerLocalWorkspace(chat) &&
-		    !uam::strings::IsBlank(chat.workspace_directory))
-			return PathFromUtf8(uam::strings::Trim(chat.workspace_directory));
+		if (!IsControllerLocalWorkspace(chat))
+		{
+			if (!uam::strings::IsBlank(chat.workspace_directory))
+				return PathFromUtf8(uam::strings::Trim(chat.workspace_directory));
+			if (const ChatFolder* folder = FindWorkspaceFolderById(app, chat.folder_id); folder != nullptr &&
+			    folder->execution_host_id == chat.execution_host_id)
+				return PathFromUtf8(uam::strings::Trim(folder->directory));
+			return {};
+		}
 
 		std::filesystem::path workspace_root;
 
