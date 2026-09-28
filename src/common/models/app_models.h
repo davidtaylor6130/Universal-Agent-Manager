@@ -258,6 +258,9 @@ struct ChatSession
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
+	// Only chats created by a version that assigns remote Claude CLI IDs may
+	// create one on first launch. Older unbound chats may already have history.
+	bool remote_claude_session_unstarted = false;
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
 	bool remote_turn_reconnect_pending = false;

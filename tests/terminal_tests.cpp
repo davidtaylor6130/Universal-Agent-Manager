@@ -424,6 +424,47 @@ UAM_TEST(OpenCodeTerminalLaunchPersistsTheSameSessionBeforeStarting)
 #endif
 }
 
+UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
+{
+	TempDir temp("uam-remote-claude-session");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	UAM_ASSERT(chat.remote_claude_session_unstarted);
+	std::vector<std::string> first_argv{"claude"};
+	std::string error;
+	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, chat, first_argv, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(first_argv[first_argv.size() - 2], std::string("--session-id"));
+	UAM_ASSERT_EQ(first_argv.back(), chat.native_session_id);
+	UAM_ASSERT(!chat.remote_claude_session_unstarted);
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().native_session_id, chat.native_session_id);
+	UAM_ASSERT(!saved.front().remote_claude_session_unstarted);
+
+	ProviderProfile claude = ProviderProfileStore::DefaultClaudeProfile();
+	const std::vector<std::string> resumed = ProviderRuntimeRegistry::Resolve(claude).BuildInteractiveArgv(claude, chat, app.settings);
+	const auto resume_argument = std::ranges::find(resumed, "--resume");
+	UAM_ASSERT(resume_argument != resumed.end());
+	UAM_ASSERT_EQ(*(resume_argument + 1), chat.native_session_id);
+
+	ChatSession legacy;
+	std::vector<std::string> legacy_argv{"claude"};
+	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, legacy, legacy_argv, error));
+	UAM_ASSERT_EQ(legacy_argv.back(), std::string("--resume"));
+	UAM_ASSERT(legacy.native_session_id.empty());
+
+	app.data_root = temp.root / "blocked";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "storage unavailable"));
+	ChatSession blocked = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	std::vector<std::string> blocked_argv{"claude"};
+	UAM_ASSERT(!uam::PrepareRemoteClaudeTerminalArgv(app, blocked, blocked_argv, error));
+	UAM_ASSERT(blocked.native_session_id.empty());
+	UAM_ASSERT(blocked.remote_claude_session_unstarted);
+	UAM_ASSERT_EQ(blocked_argv.size(), static_cast<std::size_t>(1));
+}
+
 UAM_TEST(CliTerminalRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)
 {
 	uam::AppState app;

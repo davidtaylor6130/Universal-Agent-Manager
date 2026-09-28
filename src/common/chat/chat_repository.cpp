@@ -88,6 +88,7 @@ namespace
 	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatRemoteClaudeSessionUnstartedField = "remote_claude_session_unstarted";
 	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatRemoteProcessExistsField = "remote_process_exists";
 	constexpr std::string_view kChatRemoteStopCleanupPendingField = "remote_stop_cleanup_pending";
@@ -1039,6 +1040,8 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		chat.remote_claude_session_unstarted = JsonBoolOrDefault(
+		    root.Find(kChatRemoteClaudeSessionUnstartedField), false);
 		chat.remote_turn_reconnect_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteTurnReconnectPendingField), false);
 		chat.remote_process_exists = JsonBoolOrDefault(
@@ -1550,6 +1553,8 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	uam::json::SetBool(root, kChatRemoteClaudeSessionUnstartedField,
+	                   chat.remote_claude_session_unstarted);
 	uam::json::SetBool(root, kChatRemoteTurnReconnectPendingField,
 	                   chat.remote_turn_reconnect_pending);
 	uam::json::SetBool(root, kChatRemoteProcessExistsField,
