@@ -1,114 +1,31 @@
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, RefObject, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
-import { MarkdownContent } from '../markdown/Markdown'
-import {
-  useAppStore,
-  type AcpBinding,
-  type AcpModel,
-  type AcpPendingPermission,
-  type AcpPermissionOption,
-  type AcpPendingUserInput,
-  type AcpPlanEntry,
-  type AcpToolCall,
-  type AcpTurnEvent,
-  type AcpUserInputAnswers,
-  type ChatAttachmentInput,
-  type DictationPushMessage,
-  type VcsChangedFile,
-  type VcsCommitStatus,
-  type VcsType,
-  type UamAgentCycleShortcut,
-  type UamAgentSummary,
-} from '../../store/useAppStore'
-import type { Attachment, Message, MessageBlock } from '../../types/message'
+import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type VcsChangedFile, type VcsCommitStatus, type VcsType, type UamAgentCycleShortcut, type UamAgentSummary } from '../../store/useAppStore'
+import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
-import type { Goal, GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import { GoalBanner } from '../shared/GoalBanner'
-import { copyTextToClipboard } from '../../utils/copySelection'
-import {
-  DEFAULT_PROVIDER_ID,
-  fallbackProviderForId,
-  isClaudeProvider,
-  isCodexProvider,
-  isCopilotProvider,
-  isOpenCodeProvider,
-  providerCapabilities,
-  providerRuntimeKindLabel,
-  providerShortName,
-} from '../../utils/providerMetadata'
-import {
-  type ModelOption,
-  buildCodexReasoningOptions,
-  buildCodexSpeedOptions,
-  CODEX_SPEED_INHERIT_ID,
-  buildModelOptions,
-  FRIENDLY_MODEL_LABELS,
-  labeledOption,
-  modelOptionFor,
-  providerRuntimeLabel,
-  selectedRuntimeModel,
-} from '../chat/modelOptions'
-import {
-  AcpErrorDetails,
-  buildAcpErrorCopyText,
-  CopyTextButton,
-  diagnosticTail,
-  formatDiagnosticLine,
-  roleAccent,
-  roleLabel,
-  statusColor,
-  statusLabel,
-  toolDisplayKind,
-  toolDisplayTitle,
-} from '../chat/StatusHelpers'
-import {
-  isCancelPermissionOption,
-  MessageFrame,
-  normalizePermissionOptions,
-  PermissionInlineCard,
-  SubAgentRunningPanel,
-  ToolCallInlineRows,
-  ToolCallModal,
-  UserInputInlineCard,
-} from '../chat/ToolCallViews'
-import {
-  AttachmentList,
-  GoalReviewBlock,
-  PersistedMessageContent,
-  PlanBlock,
-  ThinkingBlock,
-  TurnTimelineContent,
-  attachmentLabel,
-  goalReviewForMessage,
-  type WorkingDisplayMode,
-} from '../chat/MessageBlocks'
-import {
-  acpRuntimeBlocksControlChanges,
-  PERMISSION_MODES,
-  type ComposerIconName,
-  ComposerIcon,
-  ComposerToolbar,
-  permissionModeIcon,
-  permissionModeForTier,
-  providerConfigVariantOptions,
-  type DictationState,
-} from '../chat/Composer'
-import { ComputerUseModal } from '../chat/ComputerUseModal'
+import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
+import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
+import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
+import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
-import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { preferredBranch, setPreferredBranch } from '../../utils/branchPreferenceStorage'
+import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
+import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
 interface ChatViewProps {
   session: Session
   accentColor?: string
-  onOpenTerminalFallback?: () => void
 }
 
 type SlashCommand = {
@@ -128,10 +45,37 @@ function normalizePermissionChangeResult(result: boolean | PermissionChangeResul
 }
 
 const INITIAL_RENDERED_MESSAGES = 200
+const COMPANION_INITIAL_RENDERED_MESSAGES = 50
 const EMPTY_GOALS: Goal[] = []
 const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
-const STEERING_TIMEOUT_MS = 5000
+const ALWAYS_OPEN_WORK_SECTION = { expanded: true, toggle: () => undefined }
+
+type WorkSection = { id: string; firstIndex: number; lastAssistantIndex: number; workedSeconds: number; hasAssistant: boolean }
+
+function findWorkSectionStartIndex(messages: Message[], index: number) {
+  let start = Math.min(index, messages.length - 1)
+  while (start > 0 && !(messages[start].role === 'user' && !messages[start].continuesTurn)) start -= 1
+  return Math.max(0, start)
+}
+
+export function buildVisibleWorkSections(messages: Message[], firstVisibleIndex: number) {
+  const sections = new Map<number, WorkSection>()
+  if (messages.length === 0) return sections
+
+  const startIndex = findWorkSectionStartIndex(messages, firstVisibleIndex)
+  let section: WorkSection = { id: '', firstIndex: startIndex, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (index === 0 || (message.role === 'user' && !message.continuesTurn))
+      section = { id: message.id, firstIndex: index, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
+    section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
+    section.hasAssistant ||= message.role === 'assistant'
+    if (message.role === 'assistant') section.lastAssistantIndex = index
+    sections.set(index, section)
+  }
+  return sections
+}
 
 export function uamAgentDisplayName(id: string) {
   if (id === 'build') return 'Build'
@@ -218,6 +162,21 @@ function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
     if (messages[index].role === role) return index
   }
   return -1
+}
+
+function hasSubstantiveOutput(message: Message) {
+  return Boolean(message.content.trim() || message.thoughts?.trim() || message.planSummary?.trim() ||
+    message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
+}
+
+function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
+  const message = messages[messageIndex]
+  if (message?.role !== 'user') return false
+  for (let index = messages.length - 1; index > messageIndex; index -= 1) {
+    const trailing = messages[index]
+    if (trailing.role !== 'assistant' || hasSubstantiveOutput(trailing)) return false
+  }
+  return true
 }
 
 function setRepositoryReview(sessionId: string, review: VcsCommitStatus | null) {
@@ -446,10 +405,21 @@ function ProviderHandoffDialog({
   )
 }
 
+/** Attribute each turn from its recorded metadata, independently of current provider/model settings. */
+export function reviewAssistantLabel(provider: string, message?: Message) {
+  const model = message?.modelId?.trim() || ''
+  const date = message?.createdAt
+  const time = date && Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
+  return [provider, model, time].filter(Boolean).join(' · ')
+}
+
 type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
   message,
+  disclosureState,
   index,
   assistantLabel,
   sessionId,
@@ -464,6 +434,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching,
   planActions,
   workingMode,
+  retryInPlace,
   onBeginEdit,
   onCancelEdit,
   onEditingTextChange,
@@ -472,6 +443,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectTool,
 }: {
   message: Message
+  disclosureState: WorkTraceDisclosureState
   index: number
   assistantLabel: string
   sessionId: string
@@ -486,6 +458,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branching: boolean
   planActions?: PersistedPlanActions
   workingMode: WorkingDisplayMode
+  retryInPlace: boolean
   onBeginEdit: (index: number, content: string) => void
   onCancelEdit: () => void
   onEditingTextChange: (content: string) => void
@@ -512,13 +485,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 
   return (
 		<>
-			{message.prioritySteer && (
-				<div role="separator" aria-label="Steered during this response" className="my-3 flex items-center gap-3 text-xs" style={{ color: 'var(--accent)' }}>
-					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
-					<span>Steered during this response</span>
-					<span className="h-px flex-1" style={{ background: 'var(--border-bright)' }} />
-				</div>
-			)}
     <MessageFrame
       role={message.role}
       assistantLabel={assistantLabel}
@@ -532,10 +498,11 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       } : undefined}
       goalReview={Boolean(goalReview)}
       actionsDisabled={actionsDisabled}
-      onEdit={isUserMessage ? () => onBeginEdit(index, message.content) : undefined}
-      onRevert={isUserMessage ? () => void onCreateBranch(index) : undefined}
+      onEdit={isUserMessage && !isCompanionContext() ? () => onBeginEdit(index, message.content) : undefined}
+      onRevert={isUserMessage && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
+      revertLabel={retryInPlace ? 'Retry message' : undefined}
     >
-			{message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>Response interrupted</div>}
+			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
 			{isEditing ? (
         <div className="space-y-2">
           <textarea
@@ -566,30 +533,32 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       ) : (
         <PersistedMessageContent
           message={message}
+          disclosureState={disclosureState}
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sessionId}
           workingMode={workingMode}
         />
       )}
+      {!isUserMessage && message.interrupted && <div className="conversation-interrupted">Response interrupted</div>}
 		</MessageFrame>
 		</>
   )
 })
 
-export const ChatView = memo(function ChatView({ session, accentColor, onOpenTerminalFallback }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
   const slashListboxId = useId()
   const workspaceMenuId = useId()
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
   const [dictationState, setDictationState] = useState<DictationState>('idle')
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
-  const [computerUseModalOpen, setComputerUseModalOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
@@ -614,14 +583,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
-  const [renderedMessageCount, setRenderedMessageCount] = useState(INITIAL_RENDERED_MESSAGES)
+  const [renderedMessageCount, setRenderedMessageCount] = useState(() => isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
+  const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
-  const steerTurnSerialRef = useRef(0)
-  const steeringTimeoutRef = useRef<number | null>(null)
+  const goalMutationInFlightRef = useRef(false)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
-    computerUseModalOpen ||
     s.isNewChatModalOpen ||
     s.isSettingsOpen ||
     s.memoryLibraryScope !== null ||
@@ -629,25 +597,50 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     s.isMarkdownStoreOpen
   )
 
-  useEffect(() => {
-    return () => {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-      }
-    }
-  }, [])
+  useEffect(() => setSteering(false), [session.id])
 
   useEffect(() => setMemoryChipExplicit(false), [session.id])
+  const composerDraftRef = useRef({ text: draft, attachments: [] as Attachment[] })
+  composerDraftRef.current = {
+    text: draft,
+    attachments: composerAttachments
+      .filter((attachment) => attachment.status === 'ready')
+      .map(({ status: _status, error: _error, ...attachment }) => attachment),
+  }
   useEffect(() => {
-    writeChatComposerDraft(session.id, {
-      text: draft,
-      attachments: composerAttachments
-        .filter((attachment) => attachment.status === 'ready')
-        .map(({ status: _status, error: _error, ...attachment }) => attachment),
-    })
+    const timer = window.setTimeout(() => writeChatComposerDraft(session.id, composerDraftRef.current), 250)
+    return () => window.clearTimeout(timer)
   }, [composerAttachments, draft, session.id])
+  useEffect(() => {
+	const flush = () => {
+	  if (useAppStore.getState().sessions.some((candidate) => candidate.id === session.id)) {
+		writeChatComposerDraft(session.id, composerDraftRef.current)
+	  }
+	}
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
+  const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
+  const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
+  const retryChatHistory = useCallback(async (chatId: string) => {
+    setChatHistoryRetryingIds((ids) => new Set(ids).add(chatId))
+    try {
+      await loadSessionMessages(chatId, true)
+    } finally {
+      setChatHistoryRetryingIds((ids) => {
+        const next = new Set(ids)
+        next.delete(chatId)
+        return next
+      })
+    }
+  }, [loadSessionMessages])
   const folderDirectory = useAppStore((s) =>
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
@@ -671,21 +664,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const branchSessions = useAppStore(useShallow((s) => s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
-  useEffect(() => {
-    for (let index = 0; index < messages.length; index += 1) {
-      if (messages[index]?.role !== 'user') continue
-      const parentId = session.parentChatId && session.branchFromMessageIndex === index ? session.parentChatId : session.id
-      const candidates = branchSessions.filter((candidate) =>
-        candidate.id === parentId || (candidate.parentChatId === parentId && candidate.branchFromMessageIndex === index)
-      )
-      if (candidates.length < 2) continue
-      const preferred = preferredBranch(parentId, index, candidates.map((candidate) => candidate.id))
-      if (preferred && preferred !== session.id) {
-        setActiveSession(preferred)
-        return
-      }
-    }
-  }, [branchSessions, messages, session.branchFromMessageIndex, session.id, session.parentChatId, setActiveSession])
+  const retryFailedMessage = useAppStore((s) => s.retryFailedMessage)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -704,9 +683,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
-  const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
-  const computerUseEffectiveBackend = session.computerUseEffectiveBackend ?? 'uam'
   const computerUseMode = Boolean(session.computerUseEnabled)
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
@@ -717,11 +694,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   useEffect(() => {
     void refreshUamAgents(session.id)
   }, [refreshUamAgents, session.id, workspaceDirectory])
+  useEffect(() => {
+    if (isCompanionContext() && !session.importedReadOnly) {
+      void discoverProviderModels(session.id)
+    }
+  }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
+
   const openSessionWorkspace = useAppStore((s) => s.openSessionWorkspace)
   const openSessionWorkspaceEditor = useAppStore((s) => s.openSessionWorkspaceEditor)
   const openSessionTerminal = useAppStore((s) => s.openSessionTerminal)
-  const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
-  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const openSubAgentSession = useAppStore((s) => s.openSubAgentSession)
   const createChatWorktree = useAppStore((s) => s.createChatWorktree)
   const discardChatWorktreeChanges = useAppStore((s) => s.discardChatWorktreeChanges)
@@ -749,12 +730,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
+  const scrollFrameRef = useRef<number | null>(null)
+  const showScrollToBottomRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
   const dictationActiveRef = useRef(false)
+  const dictationIdRef = useRef('')
   const dictationBaseDraftRef = useRef('')
   const dictationFinalTextRef = useRef('')
   const dictationInterimTextRef = useRef('')
@@ -763,10 +747,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
   const currentSessionIdRef = useRef(session.id)
+  const mountedRef = useRef(true)
+  const removedAttachmentIdsRef = useRef(new Set<string>())
+
+  useEffect(() => () => {
+    mountedRef.current = false
+	if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+  }, [])
 
   useEffect(() => {
     currentSessionIdRef.current = session.id
     isNearBottomRef.current = true
+    showScrollToBottomRef.current = false
     setShowScrollToBottom(false)
     submitInFlightRef.current = false
     setSubmitting(false)
@@ -792,15 +784,49 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 
   const turnEvents = acp?.turnEvents ?? []
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
-  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex ?? -1
-  const turnUserMessageIndex = acp?.turnUserMessageIndex ?? -1
+  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
+    ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
+  const turnUserMessageIndex = acp?.turnUserMessageIndex === undefined || acp.turnUserMessageIndex < 0
+    ? -1 : acp.turnUserMessageIndex - historyStartIndex
   const turnSerial = acp?.turnSerial ?? 0
+  const liveWorkDisclosure = useMemo<WorkTraceDisclosureState>(() => ({}), [session.id, turnSerial])
+  const savedWorkDisclosures = useMemo(() => new Map<string, WorkTraceDisclosureState>(), [session.id])
+  const expandWorkTraces = useAppStore((state) => state.expandWorkTraces)
+  const collapsibleWorkSections = useAppStore((state) => state.collapsibleWorkSections)
+  const [sectionChoices, setSectionChoices] = useState<{ sessionId: string; expanded: Record<string, boolean> }>({ sessionId: session.id, expanded: {} })
   const earliestRenderedMessageIndex = Math.max(0, messages.length - renderedMessageCount)
+  const workSections = useMemo(
+    () => buildVisibleWorkSections(messages, earliestRenderedMessageIndex),
+    [earliestRenderedMessageIndex, messages]
+  )
+  const sectionControls = useMemo(() => {
+    const controls = new Map<string, { expanded: boolean; toggle: () => void }>()
+    return (id: string) => {
+      if (!controls.has(id)) {
+        const expanded = (sectionChoices.sessionId === session.id ? sectionChoices.expanded[id] : undefined) ?? expandWorkTraces
+        controls.set(id, { expanded, toggle: () => setSectionChoices((previous) => ({ sessionId: session.id, expanded: { ...(previous.sessionId === session.id ? previous.expanded : {}), [id]: !expanded } })) })
+      }
+      return controls.get(id)!
+    }
+  }, [session.id, sectionChoices, expandWorkTraces])
   const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
+  const retryInPlaceMessageIndex = canRetryMessageInPlace(messages, latestUserMessageIndex)
+    ? latestUserMessageIndex : -1
   const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const activeWorkMessageIndex = turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex
+  const activeWorkSectionFirstIndex = activeWorkMessageIndex >= 0 && activeWorkMessageIndex < messages.length
+    ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
+    : -1
+  const activeWorkSectionId = messages[activeWorkSectionFirstIndex]?.id
+  const redundantStreamingMessageIndex =
+    turnEvents.length > 0 &&
+    messages[messages.length - 1]?.isStreaming &&
+    turnAssistantMessageIndex === messages.length - 2
+      ? messages.length - 1
+      : -1
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    turnAssistantMessageIndex === messages.length - 1 &&
+    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
     messages[turnAssistantMessageIndex]?.role === 'assistant'
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
@@ -808,19 +834,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  const completedTurnAssistantText = acp?.processing
+  const completedTurnAssistantText = useMemo(() => acp?.processing
     ? ''
     : turnEvents.reduce(
         (text, event) => event.type === 'assistant_text' ? text + event.text : text,
         ''
-      ).trim()
+      ).trim(), [acp?.processing, turnEvents])
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
     completedTurnAssistantText.length > 0 &&
     latestAssistantMessageIndex > latestUserMessageIndex &&
     messages[latestAssistantMessageIndex]?.content.trim() === completedTurnAssistantText
+  // Bind only a confirmed assistant; steering can put user messages between turn rows.
+  const disclosureAssistant = turnAssistantMessageMatches
+    ? messages[turnAssistantMessageIndex]
+    : completedFallbackAlreadyPersisted ? messages[latestAssistantMessageIndex] : undefined
+  if (disclosureAssistant) savedWorkDisclosures.set(disclosureAssistant.id, liveWorkDisclosure)
+  const turnClockStart = useMemo(() => acp?.processingStartedAtMs || Date.now(), [session.id, turnSerial, acp?.processingStartedAtMs, acp?.processing])
   const turnWorkedSeconds = acp?.processing
-    ? acp.processingStartedAtMs ? (Date.now() - acp.processingStartedAtMs) / 1000 : undefined
+    ? Math.max(0, (Date.now() - turnClockStart) / 1000)
     : turnAssistantMessageIndex >= 0
       ? (messages[turnAssistantMessageIndex]?.processingTimeMs ?? 0) / 1000
       : undefined
@@ -858,15 +890,23 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   ])
 
   const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
-    isNearBottomRef.current = isNearBottom
-    setShowScrollToBottom(!isNearBottom)
+	if (scrollFrameRef.current !== null) return
+	scrollFrameRef.current = window.requestAnimationFrame(() => {
+	  scrollFrameRef.current = null
+      const el = scrollRef.current
+      if (!el) return
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
+      isNearBottomRef.current = isNearBottom
+	  const showButton = !isNearBottom
+	  if (showScrollToBottomRef.current === showButton) return
+	  showScrollToBottomRef.current = showButton
+	  setShowScrollToBottom(showButton)
+	})
   }, [])
 
   const scrollToBottom = useCallback(() => {
     isNearBottomRef.current = true
+    showScrollToBottomRef.current = false
     setShowScrollToBottom(false)
     bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
   }, [])
@@ -882,7 +922,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [turnSerial])
 
   useEffect(() => {
-    setComposerAttachments([])
     setSteering(false)
     setAttachmentError('')
     setGoalError('')
@@ -897,14 +936,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     setBranchingMessageIndex(null)
     setMessageBranchError('')
     setClaudePlanPrompt(null)
-    setRenderedMessageCount(INITIAL_RENDERED_MESSAGES)
+    setRenderedMessageCount(isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES)
+    setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')
   }, [session.id])
 
   useEffect(() => {
-    if (!acp?.lastError) setDismissedAcpErrorKey('')
-  }, [acp?.lastError])
+    if (!acp?.lastError && !acp?.promptActionError) setDismissedAcpErrorKey('')
+  }, [acp?.lastError, acp?.promptActionError])
 
   useEffect(() => {
     if (dictationState !== 'listening') { setDictationElapsedSeconds(0); return }
@@ -918,24 +958,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       setWorkspaceFeedback(null)
     }
   }, [session.workspaceIsolationKind])
-
-  useEffect(() => {
-    if (!steering) return
-    const nextTurnStarted = (acp?.turnSerial ?? 0) > steerTurnSerialRef.current
-    const queuedSteerStillPending = Boolean(acp?.queuedPrompts?.[0]?.prioritySteer)
-    if (nextTurnStarted || (!acp?.processing && !queuedSteerStillPending)) {
-      setSteering(false)
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      return
-    }
-    if (steeringTimeoutRef.current !== null) {
-      window.clearTimeout(steeringTimeoutRef.current)
-    }
-    steeringTimeoutRef.current = window.setTimeout(() => setSteering(false), STEERING_TIMEOUT_MS)
-  }, [acp?.turnSerial, acp?.processing, acp?.queuedPrompts, steering])
 
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
@@ -982,6 +1004,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }, [modelOpen, workspaceMenuOpen])
 
   const stageFiles = async (files: File[]) => {
+    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
+    const stagingSessionId = session.id
     const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
     if (realFiles.length === 0) return
 
@@ -1013,7 +1037,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       }
 
-      const staged = await stageChatAttachments(session.id, items)
+      const staged = await stageChatAttachments(stagingSessionId, items)
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+        const stored = readChatComposerDraft(stagingSessionId)
+        writeChatComposerDraft(stagingSessionId, {
+          ...stored,
+          attachments: [...stored.attachments, ...staged.filter((candidate) =>
+            !removedAttachmentIdsRef.current.has(candidate.id) &&
+            !stored.attachments.some((attachment) => attachment.id === candidate.id)
+          )],
+        })
+        return
+      }
       setComposerAttachments((current) =>
         current.map((attachment) => {
           const replacement = staged.find((candidate) => candidate.id === attachment.id)
@@ -1023,6 +1059,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       )
     } catch (err) {
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
       const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1035,6 +1072,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
+    const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
 
@@ -1050,12 +1088,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     setComposerAttachments((current) => [...current, ...pending])
 
     try {
-      const staged = await stageChatAttachments(session.id, pending.map((attachment) => ({
+      const staged = await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         kind: 'directory',
         path: attachment.path,
       })))
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+        const stored = readChatComposerDraft(stagingSessionId)
+        writeChatComposerDraft(stagingSessionId, {
+          ...stored,
+          attachments: [...stored.attachments, ...staged.filter((candidate) =>
+            !removedAttachmentIdsRef.current.has(candidate.id) &&
+            !stored.attachments.some((attachment) => attachment.id === candidate.id)
+          )],
+        })
+        return
+      }
       setComposerAttachments((current) =>
         current.map((attachment) => {
           const replacement = staged.find((candidate) => candidate.id === attachment.id)
@@ -1065,6 +1115,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         })
       )
     } catch (err) {
+      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
       const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1108,24 +1159,31 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return true
     }
 
+	goalMutationInFlightRef.current = true
     setGoalSubmitting(true)
-	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
-	const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
-	const goalAttachments = composerAttachments
-	  .filter((attachment) => attachment.status === 'ready')
-	  .map(({ status, error, ...attachment }) => attachment)
-	const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
-    setGoalSubmitting(false)
+	try {
+	  const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+	  const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
+	  const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
+	  const goalAttachments = composerAttachments
+	    .filter((attachment) => attachment.status === 'ready')
+	    .map(({ status, error, ...attachment }) => attachment)
+	  const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
 
-	if (goalResult.ok && sent) {
-      setDraft('')
-	  setComposerAttachments([])
-	  setAttachmentError('')
-      setGoalError('')
-    } else {
-	  setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
-    }
+	  if (goalResult.ok && sent) {
+        setDraft('')
+	    setComposerAttachments([])
+	    setAttachmentError('')
+        setGoalError('')
+      } else {
+	    setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
+      }
+	} catch {
+	  setGoalError('Failed to create goal.')
+	} finally {
+	  goalMutationInFlightRef.current = false
+	  setGoalSubmitting(false)
+	}
     return true
   }
 
@@ -1163,6 +1221,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 	  }
 	  const submittedSessionId = session.id
 	  submitInFlightRef.current = true
+	  goalMutationInFlightRef.current = true
 	  setSubmitting(true)
 	  setGoalSubmitting(true)
 	  try {
@@ -1176,7 +1235,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 		setDraft('')
 		setComposerAttachments([])
 		setAttachmentError('')
+	  } catch {
+		setGoalError('Failed to create goal.')
 	  } finally {
+		goalMutationInFlightRef.current = false
 		setGoalSubmitting(false)
 		submitInFlightRef.current = false
 		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
@@ -1187,6 +1249,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (goalArmNextMessage) {
       const submittedSessionId = session.id
       submitInFlightRef.current = true
+	  goalMutationInFlightRef.current = true
       setSubmitting(true)
       setGoalSubmitting(true)
 	  try {
@@ -1208,7 +1271,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 		setDraft('')
 		setComposerAttachments([])
 		setAttachmentError('')
+	  } catch {
+		setGoalError('Failed to create goal.')
 	  } finally {
+		goalMutationInFlightRef.current = false
 		setGoalSubmitting(false)
 		submitInFlightRef.current = false
 		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
@@ -1223,14 +1289,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     const submittedSessionId = session.id
     submitInFlightRef.current = true
     setSubmitting(true)
-    if (steerNow) {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      steerTurnSerialRef.current = acp?.turnSerial ?? 0
-      setSteering(true)
-    }
+    if (steerNow) setSteering(true)
     let ok = false
     try {
       ok = await (steerNow
@@ -1242,13 +1301,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (currentSessionIdRef.current === submittedSessionId) {
       submitInFlightRef.current = false
       setSubmitting(false)
-    }
-    if (!ok) {
-      if (steeringTimeoutRef.current !== null) {
-        window.clearTimeout(steeringTimeoutRef.current)
-        steeringTimeoutRef.current = null
-      }
-      setSteering(false)
+      if (steerNow) setSteering(false)
     }
     if (ok && currentSessionIdRef.current === submittedSessionId) {
       setDraft('')
@@ -1267,7 +1320,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     : ''
   useEffect(() => {
     let cancelled = false
-    if (remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
+    if (isCompanionContext() || remoteComputerUseDisabled || !completedTurnKey || !workspaceDirectory || !repositoryComparisonRef) return
 
     void getVcsCommitStatus(session.id, 'git', {
       includeLineStats: true,
@@ -1345,7 +1398,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (workspaceActionsDisabled || latestAssistantMessageIndex < 0) return
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(true)
-    const preview = await previewChatTurnRollback(session.id, latestAssistantMessageIndex)
+    const preview = await previewChatTurnRollback(session.id, latestAssistantMessageIndex + historyStartIndex)
     if (!preview) {
       setWorkspaceActionBusy(false)
       setWorkspaceFeedback({ message: 'This turn can no longer be rolled back safely.', tone: 'error' })
@@ -1353,7 +1406,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
     setWorkspaceActionBusy(false)
     setRollbackConfirmation({
-      messageIndex: latestAssistantMessageIndex,
+      messageIndex: latestAssistantMessageIndex + historyStartIndex,
       diff: preview.diff || 'This checkpoint contains repository changes.',
     })
   }
@@ -1379,6 +1432,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     [currentProviderId, providers]
   )
   const providerAcp = acp?.providerId === currentProviderId ? acp : undefined
+  const providerRuntime = cli?.running ? cli : providerAcp
   const providerVariants = useMemo(
     () => providerConfigVariantOptions(providerAcp, currentProviderId),
     [providerAcp, currentProviderId]
@@ -1400,8 +1454,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     : ''
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
-  const currentErrorTitle = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)} error`
-  const currentAcpErrorKey = acp?.lastError ? `${session.id}:${acp.lastError}` : ''
+  const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
+  const currentErrorTitle = `${currentErrorSource} error`
+  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
+  const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
     : /working|unavailable|provider-managed/i.test(slashMessage)
@@ -1414,6 +1470,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const createMessageBranch = useCallback(async (messageIndex: number, content?: string) => {
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
+    const chatMessages = useAppStore.getState().messages[session.id] ?? []
+    if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex - historyStartIndex)) {
+      try {
+        const result = await retryFailedMessage(session.id, messageIndex)
+        if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
+      } catch {
+        setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
+      } finally {
+        setBranchingMessageIndex(null)
+      }
+      return
+    }
     const branchId = await branchFromMessage(session.id, messageIndex, content)
     setBranchingMessageIndex(null)
     if (!branchId) {
@@ -1422,7 +1490,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
-  }, [branchFromMessage, session.id])
+  }, [branchFromMessage, historyStartIndex, retryFailedMessage, session.id])
   const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
     setEditingMessageIndex(messageIndex)
     setEditingMessageText(content)
@@ -1449,6 +1517,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 
   const startDictation = async () => {
     if (!dictationAvailable || dictationActiveRef.current) return
+    const dictationId = createRequestId('dictation')
+    dictationIdRef.current = dictationId
     dictationActiveRef.current = true
     dictationBaseDraftRef.current = draft
     dictationFinalTextRef.current = ''
@@ -1460,9 +1530,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
 
     const response = await sendToCEF<{ started: boolean }>({
       action: 'startDictation',
-      payload: { locale: navigator.language || '' },
+      payload: { locale: navigator.language || '', dictationId },
     })
-    if (!dictationActiveRef.current) return
+    if (!dictationActiveRef.current || dictationIdRef.current !== dictationId) return
     if (!response.ok) {
       dictationActiveRef.current = false
       setDictationState('idle')
@@ -1476,8 +1546,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     if (!dictationActiveRef.current) return
 	dictationSubmitAfterStopRef.current = submitAfterStop
     setDictationState('stopping')
-    const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation' })
-    if (!response.ok && dictationActiveRef.current) {
+    const dictationId = dictationIdRef.current
+    const response = await sendToCEF<{ stopped: boolean }>({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
+    if (!response.ok && dictationActiveRef.current && dictationIdRef.current === dictationId) {
 	  dictationSubmitAfterStopRef.current = false
       setDictationState('listening')
       setDictationError(response.error || 'Failed to stop dictation.')
@@ -1490,14 +1561,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     dictationSubmitAfterStopRef.current = false
     setDictationState('idle')
     setDictationError('')
-    if (wasActive) void sendToCEF({ action: 'stopDictation' })
+    if (wasActive) void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
     window.setTimeout(() => composerTextareaRef.current?.focus(), 0)
   }
 
   useEffect(() => {
     const onDictation = (event: Event) => {
       const message = (event as CustomEvent<DictationPushMessage>).detail
-      if (!dictationActiveRef.current || !message || message.type !== 'dictation') return
+      if (!dictationActiveRef.current || !message || message.type !== 'dictation' || message.dictationId !== dictationIdRef.current) return
 
       if (message.event === 'interim') {
         dictationInterimTextRef.current = message.text
@@ -1539,7 +1610,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       window.removeEventListener('uam-dictation', onDictation)
       if (dictationActiveRef.current) {
         dictationActiveRef.current = false
-        void sendToCEF({ action: 'stopDictation' })
+        void sendToCEF({ action: 'stopDictation', payload: { dictationId: dictationIdRef.current } })
       }
     }
   }, [session.id])
@@ -1549,9 +1620,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   const currentReviewerModelId = session.reviewerModelId || defaultReviewerModelId || currentModelId
   const showUnresolvedDefaultModel = !session.modelId && !providerAcp?.currentModelId
   const currentModel = modelOptionFor(buildModelOptions(providerAcp, currentModelId, currentProvider, currentProviderId, showUnresolvedDefaultModel), currentModelId)
-  const currentProviderCapabilities = providerCapabilities(currentProviderId, currentProvider)
+  const currentProviderCapabilities = useMemo(
+    () => providerCapabilities(currentProviderId, currentProvider),
+    [currentProvider, currentProviderId]
+  )
   const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
-  const reasoningOptions = currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
+  const reasoningOptions = useMemo(() => currentProviderCapabilities.hasReasoningEffort || runtimeSupportsReasoning
     ? buildCodexReasoningOptions(
         providerAcp,
         currentModel.id,
@@ -1560,11 +1634,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
           : undefined
       )
-    : []
+    : [], [currentModel.id, currentProvider, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
-  const speedOptions = currentProviderCapabilities.hasServiceTier
+  const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
     ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '')
-    : []
+    : [], [currentModel.id, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
     const offered = providerAcp?.availableModes.filter((mode) => mode.id === 'default' || mode.id === 'plan') ?? []
@@ -1698,13 +1772,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     const changed = await setAcpConfigOption(session.id, configId, value)
     setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
   }
-  const latestPlanMessageIndex = messages.reduce((latest, message, index) => {
+  const supportsPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan'
+  const latestPlanMessageIndex = useMemo(() => supportsPlanActions ? messages.reduce((latest, message, index) => {
     const hasPlan = message.role === 'assistant' && (Boolean(message.planSummary?.trim()) || (message.planEntries?.length ?? 0) > 0)
     return hasPlan ? index : latest
-  }, -1)
-  const latestPlanHasLaterUser =
-    latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user')
-  const canShowPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan' && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
+  }, -1) : -1, [messages, supportsPlanActions])
+  const latestPlanHasLaterUser = useMemo(
+    () => latestPlanMessageIndex >= 0 && messages.slice(latestPlanMessageIndex + 1).some((message) => message.role === 'user'),
+    [latestPlanMessageIndex, messages]
+  )
+  const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
   const planActionsDisabledTitle = planActionBlockedByRuntime
@@ -1732,10 +1809,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     mutation: () => Promise<{ ok: boolean; error?: string }>,
     fallbackError: string,
   ) => {
+    if (goalSubmitting || goalMutationInFlightRef.current) return false
+    goalMutationInFlightRef.current = true
     setGoalError('')
-    const result = await mutation()
-    if (!result.ok) setGoalError(result.error || fallbackError)
-    return result.ok
+    setGoalSubmitting(true)
+    try {
+      const result = await mutation()
+      if (!result.ok) setGoalError(result.error || fallbackError)
+      return result.ok
+    } catch {
+      setGoalError(fallbackError)
+      return false
+    } finally {
+      goalMutationInFlightRef.current = false
+      setGoalSubmitting(false)
+    }
   }
   const handleCompleteGoal = () => {
     if (displayedGoal) {
@@ -1746,12 +1834,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     }
   }
   const handleResumeGoal = async () => {
-    if (!displayedGoal || goalSubmitting) return
-    setGoalError('')
-    setGoalSubmitting(true)
-    const resumed = await resumeGoal(session.id, displayedGoal.id)
-    setGoalSubmitting(false)
-    if (!resumed.ok) setGoalError(resumed.error || 'Failed to resume goal.')
+    if (!displayedGoal) return
+    await runGoalMutation(
+      () => resumeGoal(session.id, displayedGoal.id),
+      'Failed to resume goal.',
+    )
   }
   const handlePauseGoal = () => {
     if (displayedGoal) {
@@ -1793,7 +1880,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
-    return setSessionComputerUseEnabled(session.id, active)
+    const result = await setSessionComputerUseEnabled(session.id, active)
+    if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
+    return result
   }
 
   // Slash command palette: typing "/" at the start of an empty-ish draft opens
@@ -1852,7 +1941,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
-        { id: 'computer', label: '/computer', hint: `Configure computer use · ${computerUseEffectiveBackend === 'provider' ? 'Provider built-in' : 'UAM controlled'}`, icon: <MousePointer2 size={15} />, run: () => setComputerUseModalOpen(true) },
+        { id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) },
         {
           id: 'memory',
           label: '/memory',
@@ -1880,7 +1969,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, computerUseEffectiveBackend, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants]
+    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -1940,7 +2029,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       : []
   const slashOpen = !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
   const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined
-  const activeSlashOptionId = slashOpen ? `${slashListboxId}-option-${Math.min(slashIndex, slashMatches.length - 1)}` : undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
@@ -1978,11 +2066,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
     return groups
   }, []) : []
   const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
+  const activeSlashOptionId = !slashOpen
+    ? undefined
+    : activeSlashGroup?.groupEntries
+      ? `${slashListboxId}-group-${activeSlashGroups.length - 1}-option-${Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)}`
+      : `${slashListboxId}-option-${Math.min(slashIndex, slashMatches.length - 1)}`
+  const controlledSlashMenuIds = slashOpen
+    ? [slashListboxId, ...activeSlashGroups.map((_, index) => `${slashListboxId}-group-${index}`)].join(' ')
+    : undefined
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 	const nativeEvent = event.nativeEvent
+	if (nativeEvent.isComposing || nativeEvent.keyCode === 229) return
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
-		!event.repeat && !nativeEvent.isComposing && nativeEvent.keyCode !== 229 &&
+		!event.repeat &&
 		!appModalOpen && !selectedToolCallRef && !modelOpen && !workspaceMenuOpen &&
 		!slashPaletteVisible && !permissionMenuOpen && !slashGroup) {
 	  event.preventDefault()
@@ -2128,7 +2225,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
       {selectedToolCall && (
         <ToolCallModal
           tool={selectedToolCall}
-          chatId={selectedToolCallRef?.messageId ? session.id : undefined}
+          chatId={session.id}
+          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) + historyStartIndex : undefined}
           onClose={() => setSelectedToolCallRef(null)}
           onOpenSubAgent={selectedToolCall.isSubAgent ? () => void openSelectedSubAgentSession() : undefined}
           accentColor={accentColor}
@@ -2148,13 +2246,41 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
         <div className="relative flex-1 min-h-0">
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div className="uam-chat-content w-full py-4">
+              {chatHistoryError && (
+                <Notice
+                  key={`chat-history:${session.id}:${chatHistoryError}`}
+                  tone="error"
+                  title="Chat history unavailable"
+                  dismissLabel="Dismiss chat history error"
+                  actions={(
+                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                      Retry
+                    </Button>
+                  )}
+                >
+                  {chatHistoryError}
+                </Notice>
+              )}
+              <SubAgentDisclosureProvider key={session.id}>
               <div className="uam-message-list space-y-1.5">
-              {earliestRenderedMessageIndex > 0 && (
+              {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)}
+                    loading={olderHistoryLoading}
+                    onClick={() => {
+                      if (earliestRenderedMessageIndex > 0) {
+                        setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                      } else if (!olderHistoryLoading) {
+                        setOlderHistoryLoading(true)
+                        void loadOlderSessionMessages(session.id).then((loaded) => {
+                          if (loaded) setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                        }).finally(() => {
+                          setOlderHistoryLoading(false)
+                        })
+                      }
+                    }}
                   >
                     Show earlier messages
                   </Button>
@@ -2162,29 +2288,66 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               )}
               {visibleMessages.map((message, visibleIndex) => {
                 const index = earliestRenderedMessageIndex + visibleIndex
+                if (index === redundantStreamingMessageIndex) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const messageProviderId = message.providerId?.trim() || currentProviderId
+                const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
+                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
                   messageProviderId
                 )
 
                 if (shouldSkipAssistantMessage) return null
+                let disclosureState = savedWorkDisclosures.get(message.id)
+                if (!disclosureState) {
+                  disclosureState = {}
+                  savedWorkDisclosures.set(message.id, disclosureState)
+                }
 
+                const section = workSections.get(index)!
+                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
+                const sectionControl = sectionActive || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
+                const sectionCollapsed = !sectionActive && !sectionControl.expanded
+                const hideCollapsedMessage = sectionCollapsed && (
+                  (message.role === 'user' && message.continuesTurn) ||
+                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
+                )
+                if (hideCollapsedMessage) return null
+                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
+                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
+                const sectionStart = messages[section.firstIndex]
+                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
+                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
+                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
+                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
+                  onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                /></div> : null
                 return (
-                  <div key={message.id} className="space-y-1">
+                  <WorkSectionContext.Provider key={message.id} value={sectionControl}>
+                  <div className="space-y-1">
+                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
+                      sectionProviderName,
+                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : ''),
+                      sectionStart.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
+                    ].filter(Boolean).join(' · ')}</time>}
+                    {message.role !== 'user' && heading}
                     {shouldRenderTimelineAtAssistant ? (
                       <MessageFrame
                         role={message.role}
-                        assistantLabel={messageProviderName}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         copyText={message.content}
                         goalReview={Boolean(goalReviewForMessage(message))}
                         streaming={Boolean(acp?.processing)}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                       >
                         <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
                           key={`turn-${turnSerial}-assistant`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2209,20 +2372,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     ) : (
                       <PersistedMessageRow
                         message={message}
-                        index={index}
-                        assistantLabel={messageProviderName}
+                        disclosureState={disclosureState}
+                        index={index + historyStartIndex}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         sessionId={session.id}
                         sessionParentChatId={session.parentChatId}
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        isEditing={editingMessageIndex === index}
-                        editingText={editingMessageIndex === index ? editingMessageText : ''}
+                        isEditing={editingMessageIndex === index + historyStartIndex}
+                        editingText={editingMessageIndex === index + historyStartIndex ? editingMessageText : ''}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                         canChangeProvider={canChangeProvider}
-                        branching={branchingMessageIndex === index}
+                        branching={branchingMessageIndex === index + historyStartIndex}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
+                        retryInPlace={index === retryInPlaceMessageIndex}
                         onBeginEdit={beginEditingMessage}
                         onCancelEdit={cancelEditingMessage}
                         onEditingTextChange={setEditingMessageText}
@@ -2231,15 +2396,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         onSelectTool={selectPersistedTool}
                       />
                     )}
+                    {message.role === 'user' && heading}
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
                       <MessageFrame
                         key={`turn-${turnSerial}-after-user`}
                         role="assistant"
-                        assistantLabel={currentProviderName}
+                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                         streaming={Boolean(acp?.processing)}
                       >
                         <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
                           key={`turn-${turnSerial}-after-user-content`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2263,29 +2432,39 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       </MessageFrame>
                     )}
                   </div>
+                  </WorkSectionContext.Provider>
                 )
               })}
-              {acp?.processing && turnEvents.length === 0 && (
+              {acp?.processing && turnEvents.length === 0 && activeWorkMessageIndex < 0 && (
                 <div
                   data-testid="turn-starting"
                   role="status"
-                  className="uam-turn-starting flex items-center gap-2 px-4 py-2 text-xs"
+                  className="uam-turn-starting px-4 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}
                 >
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} aria-hidden />
-                  Starting…
+                  <ConversationWork
+                    headerOnly active startedAt={turnClockStart} duration="0s"
+                    disclosureState={liveWorkDisclosure} events={[]} tools={[]}
+                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                  />
                 </div>
               )}
-              {turnEvents.length > 0 && !renderTimelineAfterUser && !renderTimelineAtAssistant && !completedFallbackAlreadyPersisted && (
+              {(turnEvents.length > 0 || pendingPermission || pendingUserInput) &&
+                !renderTimelineAfterUser && !renderTimelineAtAssistant &&
+                (!completedFallbackAlreadyPersisted || pendingPermission || pendingUserInput) && (
                 <MessageFrame
                   key={`turn-${turnSerial}-fallback`}
                   role="assistant"
-                  assistantLabel={currentProviderName}
+                  assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
                   streaming={Boolean(acp?.processing)}
                 >
+                  <WorkSectionContext.Provider value={activeWorkSectionId ? ALWAYS_OPEN_WORK_SECTION : null}>
                   <TurnTimelineContent
+                    disclosureState={liveWorkDisclosure}
                     key={`turn-${turnSerial}-fallback-content`}
-                    events={turnEvents}
+                    startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          events={turnEvents}
                       tools={acp?.toolCalls ?? []}
                       planSummary={acp?.planSummary ?? ''}
                       planEntries={acp?.planEntries ?? []}
@@ -2305,6 +2484,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     workingMode={workingDisplayMode}
                     workedSeconds={turnWorkedSeconds}
                   />
+                  </WorkSectionContext.Provider>
                 </MessageFrame>
               )}
               {(repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
@@ -2322,7 +2502,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                         </span>
                       )}
                     </div>
-                    <Button type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
+                    <Button style={isCompanionContext() ? { display: 'none' } : undefined} type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
                       Open commit panel
                     </Button>
                   </div>
@@ -2361,6 +2541,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               )}
               <div ref={bottomRef} />
               </div>
+              </SubAgentDisclosureProvider>
             </div>
           </div>
           {showScrollToBottom && (
@@ -2382,7 +2563,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
-            onResume={() => void handleResumeGoal()}
+			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
             resumePending={goalSubmitting}
             onRemove={handleRemoveGoal}
             onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
@@ -2464,54 +2645,23 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use the CLI fallback when a turn needs interaction.
               </Notice>
             )}
-            {acp?.lastError && currentAcpErrorKey !== dismissedAcpErrorKey && (
-              <Notice
-                key={`acp:${currentAcpErrorKey}`}
-                tone="error"
-                title={currentErrorTitle}
-                dismissLabel="Dismiss composer error"
-                onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
-                actions={(
-                  <>
-                    <CopyTextButton text={buildAcpErrorCopyText(acp, currentErrorTitle)} label="Copy error" title="Copy error details" />
-                    {acp.lifecycleState === 'error' && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Check provider CLI"
-                          onClick={() => void refreshCliProviderVersion(currentProviderId)}
-                        >
-                          Check CLI
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Open CLI settings"
-                          onClick={() => setSettingsOpen(true)}
-                        >
-                          CLI settings
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          aria-label="Open fallback terminal"
-                          disabled={!onOpenTerminalFallback}
-                          onClick={onOpenTerminalFallback}
-                        >
-                          Open terminal
-                        </Button>
-                      </>
-                    )}
-                  </>
-                )}
+            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
+              <div
+                role="alert"
+                className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
+                style={{
+                  border: '1px solid color-mix(in srgb, var(--red) 42%, var(--border))',
+                  background: 'color-mix(in srgb, var(--red) 9%, var(--surface))',
+                  color: 'var(--red)',
+                }}
               >
-                <span style={{ color: 'var(--red)', fontWeight: 600 }}>{currentErrorTitle}</span>
-                <span style={{ color: 'var(--text-2)' }}> · </span>
-                {acp.lastError}
-                <AcpErrorDetails acp={acp} title={currentErrorTitle} />
-              </Notice>
-              )}
+                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {currentAcpError}</span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                  <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
+                </span>
+              </div>
+            )}
             {claudePlanPrompt !== null && (
               <Notice
                 tone="warning"
@@ -2585,18 +2735,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                       label="Steer with this prompt now"
                       disabled={steering}
                       onClick={() => {
-                        steerTurnSerialRef.current = acp?.turnSerial ?? 0
+                        const submittedSessionId = session.id
                         setSteering(true)
-                        if (steeringTimeoutRef.current !== null) {
-                          window.clearTimeout(steeringTimeoutRef.current)
-                          steeringTimeoutRef.current = null
-                        }
-                        void steerQueuedAcpPrompt(session.id, index)
-                          .then((ok) => {
-                            if (!ok) setSteering(false)
-                          })
-                          .catch(() => {
-                            setSteering(false)
+                        void steerQueuedAcpPrompt(submittedSessionId, index)
+                          .catch(() => false)
+                          .finally(() => {
+                            if (currentSessionIdRef.current === submittedSessionId) setSteering(false)
                           })
                       }}
                     />
@@ -2671,7 +2815,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     </span>
                     <button
                       type="button"
-                      onClick={() => setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      onClick={() => {
+                        removedAttachmentIdsRef.current.add(attachment.id)
+                        setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
+                      }}
                       title="Remove attachment"
                       aria-label={`Remove ${attachment.name} attachment`}
                       className="uam-attachment-remove"
@@ -2731,15 +2878,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                   </div>
                 </ViewportMenu>
             )}
-            {activeSlashGroups.map((group) => {
+            {activeSlashGroups.map((group, groupIndex) => {
               const path = group.id.slice('md-group:'.length)
               const anchor = { current: slashGroupButtonRefs.current[path] }
               if (!group.groupEntries || !anchor.current) return null
-              return <ViewportMenu key={group.id} anchorRef={anchor} side="right" role="menu" manageFocus={false} aria-label={`${path} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
+              return <ViewportMenu key={group.id} id={`${slashListboxId}-group-${groupIndex}`} anchorRef={anchor} side="right" role="menu" manageFocus={false} aria-label={`${path} skills`} className="animate-fade-in" style={{ width: 280, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}>
                 <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }}>{path}</div>
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
-                  return <button key={command.id} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${group === activeSlashGroup && index === slashGroupIndex ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: group === activeSlashGroup && index === slashGroupIndex ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: group === activeSlashGroup && index === slashGroupIndex ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
+                  const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
+                  return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
                 })}
               </ViewportMenu>
             })}
@@ -2771,6 +2919,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 )}
               </div>
             )}
+            <div className="uam-composer-input-row">
+              {featurePreference === 'uam' && <ComposerAgentSelector
+                agents={uamAgents}
+                agentId={selectedUamAgentId}
+                nextTurn={Boolean(providerAcp?.processing)}
+                onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
+              />}
+
             <textarea
               ref={composerTextareaRef}
               value={draft}
@@ -2780,7 +2936,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 setSlashGroup('')
                 setPermissionMenuOpen(false)
               }}
-              onSelect={(event) => setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
+              onSelect={(event) => {
+                if (draft.includes('/')) {
+                  setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
+                }
+              }}
               onKeyDown={onComposerKeyDown}
               onPaste={onComposerPaste}
               rows={1}
@@ -2789,7 +2949,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
               aria-expanded={slashOpen}
-              aria-controls={slashOpen ? slashListboxId : undefined}
+              aria-controls={controlledSlashMenuIds}
               aria-activedescendant={activeSlashOptionId}
               aria-autocomplete="list"
               className="uam-composer-textarea w-full resize-none text-sm"
@@ -2801,6 +2961,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                 outline: 'none',
               }}
             />
+            </div>
             <input
               ref={fileInputRef}
               type="file"
@@ -2819,12 +2980,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
               canSend={canSend}
-              runtimeStatusLabel={statusLabel(providerAcp)}
-              runtimeStatusColor={statusColor(providerAcp)}
+              runtimeStatusLabel={statusLabel(providerRuntime)}
+              runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}
               reviewerModelId={session.smallModelMode ? activeGoal?.reviewerModelId || currentReviewerModelId : currentReviewerModelId}
               includeDefaultModel={showUnresolvedDefaultModel}
-              session={session}
               reasoningEffort={session.reasoningEffort ?? ''}
               serviceTier={session.serviceTier ?? ''}
               serviceTierExplicit={serviceTierExplicit}
@@ -2838,6 +2998,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               providerModes={providerModes}
               uamAgents={uamAgents}
               computerUseMode={computerUseMode}
+              computerUseAwaitingTarget={computerUseMode && !session.computerUseTargetId}
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
               memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
@@ -2845,7 +3006,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               modelOpen={modelOpen}
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
-				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerVariants.some((option) => option.id.toLowerCase() === 'effort' || option.id.toLowerCase() === 'thought_level')) {
+				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
 				  void discoverProviderModels('', currentProviderId, workspaceDirectory)
 				}
                 setModelOpen((value) => !value)
@@ -2870,8 +3031,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               onSelectProviderMode={(modeId) => void setSessionApprovalMode(session.id, modeId)}
               onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
-              onToggleComputerUseMode={() => void setComputerUseActive(false)}
-              onOpenComputerUse={() => setComputerUseModalOpen(true)}
+              onToggleComputerUseMode={() => void setComputerUseActive(!computerUseMode)}
               onSelectMemoryLevel={(level) => {
                 setMemoryChipExplicit(true)
                 void setSessionMemoryLevel(session.id, level)
@@ -2887,10 +3047,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
               defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
               onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
-              onStopRuntime={() => void stopAcpSession(session.id)}
+              onCancelTurn={() => void cancelAcpTurn(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
-              workspaceControl={(
+              workspaceControl={!isCompanionContext() && (
+                <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
@@ -2948,11 +3109,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
                     </ViewportMenu>
                   )}
                 </div>
+                </>
               )}
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
-              dictationAvailable={dictationAvailable}
+              dictationAvailable={!isCompanionContext() && dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()
                 else void startDictation()
@@ -2962,27 +3124,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, onOpenTer
           </div>
         </form>
       </div>
-      {computerUseModalOpen && (
-        <ComputerUseModal
-          active={computerUseMode}
-          enabled={session.computerUseEnabled ?? false}
-          disabled={runtimeBlocksControlChanges || remoteComputerUseDisabled}
-          remoteDisabled={remoteComputerUseDisabled}
-          backend={session.computerUseBackend ?? 'auto'}
-          effectiveBackend={computerUseEffectiveBackend}
-          providerAvailable={session.computerUseProviderAvailable ?? false}
-          providerName={currentProviderName}
-          modelLabel={currentModel.label}
-          targetKind={session.computerUseTargetKind ?? 'window'}
-          targetTitle={session.computerUseTargetTitle ?? ''}
-          targetInputMode={session.computerUseTargetInputMode ?? 'foreground'}
-          state={session.computerUse?.state ?? (session.computerUseEnabled ? 'running' : 'stopped')}
-          onClose={() => setComputerUseModalOpen(false)}
-          onSetActive={setComputerUseActive}
-          onSetBackend={(backend) => setSessionComputerUseBackend(session.id, backend)}
-          onSetControl={(state) => setSessionComputerUseControl(session.id, state)}
-        />
-      )}
     </div>
   )
 })

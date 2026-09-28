@@ -60,7 +60,10 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
     if (!isString(raw.chatId) || !isString(raw.token)) {
       return { ok: false, status: 'invalid-message', error: 'streamToken requires chatId and token.' }
     }
-    return { ok: true, message: { type, chatId: raw.chatId, token: raw.token } }
+    if (raw.messageIndex !== undefined && (typeof raw.messageIndex !== 'number' || !Number.isSafeInteger(raw.messageIndex) || raw.messageIndex < 0)) {
+      return { ok: false, status: 'invalid-message', error: 'streamToken messageIndex must be a nonnegative integer.' }
+    }
+    return { ok: true, message: { type, chatId: raw.chatId, token: raw.token, ...(raw.messageIndex === undefined ? {} : { messageIndex: raw.messageIndex }) } }
   }
 
   if (type === 'streamDone') {
@@ -71,20 +74,24 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   }
 
   if (type === 'dictation') {
+    const dictationId = raw.dictationId
+    if (!isString(dictationId) || !dictationId || dictationId.length > 128) {
+      return { ok: false, status: 'invalid-message', error: 'dictation requires a recording ID.' }
+    }
     if (raw.event === 'interim' || raw.event === 'final') {
       if (!isString(raw.text)) {
         return { ok: false, status: 'invalid-message', error: `dictation ${raw.event} requires text.` }
       }
-      return { ok: true, message: { type, event: raw.event, text: raw.text } }
+      return { ok: true, message: { type, dictationId, event: raw.event, text: raw.text } }
     }
     if (raw.event === 'error') {
       if (!isString(raw.message)) {
         return { ok: false, status: 'invalid-message', error: 'dictation error requires a message.' }
       }
-      return { ok: true, message: { type, event: raw.event, message: raw.message } }
+      return { ok: true, message: { type, dictationId, event: raw.event, message: raw.message } }
     }
     if (raw.event === 'end') {
-      return { ok: true, message: { type, event: raw.event } }
+      return { ok: true, message: { type, dictationId, event: raw.event } }
     }
     return { ok: false, status: 'invalid-message', error: 'dictation requires a supported event.' }
   }

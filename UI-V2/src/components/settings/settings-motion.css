@@ -1,0 +1,12 @@
+.uam-settings-motion {
+  animation: uam-settings-enter 150ms ease-out both;
+}
+
+@keyframes uam-settings-enter {
+  from { transform: translateY(5px); }
+  to { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-settings-motion { animation: none; }
+}

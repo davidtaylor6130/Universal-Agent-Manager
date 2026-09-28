@@ -18,6 +18,7 @@ function gridLayout(...sessionIds: string[]) {
 const now = new Date('2026-01-01T12:00:00.000Z')
 const originalAddFolder = useAppStore.getState().addFolder
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
+const originalSetActiveSession = useAppStore.getState().setActiveSession
 
 function makeFolder(): Folder {
   return {
@@ -72,6 +73,32 @@ describe('FolderTree', () => {
     })
   })
 
+  it('glides workspace chats on expand and keeps collapsed chats inert', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+    const list = host.querySelector<HTMLElement>('[data-testid="folder-sessions-project"]')!
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeTruthy()
+
+    act(() => header.click())
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(list.getAttribute('aria-hidden')).toBe('true')
+    expect(list.hasAttribute('inert')).toBe(true)
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeNull()
+
+    act(() => header.click())
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(list.hasAttribute('inert')).toBe(false)
+    expect(list.querySelector('.uam-folder-expand-glide')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows five recent chats in a folder until see more is clicked', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -113,6 +140,48 @@ describe('FolderTree', () => {
       root.unmount()
     })
     host.remove()
+  })
+
+  it('shows all chats in an expanded companion workspace', () => {
+    window.history.replaceState(null, '', '/companion')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    try {
+      act(() => {
+        root.render(<FolderTree searchQuery="" />)
+      })
+
+      expect(host.textContent).toContain('Chat 6')
+      expect(host.textContent).toContain('Chat 7')
+      expect(host.textContent).not.toContain('Show 2 more')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
+  it('does not enable desktop folder dragging in the companion chat list', () => {
+    window.history.replaceState(null, '', '/companion')
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ setActiveSession, activeSessionId: 'chat-2' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      expect((host.querySelector('[data-testid="folder-row-project"]') as HTMLElement | null)?.draggable).toBe(false)
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ setActiveSession: originalSetActiveSession })
+      window.history.replaceState(null, '', '/')
+    }
   })
 
   it('does not rescan the sidebar runtime model when only turn event text changes', () => {
@@ -790,6 +859,31 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('uses the compact two-line Activity layout only for Active chats', () => {
+    useAppStore.setState({
+      sessions: [
+        { ...makeSession(1), id: 'active', name: 'Build fixes', workspaceDirectory: '/workspaces/uam', updatedAt: now },
+        { ...makeSession(2), id: 'pinned', name: 'Pinned chat', isPinned: true },
+      ],
+    })
+    act(() => useAppStore.getState().setCliBinding('active', { processing: true }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
+    const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
+    expect(active?.className).toContain('min-h-[53px]')
+    expect(active?.textContent).toContain('Project · uam')
+    expect(active?.textContent).toContain('Running')
+    expect(active?.querySelectorAll('.session-status--processing')).toHaveLength(1)
+    expect(pinned?.className).toContain('min-h-[26px]')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('collapses Active chats and keeps an attention strip that expands the section', () => {
     act(() => {
       useAppStore.getState().setCliBinding('chat-1', { processing: true })
@@ -1101,6 +1195,26 @@ describe('FolderTree', () => {
 	  host.remove()
 	})
 
+	it('keeps Browse enabled for an installed helper in error state', () => {
+	  useAppStore.setState({
+		executionHosts: [
+		  { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+		  { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'uam-homelab', runnerStatus: 'error', runnerVersion: '4.8.0-alpha', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+		],
+	  })
+	  const host = document.createElement('div')
+	  document.body.appendChild(host)
+	  const root = createRoot(host)
+	  act(() => root.render(<FolderTree searchQuery="" />))
+	  act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'New workspace')!.click())
+	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Workspace computer"]')!.click())
+	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.textContent?.includes('Homelab'))!.click())
+	  const browse = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Browse')
+	  expect(browse?.disabled).toBe(false)
+	  act(() => root.unmount())
+	  host.remove()
+	})
+
 	it('browses remote directories only after an explicit Browse action', async () => {
 	  const listRemoteDirectories = vi.fn(async (_hostId: string, directory: string) => ({
 		ok: true as const,
@@ -1221,6 +1335,17 @@ describe('FolderTree', () => {
     await act(async () => { rescan?.click(); await Promise.resolve() })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss folder action error"]')
+    expect(dismiss).not.toBeNull()
+    act(() => dismiss?.click())
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    act(() => host.querySelector('[data-testid="folder-header-project"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    await act(async () => { retry?.click(); await Promise.resolve() })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+
 
     act(() => root.unmount())
     host.remove()

@@ -1,9 +1,11 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 
 #include "app/chat_domain_service.h"
+#include "app/provider_resolution_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 
@@ -13,6 +15,13 @@
 
 namespace uam
 {
+
+bool DetachCliTerminalUi(CliTerminalState& terminal, std::string_view attachment_id)
+{
+	if (terminal.ui_attachment_id != attachment_id) return false;
+	terminal.ui_attached = false;
+	return true;
+}
 
 void CloseCliTerminalHandles(CliTerminalState& terminal)
 {
@@ -68,6 +77,11 @@ bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt
 		if (error_out != nullptr) *error_out = "Terminal fallback is not running.";
 		return false;
 	}
+	if (terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
+	{
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Send or interrupt prompts in the native CLI.";
+		return false;
+	}
 	if (!terminal.pending_steer_prompt.empty() && !retry)
 	{
 		if (error_out != nullptr) *error_out = "A terminal steering prompt is already pending.";
@@ -113,6 +127,8 @@ bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal)
 
 CliTerminalSteerRecoveryAction CliTerminalSteerRecovery(const CliTerminalState& terminal, double now_seconds)
 {
+	if (terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
+		return CliTerminalSteerRecoveryAction::None;
 	if (terminal.pending_steer_prompt.empty() || terminal.pending_steer_started_time_s <= 0.0)
 	{
 		return CliTerminalSteerRecoveryAction::None;
@@ -151,6 +167,7 @@ const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 	{
 	case CliTerminalLifecycleState::Disabled:     return "disabled";
 	case CliTerminalLifecycleState::Stopped:      return "stopped";
+	case CliTerminalLifecycleState::Unknown:      return "unknown";
 	case CliTerminalLifecycleState::Idle:         return "idle";
 	case CliTerminalLifecycleState::Busy:         return "busy";
 	case CliTerminalLifecycleState::ShuttingDown: return "shuttingDown";
@@ -176,7 +193,8 @@ bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
 
 bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds)
 {
-	if (!terminal.running || terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
+	if (!terminal.running || !terminal.uses_prompt_activity_tracking ||
+	    terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
 	{
 		return false;
 	}
@@ -225,12 +243,12 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 {
 	const double now = GetAppTimeSeconds();
 	terminal.current_turn_output_bytes.clear();
-	terminal.prompt_settle_required = settle_first_prompt;
+	terminal.prompt_settle_required = terminal.uses_prompt_activity_tracking && settle_first_prompt;
 	terminal.prompt_settle_candidate_time_s = 0.0;
-	terminal.lifecycle_state = CliTerminalLifecycleState::Busy;
-	terminal.turn_state = CliTerminalTurnState::Busy;
-	terminal.generation_in_progress = true;
-	terminal.last_busy_time_s = now;
+	terminal.lifecycle_state = terminal.uses_prompt_activity_tracking ? CliTerminalLifecycleState::Busy : CliTerminalLifecycleState::Unknown;
+	terminal.turn_state = terminal.uses_prompt_activity_tracking ? CliTerminalTurnState::Busy : CliTerminalTurnState::Unknown;
+	terminal.generation_in_progress = terminal.uses_prompt_activity_tracking;
+	terminal.last_busy_time_s = terminal.uses_prompt_activity_tracking ? now : 0.0;
 	terminal.inactivity_interrupt_requested_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
 }
@@ -315,31 +333,6 @@ void BeginCliTerminalIdleShutdown(CliTerminalState& terminal)
 	}
 }
 
-bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view identity)
-{
-	const std::string_view target_id = TrimCliTerminalIdentityView(identity);
-	return !target_id.empty() && HasPendingCallForChat(app, target_id);
-}
-
-bool CliTerminalHasPendingCall(const AppState& app, const CliTerminalState& terminal)
-{
-	const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
-	const std::string attached_chat_id = CliTerminalAttachedChatId(terminal);
-	const std::string attached_session_id = CliTerminalAttachedSessionId(terminal);
-
-	if (PendingCallMatchesCliTerminalIdentity(app, primary_chat_id))
-	{
-		return true;
-	}
-
-	if (attached_chat_id != primary_chat_id && PendingCallMatchesCliTerminalIdentity(app, attached_chat_id))
-	{
-		return true;
-	}
-
-	return PendingCallMatchesCliTerminalIdentity(app, attached_session_id);
-}
-
 bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
                                                     const CliTerminalState& terminal,
                                                     std::string_view selected_chat_id,
@@ -360,17 +353,17 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 		return false;
 	}
 
-	if (CliTerminalHasPendingCall(app, terminal))
-	{
-		return false;
-	}
-
 	return terminal.last_idle_confirmed_time_s > 0.0 &&
 	       (now - terminal.last_idle_confirmed_time_s) >= static_cast<double>(app.settings.cli_idle_timeout_seconds);
 }
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	if (terminal.native_session_setup_cancel != nullptr)
+	{
+		terminal.native_session_setup_cancel->request_stop();
+		terminal.native_session_setup_cancel.reset();
+	}
 	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
 
 	CloseCliTerminalHandles(terminal);
@@ -392,6 +385,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 		terminal.linked_files_snapshot.clear();
 		terminal.should_launch = false;
 		terminal.ui_attached = false;
+		terminal.ui_attachment_id.clear();
 	}
 }
 
@@ -407,13 +401,31 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		error_out->clear();
 	}
 
+	if (const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id)))
+	{
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+		if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat->execution_host_id); !update_error.empty())
+		{
+			if (error_out != nullptr) *error_out = update_error;
+			return false;
+		}
+	}
 	CliTerminalState* terminal = FindCliTerminalForChat(app, chat_id);
+	if (terminal != nullptr && terminal->native_session_setup_cancel != nullptr)
+	{
+		StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
+	}
 	if (terminal == nullptr || !terminal->running)
 	{
 		return true;
 	}
 
 	const bool shutting_down = terminal->lifecycle_state == CliTerminalLifecycleState::ShuttingDown;
+	if (terminal->lifecycle_state == CliTerminalLifecycleState::Unknown)
+	{
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Exit the native CLI before starting structured chat.";
+		return false;
+	}
 	const bool has_blocking_work = !shutting_down && (terminal->lifecycle_state == CliTerminalLifecycleState::Busy || terminal->turn_state == CliTerminalTurnState::Busy || terminal->generation_in_progress || !terminal->pending_steer_prompt.empty());
 	if (has_blocking_work)
 	{

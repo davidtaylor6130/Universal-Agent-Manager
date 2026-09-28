@@ -10,7 +10,7 @@ inline bool RuntimeShouldKeepSystemAwake(const AppState& app)
 {
 	for (const auto& terminal : app.cli_terminals)
 	{
-		if (terminal != nullptr && terminal->running && (terminal->generation_in_progress || terminal->turn_state == CliTerminalTurnState::Busy || terminal->lifecycle_state == CliTerminalLifecycleState::Busy))
+		if (terminal != nullptr && terminal->running && (terminal->generation_in_progress || terminal->turn_state == CliTerminalTurnState::Busy || terminal->lifecycle_state == CliTerminalLifecycleState::Busy || terminal->lifecycle_state == CliTerminalLifecycleState::Unknown))
 		{
 			return true;
 		}

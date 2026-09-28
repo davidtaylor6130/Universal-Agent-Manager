@@ -17,13 +17,7 @@ namespace uam::computer_use
 
 		std::string ExecutablePath()
 		{
-			const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
-#if defined(__APPLE__)
-			const std::filesystem::path companion = executable.parent_path().parent_path() / "Frameworks" / "UAM Computer Use.app" / "Contents" / "MacOS" / "UAM Computer Use";
-			if (std::filesystem::exists(companion))
-				return companion.string();
-#endif
-			return executable.string();
+			return ResolveMcpExecutablePath(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath());
 		}
 
 		std::filesystem::path GeminiPolicyPath()
@@ -96,7 +90,22 @@ namespace uam::computer_use
 
 	std::vector<std::string> McpServerArguments(const ChatSession& chat)
 	{
-		return {kMcpServerFlag, "--chat-id", chat.id, "--target-id", chat.computer_use_target_id, "--target-pid", chat.computer_use_target_process_id, "--target-kind", chat.computer_use_target_kind == "screen" ? "screen" : "window"};
+		return {kMcpServerFlag, "--chat-id", chat.id, "--chat-label", chat.title, "--target-id", chat.computer_use_target_id, "--target-pid", chat.computer_use_target_process_id, "--target-kind", chat.computer_use_target_kind == "screen" ? "screen" : "window"};
+	}
+
+	std::string ResolveMcpExecutablePath(const std::filesystem::path& executable)
+	{
+#if defined(__APPLE__)
+		const std::filesystem::path companion = executable.parent_path().parent_path() / "Frameworks" / "UAM Computer Use.app" / "Contents" / "MacOS" / "UAM Computer Use";
+		if (std::filesystem::exists(companion))
+			return companion.string();
+#endif
+		return executable.string();
+	}
+
+	std::string McpExecutablePath()
+	{
+		return ExecutablePath();
 	}
 
 	nlohmann::json AcpMcpServers(const ChatSession& chat)

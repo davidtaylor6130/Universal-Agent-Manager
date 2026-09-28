@@ -4,20 +4,12 @@
 
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
-#include "common/chat/chat_folder_store.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
-#include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/string_utils.h"
-
-#include <algorithm>
-#include <cerrno>
-#include <cstring>
-#include <optional>
-#include <string_view>
 
 namespace fs = std::filesystem;
 
@@ -27,17 +19,6 @@ namespace
 	constexpr const char* kThemesDirectoryName = "themes";
 	constexpr const char* kAgentsDirectoryName = "agents";
 	constexpr const char* kAgentRunsDirectoryName = "agent-runs";
-	constexpr const char* kProviderCliNoOutputMessage = "(Provider CLI returned no output.)";
-	constexpr const char* kProviderCliExitCodePrefix = "\n\n[Provider CLI exited with code ";
-
-	void SetError(std::string* error_out, std::string_view message)
-	{
-		if (error_out != nullptr)
-		{
-			error_out->assign(message);
-		}
-	}
-
 	void NormalizeProviderCliSettings(AppSettings& settings)
 	{
 		settings.active_provider_id = uam::strings::NonEmptyOrFallback(
@@ -58,49 +39,14 @@ namespace
 			return true;
 		}
 
-		SetError(error_out, "Failed to create " + label + " '" + path.string() + "': " + error.message());
+		if (error_out != nullptr)
+		{
+			*error_out = "Failed to create " + label + " '" + path.string() + "': " + error.message();
+		}
 		return false;
 	}
 
-	std::string ProviderLaunchFailureMessage()
-	{
-		std::string message = "Failed to launch provider CLI command";
-		if (errno != 0)
-		{
-			message += " (";
-			message += std::strerror(errno);
-			message += ")";
-		}
-		message += ".";
-		return message;
-	}
 } // namespace
-
-std::string PersistenceCoordinator::ExecuteCommandCaptureOutput(const std::string& command) const
-{
-	const IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
-	const ProcessExecutionResult result = process_service.ExecuteCommand(command);
-
-	if (!result.error.empty() && result.output.empty())
-	{
-		return ProviderLaunchFailureMessage();
-	}
-
-	std::string output = result.output;
-	const int exit_code = result.exit_code;
-
-	if (output.empty())
-	{
-		output = kProviderCliNoOutputMessage;
-	}
-
-	if (exit_code != 0)
-	{
-		output += kProviderCliExitCodePrefix + std::to_string(exit_code) + "]";
-	}
-
-	return output;
-}
 
 bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std::string* error_out) const
 {

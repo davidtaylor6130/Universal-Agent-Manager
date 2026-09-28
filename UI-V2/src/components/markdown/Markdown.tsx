@@ -3,23 +3,38 @@ import { isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } fro
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = []
-  const pattern = /(`[^`]+`|\*\*[^*]+?\*\*|\[[^\]]+\]\([^)]+\))/g
+  let pattern = /(`[^`]+`|\*\*[^*]+?\*\*|\[[^\[\]]+\]\()/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
   while ((match = pattern.exec(text)) !== null) {
+    let token = match[0]
+    if (token.startsWith('[')) {
+      const end = text.indexOf(')', pattern.lastIndex)
+      if (end < 0) {
+        // No later link can close; keep parsing code and bold without rescanning the suffix.
+        pattern = /(`[^`]+`|\*\*[^*]+?\*\*)/g
+        pattern.lastIndex = match.index
+        continue
+      }
+      if (end === pattern.lastIndex) {
+        pattern.lastIndex = match.index + 1
+        continue
+      }
+      token = text.slice(match.index, end + 1)
+      pattern.lastIndex = end + 1
+    }
     if (match.index > lastIndex) {
       nodes.push(text.slice(lastIndex, match.index))
     }
 
-    const token = match[0]
     const key = `${keyPrefix}-${match.index}`
     if (token.startsWith('`')) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>)
     } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>)
     } else {
-      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+      const link = token.match(/^\[([^\[\]]+)\]\(([^)]+)\)$/)
       const href = link ? safeHref(link[2]) : undefined
       nodes.push(
         href ? (
@@ -187,7 +202,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
 
 export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   const parts: ReactNode[] = []
-  const fencePattern = /```([A-Za-z0-9_-]+)?\n?([\s\S]*?)```/g
+  const fencePattern = /```(?:([A-Za-z0-9_-]+)\r?\n|\r?\n)?([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
@@ -206,7 +221,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content }: { cont
     parts.push(
       <pre key={`code-${match.index}`}>
         {language && <div className="mb-2 text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{language}</div>}
-        <code>{match[2].replace(/\n$/, '')}</code>
+        <code>{match[2].replace(/\r?\n$/, '')}</code>
       </pre>
     )
     lastIndex = match.index + match[0].length

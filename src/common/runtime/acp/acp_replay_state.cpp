@@ -66,6 +66,36 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 			continue;
 		}
 
+		if (!message.blocks.empty())
+		{
+			for (const MessageBlock& block : message.blocks)
+			{
+				AcpReplayUpdateState replay;
+				if (block.type == uam::acp_stream_types::kTurnEventThought)
+				{
+					replay.session_update = uam::acp_stream_types::kSessionUpdateAgentThoughtChunk;
+					replay.text = block.text;
+				}
+				else if (block.type == uam::acp_stream_types::kTurnEventAssistantText)
+				{
+					replay.session_update = uam::acp_stream_types::kSessionUpdateAgentMessageChunk;
+					replay.text = block.text;
+				}
+				else if (block.type == uam::acp_stream_types::kTurnEventToolCall)
+				{
+					const auto tool = std::ranges::find_if(message.tool_calls, [&](const ToolCall& candidate) { return candidate.id == block.tool_call_id; });
+					if (tool == message.tool_calls.end()) continue;
+					replay.session_update = uam::acp_stream_types::kSessionUpdateToolCall;
+					replay.tool_call_id = tool->id;
+					replay.title = tool->name;
+				}
+				else continue;
+				if (!replay.text.empty() || !replay.tool_call_id.empty())
+					session.load_history_replay_updates.push_back(std::move(replay));
+			}
+			continue;
+		}
+
 		if (!uam::strings::IsBlank(message.thoughts))
 		{
 			AcpReplayUpdateState replay;

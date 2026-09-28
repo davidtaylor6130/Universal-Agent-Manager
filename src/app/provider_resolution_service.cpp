@@ -193,20 +193,9 @@ bool ProviderResolutionService::ActiveProviderUsesNativeOverlayHistory(const uam
 	return profile != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*profile);
 }
 
-bool ProviderResolutionService::ActiveProviderUsesInternalEngine(const uam::AppState& app) const
-{
-	const ProviderProfile* profile = ActiveProvider(app);
-	return profile != nullptr && ProviderRuntime::UsesInternalEngine(*profile);
-}
-
 bool ProviderResolutionService::ChatUsesNativeOverlayHistory(const uam::AppState& app, const ChatSession& chat) const
 {
 	return ProviderForChatMatches(app, chat, [](const ProviderProfile& profile) { return ProviderRuntime::UsesNativeOverlayHistory(profile); });
-}
-
-bool ProviderResolutionService::ChatUsesInternalEngine(const uam::AppState& app, const ChatSession& chat) const
-{
-	return ProviderForChatMatches(app, chat, [](const ProviderProfile& profile) { return ProviderRuntime::UsesInternalEngine(profile); });
 }
 
 bool ProviderResolutionService::ChatUsesCliOutput(const uam::AppState& app, const ChatSession& chat) const

@@ -83,6 +83,9 @@ void UamCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
 	CEF_REQUIRE_UI_THREAD();
 	EnsureMessageRouter();
 	m_browser = browser;
+	// Expose React controls to native accessibility readers and computer-use targeting.
+	browser->GetHost()->SetAccessibilityState(STATE_ENABLED);
+	m_queryHandler->StartCompanion(browser);
 
 	if (m_onReady)
 	{

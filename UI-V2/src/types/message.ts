@@ -15,6 +15,7 @@ export interface MessageToolCall {
   status: string
   content: string
   contentDeferred?: boolean
+  contentDigest?: string
   isSubAgent?: boolean
   subAgentId?: string
   subAgentTitle?: string
@@ -40,16 +41,20 @@ export interface Message {
   role: Role
   content: string
   providerId?: string
+  modelId?: string
   thoughts?: string
   planSummary?: string
   planEntries?: MessagePlanEntry[]
   toolCalls?: MessageToolCall[]
   blocks?: MessageBlock[]
   isStreaming?: boolean
+  streamMessageIndex?: number
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
+	acpPromptNotSent?: boolean
 	prioritySteer?: boolean
+	continuesTurn?: boolean
   checkpointSha?: string
   checkpointParentSha?: string
   createdAt: Date

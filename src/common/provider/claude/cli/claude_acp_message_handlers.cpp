@@ -1,4 +1,4 @@
-#include "common/runtime/acp/acp_claude_message_handlers.h"
+#include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
@@ -26,7 +26,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			const std::string appended = AppendAssistantChunk(chat, session, fallback_text);
 			if (browser && !appended.empty())
 			{
-				uam::PushStreamToken(browser, chat.id, appended);
+				uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 			}
 			ScheduleChatSave(app, chat, 0.5);
 		}
@@ -50,7 +50,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 				const std::string appended = AppendAssistantChunk(chat, session, text);
 				if (browser && !appended.empty())
 				{
-					uam::PushStreamToken(browser, chat.id, appended);
+					uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 				}
 				changed = true;
 			}
@@ -181,16 +181,18 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 		}
 	}
 
-	(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 	const bool is_error = JsonBooleanValueOr(message, "is_error", false);
 	const std::string subtype = JsonDiagnosticStringValue(message, "subtype");
 	if (is_error || uam::acp_claude_stream::IsResultErrorSubtype(subtype))
 	{
 		const std::string result_text = uam::nlohmann_json::TrimmedStringValueOr(message, "result", "");
-		FailAcpTurnOrSession(session, uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
+		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+		FailAcpTurnOrSession(session, &chat,
+		                     uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
 	}
 	else
 	{
+		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 	}
 

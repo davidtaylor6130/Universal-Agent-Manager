@@ -2,10 +2,11 @@
 
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
+#include "app/runtime_orchestration_internal.h"
 #include "app/runtime_orchestration_services.h"
-#include "common/chat/chat_branching.h"
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
@@ -18,6 +19,26 @@
 
 namespace uam
 {
+namespace
+{
+	constexpr std::string_view kNativeRefreshFailurePrefix = "Native chat refresh failed: ";
+
+	void UpdateNativeChatRefreshError(AppState& app, std::string_view target_id, std::string_view error)
+	{
+		if (!error.empty())
+		{
+			app.native_chat_refresh_error_target_id = target_id;
+			app.native_chat_refresh_error_status = std::string(kNativeRefreshFailurePrefix) + std::string(error);
+			app.status_line = app.native_chat_refresh_error_status;
+		}
+		else if (app.native_chat_refresh_error_target_id == target_id)
+		{
+			if (app.status_line == app.native_chat_refresh_error_status) app.status_line.clear();
+			app.native_chat_refresh_error_target_id.clear();
+			app.native_chat_refresh_error_status.clear();
+		}
+	}
+}
 
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs)
 {
@@ -27,33 +48,6 @@ bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs)
 std::string NormalizeChatSyncTargetId(std::string_view chat_id)
 {
 	return uam::strings::Trim(chat_id);
-}
-
-auto FindPendingCallForChat(const AppState& app, std::string_view chat_id) -> decltype(app.pending_calls.end())
-{
-	const std::string target_id = NormalizeChatSyncTargetId(chat_id);
-	if (target_id.empty())
-	{
-		return app.pending_calls.end();
-	}
-
-	return std::ranges::find_if(app.pending_calls, [&target_id](const PendingRuntimeCall& call) { return ChatSyncIdsMatch(call.chat_id, target_id); });
-}
-
-bool HasPendingCallForChat(const AppState& app, std::string_view chat_id)
-{
-	return FindPendingCallForChat(app, chat_id) != app.pending_calls.end();
-}
-
-bool HasAnyPendingCall(const AppState& app)
-{
-	return !app.pending_calls.empty();
-}
-
-const PendingRuntimeCall* FirstPendingCallForChat(const AppState& app, std::string_view chat_id)
-{
-	const auto found = FindPendingCallForChat(app, chat_id);
-	return found == app.pending_calls.end() ? nullptr : &*found;
 }
 
 bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id)
@@ -69,7 +63,9 @@ bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id)
 
 bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 {
-	return uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
+	// Unknown activity must still block history rewrites and provider replacement.
+	return terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
+	       uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
 }
 
 bool ChatHasBusyCliTerminal(const AppState& app, std::string_view chat_id)
@@ -105,11 +101,6 @@ bool ChatHasRunningRuntime(const AppState& app, std::string_view chat_id)
 	if (target_id.empty())
 	{
 		return false;
-	}
-
-	if (HasPendingCallForChat(app, target_id))
-	{
-		return true;
 	}
 
 	if (ChatHasActiveAcpSession(app, target_id))
@@ -211,7 +202,7 @@ void RemoveMissingChatIds(const AppState& app, std::unordered_set<std::string>& 
 	chat_ids = std::move(normalized_existing_ids);
 }
 
-void FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_before, std::string_view preferred_chat_id, bool preserve_selection)
+bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_before, std::string_view preferred_chat_id, bool preserve_selection)
 {
 	const std::string selected_before_id = NormalizeChatSyncTargetId(selected_before);
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
@@ -249,30 +240,54 @@ void FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 		app.composer_text.clear();
 	}
 
+	std::string warning;
+	ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
+	if (selected_chat != nullptr && !ChatRepository::HydrateChatMessages(app.data_root, *selected_chat, &warning))
+	{
+		UpdateNativeChatRefreshError(app, preferred_id, "could not load chat history. " + warning);
+		LogCliDiagnosticEvent(app, "sync_native_history", "chat_load_failed", nullptr, app.status_line);
+		return false;
+	}
 	MarkSelectedChatSeen(app);
+	return true;
 }
 
 bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, std::string_view preferred_chat_id, bool preserve_selection)
 {
 	const std::string selected_before = ChatDomainService().SelectedChatId(app);
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
-	ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+	(void)ChatHistorySyncService().OverlayLocalHistory(app, native_chats, true);
 
 	// Only save the specifically requested chat (e.g. the one just discovered)
 	for (ChatSession& chat : native_chats)
 	{
 		if (NativeChatMatchesPreferredSyncId(chat, preferred_id))
 		{
-			ChatRepository::SaveChat(app.data_root, chat);
+			if (!ChatRepository::SaveChat(app.data_root, chat))
+			{
+				UpdateNativeChatRefreshError(app, preferred_id, "could not save chat history.");
+				LogCliDiagnosticEvent(app, "sync_native_history", "chat_save_failed", nullptr, app.status_line);
+				return false;
+			}
 			break;
 		}
 	}
 
-	app.chats = ChatRepository::LoadLocalChats(app.data_root);
-	app.chats = ChatDomainService().DeduplicateChatsById(std::move(app.chats));
-	ChatBranching::Normalize(app.chats);
-	ChatDomainService().NormalizeChatFolderAssignments(app);
-	FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection);
+	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	for (ChatSession& chat : chats)
+	{
+		if (!NativeChatMatchesPreferredSyncId(chat, preferred_id)) continue;
+		std::string warning;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning))
+		{
+			UpdateNativeChatRefreshError(app, preferred_id, "could not load chat history. " + warning);
+			LogCliDiagnosticEvent(app, "sync_native_history", "chat_load_failed", nullptr, app.status_line);
+			return false;
+		}
+	}
+	uam::runtime_orch_impl::ReplaceAppChatsWithNormalized(app, std::move(chats));
+	if (!FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection)) return false;
+	UpdateNativeChatRefreshError(app, preferred_id, {});
 	return true;
 }
 
@@ -283,10 +298,17 @@ bool SyncChatsFromNative(AppState& app, std::string_view preferred_chat_id, bool
 
 	// Import from native to local before reloading the sidebar.
 	// We only import the target chat to avoid re-importing chats the user manually deleted.
-	ChatHistorySyncService().ImportAllNativeChatsToLocal(app, false, preferred_id);
+	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsToLocal(app, false, preferred_id);
+	if (!result.success)
+	{
+		UpdateNativeChatRefreshError(app, preferred_id, result.errors.empty() ? "could not import chat history." : result.errors.front());
+		LogCliDiagnosticEvent(app, "sync_native_history", "import_failed", nullptr, app.status_line);
+		return false;
+	}
 
 	ChatHistorySyncService().LoadSidebarChats(app);
-	FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection);
+	if (!FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection)) return false;
+	UpdateNativeChatRefreshError(app, preferred_id, {});
 	return true;
 }
 

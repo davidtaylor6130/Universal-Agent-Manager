@@ -10,6 +10,8 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/provider_runtime.h"
+#include "common/provider/provider_ids.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/time_utils.h"
 #include "remote/runner_client.h"
@@ -38,23 +40,22 @@ namespace
 	};
 
 	RemoteOpenCodeDiscovery DiscoverRemoteOpenCodeSessions(
-	    const ChatFolder& folder, const ExecutionHost& host)
+	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile)
 	{
 		RemoteOpenCodeDiscovery result;
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
 		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory),
-		    host.runner_version);
+		                               host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
 		if (!client.Connect(&result.error)) return result;
 		std::string session_id = "history-" +
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id == "history-")
 			session_id += uam::time::SteadyEpochNanosecondsTokenNow();
 		if (!client.StartProcess(
-		        session_id, std::filesystem::path(folder.directory),
-		        {"opencode", "session", "list", "--format", "json", "--pure",
-		         "--max-count", "200"},
+		        session_id, uam::paths::PathFromUtf8(folder.directory),
+		        ProviderRuntimeRegistry::Resolve(profile).BuildNativeDiscoveryArgv(profile),
 		        {}, &result.error) || !client.CloseProcessInput(session_id, &result.error))
 		{
 			(void)client.StopProcess(session_id);
@@ -78,6 +79,7 @@ namespace
 			}
 			output += polled.standard_output;
 			diagnostic += polled.standard_error;
+			if (!client.AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
 			if (!polled.running)
 			{
 				(void)client.RemoveProcess(session_id);
@@ -341,18 +343,18 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 			cb->Failure(409, "The selected remote helper is not ready.");
 			return;
 		}
+		const ProviderProfile* configured_profile = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+		const ProviderProfile profile = configured_profile != nullptr ? *configured_profile : ProviderProfileStore::DefaultOpenCodeProfile();
 		const ChatFolder folder = *matched_folder;
 		const ExecutionHost host = *configured;
-		const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-		const std::string composer_text = m_app.composer_text;
 		auto discovery = std::make_shared<RemoteOpenCodeDiscovery>();
 		auto codex_discovery =
 		    std::make_shared<ChatHistorySyncService::RemoteCodexDiscovery>();
-		uam::query_handler_async::RunAsyncCefQuery(
+		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
 		    cb,
-		    [folder, host, discovery, codex_discovery]()
+		    [folder, host, discovery, codex_discovery, profile]()
 		    {
-			    *discovery = DiscoverRemoteOpenCodeSessions(folder, host);
+			    *discovery = DiscoverRemoteOpenCodeSessions(folder, host, profile);
 			    *codex_discovery = ChatHistorySyncService().DiscoverRemoteCodexSessions(
 			        host, folder);
 			    return discovery->error.empty() || codex_discovery->error.empty() ||
@@ -362,7 +364,7 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 			              502, "Remote history discovery failed. OpenCode: " +
 			                       discovery->error + " Codex: " + codex_discovery->error);
 		    },
-		    [this, browser, folder, selected_chat_id, composer_text, discovery,
+		    [this, browser, folder, discovery,
 		     codex_discovery](
 		        uam::query_handler_async::AsyncCefResult& response)
 		    {
@@ -375,6 +377,8 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 				        409, "The workspace changed while remote history was being scanned.");
 				    return;
 			    }
+			    const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
+			    const std::string composer_text = m_app.composer_text;
 			    ChatHistorySyncService::ImportResult result;
 			    if (discovery->error.empty())
 				    result.Merge(ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(

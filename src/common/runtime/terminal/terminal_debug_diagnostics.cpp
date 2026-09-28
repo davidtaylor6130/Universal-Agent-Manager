@@ -5,9 +5,9 @@
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <algorithm>
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -17,6 +17,7 @@ namespace uam
 
 const char* CliTurnStateLabel(const CliTerminalState& terminal)
 {
+	if (terminal.turn_state == CliTerminalTurnState::Unknown) return "unknown";
 	return terminal.turn_state == CliTerminalTurnState::Busy ? "busy" : "idle";
 }
 
@@ -183,7 +184,7 @@ void LogCliDiagnosticEvent(const AppState& app,
 	}
 
 	out << " t=" << GetAppTimeSeconds();
-	std::cerr << out.str() << '\n';
+	uam::diagnostics::Write(out.str());
 }
 
 } // namespace uam

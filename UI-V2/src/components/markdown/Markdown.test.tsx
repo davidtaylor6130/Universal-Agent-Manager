@@ -28,17 +28,24 @@ describe('MarkdownContent', () => {
     host.remove()
   })
 
-  it('renders fenced code blocks with an optional language label', () => {
-    const host = renderMarkdown('```ts\nconst x = 1\n```')
+  it.each(['\n', '\r\n'])('renders fenced code blocks with an optional language label (%j)', (newline) => {
+    const host = renderMarkdown('```ts\nconst x = 1\n```\n\n```plain text```\n\n```\nno label\n```'.replace(/\n/g, newline))
 
     expect(host.querySelector('pre code')?.textContent).toBe('const x = 1')
     expect(host.querySelector('pre div')?.textContent).toBe('ts')
+    expect(Array.from(host.querySelectorAll('pre code'), node => node.textContent)).toEqual(['const x = 1', 'plain text', 'no label'])
+    expect(host.querySelectorAll('pre div')).toHaveLength(1)
 
     host.remove()
   })
 
   it('renders inline links only for safe schemes', () => {
-    const host = renderMarkdown('See [docs](https://example.com) and [bad](javascript:alert(1)).')
+    const malformed = '['.repeat(40000) + '[x]('.repeat(10000)
+    const host = renderMarkdown(`${malformed} **still bold** and ` + "`still code`" + `\n\nSee [docs](https://example.com) and [bad](javascript:alert(1)). [**empty**]()`)
+    expect(host.querySelector('p')?.textContent).toBe(`${malformed} still bold and still code`)
+    expect(Array.from(host.querySelectorAll('strong'), node => node.textContent)).toEqual(['still bold', 'empty'])
+    expect(host.querySelector('code')?.textContent).toBe('still code')
+    expect(host.textContent).toContain('[empty]()')
 
     const anchor = host.querySelector('a')
     expect(anchor?.getAttribute('href')).toBe('https://example.com')

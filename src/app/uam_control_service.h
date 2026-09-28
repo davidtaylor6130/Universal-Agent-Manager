@@ -5,6 +5,8 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,11 +26,18 @@ namespace uam
 		                                   nlohmann::json& request, std::string* error_out = nullptr);
 		static void RevokeForSession(AppState& app, AcpSessionState& session);
 		static bool ProcessPendingRequests(AppState& app);
+		static std::optional<AcpPendingUserInputState> PendingApprovalForChat(const AppState& app,
+		                                                                 std::string_view chat_id);
+		static bool ResolveApproval(AppState& app, std::string_view chat_id,
+		                            std::string_view request_id,
+		                            const std::map<std::string, std::vector<std::string>>& answers,
+		                            std::string* error_out = nullptr);
 
 		// Pure entry point retained for focused authority and restart tests.
 		static nlohmann::json HandleRequestForTests(AppState& app, const std::string& capability_id,
 		                                            const nlohmann::json& request,
 		                                            int64_t now_epoch_ms);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
+		static nlohmann::json ToolDefinitionsForTests();
 	};
 } // namespace uam

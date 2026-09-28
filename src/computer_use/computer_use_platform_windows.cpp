@@ -171,7 +171,18 @@ namespace uam::computer_use
 		}
 
 		std::wstring virtual_cursor_label;
+		COLORREF virtual_cursor_accent = RGB(20, 184, 166);
 		bool virtual_cursor_clicked = false;
+
+		void ConfigureVirtualCursorIdentityImpl(const std::string& label, const std::string& chat_id)
+		{
+			virtual_cursor_label = Wide(label.empty() ? "Chat" : label);
+			constexpr COLORREF colors[] = {RGB(249, 115, 22), RGB(14, 165, 233), RGB(124, 58, 237), RGB(20, 184, 166), RGB(34, 197, 94), RGB(225, 29, 72)};
+			std::uint32_t hash = 2166136261u;
+			for (const unsigned char value : chat_id)
+				hash = (hash ^ value) * 16777619u;
+			virtual_cursor_accent = colors[hash % (sizeof(colors) / sizeof(colors[0]))];
+		}
 
 		LRESULT CALLBACK VirtualCursorWindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 		{
@@ -185,36 +196,33 @@ namespace uam::computer_use
 			FillRect(context, &bounds, transparent);
 			DeleteObject(transparent);
 
-			HPEN accent_pen = CreatePen(PS_SOLID, 3, RGB(31, 209, 255));
-			HPEN previous_pen = static_cast<HPEN>(SelectObject(context, accent_pen));
+			HPEN cursor_pen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+			HPEN previous_pen = static_cast<HPEN>(SelectObject(context, cursor_pen));
 			HBRUSH hollow = static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
 			HBRUSH previous_brush = static_cast<HBRUSH>(SelectObject(context, hollow));
 			if (virtual_cursor_clicked)
 				Ellipse(context, 0, 0, 40, 40);
 
 			POINT cursor[] = {{8, 8}, {8, 36}, {15, 29}, {21, 41}, {27, 38}, {21, 26}, {31, 26}};
-			HPEN cursor_pen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
-			HBRUSH cursor_brush = CreateSolidBrush(RGB(255, 255, 255));
+			HBRUSH cursor_brush = CreateSolidBrush(virtual_cursor_accent);
 			SelectObject(context, cursor_pen);
 			SelectObject(context, cursor_brush);
 			Polygon(context, cursor, 7);
 
-			SelectObject(context, accent_pen);
-			HBRUSH badge_brush = CreateSolidBrush(RGB(20, 20, 20));
-			SelectObject(context, badge_brush);
-			RoundRect(context, 38, 11, 154, 36, 8, 8);
 			SetBkMode(context, TRANSPARENT);
-			SetTextColor(context, RGB(255, 255, 255));
-			RECT text_bounds{48, 16, 148, 33};
-			const std::wstring text = L"UAM  " + virtual_cursor_label;
+			SetTextColor(context, virtual_cursor_accent);
+			HFONT font = CreateFontW(18, 0, 0, 0, FW_BOLD, FALSE, TRUE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+			HFONT previous_font = static_cast<HFONT>(SelectObject(context, font));
+			RECT text_bounds{48, 14, 248, 40};
+			const std::wstring text = virtual_cursor_label;
 			DrawTextW(context, text.c_str(), static_cast<int>(text.size()), &text_bounds, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
 			SelectObject(context, previous_pen);
 			SelectObject(context, previous_brush);
-			DeleteObject(accent_pen);
+			SelectObject(context, previous_font);
+			DeleteObject(font);
 			DeleteObject(cursor_pen);
 			DeleteObject(cursor_brush);
-			DeleteObject(badge_brush);
 			EndPaint(window, &paint);
 			return 0;
 		}
@@ -232,16 +240,16 @@ namespace uam::computer_use
 				window_class.hInstance = GetModuleHandleW(nullptr);
 				window_class.lpszClassName = class_name;
 				RegisterClassW(&window_class);
-				window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class_name, L"", WS_POPUP, 0, 0, 160, 48, nullptr, nullptr, window_class.hInstance, nullptr);
+				window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class_name, L"", WS_POPUP, 0, 0, 260, 56, nullptr, nullptr, window_class.hInstance, nullptr);
 				if (window == nullptr)
 					return;
 				SetLayeredWindowAttributes(window, RGB(255, 0, 255), 0, LWA_COLORKEY);
 			}
-			virtual_cursor_label = Wide(action.kind);
-			CharUpperBuffW(virtual_cursor_label.data(), static_cast<DWORD>(virtual_cursor_label.size()));
+			if (virtual_cursor_label.empty())
+				virtual_cursor_label = L"Chat";
 			virtual_cursor_clicked = action.kind == "click";
 			const POINT point = DesktopPoint(action, reference);
-			SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 160, 48, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+			SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 260, 56, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 			InvalidateRect(window, nullptr, FALSE);
 			UpdateWindow(window);
 		}
@@ -288,7 +296,7 @@ namespace uam::computer_use
 		{
 			const std::string key = Lower(raw_key);
 			static const std::unordered_map<std::string, WORD> named = {
-			    {"ctrl", VK_CONTROL}, {"control", VK_CONTROL}, {"shift", VK_SHIFT}, {"alt", VK_MENU}, {"option", VK_MENU}, {"cmd", VK_LWIN}, {"command", VK_LWIN}, {"win", VK_LWIN}, {"enter", VK_RETURN}, {"return", VK_RETURN}, {"tab", VK_TAB}, {"space", VK_SPACE}, {"escape", VK_ESCAPE}, {"esc", VK_ESCAPE}, {"backspace", VK_BACK}, {"delete", VK_DELETE}, {"left", VK_LEFT}, {"right", VK_RIGHT}, {"up", VK_UP}, {"down", VK_DOWN}, {"home", VK_HOME}, {"end", VK_END}, {"pageup", VK_PRIOR}, {"pagedown", VK_NEXT},
+			    {"ctrl", VK_CONTROL}, {"control", VK_CONTROL}, {"shift", VK_SHIFT}, {"alt", VK_MENU}, {"option", VK_MENU}, {"cmd", VK_LWIN}, {"command", VK_LWIN}, {"meta", VK_LWIN}, {"win", VK_LWIN}, {"enter", VK_RETURN}, {"return", VK_RETURN}, {"tab", VK_TAB}, {"space", VK_SPACE}, {"escape", VK_ESCAPE}, {"esc", VK_ESCAPE}, {"backspace", VK_BACK}, {"delete", VK_DELETE}, {"left", VK_LEFT}, {"right", VK_RIGHT}, {"up", VK_UP}, {"down", VK_DOWN}, {"home", VK_HOME}, {"end", VK_END}, {"pageup", VK_PRIOR}, {"pagedown", VK_NEXT},
 			};
 			if (const auto found = named.find(key); found != named.end())
 				return found->second;
@@ -392,6 +400,23 @@ namespace uam::computer_use
 			return result;
 		}
 	} // namespace
+
+	void ConfigureVirtualCursorIdentity(const std::string& label, const std::string& chat_id)
+	{
+		ConfigureVirtualCursorIdentityImpl(label, chat_id);
+	}
+
+	std::optional<ApplicationIdentity> ResolveApplication(std::string_view, std::string* error_out)
+	{
+		if (error_out != nullptr) *error_out = "Application registry resolution is not available on Windows yet.";
+		return std::nullopt;
+	}
+
+	bool LaunchApplication(const ApplicationIdentity&, std::string* error_out)
+	{
+		if (error_out != nullptr) *error_out = "Application launching is not available on Windows yet.";
+		return false;
+	}
 
 	bool AcquireControllerLock(std::string* error_out)
 	{
@@ -912,15 +937,21 @@ namespace uam::computer_use
 		return true;
 	}
 
-	bool ConfirmComputerUse(const std::string& message)
+	bool EnsureCapturePermission(std::string*)
 	{
-		HWND previous = GetForegroundWindow();
-		const std::wstring text = Wide(message);
-		const int result = MessageBoxW(nullptr, text.c_str(), L"Allow UAM computer control", MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2);
-		if (previous != nullptr)
-			SetForegroundWindow(previous);
-		return result == IDYES;
+		return true;
 	}
+
+	bool RequestCapturePermission(std::string*) { return true; }
+	bool RequestActionPermission(std::string*) { return true; }
+
+	ApplicationIdentity ApplicationIdentityForTarget(const std::string& kind, std::uint64_t id, std::uint64_t)
+	{
+		if (kind != "window") return {};
+		return ApplicationForWindow(reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id)));
+	}
+
+	bool OpenPermissionSettings(const std::string&, std::string*) { return false; }
 
 	int RunWithUi(const std::function<int()>& work)
 	{

@@ -2,6 +2,21 @@
 
 using namespace uam_test;
 
+namespace
+{
+	void DrainMemoryWork(uam::AppState& app)
+	{
+		while (!app.memory_extraction_tasks.empty())
+		{
+			for (uam::AsyncMemoryExtractionTask& task : app.memory_extraction_tasks)
+			{
+				if (task.worker != nullptr && task.worker->joinable()) task.worker->join();
+			}
+			(void)MemoryService::ProcessDueMemoryWork(app);
+		}
+	}
+}
+
 UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 {
 	TempDir temp("uam-memory-service");
@@ -68,7 +83,24 @@ UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)
 	const std::string output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Retry-safe memory","memory":"Apply a completed extraction at most once.","evidence":"The user requested retry safety.","confidence":"high"}]})";
 
 	std::string error;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	const fs::path data_root = app.data_root;
+	const fs::path blocked = temp.root / "blocked-data-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "blocked"));
+	app.data_root = blocked;
+	const std::string previous_processed_at = app.chats[0].memory_last_processed_at;
+	UAM_ASSERT(!MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 1, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_at, previous_processed_at);
+	app.data_root = data_root;
+	const std::string unrelated_status = "Other connection failed.";
+	app.status_line = unrelated_status;
 	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 1, &error));
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(app.status_line, unrelated_status);
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 1, &error));
 	const fs::path path = fs::path(chat.workspace_directory) / ".UAM" / "Lessons" / "User_Lessons" / "retry-safe-memory.md";
 	const std::string text = ReadFile(path);
@@ -77,9 +109,20 @@ UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)
 	UAM_ASSERT(key_at != std::string::npos);
 	UAM_ASSERT(text.find("Extraction key: chat-memory-retry:1", key_at + 1) == std::string::npos);
 
-	app.chats[0].messages.push_back({MessageRole::User, "Remember it again.", "later"});
+	UAM_ASSERT(!app.chats[0].messages_loaded);
+	UAM_ASSERT(app.chats[0].messages.empty());
+	const std::optional<ChatSession> preserved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(preserved && preserved->messages.size() == 1);
+	UAM_ASSERT_EQ(preserved->messages[0].content, chat.messages[0].content);
+	chat.messages.push_back({MessageRole::User, "Remember it again.", "later"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, output, 2, &error));
 	UAM_ASSERT(ReadFile(path).find("Occurrence count: 2") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 2);
+	const std::optional<ChatSession> completed = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(completed && completed->messages.size() == 2);
+	UAM_ASSERT_EQ(completed->memory_last_processed_message_count, 2);
 }
 
 UAM_TEST(MemoryServiceRecallTruncatesUtf8AtCodePointBoundary)
@@ -610,6 +653,7 @@ UAM_TEST(MemoryServiceDeletesNewGeminiNativeHistoryAfterWorkerCompletes)
   "messages": [{"type": "user", "timestamp": "2026-01-01T00:00:02.000Z", "content": "This is a normal user chat that started while memory ran."}]
 })"));
 
+	uam::StopAsyncMemoryExtractionWorker(app.memory_extraction_tasks[0]);
 	app.memory_extraction_tasks[0].state->result.ok = true;
 	app.memory_extraction_tasks[0].state->result.output = R"({"memories":[]})";
 	app.memory_extraction_tasks[0].state->completed.store(true);
@@ -1087,6 +1131,9 @@ UAM_TEST(MemoryServiceListsAndQueuesManualScanCandidates)
 	terminal->turn_state = uam::CliTerminalTurnState::Busy;
 	app.cli_terminals.push_back(std::move(terminal));
 
+	for (const ChatSession& saved_chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, saved_chat));
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+
 	const std::vector<MemoryService::ManualScanCandidate> candidates = MemoryService::ListManualScanCandidates(app);
 	UAM_ASSERT_EQ(candidates.size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(candidates[0].chat_id, std::string("chat-alpha"));
@@ -1110,6 +1157,11 @@ UAM_TEST(MemoryServiceListsAndQueuesManualScanCandidates)
 	UAM_ASSERT(!MemoryService::QueueManualScan(app, {"missing-chat"}, &queued_count, &error));
 	UAM_ASSERT_EQ(queued_count, 0);
 	UAM_ASSERT(!error.empty());
+	for (const ChatSession& summary : app.chats)
+	{
+		UAM_ASSERT(!summary.messages_loaded);
+		UAM_ASSERT(summary.messages.empty());
+	}
 	MemoryService::StopMemoryTasks(app);
 }
 
@@ -1333,9 +1385,10 @@ UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
 		chat.memory_enabled = true;
 		chat.messages.push_back({MessageRole::User, "Remember that item " + std::to_string(i) + " is a critical workspace lesson.", "now"});
 		app.memory_idle_started_at_by_chat_id[chat.id] = idle_started_at;
-		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 	}
 
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 	uam::AsyncMemoryExtractionTask running_task;
 	running_task.running = true;
 	running_task.chat_id = "chat-0";
@@ -1346,8 +1399,10 @@ UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(app.memory_extraction_queue[0].chat_id, std::string("chat-1"));
-	UAM_ASSERT_EQ(app.memory_extraction_queue[1].chat_id, std::string("chat-2"));
+	const std::unordered_set<std::string> queued_ids = {
+	    app.memory_extraction_queue[0].chat_id, app.memory_extraction_queue[1].chat_id};
+	UAM_ASSERT((queued_ids == std::unordered_set<std::string>{"chat-1", "chat-2"}));
+	for (const ChatSession& summary : app.chats) UAM_ASSERT(!summary.messages_loaded && summary.messages.empty());
 	MemoryService::StopMemoryTasks(app);
 }
 
@@ -1396,6 +1451,129 @@ UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
 	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
 }
 
+UAM_TEST(MemoryServiceFailedWorkerKeepsCachedEntryCountsWithoutRescanningRoots)
+{
+	TempDir temp("uam-memory-failed-worker-no-recount");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatSession chat;
+	chat.id = "chat-failed-no-recount";
+	chat.provider_id = "opencode-cli";
+	chat.workspace_directory = (temp.root / "workspace").string();
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.messages.push_back({MessageRole::User, "Remember this preference.", "now"});
+	fs::create_directories(chat.workspace_directory);
+	app.chats.push_back(chat);
+
+	const std::string memory_output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Cached entry","memory":"Keep cached entry metadata.","evidence":"Test setup.","confidence":"high"}]})";
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats[0], chat.workspace_directory, memory_output, 1, &error));
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 1);
+	const std::string last_created_at = app.memory_activity.last_created_at;
+	fs::remove_all(chat.workspace_directory);
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = chat.id;
+	task.workspace_root = chat.workspace_directory;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = chat.provider_id;
+	task.state->result.error = "OpenCode worker unavailable";
+	task.state->result.exit_code = 1;
+	task.state->result.output = "worker diagnostic output";
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 1);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_at, last_created_at);
+	UAM_ASSERT_EQ(app.memory_activity.running_count, 0);
+	UAM_ASSERT(app.memory_activity.last_status.find("OpenCode worker unavailable") != std::string::npos);
+	UAM_ASSERT(app.memory_activity.last_worker_status.find("OpenCode worker unavailable") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_error, std::string("OpenCode worker unavailable"));
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_output, std::string("worker diagnostic output"));
+	UAM_ASSERT(app.memory_activity.last_worker_has_exit_code);
+	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 1);
+}
+
+UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
+{
+	TempDir temp("uam-memory-global-backoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+
+	ChatSession failed;
+	failed.id = "chat-global-failure";
+	failed.provider_id = "gemini-cli";
+	failed.workspace_directory = temp.root.string();
+	failed.memory_enabled = true;
+	failed.messages.push_back({MessageRole::User, "Remember this.", "now"});
+	ChatSession queued = failed;
+	queued.id = "chat-global-queued";
+	queued.provider_id = "missing-provider";
+	ChatSession queued_again = queued;
+	queued_again.id = "chat-global-queued-again";
+	app.chats = {failed, queued, queued_again};
+
+	uam::AsyncMemoryExtractionTask task;
+	task.running = true;
+	task.chat_id = failed.id;
+	task.message_count = 1;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->provider_id = failed.provider_id;
+	task.state->result.exit_code = 1;
+	task.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(task));
+	app.memory_extraction_queue.push_back({queued.id, -1, false});
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_global_retry_not_before > uam::GetAppTimeSeconds());
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 1);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+
+	app.memory_extraction_queue.clear();
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
+	uam::AsyncMemoryExtractionTask success;
+	success.running = true;
+	success.chat_id = failed.id;
+	success.message_count = 1;
+	success.workspace_root = temp.root;
+	success.state = std::make_shared<AsyncProcessTaskState>();
+	success.state->provider_id = failed.provider_id;
+	success.state->result.ok = true;
+	success.state->result.output = R"({"memories":[]})";
+	success.state->completed.store(true);
+	app.memory_extraction_tasks.push_back(std::move(success));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
+	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+
+	ChatSession fresh = queued;
+	fresh.id = "chat-global-fresh-manual";
+	app.chats.push_back(fresh);
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {fresh.id}));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, fresh.id);
+	app.memory_extraction_queue.clear();
+
+	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
+	app.memory_extraction_queue.push_back({queued.id, -1, false});
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {queued.id}));
+	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
+	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, queued.id);
+	UAM_ASSERT(app.memory_extraction_queue.front().manual);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[queued.id], 1);
+	UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(queued_again.id));
+}
+
 UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 {
 	TempDir temp("uam-memory-worker-command-not-found");
@@ -1434,4 +1612,249 @@ UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 	UAM_ASSERT(app.memory_activity.last_worker_status.find("command was not found") != std::string::npos);
 	UAM_ASSERT(app.memory_activity.last_worker_output.find("command not found") != std::string::npos);
 	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 127);
+}
+
+UAM_TEST(MemoryServiceColdAutomaticScanHydratesOnlyWhenDequeued)
+{
+	TempDir temp("uam-memory-cold-auto");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const std::string unrelated_status = "Other connection failed.";
+	app.status_line = unrelated_status;
+	app.settings.memory_idle_delay_seconds = -1;
+	for (int index = 0; index < 2; ++index)
+	{
+		ChatSession chat;
+		chat.id = "cold-low-signal-" + std::to_string(index);
+		chat.memory_enabled = true;
+		chat.memory_level = "strict";
+		chat.workspace_directory = temp.root.string();
+		chat.messages.push_back({MessageRole::User, "Please make the button spacing tighter.", "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.memory_idle_started_at_by_chat_id[chat.id] = std::max(0.001, uam::GetAppTimeSeconds());
+	}
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+		UAM_ASSERT(!chat.messages_loaded && chat.messages.empty());
+	}
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_extraction_tasks.size() == static_cast<std::size_t>(1));
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT(!chat.messages_loaded && chat.messages.empty());
+	}
+	DrainMemoryWork(app);
+	UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
+	UAM_ASSERT_EQ(app.status_line, unrelated_status);
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 1);
+		UAM_ASSERT(!chat.messages_loaded && chat.messages.empty());
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->messages.size() == 1);
+		UAM_ASSERT_EQ(saved->memory_last_processed_message_count, 1);
+	}
+}
+
+UAM_TEST(MemoryServiceColdPreparationDoesNotSkipNewMessages)
+{
+	TempDir temp("uam-memory-cold-stale");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "cold-stale";
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = true;
+	chat.memory_level = "strict";
+	chat.messages.push_back({MessageRole::User, "Tighten the button spacing.", "now"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	uam::QueuedMemoryExtractionTask queued;
+	queued.chat_id = chat.id;
+	app.memory_extraction_queue.push_back(queued);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+
+	ChatSession& live = app.chats.front();
+	live.messages_loaded = true;
+	live.messages = chat.messages;
+	live.messages.push_back({MessageRole::User, "Remember this critical lesson.", "later"});
+	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 60;
+	DrainMemoryWork(app);
+	UAM_ASSERT_EQ(live.memory_last_processed_message_count, 0);
+	UAM_ASSERT_EQ(live.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(MemoryServiceColdHydrationFailuresRetryAfterRepair)
+{
+	for (int scenario = 0; scenario < 4; ++scenario)
+	{
+		const bool manual = (scenario & 1) != 0;
+		const bool corrupt = (scenario & 2) != 0;
+		TempDir temp("uam-memory-cold-repair");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "cold-repair";
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = true;
+		chat.messages_loaded = false;
+		chat.persisted_message_count = 1;
+		app.chats.push_back(chat);
+		if (corrupt)
+		{
+			fs::create_directories(app.data_root / "chats");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "chats" / "cold-repair.json", "{"));
+		}
+		uam::QueuedMemoryExtractionTask queued;
+		queued.chat_id = chat.id;
+		queued.manual = manual;
+		queued.scan_start_message_index = manual ? 0 : -1;
+	app.memory_extraction_queue.push_back(queued);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
+		const double retry_at = app.memory_retry_not_before_by_chat_id[chat.id];
+		UAM_ASSERT(retry_at > uam::GetAppTimeSeconds());
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
+		UAM_ASSERT_EQ(app.memory_retry_not_before_by_chat_id[chat.id], retry_at);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		const std::string hydration_failure = app.memory_last_status;
+		UAM_ASSERT(!hydration_failure.empty());
+		chat.messages_loaded = true;
+		chat.persisted_message_count = 0;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.memory_retry_not_before_by_chat_id[chat.id] = 0;
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		DrainMemoryWork(app);
+		UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
+		UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(chat.id));
+		UAM_ASSERT(!app.memory_retry_not_before_by_chat_id.contains(chat.id));
+		UAM_ASSERT(app.memory_last_status != hydration_failure);
+		UAM_ASSERT_EQ(app.chats[0].persisted_message_count, static_cast<std::size_t>(0));
+		UAM_ASSERT(!app.chats[0].messages_loaded && app.chats[0].messages.empty());
+	}
+}
+
+UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
+{
+	for (const std::string failure : {"process", "output", "save", "canceled"})
+	{
+		TempDir temp("uam-memory-manual-retry");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "manual-retry";
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = true;
+		chat.memory_last_processed_message_count = 1;
+		chat.messages.push_back({MessageRole::User, "Remember our coding style.", "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+		uam::AsyncMemoryExtractionTask task;
+		task.running = true;
+		task.chat_id = chat.id;
+		task.message_count = 1;
+		task.scan_start_message_index = 0;
+		task.workspace_root = temp.root;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = failure == "output" || failure == "save";
+		task.state->result.output = failure == "output" ? "not-json" : R"({"memories":[]})";
+		task.state->result.canceled = failure == "canceled";
+		task.state->completed.store(true);
+		app.memory_extraction_tasks.push_back(std::move(task));
+		if (failure == "save")
+		{
+			app.data_root = temp.root / "blocked";
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+		}
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
+		if (failure == "canceled")
+		{
+			UAM_ASSERT(app.memory_extraction_queue.empty());
+			continue;
+		}
+		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(app.memory_extraction_queue[0].manual);
+		UAM_ASSERT_EQ(app.memory_extraction_queue[0].scan_start_message_index, 0);
+		const double retry_at = app.memory_retry_not_before_by_chat_id.at(chat.id);
+		UAM_ASSERT(retry_at > uam::GetAppTimeSeconds());
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
+		UAM_ASSERT_EQ(app.memory_retry_not_before_by_chat_id.at(chat.id), retry_at);
+
+		app.data_root = temp.root / "data";
+		app.memory_retry_not_before_by_chat_id[chat.id] = 0;
+		app.memory_global_retry_not_before = 0;
+		// No configured provider: retry reaches startup without launching an installed CLI.
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		DrainMemoryWork(app);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 2);
+		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(app.memory_extraction_queue[0].manual);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_last_status.find("provider is unavailable") != std::string::npos);
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 2);
+	}
+}
+
+UAM_TEST(MemoryServiceRejectsIneligibleScansBeforeReadingOrWritingHistory)
+{
+	for (const std::string exclusion : {"read-only", "remote", "disabled"})
+	{
+		TempDir temp("uam-memory-ineligible");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.settings.memory_idle_delay_seconds = -1;
+		ChatSession chat;
+		chat.id = "ineligible-scan";
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = true;
+		chat.messages_loaded = false;
+		chat.persisted_message_count = 1;
+		app.chats.push_back(chat);
+		UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, nullptr, nullptr));
+		app.chats[0].execution_host_id = exclusion == "remote" ? "remote-host" : "local";
+		app.chats[0].imported_read_only = exclusion == "read-only";
+		app.chats[0].memory_enabled = exclusion != "disabled";
+		app.chats[0].memory_level = exclusion == "disabled" ? "off" : "open";
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_failure_count_by_chat_id.empty());
+		UAM_ASSERT(MemoryService::ListManualScanCandidates(app).empty());
+		UAM_ASSERT(!MemoryService::QueueManualScan(app, {chat.id}, nullptr, nullptr));
+		app.memory_idle_started_at_by_chat_id[chat.id] = std::max(0.001, uam::GetAppTimeSeconds());
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+		UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
+		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+
+		uam::AsyncMemoryExtractionTask completed;
+		completed.running = true;
+		completed.chat_id = chat.id;
+		completed.message_count = 1;
+		completed.scan_start_message_index = 0;
+		completed.workspace_root = temp.root;
+		completed.state = std::make_shared<AsyncProcessTaskState>();
+		completed.state->result.ok = true;
+		completed.state->result.output = R"({"memories":[{"scope":"global","category":"Lessons/User_Lessons","title":"Late preference","memory":"Prefer Allman brace style in this project.","evidence":"User said: Please remember that this project uses Allman braces.","confidence":"high"}]})";
+		completed.state->completed.store(true);
+		app.memory_extraction_tasks.push_back(std::move(completed));
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT(app.memory_extraction_tasks.empty() && app.memory_extraction_queue.empty());
+		UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 0);
+		UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
+		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+	}
 }

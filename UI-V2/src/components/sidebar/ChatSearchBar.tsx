@@ -78,7 +78,7 @@ export function ChatSearchBar({
       className="flex h-12 flex-shrink-0 items-center px-4"
       style={{ background: 'var(--sidebar-bg)' }}
     >
-      <div className="flex w-full items-center gap-2">
+      <div className="flex w-full items-center gap-2 rounded-md focus-within:ring-1 focus-within:ring-[var(--accent)]">
         <div
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2"
           style={{
@@ -105,6 +105,7 @@ export function ChatSearchBar({
             style={{
               color: 'var(--text)',
               fontFamily: 'inherit',
+              outline: 'none',
             }}
           />
 

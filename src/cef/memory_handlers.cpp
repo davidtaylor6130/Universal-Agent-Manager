@@ -56,7 +56,7 @@ void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 
-	RunAsyncCefQuery(cb,
+	RunAsyncCefQuery(m_asyncLifetime, cb,
 	                 [data_root, tokens, request_id]()
 	                 {
 		                 nlohmann::json async_result;
@@ -104,7 +104,7 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 	}
 	const std::string request_id = payload.value("requestId", "");
 
-	RunAsyncCefQuery(cb,
+	RunAsyncCefQuery(m_asyncLifetime, cb,
 	                 [scope, request_id]()
 	                 {
 		                 std::string error;

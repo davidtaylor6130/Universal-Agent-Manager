@@ -5,6 +5,7 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
@@ -16,7 +17,6 @@
 #include "include/views/cef_window.h"
 #include "include/wrapper/cef_stream_resource_handler.h"
 
-#include <cstdio>
 #include <filesystem>
 #include <vector>
 
@@ -200,7 +200,7 @@ void UamCefApp::FailStartup(const std::string& error)
 		m_onFatalStartup(error);
 		return;
 	}
-	std::fprintf(stderr, "[CEF] %s\n", error.c_str());
+	uam::diagnostics::Write("[CEF] " + error);
 }
 
 void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
@@ -231,7 +231,7 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 
 	if (process_type.empty())
 	{
-		std::fprintf(stderr, "[CEF] macOS web-app shortcut crash workaround: disable-features=%s\n", disabled_features.c_str());
+		uam::diagnostics::Write("[CEF] macOS web-app shortcut crash workaround: disable-features=" + disabled_features);
 	}
 #endif
 

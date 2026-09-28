@@ -12,10 +12,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
-#include "common/provider/codex/cli/codex_session_index.h"
-#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
-#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
@@ -61,6 +58,7 @@ namespace uam
 			                                   : "The selected execution host no longer exists.");
 		}
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(provider);
 		LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "begin", &terminal, "chat_id=" + chat.id + ", provider_id=" + provider.id);
 
 		if (!ProviderRuntime::IsRuntimeEnabled(provider))
@@ -73,16 +71,11 @@ namespace uam
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled, "Selected provider is fixed to structured output.");
 		}
 
-		if (ProviderRuntime::UsesInternalEngine(provider))
-		{
-			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled, "Active provider does not support terminal mode.");
-		}
-
 		if (!provider.supports_interactive)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled, "Active provider does not expose an interactive runtime command.");
 		}
-		if (const std::string permission_flag_error = ProviderInteractivePermissionFlagError(app, provider); !permission_flag_error.empty())
+		if (const std::string permission_flag_error = runtime.InteractiveConfigurationError(provider, app.settings); !permission_flag_error.empty())
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
@@ -95,7 +88,6 @@ namespace uam
 
 		const bool chat_uses_native_history = !remote &&
 		    ProviderResolutionService().ChatUsesNativeOverlayHistory(app, chat);
-		const bool chat_uses_codex_cli = uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCodexCli);
 		std::filesystem::path native_history_chats_dir;
 
 		if (chat_uses_native_history)
@@ -105,7 +97,8 @@ namespace uam
 		}
 
 		std::string session_id_error;
-		if (!remote && !EnsureCopilotInteractiveSessionIdForLaunch(app, chat, provider, &session_id_error))
+		if (!runtime.PrepareInteractiveSession(app, chat, provider,
+		    ResolveProviderInteractiveResumeId(app, chat, provider), *execution_host, &session_id_error))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, session_id_error);
 		}
@@ -123,22 +116,15 @@ namespace uam
 		terminal.attached_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
 		terminal.linked_files_snapshot = chat.linked_files;
 
-		// RT-7: pre-launch session-id snapshot is per-provider. Unlike RT-3/PR-6 (pure argv),
-		// these branches differ in data source (native history dir vs local chats vs codex index)
-		// and the gemini branch has a side effect (ExportChatToNative), so it is intentionally
-		// left inline rather than forced behind a single runtime virtual.
+		// Capture the provider baseline before an unbound native CLI starts.
 		if (chat_uses_native_history)
 		{
 			ChatHistorySyncService().ExportChatToNative(app, chat);
 			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatHistorySyncService().LoadNativeSessionChats(native_history_chats_dir, provider));
 		}
-		else if (!remote && uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli))
+		else if (!remote && terminal.attached_session_id.empty())
 		{
-			terminal.session_ids_before = ChatHistorySyncService().SessionIdsFromChats(ChatRepository::LoadLocalChatSummaries(app.data_root));
-		}
-		else if (!remote && chat_uses_codex_cli && !uam::codex::IsValidThreadId(chat.native_session_id))
-		{
-			terminal.session_ids_before = uam::codex::ReadSessionIndexIds();
+			terminal.session_ids_before = runtime.SnapshotInteractiveSessionIds();
 		}
 		else
 		{
@@ -164,7 +150,7 @@ namespace uam
 
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
-		    : uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
+		    : runtime.BuildInteractiveEnvironment(provider);
 		if (remote)
 		{
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();
@@ -190,6 +176,7 @@ namespace uam
 
 		terminal.running = true;
 		terminal.should_launch = false;
+		terminal.uses_prompt_activity_tracking = runtime.SupportsInteractivePromptTracking();
 		MarkCliTerminalTurnBusy(terminal, false);
 		LogCliDiagnosticEvent(app, "start_cli_terminal_for_chat", "process_launched", &terminal,
 		                      "host=" + execution_host->id + ", argv0=" + launch_argv.front());

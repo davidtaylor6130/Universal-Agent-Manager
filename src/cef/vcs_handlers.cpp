@@ -8,9 +8,9 @@
 #include "app/vcs_commit_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
-#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/nlohmann_json_utils.h"
 
@@ -31,6 +31,20 @@ using namespace uam::query_handler_async;
 
 namespace
 {
+	std::shared_ptr<void> BeginRemoteVcsOperationLease(uam::AppState& app,
+	                                                   const std::string& host_id)
+	{
+		if (host_id.empty() || host_id == uam::execution_hosts::kLocalHostId) return {};
+		std::weak_ptr<void>& lease = app.remote_vcs_operation_leases_by_host_id[host_id];
+		std::shared_ptr<void> token = lease.lock();
+		if (!token)
+		{
+			token = std::make_shared<int>(0);
+			lease = token;
+		}
+		return token;
+	}
+
 	uam::AppState BuildReadOnlyAppSnapshot(std::filesystem::path data_root, AppSettings settings, std::vector<ChatFolder> folders, std::vector<ProviderProfile> provider_profiles, std::unordered_map<std::string, uam::CliProviderVersionState> provider_versions)
 	{
 		uam::AppState snapshot;
@@ -127,7 +141,7 @@ namespace
 		target.updated_at = source.updated_at;
 	}
 
-	void RunWorktreeOperationAsync(uam::AppState& app,
+	void RunWorktreeOperationAsync(std::weak_ptr<void> lifetime, uam::AppState& app,
 	                               CefRefPtr<CefBrowser> browser,
 	                               CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
 	                               const std::string& chat_id,
@@ -139,7 +153,7 @@ namespace
 		uam::AppState* live_app = &app;
 		app.worktree_operation_chat_ids.insert(chat_id);
 
-		RunAsyncCefQuery(
+		RunAsyncCefQuery(std::move(lifetime),
 		    callback,
 		    [snapshot_inputs = std::move(snapshot_inputs), state, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
 		    {
@@ -236,10 +250,6 @@ namespace
 
 	bool ChatRuntimeBusy(const uam::AppState& app, const std::string& chat_id)
 	{
-		if (uam::HasPendingCallForChat(app, chat_id))
-		{
-			return true;
-		}
 		for (const auto& session : app.acp_sessions)
 		{
 			if (session == nullptr || session->chat_id != chat_id || !session->running)
@@ -273,7 +283,7 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(
+	RunAsyncCefQuery(m_asyncLifetime,
 	    cb,
 	    [snapshot_inputs = std::move(snapshot_inputs), chat_id]() mutable
 	    {
@@ -311,7 +321,7 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 
-	RunWorktreeOperationAsync(m_app,
+	RunWorktreeOperationAsync(m_asyncLifetime, m_app,
 	                          browser,
 	                          cb,
 	                          chat->id,
@@ -337,7 +347,7 @@ void UamQueryHandler::HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> bro
 		return;
 	}
 
-	RunWorktreeOperationAsync(m_app,
+	RunWorktreeOperationAsync(m_asyncLifetime, m_app,
 	                          browser,
 	                          cb,
 	                          chat->id,
@@ -363,7 +373,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		return;
 	}
 
-	RunWorktreeOperationAsync(m_app,
+	RunWorktreeOperationAsync(m_asyncLifetime, m_app,
 	                          browser,
 	                          cb,
 	                          chat->id,
@@ -383,7 +393,7 @@ void UamQueryHandler::HandlePreviewChatTurnRollback(CefRefPtr<CefBrowser> /*brow
 	}
 	const std::string chat_id = chat->id;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	RunAsyncCefQuery(cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
+	RunAsyncCefQuery(m_asyncLifetime, cb, [snapshot_inputs = std::move(snapshot_inputs), chat_id, message_index = *message_index]() mutable {
 		uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		std::string warning;
 		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
@@ -425,7 +435,7 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 	auto result_state = std::make_shared<uam::GitTurnCheckpointResult>();
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(cb,
+	RunAsyncCefQuery(m_asyncLifetime, cb,
 		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, result_state]() mutable {
 			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			std::string warning;
@@ -464,9 +474,10 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref]() mutable
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref);
@@ -488,9 +499,10 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref]() mutable
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), path, type, request_id, comparison_ref, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 std::string error;
@@ -521,9 +533,10 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files]() mutable
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
@@ -549,9 +562,10 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	const std::string request_id = payload.value("requestId", "");
 	const ChatSession chat_snapshot = *chat;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 
-	RunAsyncCefQuery(cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id]() mutable
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, files = std::move(files), request_id, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService().GenerateMessage(snapshot, chat, type, files);

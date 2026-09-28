@@ -8,6 +8,9 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	const char* AcpProtocolKind() const override { return "gemini-acp"; }
 	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
 	const char* RuntimeId() const override;
+	bool OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+	    const uam::acp_detail::AcpResponseFailureDetails& details) const override;
+	const ProviderCliPolicy* CliVersionPolicy() const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
@@ -20,7 +23,6 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspace_path) const override;
 	bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const override;
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
-	bool UsesInternalEngine(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;

@@ -38,6 +38,8 @@ const defaultAppShellLayout = {
   sidebarWidthPx: 320,
   commitPanelWidthPx: 420,
   workingDisplayMode: 'compact' as const,
+  expandWorkTraces: true,
+  collapsibleWorkSections: true,
 }
 
 function clampSidebarWidthPx(width: number): number {
@@ -67,6 +69,8 @@ function readStoredAppShellLayout() {
         sidebarWidthPx: clampSidebarWidthPx(Number(parsed.sidebarWidthPx) || defaultAppShellLayout.sidebarWidthPx),
         commitPanelWidthPx: clampCommitPanelWidthPx(Number(parsed.commitPanelWidthPx) || defaultAppShellLayout.commitPanelWidthPx),
         workingDisplayMode: parsed.workingDisplayMode === 'verbose' ? 'verbose' as const : 'compact' as const,
+        expandWorkTraces: parsed.expandWorkTraces !== false,
+        collapsibleWorkSections: parsed.collapsibleWorkSections !== false,
       }
     }
 
@@ -78,6 +82,8 @@ function readStoredAppShellLayout() {
       sidebarWidthPx: defaultAppShellLayout.sidebarWidthPx,
       commitPanelWidthPx: legacyCommitPanelPercentToPx(parsed.commitPanelWidth),
       workingDisplayMode: defaultAppShellLayout.workingDisplayMode,
+      expandWorkTraces: defaultAppShellLayout.expandWorkTraces,
+      collapsibleWorkSections: defaultAppShellLayout.collapsibleWorkSections,
     }
   } catch {
     return defaultAppShellLayout
@@ -90,6 +96,8 @@ function writeStoredAppShellLayout(layout: {
   sidebarWidthPx: number
   commitPanelWidthPx: number
   workingDisplayMode: 'compact' | 'verbose'
+  expandWorkTraces: boolean
+  collapsibleWorkSections: boolean
 }) {
   if (typeof window === 'undefined') return
   try {
@@ -99,6 +107,8 @@ function writeStoredAppShellLayout(layout: {
       sidebarWidthPx: clampSidebarWidthPx(layout.sidebarWidthPx),
       commitPanelWidthPx: clampCommitPanelWidthPx(layout.commitPanelWidthPx),
       workingDisplayMode: layout.workingDisplayMode,
+      expandWorkTraces: layout.expandWorkTraces,
+      collapsibleWorkSections: layout.collapsibleWorkSections,
     }))
   } catch {
     // Ignore storage failures; the in-memory store still tracks the layout.
@@ -127,6 +137,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     theme: readDocumentTheme(),
     customThemes: [] as CustomTheme[],
     workingDisplayMode: storedShellLayout.workingDisplayMode,
+    expandWorkTraces: storedShellLayout.expandWorkTraces,
+    collapsibleWorkSections: storedShellLayout.collapsibleWorkSections,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
     isNewChatModalOpen: false,
@@ -228,6 +240,14 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       writeStoredAppShellLayout({ ...state, workingDisplayMode })
       return { workingDisplayMode }
     }),
+    setExpandWorkTraces: (expandWorkTraces: boolean) => set((state: AppState) => {
+      writeStoredAppShellLayout({ ...state, expandWorkTraces })
+      return { expandWorkTraces }
+    }),
+    setCollapsibleWorkSections: (collapsibleWorkSections: boolean) => set((state: AppState) => {
+      writeStoredAppShellLayout({ ...state, collapsibleWorkSections })
+      return { collapsibleWorkSections }
+    }),
     setSidebarCollapsed: (collapsed: boolean) => set((state: AppState) => {
       const next = {
         sidebarCollapsed: collapsed,
@@ -235,6 +255,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
         workingDisplayMode: state.workingDisplayMode,
+        expandWorkTraces: state.expandWorkTraces,
+        collapsibleWorkSections: state.collapsibleWorkSections,
       }
       writeStoredAppShellLayout(next)
       return { sidebarCollapsed: collapsed }
@@ -246,6 +268,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
         workingDisplayMode: state.workingDisplayMode,
+        expandWorkTraces: state.expandWorkTraces,
+        collapsibleWorkSections: state.collapsibleWorkSections,
       }
       writeStoredAppShellLayout(next)
       return { commitPanelOpen: open }
@@ -261,6 +285,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         sidebarWidthPx,
         commitPanelWidthPx: state.commitPanelWidthPx,
         workingDisplayMode: state.workingDisplayMode,
+        expandWorkTraces: state.expandWorkTraces,
+        collapsibleWorkSections: state.collapsibleWorkSections,
       }
       writeStoredAppShellLayout(next)
       return { sidebarWidthPx }
@@ -276,6 +302,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
         sidebarWidthPx: state.sidebarWidthPx,
         commitPanelWidthPx,
         workingDisplayMode: state.workingDisplayMode,
+        expandWorkTraces: state.expandWorkTraces,
+        collapsibleWorkSections: state.collapsibleWorkSections,
       }
       writeStoredAppShellLayout(next)
       return { commitPanelWidthPx }

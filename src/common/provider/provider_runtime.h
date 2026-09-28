@@ -3,20 +3,31 @@
 #include "common/models/app_models.h"
 #include "common/provider/provider_profile.h"
 
+#include "include/internal/cef_ptr.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+class CefBrowser;
+
 namespace uam
 {
 struct AcpSessionState;
+struct AcpPendingPermissionState;
+struct AcpToolCallState;
 struct AppState;
+namespace acp_detail
+{
+struct AcpResponseFailureDetails;
+}
 } // namespace uam
 
 /// <summary>
@@ -47,6 +58,41 @@ struct ProviderDiscoveryResult
 	std::string error;
 };
 
+/// <summary>How a structured session applies a setting change.</summary>
+enum class ProviderAcpSettingChangeAction
+{
+	SendRequest,
+	KeepCurrent,
+	ApplyLocally,
+	RestartSession,
+	SendRequestAndAwaitConfigOptions,
+};
+
+enum class ProviderCliVersionPolicy
+{
+	MinimumSemver,
+	AnySafeToken,
+};
+
+/// <summary>Provider-owned CLI distribution and version compatibility policy.</summary>
+struct ProviderCliPolicy
+{
+	std::string_view provider_id;
+	std::string_view npm_package;
+	std::string_view fallback_title;
+	std::string_view executable_name;
+	std::string_view version_probe_command;
+	std::string_view homebrew_package;
+	std::string_view winget_package;
+	bool homebrew_cask = false;
+	const char* preferred_version = nullptr;
+	const char* fallback_version = nullptr;
+	const char* minimum_version = nullptr;
+	ProviderCliVersionPolicy version_policy = ProviderCliVersionPolicy::AnySafeToken;
+	bool provider_managed = false;
+	const char* verified_at = nullptr;
+};
+
 /// <summary>
 /// Runtime-polymorphic provider backend contract.
 /// </summary>
@@ -57,17 +103,50 @@ class IProviderRuntime
 
 	/// <summary>Canonical provider runtime id (for example `gemini-cli`).</summary>
 	virtual const char* RuntimeId() const = 0;
+	/// <summary>Reads the provider's local model cache without starting a process or fetching models.</summary>
+	virtual nlohmann::json ReadLocalModelCatalog() const { return nlohmann::json::array(); }
+	/// <summary>Returns CLI update and compatibility policy, or null for unsupported runtimes.</summary>
+	virtual const ProviderCliPolicy* CliVersionPolicy() const { return nullptr; }
+	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
+	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
 	virtual bool IsEnabled() const { return true; }
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>
 	virtual const char* DisabledReason() const { return ""; }
 
 	/// <summary>Builds interactive terminal argv for the active provider.</summary>
+	virtual std::vector<std::string> BuildNativeDiscoveryArgv(const ProviderProfile&) const { return {}; }
+	/// Returns a direct native transcript export command, or empty when unsupported.
+	virtual std::vector<std::string> BuildNativeExportArgv(const ProviderProfile&, const ChatSession&) const { return {}; }
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
+	/// <summary>Validates provider-specific terminal options before runtime handoff.</summary>
+	virtual std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const;
+	/// <summary>Returns environment overrides for a local interactive provider process.</summary>
+	virtual std::vector<std::pair<std::string, std::string>> BuildInteractiveEnvironment(const ProviderProfile& profile) const;
+	/// <summary>Recognizes the provider's idle prompt in recent native terminal output.</summary>
+	virtual bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const;
+	/// <summary>Whether terminal output can confirm completion after a submitted turn.</summary>
+	virtual bool SupportsInteractivePromptTracking() const { return true; }
+	/// <summary>True when a native session must be created and saved before starting the CLI.</summary>
+	virtual bool RequiresNativeSessionCreation() const { return false; }
+	/// <summary>Creates an empty native session without sending a model prompt. Run off the UI thread.</summary>
+	virtual std::string CreateNativeSession(const ProviderProfile& profile, const std::filesystem::path& workspace,
+	    std::stop_token stop_token, std::string* error_out = nullptr, const ExecutionHost* remote_host = nullptr) const;
+	/// <summary>Resolves the saved terminal binding according to the provider's native ID rules.</summary>
+	virtual std::string ResolveInteractiveResumeId(const uam::AppState& app, const ChatSession& chat) const;
+	/// <summary>Validates and persists provider session state before launching a local or remote CLI.</summary>
+	virtual bool PrepareInteractiveSession(uam::AppState& app, ChatSession& chat, const ProviderProfile& profile,
+	    const std::string& resume_id, const ExecutionHost& host, std::string* error_out) const;
+	/// <summary>Captures native IDs before an unbound local CLI starts.</summary>
+	virtual std::vector<std::string> SnapshotInteractiveSessionIds() const { return {}; }
+	/// <summary>Discovers a new native binding using the provider's index and workspace rules.</summary>
+	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&) const { return {}; }
 	/// <summary>Maps provider-native message types to app message roles.</summary>
 	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const = 0;
 	/// <summary>Loads history according to runtime policy.</summary>
 	virtual std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const = 0;
+	/// <summary>Restores or validates native identity after loading local history, including recovered backups.</summary>
+	virtual void NormalizeLoadedNativeSessionId(ChatSession& chat) const;
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	virtual bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const = 0;
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
@@ -123,12 +202,6 @@ class IProviderRuntime
 		(void)profile;
 		return true;
 	}
-	/// <summary>Returns true when provider execution is internal engine backed.</summary>
-	virtual bool UsesInternalEngine(const ProviderProfile& profile) const
-	{
-		(void)profile;
-		return false;
-	}
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
 	virtual bool UsesCliOutput(const ProviderProfile& profile) const
 	{
@@ -162,10 +235,27 @@ class IProviderRuntime
 	/// </summary>
 	virtual bool ProviderRecognizesSubagentTool(std::string_view tool_name) const;
 
+	/// <summary>Restores provider-specific tool metadata from a native history item.</summary>
+	virtual void ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const
+	{
+		(void)tool;
+		(void)native_item;
+	}
+	/// <summary>Decodes provider extensions after common ACP tool metadata is applied.</summary>
+	virtual void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& update) const
+	{
+		(void)tool;
+		(void)update;
+	}
+
 	// == ACP Session Strategy ==
 
 	/// <summary>ACP protocol variant for message routing.</summary>
 	virtual const char* AcpProtocolKind() const { return ""; }
+
+	/// <summary>Provider-owned active turn identity retained across remote attachment.</summary>
+	virtual std::string AcpTurnIdentity(const uam::AcpSessionState&) const { return {}; }
+	virtual void RestoreAcpTurnIdentity(uam::AcpSessionState&, const std::string&) const {}
 
 	/// <summary>Display name for this provider in ACP mode.</summary>
 	virtual const char* GetAcpDisplayName() const { return RuntimeId(); }
@@ -175,6 +265,30 @@ class IProviderRuntime
 	/// Returns empty to skip wire initialize.
 	/// </summary>
 	virtual nlohmann::json OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const;
+
+	/// <summary>Recognizes legacy prompt completion when a saved request map is unavailable.</summary>
+	virtual std::string RecoverAcpResponseMethod(const nlohmann::json& message) const
+	{
+		const nlohmann::json::const_iterator result = message.find("result");
+		if (result != message.end() && result->is_object())
+		{
+			const nlohmann::json::const_iterator reason = result->find("stopReason");
+			if (reason != result->end() && reason->is_string()) return "session/prompt";
+		}
+		return {};
+	}
+
+	/// <summary>Handles a provider-specific successful response; false delegates to shared ACP handling.</summary>
+	virtual bool OnAcpHandleResult(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const std::string&, const std::string&, const nlohmann::json&) const { return false; }
+
+	/// <summary>Handles provider-specific response failures after shared diagnostics; false uses common recovery.</summary>
+	virtual bool OnAcpHandleError(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const uam::acp_detail::AcpResponseFailureDetails&) const { return false; }
+
+	/// <summary>Consumes provider-specific stream messages; false delegates to shared ACP dispatch.</summary>
+	virtual bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const nlohmann::json&, const CefRefPtr<CefBrowser>&) const { return false; }
 
 	/// <summary>Called after initialize response received.</summary>
 	virtual void OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const;
@@ -193,6 +307,13 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const;
 
+	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
+	virtual bool SupportsAcpSteering() const { return false; }
+
+	/// <summary>Builds native steering and records provider turn identity for its acknowledgment.</summary>
+	virtual nlohmann::json OnAcpBuildSteer(uam::AcpSessionState&, int,
+	    const std::string&, std::string&) const { return nullptr; }
+
 	/// <summary>True when prompt can be sent without session_id (Claude stream-json).</summary>
 	virtual bool OnAcpCanSendPromptWithoutSessionId() const { return false; }
 
@@ -203,15 +324,23 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session,
 	    int request_id, std::string& out_method) const;
 
-	/// <summary>Set mode locally. Return true if handled locally (no wire call).</summary>
-	virtual bool OnAcpSetModeLocally(uam::AcpSessionState& session, const std::string& mode_id) const;
+	/// <summary>Chooses mode-change transport, retaining provider-owned agent selection when needed.</summary>
+	virtual ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const { return ProviderAcpSettingChangeAction::SendRequest; }
 
-	/// <summary>Set model locally. Return true if handled locally (no wire call).</summary>
-	virtual bool OnAcpSetModelLocally(uam::AcpSessionState& session, const std::string& model_id) const;
+	/// <summary>Chooses model-change transport and whether refreshed config options are required.</summary>
+	virtual ProviderAcpSettingChangeAction AcpModelChangeAction() const { return ProviderAcpSettingChangeAction::SendRequest; }
+
+	/// <summary>Updates provider model metadata from native config options; returns whether it changed.</summary>
+	virtual bool OnAcpConfigOptionsUpdated(uam::AcpSessionState&, const nlohmann::json&) const { return false; }
+	/// <summary>Reconciles saved model options with the active provider session; returns whether it changed.</summary>
+	virtual bool OnAcpReconcileModelOptions(uam::AppState&, uam::AcpSessionState&, ChatSession&) const { return false; }
 
 	/// <summary>Build permission response.</summary>
 	virtual nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
 	    const std::string& option_id, bool cancelled) const;
+
+	/// <summary>Preserves provider recovery decisions that must not be automatically approved.</summary>
+	virtual bool AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState&) const { return false; }
 
 	/// <summary>Try to auto-approve pending permission. Return true if approved.</summary>
 	virtual bool OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat,
@@ -260,6 +389,8 @@ class ProviderRuntime
 	static MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type);
 	/// <summary>Loads history according to runtime policy.</summary>
 	static std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options = {});
+	/// <summary>Restores or validates native identity after loading local history, including recovered backups.</summary>
+	virtual void NormalizeLoadedNativeSessionId(ChatSession& chat) const;
 	/// <summary>Saves chat according to runtime history policy.</summary>
 	static bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Returns true when runtime uses Gemini-native history plus local overlay.</summary>
@@ -268,8 +399,6 @@ class ProviderRuntime
 	static bool SupportsGeminiJsonHistory(const ProviderProfile& profile);
 	/// <summary>Returns true when provider persists via local chat storage only.</summary>
 	static bool UsesLocalHistory(const ProviderProfile& profile);
-	/// <summary>Returns true when provider execution is internal engine backed.</summary>
-	static bool UsesInternalEngine(const ProviderProfile& profile);
 	/// <summary>Returns true when provider output is fixed to CLI terminal mode.</summary>
 	static bool UsesCliOutput(const ProviderProfile& profile);
 	/// <summary>Returns true when prompt bootstrap should use @.gemini path injection.</summary>

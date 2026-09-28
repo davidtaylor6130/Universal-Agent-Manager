@@ -225,9 +225,8 @@ describe('MemoryLibraryModal all memory scope', () => {
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
-    expect(host.textContent).not.toContain('New memory')
-
-    clickButton(host, 'Add memory')
+    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(host, 'Go back')
     expect((Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
 
     clickButton(host, 'Delete Global lesson')
@@ -237,7 +236,8 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.textContent).not.toContain('New memory')
+    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(host, 'Discard')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).toHaveBeenCalledTimes(1)
 
@@ -293,6 +293,31 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(host.textContent).toContain('Try another term or clear the search.')
     expect(host.textContent).not.toContain('No memory saved here yet')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows a repeated memory failure after the previous error was dismissed', () => {
+    const { host, root } = renderModal()
+    const deleteMemoryEntry = vi.fn(async () => {
+      useAppStore.setState({ memoryLibraryError: 'Permission denied' })
+      return false
+    })
+    act(() => useAppStore.setState({ deleteMemoryEntry }))
+    const attemptDelete = () => {
+      clickButton(host, 'Delete Global lesson')
+      const dialog = host.querySelector('[aria-label="Delete memory entry"]') as HTMLElement
+      clickButton(dialog, 'Delete memory')
+    }
+    attemptDelete()
+    expect(host.textContent).toContain('Permission denied')
+    clickButton(host, 'Dismiss memory error')
+    expect(host.textContent).not.toContain('Permission denied')
+    expect(useAppStore.getState().memoryLibraryError).toBe('')
+
+    attemptDelete()
+    expect(deleteMemoryEntry).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('Permission denied')
     act(() => root.unmount())
     host.remove()
   })

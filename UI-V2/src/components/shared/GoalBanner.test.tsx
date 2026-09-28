@@ -130,6 +130,30 @@ describe('GoalBanner', () => {
 		act(() => root.unmount())
 	})
 
+	it('recognizes legacy remote blockers without a stored kind', () => {
+		const { host, root } = renderGoal({
+			status: 'blocked',
+			lastBlocker: 'The remote turn no longer exists on the selected runner.',
+			lastBlockerKind: '',
+		})
+
+		expect(host.textContent).toContain('Needs connection')
+		expect(host.textContent).toContain('Reconnect the host, then resume.')
+		act(() => root.unmount())
+	})
+
+	it('shows legacy remote process exits as connection recovery', () => {
+		const { host, root } = renderGoal({
+			status: 'blocked',
+			lastBlocker: 'Codex app-server process exited during an active turn.',
+			lastBlockerKind: '',
+		})
+
+		expect(host.textContent).toContain('Needs connection')
+		expect(host.textContent).toContain('Reconnect the host, then resume.')
+		act(() => root.unmount())
+	})
+
   it('edits a UAM-managed goal in a screen-level modal and saves trimmed text', async () => {
     const { host, root, onEdit } = renderGoal()
 
@@ -153,14 +177,19 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-  it('does not offer editing for provider-managed or completed goals', () => {
+  it('does not offer editing for provider-managed goals', () => {
     const { host, root } = renderGoal({ executionOwner: 'provider' })
     act(() => { (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
     expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
     act(() => root.unmount())
+  })
 
+  it('keeps completed goals deletable but not editable or resumable', () => {
     const completed = renderGoal({ status: 'complete' })
-    expect(completed.host.querySelector('[aria-label="Goal actions"]')).toBeNull()
+    act(() => { (completed.host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
+    expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Resume goal"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Delete goal"]')).toBeTruthy()
     act(() => completed.root.unmount())
   })
 

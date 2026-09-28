@@ -44,9 +44,11 @@ class GoalService
 	static bool IsProviderManaged(const Goal& goal);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal);
-	static std::size_t PauseActiveGoalsAfterRestart(AppState& app);
+	static std::size_t PauseActiveGoalsAfterRestart(AppState& app,
+	                                                std::size_t* failed_out = nullptr);
 	static bool CancelGoalWork(AppState& app, const std::string& chat_id,
-	                           const std::string& goal_id, std::string* error_out = nullptr);
+	                           const std::string& goal_id, std::string* error_out = nullptr,
+	                           bool* work_changed_out = nullptr);
 
 	/// <summary>
 	/// Transition a goal to a new status (complete, blocked).
@@ -61,7 +63,8 @@ class GoalService
 	/// Set the active goal for a chat session. Only one active goal per chat.
 	/// </summary>
 	static bool SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-	                          std::string* error_out = nullptr);
+	                          std::string* error_out = nullptr,
+	                          bool* work_changed_out = nullptr);
 
 	/// <summary>
 	/// Clear the active goal for a chat session.
@@ -89,7 +92,7 @@ class GoalService
 	/// Remove a goal from a chat session. Returns true on success.
 	/// </summary>
 	static bool RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-	                       std::string* error_out = nullptr);
+	                       std::string* error_out = nullptr, bool* work_changed_out = nullptr);
 
 	/// <summary>
 	/// Record that the provider completed a turn while working on this goal.
@@ -103,7 +106,8 @@ class GoalService
 	/// blocker, the goal is auto-marked as blocked (per Codex behavior).
 	/// </summary>
 	static void RecordBlocker(AppState& app, const std::string& chat_id,
-	                          const std::string& goal_id, const std::string& blocker);
+	                          const std::string& goal_id, const std::string& blocker,
+	                          const std::string& blocker_kind = {});
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.

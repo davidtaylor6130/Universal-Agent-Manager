@@ -34,4 +34,5 @@ describe('theme token contract', () => {
     expect(accentStrength).toBeGreaterThanOrEqual(50)
     expect(selectionRule).toMatch(/color:\s*var\(--text\)/)
   })
+
 })

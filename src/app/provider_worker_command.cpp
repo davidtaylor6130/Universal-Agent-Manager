@@ -264,9 +264,14 @@ namespace uam
 		{
 			error_out->clear();
 		}
+		if (const std::string update_error = ProviderCliLaunchBlockReason(app, profile.id); !update_error.empty())
+		{
+			SetError(error_out, update_error);
+			return {};
+		}
 		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
 		{
-			if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
+			if (const std::string compatibility_error = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app); !compatibility_error.empty())
 			{
 				SetError(error_out, compatibility_error);
 				return {};

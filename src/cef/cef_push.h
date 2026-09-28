@@ -28,12 +28,11 @@ namespace uam
 	}
 	std::string StatePatchForTests(const AppState& before, const AppState& after);
 	std::string SettingsPatchForTests(const AppState& app);
-	std::size_t LastStatePushChatSerializationCountForTests();
 
 	/// <summary>
-	/// Delivers a single streaming token for the given chat session to the React frontend.
+	/// Delivers a streaming token with its native message position to the React frontend.
 	/// </summary>
-	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, const std::string& token);
+	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token);
 
 	/// <summary>
 	/// Signals that the streaming response for chat_id has completed.

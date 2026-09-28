@@ -1,0 +1,12 @@
+{
+	admin off
+	default_sni {$UAM_LAN_HOST}
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+https://{$UAM_LAN_HOST}:58950 {
+	bind 127.0.0.1 {$UAM_LAN_HOST}
+	tls internal
+	reverse_proxy 127.0.0.1:{$UAM_COMPANION_PORT:58948}
+}

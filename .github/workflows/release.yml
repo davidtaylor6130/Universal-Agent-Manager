@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Reject tracked private working notes
+        run: test -z "$(git ls-files wayfinder/progress.md)"
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -67,11 +69,11 @@ jobs:
       - run: cmake --build Builds/runner --config Release --target uam_runner --parallel 4
       - name: Smoke runner version (Linux)
         if: runner.os == 'Linux'
-        run: test "$(Builds/runner/uam-runner --version)" = "4.8.0"
+        run: test "$(Builds/runner/uam-runner --version)" = "$(tr -d '\r\n' < Builds/runner/uam-runner.version)"
       - name: Smoke runner version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: if ((& Builds/runner/Release/uam-runner.exe --version) -ne '4.8.0') { throw 'Runner version mismatch.' }
+        run: if ((& Builds/runner/Release/uam-runner.exe --version).Trim() -ne (Get-Content -Raw Builds/runner/Release/uam-runner.version).Trim()) { throw 'Runner version mismatch.' }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -144,6 +146,10 @@ jobs:
       - name: Test frontend
         run: npm --prefix UI-V2 run test
 
+      - name: Install static zlib (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install zlib:x64-windows-static
+
       - name: Validate release tag matches product version
         if: startsWith(github.ref, 'refs/tags/')
         run: node -e "const version = require('./UI-V2/package.json').version; const tag = 'v' + version; if (process.env.GITHUB_REF_NAME !== tag) throw new Error('Tag ' + process.env.GITHUB_REF_NAME + ' does not match ' + tag + '.');"
@@ -154,7 +160,7 @@ jobs:
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S . -B Builds -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts"
+        run: cmake -S . -B Builds -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
 
       - name: Build
         run: cmake --build Builds --config Release --parallel 4

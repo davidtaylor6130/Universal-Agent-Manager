@@ -13,7 +13,6 @@ namespace uam::acp_content
 	inline constexpr const char* kTypeField = "type";
 	inline constexpr const char* kTextField = "text";
 	inline constexpr const char* kTextType = "text";
-	inline constexpr const char* kTextElementsField = "text_elements";
 
 	inline nlohmann::json TextPart(std::string_view text)
 	{
@@ -21,13 +20,6 @@ namespace uam::acp_content
 		    {kTypeField, kTextType},
 		    {kTextField, std::string(text)},
 		};
-	}
-
-	inline nlohmann::json CodexTextInputPart(std::string_view text)
-	{
-		nlohmann::json part = TextPart(text);
-		part[kTextElementsField] = nlohmann::json::array();
-		return part;
 	}
 
 	inline bool HasTextField(const nlohmann::json& value)

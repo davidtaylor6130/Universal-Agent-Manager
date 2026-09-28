@@ -14,11 +14,14 @@
 #include <iostream>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <stop_token>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -53,6 +56,26 @@ namespace uam::remote
 
 		  private:
 			std::filesystem::path m_path;
+		};
+
+		class ServiceLock
+		{
+		  public:
+			explicit ServiceLock(int descriptor = -1) : m_descriptor(descriptor) {}
+			~ServiceLock()
+			{
+				if (m_descriptor >= 0) (void)close(m_descriptor);
+			}
+			ServiceLock(const ServiceLock&) = delete;
+			ServiceLock& operator=(const ServiceLock&) = delete;
+			ServiceLock(ServiceLock&& other) noexcept
+			    : m_descriptor(std::exchange(other.m_descriptor, -1))
+			{
+			}
+			int Get() const { return m_descriptor; }
+
+		  private:
+			int m_descriptor;
 		};
 
 		struct ClientThread
@@ -223,15 +246,52 @@ namespace uam::remote
 			return true;
 		}
 
-		bool SocketIsReachable(const std::filesystem::path& socket_path)
+		bool SocketIsReachable(const std::filesystem::path& socket_path, bool nonblocking = false)
 		{
 			std::string error;
 			sockaddr_un address{};
 			if (!SocketAddress(socket_path, address, error)) return false;
 			Socket probe(socket(AF_UNIX, SOCK_STREAM, 0));
+			if (nonblocking && probe.Get() >= 0 && fcntl(probe.Get(), F_SETFL, O_NONBLOCK) != 0)
+				return false;
 			return probe.Get() >= 0 &&
 			       connect(probe.Get(), reinterpret_cast<const sockaddr*>(&address),
 			               sizeof(address)) == 0;
+		}
+
+		ServiceLock AcquireServiceLock(const std::filesystem::path& socket_path,
+		                               bool& already_running, std::string& error)
+		{
+			already_running = false;
+			const std::filesystem::path lock_path = socket_path.string() + ".lock";
+			const int descriptor = open(lock_path.c_str(),
+			                            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+			if (descriptor < 0)
+			{
+				error = "Runner service lock could not be opened.";
+				return ServiceLock();
+			}
+			ServiceLock service_lock(descriptor);
+			struct stat status
+			{
+			};
+			if (fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
+			    status.st_uid != geteuid() || fchmod(descriptor, 0600) != 0)
+			{
+				error = "Runner service lock must be a private file owned by this user.";
+				return ServiceLock();
+			}
+			if (flock(descriptor, LOCK_EX | LOCK_NB) != 0)
+			{
+				if (errno == EWOULDBLOCK || errno == EAGAIN)
+				{
+					already_running = true;
+					return ServiceLock();
+				}
+				error = "Runner service lock could not be acquired.";
+				return ServiceLock();
+			}
+			return service_lock;
 		}
 	}
 
@@ -240,7 +300,15 @@ namespace uam::remote
 	{
 		std::string error;
 		sockaddr_un address{};
-		if (!SocketAddress(socket_path, address, error) ||
+		if (!SocketAddress(socket_path, address, error))
+		{
+			std::cerr << error << '\n';
+			return 2;
+		}
+		bool already_running = false;
+		ServiceLock service_lock = AcquireServiceLock(socket_path, already_running, error);
+		if (already_running) return 0;
+		if (service_lock.Get() < 0 ||
 		    !PrepareSocketPath(socket_path, address, error))
 		{
 			std::cerr << error << '\n';
@@ -273,6 +341,7 @@ namespace uam::remote
 
 		RunnerState state;
 		std::atomic<bool> shutdown_requested{false};
+		std::mutex dispatch_mutex;
 		std::vector<ClientThread> clients;
 		while (!shutdown_requested.load(std::memory_order_acquire))
 		{
@@ -283,6 +352,11 @@ namespace uam::remote
 				if (errno == EINTR) continue;
 				std::cerr << "Runner service could not accept a bridge.\n";
 				return 2;
+			}
+			if (shutdown_requested.load(std::memory_order_acquire))
+			{
+				(void)close(descriptor);
+				break;
 			}
 			std::erase_if(clients, [](const ClientThread& client)
 			{
@@ -308,16 +382,42 @@ namespace uam::remote
 						    if (result != FrameReadResult::Ok) break;
 						    if (request.value("type", "") == "service.shutdown")
 						    {
+							    std::scoped_lock dispatch_lock(dispatch_mutex);
+							    const bool busy = state.HasManagedProcesses();
+							    if (busy)
+							    {
+								    (void)WriteSocketFrame(client.Get(),
+								        {{"id", request.value("id", "")},
+								         {"type", "service.shutdown"}, {"ok", false},
+								         {"error", {{"code", "processes_active"},
+								                    {"message", "Runner service still owns remote processes."}}}});
+								    continue;
+							    }
 							    (void)WriteSocketFrame(client.Get(),
 							        {{"id", request.value("id", "")},
 							         {"type", "service.shutdown"}, {"ok", true},
 							         {"result", nlohmann::json::object()}});
+							    // Publish shutdown only after its reply is written; client cancellation closes sockets.
 							    shutdown_requested.store(true, std::memory_order_release);
-							    (void)shutdown(listener.Get(), SHUT_RDWR);
+							    // Connecting wakes accept on macOS too; never wait for a full backlog.
+							    (void)SocketIsReachable(socket_path, true);
 							    break;
 						    }
-						    if (!WriteSocketFrame(client.Get(), HandleRunnerRequest(
-						            request, runner_version, &state))) break;
+						    nlohmann::json response;
+						    if (request.value("type", "") == "process.start" ||
+						        request.value("type", "") == "channel.open")
+						    {
+							    std::scoped_lock dispatch_lock(dispatch_mutex);
+							    response = shutdown_requested.load(std::memory_order_acquire)
+							        ? nlohmann::json{{"id", request.value("id", "")},
+							                         {"type", "error"}, {"ok", false},
+							                         {"error", {{"code", "service_stopping"},
+							                                    {"message", "Runner service is stopping."}}}}
+							        : HandleRunnerRequest(request, runner_version, &state);
+						    }
+						    else
+							    response = HandleRunnerRequest(request, runner_version, &state);
+						    if (!WriteSocketFrame(client.Get(), response)) break;
 					    }
 				    }
 				    done->store(true, std::memory_order_release);
@@ -365,14 +465,22 @@ namespace uam::remote
 			_exit(result);
 		}
 
+		bool child_reaped = false;
 		for (int attempt = 0; attempt < 200; ++attempt)
 		{
 			if (SocketIsReachable(socket_path)) return 0;
-			int status_value = 0;
-			if (waitpid(child, &status_value, WNOHANG) == child)
+			if (!child_reaped)
 			{
-				std::cerr << "Runner service exited during startup.\n";
-				return 2;
+				int status_value = 0;
+				if (waitpid(child, &status_value, WNOHANG) == child)
+				{
+					child_reaped = true;
+					if (!WIFEXITED(status_value) || WEXITSTATUS(status_value) != 0)
+					{
+						std::cerr << "Runner service exited during startup.\n";
+						return 2;
+					}
+				}
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		}

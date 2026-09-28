@@ -36,6 +36,7 @@ class MacDictationService final : public IPlatformDictationService
 			}
 
 			m_running = true;
+			m_dictationId = options.dictation_id;
 			generation = ++m_generation;
 		}
 
@@ -46,12 +47,12 @@ class MacDictationService final : public IPlatformDictationService
 		return true;
 	}
 
-	void Stop() override
+	void Stop(std::string_view dictation_id = {}) override
 	{
 		std::uint64_t generation = 0;
 		{
 			std::scoped_lock lock(m_mutex);
-			if (!m_running)
+			if (!m_running || (!dictation_id.empty() && dictation_id != m_dictationId))
 			{
 				return;
 			}
@@ -206,7 +207,7 @@ class MacDictationService final : public IPlatformDictationService
 				const std::string text = utf8 == nullptr ? std::string() : std::string(utf8);
 				if (!text.empty())
 				{
-					Enqueue({result.final ? DictationEventType::Final : DictationEventType::Interim, text});
+					Enqueue(generation, {result.final ? DictationEventType::Final : DictationEventType::Interim, text});
 				}
 				if (result.final)
 				{
@@ -228,9 +229,11 @@ class MacDictationService final : public IPlatformDictationService
 		return m_running && m_generation == generation;
 	}
 
-	void Enqueue(DictationEvent event)
+	void Enqueue(std::uint64_t generation, DictationEvent event)
 	{
 		std::scoped_lock lock(m_mutex);
+		if (!m_running || m_generation != generation) return;
+		event.dictation_id = m_dictationId;
 		m_events.push_back(std::move(event));
 	}
 
@@ -264,7 +267,7 @@ class MacDictationService final : public IPlatformDictationService
 		{
 			std::scoped_lock lock(m_mutex);
 			m_running = false;
-			m_events.push_back({DictationEventType::End, {}});
+			m_events.push_back({DictationEventType::End, {}, m_dictationId});
 		}
 	}
 
@@ -278,13 +281,14 @@ class MacDictationService final : public IPlatformDictationService
 		{
 			std::scoped_lock lock(m_mutex);
 			m_running = false;
-			m_events.push_back({DictationEventType::Error, std::move(message)});
-			m_events.push_back({DictationEventType::End, {}});
+			m_events.push_back({DictationEventType::Error, std::move(message), m_dictationId});
+			m_events.push_back({DictationEventType::End, {}, m_dictationId});
 		}
 	}
 
 	mutable std::mutex m_mutex;
 	std::vector<DictationEvent> m_events;
+	std::string m_dictationId;
 	std::uint64_t m_generation = 0;
 	bool m_running = false;
 	bool m_stopRequested = false;

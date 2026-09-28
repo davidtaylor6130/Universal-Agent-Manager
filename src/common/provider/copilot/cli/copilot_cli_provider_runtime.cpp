@@ -1,29 +1,39 @@
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 
 #include "computer_use/computer_use_mcp_config.h"
+#include "common/config/execution_host_config.h"
+#include "common/platform/platform_services.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/state/app_state.h"
+#include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/config/approval_modes.h"
 #include "common/chat/chat_ids.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
-#include "common/runtime/acp/acp_session_internal.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
+#include "common/runtime/terminal/terminal_idle_classifier.h"
 #include "core/chat_import_utils.h"
 
 #include <array>
 #include <filesystem>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 
 namespace
 {
-	std::vector<std::string> CopilotFlagsFromSettings(const AppSettings& settings)
+	std::string NormalizeCopilotReasoningEffort(std::string_view value)
 	{
-		return uam::provider_runtime_internal::BuildProviderFlagsArgv(settings);
+		constexpr auto efforts = std::to_array<std::string_view>({"none", "minimal", "low", "medium", "high", "xhigh", "max"});
+		const auto found = uam::strings::FindEqualIgnoreCase(efforts, uam::strings::TrimAsciiView(value));
+		return found ? std::string(*found) : std::string{};
 	}
 
 	void AppendCopilotModeArgs(std::vector<std::string>& argv, const ChatSession& chat)
@@ -192,9 +202,102 @@ namespace
 	}
 } // namespace
 
+namespace
+{
+constexpr auto kCopilotPromptCueTexts = std::to_array<std::string_view>({"/ commands", "? help"});
+}
+
+bool CopilotCliProviderRuntime::RecentOutputIndicatesInputPrompt(std::string_view recent_output) const
+{
+	const std::string stripped = uam::RecentTerminalPromptScanText(recent_output);
+	return uam::strings::Contains(stripped, "\xE2\x9D\xAF") && uam::strings::ContainsAny(stripped, kCopilotPromptCueTexts);
+}
+
+const ProviderCliPolicy* CopilotCliProviderRuntime::CliVersionPolicy() const
+{
+	static constexpr ProviderCliPolicy policy
+	{
+		.provider_id = uam::provider_ids::kCopilotCli,
+		.npm_package = "@github/copilot",
+		.fallback_title = "GitHub Copilot CLI",
+		.executable_name = "copilot",
+		.version_probe_command = "copilot --version",
+		.homebrew_package = "copilot-cli",
+		.winget_package = "GitHub.Copilot",
+		.homebrew_cask = true,
+		.preferred_version = "latest",
+		.fallback_version = "1.0.80",
+		.minimum_version = "1.0.60",
+		.version_policy = ProviderCliVersionPolicy::MinimumSemver,
+		.verified_at = "2026-08-27",
+	};
+	return &policy;
+}
+
+bool CopilotCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+    const uam::acp_detail::AcpResponseFailureDetails& details) const
+{
+	using namespace uam::acp_detail;
+	if (!details.failure.has_code || details.failure.code != -32002) return false;
+	return RetrySessionNewAfterInvalidLoad(app, session, chat, details);
+}
+
 const char* CopilotCliProviderRuntime::RuntimeId() const
 {
 	return uam::provider_ids::kCopilotCli;
+}
+
+
+bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, ChatSession& chat, const ProviderProfile& provider, const std::string& resume_id, const ExecutionHost& execution_host, std::string* error_out) const
+{
+	if (error_out != nullptr)
+	{
+		error_out->clear();
+	}
+	if (execution_host.id != uam::execution_hosts::kLocalHostId)
+	{
+		return true;
+	}
+	ProviderCliCompatibilityService().Poll(app);
+	if (const std::string compatibility_error = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app); !compatibility_error.empty())
+	{
+		if (error_out != nullptr)
+			*error_out = compatibility_error;
+		return false;
+	}
+
+	if (!resume_id.empty())
+	{
+		return true;
+	}
+
+	const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	if (session_id.empty())
+	{
+		if (error_out != nullptr)
+			*error_out = "Failed to create a Copilot session id.";
+		return false;
+	}
+
+	const std::string previous_session_id = chat.native_session_id;
+	const std::unordered_map<std::string, std::string>::const_iterator previous_resolved_session = app.resolved_native_sessions_by_chat_id.find(chat.id);
+	const std::string previous_resolved_session_id = previous_resolved_session == app.resolved_native_sessions_by_chat_id.end() ? std::string() : previous_resolved_session->second;
+	const bool had_resolved_session = previous_resolved_session != app.resolved_native_sessions_by_chat_id.end();
+	app.resolved_native_sessions_by_chat_id.erase(chat.id);
+	chat.native_session_id = session_id;
+	if (ProviderRuntime::SaveHistory(provider, app.data_root, chat))
+	{
+		return true;
+	}
+
+	chat.native_session_id = previous_session_id;
+	if (had_resolved_session)
+	{
+		app.resolved_native_sessions_by_chat_id[chat.id] = previous_resolved_session_id;
+	}
+	if (error_out != nullptr)
+		*error_out = "Failed to persist the Copilot session id.";
+	return false;
 }
 
 
@@ -211,7 +314,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendCopilotModeArgs(argv, chat);
-	uam::provider_runtime_internal::AppendArgs(argv, CopilotFlagsFromSettings(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
 	return argv;
 }
 
@@ -261,11 +364,6 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(co
 		argv.push_back("--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)");
 	}
 	return argv;
-}
-
-std::string CopilotCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
-{
-	return uam::acp_detail::ValidGenericAcpResumeId(chat);
 }
 
 std::string CopilotCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
@@ -342,4 +440,130 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 	}
 	if (error && error_out != nullptr) *error_out = "Could not finish scanning Copilot history: " + error.message();
 	return chats;
+}
+
+bool CopilotCliProviderRuntime::OnAcpConfigOptionsUpdated(uam::AcpSessionState& session, const nlohmann::json& config_options) const
+{
+	if (!config_options.is_array())
+	{
+		return false;
+	}
+
+	uam::AcpModelState* selected_model = nullptr;
+	for (uam::AcpModelState& model : session.available_models)
+	{
+		if (model.id == session.current_model_id)
+		{
+			selected_model = &model;
+			break;
+		}
+	}
+	if (selected_model == nullptr)
+	{
+		return false;
+	}
+
+	std::vector<std::string> supported_efforts;
+	std::string current_effort;
+	for (const nlohmann::json& option : config_options)
+	{
+		if (uam::nlohmann_json::TrimmedStringValue(option, {"id"}) != "reasoning_effort")
+		{
+			continue;
+		}
+		for (const nlohmann::json& choice : uam::acp_detail::JsonArrayValue(option, "options"))
+		{
+			uam::ranges::PushUniqueNonEmptyString(supported_efforts, NormalizeCopilotReasoningEffort(uam::nlohmann_json::TrimmedStringValue(choice, {"value"})));
+		}
+		current_effort = NormalizeCopilotReasoningEffort(uam::nlohmann_json::TrimmedStringValue(option, {"currentValue"}));
+		if (!uam::ranges::Contains(supported_efforts, current_effort))
+		{
+			current_effort.clear();
+		}
+		break;
+	}
+
+	const bool changed = selected_model->supported_reasoning_efforts != supported_efforts || selected_model->default_reasoning_effort != current_effort;
+	selected_model->supported_reasoning_efforts = std::move(supported_efforts);
+	selected_model->default_reasoning_effort = current_effort;
+	return changed;
+}
+
+bool CopilotCliProviderRuntime::OnAcpReconcileModelOptions(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat) const
+{
+	if (session.model_discovery_only || (!chat.model_id.empty() && chat.model_id != session.current_model_id))
+	{
+		return false;
+	}
+
+	uam::AcpModelState* selected_model = nullptr;
+	for (uam::AcpModelState& model : session.available_models)
+	{
+		if (model.id == session.current_model_id)
+		{
+			selected_model = &model;
+			break;
+		}
+	}
+	if (selected_model == nullptr || selected_model->supported_reasoning_efforts.empty())
+	{
+		return false;
+	}
+
+	const std::string desired_effort = NormalizeCopilotReasoningEffort(chat.reasoning_effort);
+	if (uam::ranges::Contains(selected_model->supported_reasoning_efforts, desired_effort))
+	{
+		if (desired_effort == selected_model->default_reasoning_effort || !session.running || !session.session_ready || session.session_id.empty() || session.startup_model_request_id != 0 || session.mode_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.reasoning_change_request_id != 0 || session.config_option_change_request_id != 0)
+		{
+			return false;
+		}
+		const bool prompt_is_queued_but_not_sent = session.processing && session.prompt_request_id == 0 && !session.queued_prompt.empty() && !session.waiting_for_permission && !session.waiting_for_user_input;
+		if (uam::AcpSessionHasCancelableWork(session) && !prompt_is_queued_but_not_sent) return false;
+
+		const int id = uam::acp_detail::NextAcpRequestId(session, uam::acp_methods::kSessionSetConfigOption);
+		session.reasoning_change_request_id = id;
+		session.reasoning_change_previous_id = selected_model->default_reasoning_effort;
+		session.reasoning_change_previous_chat_id = selected_model->default_reasoning_effort;
+		session.reasoning_change_requested_id = desired_effort;
+		if (!uam::acp_detail::WriteAcpMessage(session, uam::acp_detail::BuildSetConfigOptionRequest(id, session.session_id, "reasoning_effort", desired_effort)))
+		{
+			session.pending_request_methods.erase(id);
+			uam::acp_detail::ClearAcpReasoningChangeRequest(session);
+			return false;
+		}
+		selected_model->default_reasoning_effort = desired_effort;
+		return true;
+	}
+
+	if (chat.reasoning_effort == selected_model->default_reasoning_effort)
+	{
+		return false;
+	}
+	chat.reasoning_effort = selected_model->default_reasoning_effort;
+	uam::acp_detail::SaveChatQuietly(app, chat);
+	return true;
+}
+
+std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::AppState& app) const
+{
+	const auto state_it = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kCopilotCli);
+	if (state_it == app.runtime_cli_versions_by_provider_id.end())
+	{
+		return "";
+	}
+
+	const uam::CliProviderVersionState& state = state_it->second;
+	if (!state.checked)
+	{
+		return "Checking GitHub Copilot CLI compatibility. Try again in a moment.";
+	}
+	if (state.supported)
+	{
+		return "";
+	}
+	if (!state.installed_version.empty())
+	{
+		return "GitHub Copilot CLI 1.0.60 or newer is required (installed " + state.installed_version + "). Update it in Settings.";
+	}
+	return uam::strings::NonEmptyOrFallback(state.message, "GitHub Copilot CLI is not installed or its version could not be determined.") + " Open Settings to check or update it.";
 }

@@ -623,7 +623,14 @@ inline bool ArmParentDeathWatchdogAndReleaseChild(pid_t child_pid, pid_t& watchd
 	}
 
 	struct pollfd ready_poll = {ready_pipe[0], POLLIN | POLLHUP, 0};
-	const int poll_result = poll(&ready_poll, 1, 5000);
+	const std::chrono::steady_clock::time_point ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	int poll_result = 0;
+	// Signals may interrupt readiness; retries share the original startup deadline.
+	do
+	{
+		const std::chrono::milliseconds remaining = std::max(std::chrono::milliseconds::zero(), std::chrono::ceil<std::chrono::milliseconds>(ready_deadline - std::chrono::steady_clock::now()));
+		poll_result = poll(&ready_poll, 1, static_cast<int>(remaining.count()));
+	} while (poll_result < 0 && IsInterruptedErrno() && std::chrono::steady_clock::now() < ready_deadline);
 	char ready = 0;
 	ssize_t ready_count = -1;
 	if (poll_result > 0)

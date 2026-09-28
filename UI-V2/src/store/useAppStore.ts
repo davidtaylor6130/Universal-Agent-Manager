@@ -3,13 +3,14 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
-import { sendToCEF, isCefContext, createRequestId } from '../ipc/cefBridge'
+import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
   STREAM_TOKEN_FLUSH_DELAY_MS,
   pendingCliTranscriptChunksBySessionId,
   pendingStreamTokensByChatId,
   pushFlushTimers,
+  discardPendingPushesForChats,
 } from './push/pushBuffers'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -39,46 +40,9 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type {
-  AcpBinding,
-  AcpLifecycleState,
-  ChatMessagesResponse,
-  CliBinding,
-  CliTranscript,
-  CliVersionManager,
-  CppAppState,
-  CppCliDebugState,
-  CppStatePatch,
-  EditorFileAssociation,
-  MemoryActivity,
-  MemoryWorkerBinding,
-  McpServerConfiguration,
-  ProviderChatDefaults,
-  ProviderModelCatalog,
-  ShellAction,
-} from './cpp/types'
-
-import {
-  acpBindingFromCppChat,
-  applyPendingCodexOptions,
-  appendCliTranscriptChunk,
-  cliBindingFromCppChat,
-  clampCliTranscript,
-  cppPatchRevision,
-  cppStateRevision,
-  decodeCliChunk,
-  folderFromCppFolder,
-  normalizeCliTranscript,
-  normalizeProviderIdForVisibleProviders,
-  providerFromCppProvider,
-  reconcileCppMessages,
-  sameArrayEntries,
-  sameRecordEntries,
-  sessionFromCppChat,
-} from './cpp/reconcile'
-
-import { pendingProviderChatDefaults } from './slices/sessionsSlice'
-
+import type { AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
+import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
 import { persistTheme } from './slices/uiSlice'
 import { createSessionsSlice } from './slices/sessionsSlice'
@@ -87,7 +51,6 @@ import { createGoalsSlice } from './slices/goalsSlice'
 import { createUiSlice } from './slices/uiSlice'
 import { createResourceCollectionsSlice } from './slices/resourceCollectionsSlice'
 import type { ResourceCollection } from '../types/resourceCollection'
-
 import type { AppState } from './storeTypes'
 export type { AppState }
 
@@ -104,6 +67,18 @@ const initialProviders: Provider[] = [
 ]
 
 let lastPushStatusUpdateAtMs = 0
+
+function mergeAssistantText(durable: string, streamed: string): string {
+  if (!streamed || durable.endsWith(streamed)) return durable
+  if (!durable || streamed.startsWith(durable)) return streamed
+
+  for (let overlap = Math.min(durable.length, streamed.length); overlap > 0; overlap -= 1) {
+    if (durable.endsWith(streamed.slice(0, overlap))) {
+      return durable + streamed.slice(overlap)
+    }
+  }
+  return durable + streamed
+}
 
 function deserializeState(
   cpp: CppAppState,
@@ -148,6 +123,8 @@ function deserializeState(
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
+    computerUseAllowlistEnabled: boolean
+    computerUseAllowedApplications: AppState['computerUseAllowedApplications']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
     shellActionNotification: string
@@ -178,16 +155,16 @@ function deserializeState(
     : newSessions
 
   const nextMessages: Record<string, Message[]> = {}
-  for (const chat of cpp.chats) {
-    const existingMessages = existing.messages[chat.id]
-    if (!Array.isArray(chat.messages) || (chat.messages.length === 0 && existingMessages?.length)) {
+	for (const chat of cpp.chats) {
+		const existingMessages = existing.messages[chat.id]
+		if (!Array.isArray(chat.messages)) {
       if (existingMessages?.length) {
         nextMessages[chat.id] = existingMessages
       }
       continue
     }
 
-    nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages)
+		nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
@@ -335,6 +312,8 @@ function deserializeState(
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
+    computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
+    computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
@@ -387,7 +366,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     delete messages[chatId]
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
-    messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages)
+    messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages, true)
   }
 
   const cliBindingBySessionId = { ...current.cliBindingBySessionId }
@@ -427,8 +406,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    if (Array.isArray(chat.goals)) {
-      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => ({
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
         id: cppGoal.id,
         chatId: chat.id,
         objective: cppGoal.objective,
@@ -452,8 +430,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         providerCommand: cppGoal.providerCommand ?? '',
         workerModelId: cppGoal.workerModelId ?? '',
         reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-    }
+    }))
   }
 
   const activeSessionId =
@@ -468,6 +445,11 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
           : sessions[0]?.id ?? null
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
+  const goalModeByChatId = withoutDeletedKeys(current.goalModeByChatId, removedChatIds)
+  const defaultGoalTokenBudgetByChatId = withoutDeletedKeys(current.defaultGoalTokenBudgetByChatId, removedChatIds)
+  const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
+  const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
+  const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
 
   return {
     folders,
@@ -476,6 +458,10 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
+    goalModeByChatId: sameRecordEntries(current.goalModeByChatId, goalModeByChatId) ? current.goalModeByChatId : goalModeByChatId,
+    defaultGoalTokenBudgetByChatId: sameRecordEntries(current.defaultGoalTokenBudgetByChatId, defaultGoalTokenBudgetByChatId) ? current.defaultGoalTokenBudgetByChatId : defaultGoalTokenBudgetByChatId,
+    markdownStoreAttachedBySessionId: sameRecordEntries(current.markdownStoreAttachedBySessionId, markdownStoreAttachedBySessionId) ? current.markdownStoreAttachedBySessionId : markdownStoreAttachedBySessionId,
+    repositoryReviewBySessionId: sameRecordEntries(current.repositoryReviewBySessionId, repositoryReviewBySessionId) ? current.repositoryReviewBySessionId : repositoryReviewBySessionId,
     providers,
     providerModelCatalogs: patch.providerModelCatalogs ?? current.providerModelCatalogs,
     activeSessionId,
@@ -511,7 +497,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
-    uamAgentsBySessionId: current.uamAgentsBySessionId,
+    computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
+    computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
+    uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
@@ -532,8 +520,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     set((state) => {
       let nextTranscripts = state.cliTranscriptBySessionId
+      const liveSessionIds = new Set(state.sessions.map((session) => session.id))
 
       for (const [sessionId, pending] of entries) {
+        if (!liveSessionIds.has(sessionId)) continue
         const chunk = pending.chunks.join('')
         if (!chunk) continue
         const activeTerminalId = state.cliBindingBySessionId[sessionId]?.terminalId ?? ''
@@ -572,18 +562,25 @@ export const useAppStore = create<AppState>((set, get) => {
 
     set((state) => {
       let nextMessages = state.messages
+      const liveSessionIds = new Set(state.sessions.map((session) => session.id))
 
-      for (const [chatId, token] of entries) {
+      for (const [chatId, pending] of entries) {
+        if (!liveSessionIds.has(chatId)) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
-        const currentAssistantIndex = state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
-        const lastMessageIsCurrentAssistant = currentAssistantIndex === existingMessages.length - 1
+        const token = pending.token
+        const currentAssistantIndex = pending.messageIndex ?? state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
+        const lastMessageIsCurrentAssistant = lastMessage?.streamMessageIndex === undefined
+          ? currentAssistantIndex === existingMessages.length - 1
+          : lastMessage.streamMessageIndex === currentAssistantIndex
+        const lastMessageIsPlaceholder = lastMessage?.isStreaming && lastMessage.id.startsWith(`stream-${chatId}-`) &&
+          (pending.messageIndex === undefined || lastMessage.streamMessageIndex === pending.messageIndex)
 
         if (lastMessage?.role === 'assistant' && !lastMessage.isStreaming && !state.acpBindingBySessionId[chatId]?.processing) continue
 
-        if (!lastMessage || lastMessage.role !== 'assistant' || (!lastMessage.isStreaming && !lastMessageIsCurrentAssistant)) {
+        if (!lastMessage || lastMessage.role !== 'assistant' || (!lastMessageIsPlaceholder && !lastMessageIsCurrentAssistant)) {
           const placeholder: Message = {
-            id: `stream-${chatId}-${Date.now()}`,
+            id: `stream-${chatId}-${Date.now()}-${existingMessages.length}`,
             sessionId: chatId,
             role: 'assistant',
             content: '',
@@ -596,6 +593,7 @@ export const useAppStore = create<AppState>((set, get) => {
             attachments: [],
             createdAt: new Date(),
             isStreaming: true,
+            streamMessageIndex: pending.messageIndex,
           }
           lastMessage = placeholder
           const updatedMessages = [...existingMessages, placeholder]
@@ -626,8 +624,9 @@ export const useAppStore = create<AppState>((set, get) => {
     pushFlushTimers.streamToken = window.setTimeout(flushPendingStreamTokens, STREAM_TOKEN_FLUSH_DELAY_MS)
   }
 
-  // Bootstrap from CEF if available (non-blocking — state arrives via uamPush later too)
-  if (isCefContext()) {
+  // CompanionShell bootstraps after authentication and preserves phone-local selection.
+  // Desktop state arrives via uamPush later too.
+  if (isCefContext() && !isCompanionContext()) {
     sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
@@ -676,6 +675,8 @@ export const useAppStore = create<AppState>((set, get) => {
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+            computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
+            computerUseAllowedApplications: current.computerUseAllowedApplications,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
@@ -686,6 +687,15 @@ export const useAppStore = create<AppState>((set, get) => {
           if (deserialized.theme) {
             persistTheme(deserialized.theme, get().customThemes)
           }
+        } else if (
+          (sanitized.appVersion && sanitized.appVersion !== current.appVersion) ||
+          (sanitized.runnerProtocolVersion && sanitized.runnerProtocolVersion !== current.runnerProtocolVersion)
+        ) {
+          // A state patch can overtake bootstrap; its revision must win, but it lacks runtime metadata.
+          set({
+            appVersion: sanitized.appVersion || current.appVersion,
+            runnerProtocolVersion: sanitized.runnerProtocolVersion || current.runnerProtocolVersion,
+          })
         }
       }
     })
@@ -727,13 +737,20 @@ export const useAppStore = create<AppState>((set, get) => {
 
       switch (msg.type) {
         case 'stateUpdate':
-          // Drop buffered deltas: the full state already contains the streamed
-          // text, so applying them afterwards would duplicate content.
-          pendingStreamTokensByChatId.clear()
+          if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
+          // Full state only hydrates the selected transcript. Keep buffered
+          // background deltas unless this update contains that chat's messages.
+          for (const chatId of pendingStreamTokensByChatId.keys()) {
+            const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
+			if (!chat || Array.isArray(chat.messages)) {
+              pendingStreamTokensByChatId.delete(chatId)
+            }
+          }
           store.loadFromCef(msg.data)
           break
         case 'statePatch':
           {
+            if (!isNewerStateRevision(cppPatchRevision(msg.data), store.lastAppliedStateRevision)) break
             // A patch that replaces a chat's messages carries the streamed text
             // authoritatively; buffered deltas for those chats must not be
             // re-applied on top.
@@ -742,6 +759,7 @@ export const useAppStore = create<AppState>((set, get) => {
                 pendingStreamTokensByChatId.delete(chatId)
               }
             }
+            discardPendingPushesForChats(msg.data.removedChatIds ?? [])
             const current = get()
             const activeChatId = current.activeSessionId
             const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
@@ -758,10 +776,15 @@ export const useAppStore = create<AppState>((set, get) => {
                 activeBindingAfter?.processing &&
                 (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
               )
+              const appendedTurnMessages = Boolean(
+                activeBindingBefore?.processing && activeBindingAfter?.processing &&
+                (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
+                  (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
+              )
               if (
                 activeChatId &&
                 activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn)
+                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages)
               ) {
                 get().loadSessionMessages(activeChatId, true)
               }
@@ -820,11 +843,16 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'streamToken':
           {
-            const { chatId, token } = msg
+            const { chatId, token, messageIndex } = msg
             const session = get().sessions.find((s) => s.id === chatId)
             if (!session) break
 
-            pendingStreamTokensByChatId.set(chatId, (pendingStreamTokensByChatId.get(chatId) ?? '') + token)
+            const pending = pendingStreamTokensByChatId.get(chatId)
+            if (pending && pending.messageIndex !== messageIndex) {
+              if (pushFlushTimers.streamToken !== null) window.clearTimeout(pushFlushTimers.streamToken)
+              flushPendingStreamTokens()
+            }
+            pendingStreamTokensByChatId.set(chatId, { token: (pendingStreamTokensByChatId.get(chatId)?.token ?? '') + token, messageIndex })
             scheduleStreamTokenFlush()
           }
           break
@@ -839,10 +867,31 @@ export const useAppStore = create<AppState>((set, get) => {
             const lastMessage = existingMessages[existingMessages.length - 1]
 
             if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
-              const updatedMessages = [...existingMessages]
-              updatedMessages[updatedMessages.length - 1] = {
-                ...lastMessage,
-                isStreaming: false,
+              const binding = get().acpBindingBySessionId[chatId]
+              const currentAssistantIndex = binding?.turnAssistantMessageIndex ?? -1
+              const currentAssistant = existingMessages[currentAssistantIndex]
+              const turnAssistantText = (binding?.turnEvents ?? []).reduce(
+                (text, event) => event.type === 'assistant_text' ? text + event.text : text,
+                ''
+              )
+              const duplicatePlaceholder = currentAssistantIndex === existingMessages.length - 2 &&
+                currentAssistant?.role === 'assistant' &&
+                (currentAssistant.content === lastMessage.content || turnAssistantText.length > 0)
+              const updatedMessages = duplicatePlaceholder ? existingMessages.slice(0, -1) : [...existingMessages]
+              if (duplicatePlaceholder) {
+                updatedMessages[currentAssistantIndex] = {
+                  ...currentAssistant,
+                  content: mergeAssistantText(
+                    currentAssistant.content,
+                    turnAssistantText || lastMessage.content
+                  ),
+                  isStreaming: false,
+                }
+              } else {
+                updatedMessages[updatedMessages.length - 1] = {
+                  ...lastMessage,
+                  isStreaming: false,
+                }
               }
               set((state) => ({
                 messages: {
@@ -851,6 +900,8 @@ export const useAppStore = create<AppState>((set, get) => {
                 },
               }))
             }
+            // Completion settles the final token mutation; hydrate durable structure afterwards.
+            if (get().messages[chatId] !== undefined) void get().loadSessionMessages(chatId, true)
           }
           break
         case 'dictation':
@@ -863,6 +914,8 @@ export const useAppStore = create<AppState>((set, get) => {
   const inCef = isCefContext()
 
   return {
+    computerUseAllowlistEnabled: false,
+    computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
@@ -918,6 +971,8 @@ export const useAppStore = create<AppState>((set, get) => {
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+        computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
+        computerUseAllowedApplications: current.computerUseAllowedApplications,
         uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,

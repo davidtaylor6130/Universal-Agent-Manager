@@ -1,8 +1,5 @@
 #include "common/runtime/terminal/terminal_idle_classifier.h"
 
-#include "common/utils/range_utils.h"
-#include "common/utils/string_utils.h"
-
 #include <string>
 #include <string_view>
 #include <vector>
@@ -143,102 +140,10 @@ std::string StripTerminalControlSequencesForLifecycle(std::string_view input)
 	return output;
 }
 
-std::string NormalizeGeminiPromptLine(std::string_view line)
-{
-	std::string normalized = uam::strings::Trim(line);
-
-	while (!normalized.empty())
-	{
-		const unsigned char ch = static_cast<unsigned char>(normalized.front());
-		if (ch == '|' || ch == '>' || ch < 0x80)
-		{
-			break;
-		}
-		normalized.erase(normalized.begin());
-		normalized = uam::strings::Trim(normalized);
-	}
-
-	while (!normalized.empty())
-	{
-		const unsigned char ch = static_cast<unsigned char>(normalized.back());
-		if (ch < 0x80)
-		{
-			break;
-		}
-		normalized.pop_back();
-		normalized = uam::strings::Trim(normalized);
-	}
-
-	const auto box_prefix = normalized.find('>');
-	if (box_prefix != std::string::npos)
-	{
-		normalized = uam::strings::Trim(std::string_view(normalized).substr(box_prefix));
-	}
-
-	return normalized;
-}
-
 std::string RecentTerminalPromptScanText(std::string_view recent_output)
 {
 	const std::size_t start = recent_output.size() > kTerminalPromptScanLimit ? recent_output.size() - kTerminalPromptScanLimit : 0;
 	return StripTerminalControlSequencesForLifecycle(recent_output.substr(start));
-}
-
-bool GeminiCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
-{
-	const std::string stripped = RecentTerminalPromptScanText(recent_output);
-
-	if (stripped.empty())
-	{
-		return false;
-	}
-
-	const std::vector<std::string> lines = SplitTerminalLines(stripped);
-
-	int inspected = 0;
-	for (auto it = lines.rbegin(); it != lines.rend() && inspected < kGeminiPromptRecentLineLimit; ++it)
-	{
-		std::string line = NormalizeGeminiPromptLine(*it);
-		if (line.empty())
-		{
-			continue;
-		}
-
-		++inspected;
-		if (uam::ranges::Contains(kGeminiExactPromptLines, std::string_view(line)))
-		{
-			return true;
-		}
-
-		if (uam::strings::Contains(line, '>') && uam::strings::ContainsAny(line, kGeminiPromptCueTexts))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool CodexCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
-{
-	const std::string stripped = RecentTerminalPromptScanText(recent_output);
-	if (stripped.empty())
-	{
-		return false;
-	}
-
-	return uam::strings::ContainsAny(stripped, kCodexPromptMarkers) && uam::strings::ContainsAny(stripped, kCodexPromptCueTexts);
-}
-
-	bool CopilotCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
-{
-	const std::string stripped = RecentTerminalPromptScanText(recent_output);
-	return uam::strings::Contains(stripped, "\xE2\x9D\xAF") && uam::strings::ContainsAny(stripped, kCopilotPromptCueTexts);
-}
-
-bool FallbackCliRecentOutputIndicatesInputPrompt(std::string_view recent_output)
-{
-	return GeminiCliRecentOutputIndicatesInputPrompt(recent_output);
 }
 
 } // namespace uam

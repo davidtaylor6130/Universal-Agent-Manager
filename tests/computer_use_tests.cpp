@@ -2,6 +2,20 @@
 
 using namespace uam_test;
 
+UAM_TEST(ComputerUseMcpUsesNestedCompanionWhenPackaged)
+{
+	TempDir temp("uam-computer-use-mcp");
+	const fs::path current = temp.root / "UAM.app/Contents/MacOS/Universal Agent Manager";
+	const fs::path companion = temp.root / "UAM.app/Contents/Frameworks/UAM Computer Use.app/Contents/MacOS/UAM Computer Use";
+	UAM_ASSERT(fs::create_directories(companion.parent_path()));
+	std::ofstream(companion).put('\n');
+#if defined(__APPLE__)
+	UAM_ASSERT_EQ(uam::computer_use::ResolveMcpExecutablePath(current), companion.string());
+	fs::remove(companion);
+#endif
+	UAM_ASSERT_EQ(uam::computer_use::ResolveMcpExecutablePath(current), current.string());
+}
+
 UAM_TEST(ComputerUseBackendPreferenceAndEffectiveRoutingAreConservative)
 {
 	UAM_ASSERT_EQ(uam::computer_use::BackendPreference("auto"), std::string("auto"));
@@ -24,6 +38,112 @@ UAM_TEST(ComputerUseBackendPreferenceAndEffectiveRoutingAreConservative)
 		UAM_ASSERT_EQ(effective_backend(provider, "auto"), std::string("uam"));
 	UAM_ASSERT_EQ(effective_backend("claude-cli", "provider"), std::string("uam"));
 	UAM_ASSERT_EQ(effective_backend("codex-cli", "provider"), std::string("provider"));
+}
+
+UAM_TEST(ComputerUseArmedStateSurvivesPollBeforeTargetApproval)
+{
+	TempDir temp("uam-computer-use-armed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "armed-chat";
+	chat.provider_id = "claude-cli";
+	chat.computer_use_backend = "uam";
+	app.chats.push_back(chat);
+
+	const fs::path directory = temp.root / "computer-use" / chat.id;
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", "{\"state\":\"armed\"}\n"));
+
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	UAM_ASSERT(app.chats.front().computer_use_target_id.empty());
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(chat.id).state, std::string("armed"));
+}
+
+UAM_TEST(ComputerUsePollSkipsUnbackedChatsAndTracksExternalSessionChanges)
+{
+	TempDir temp("uam-computer-use-poll-discovery");
+	uam::AppState app;
+	app.data_root = temp.root;
+	for (int index = 0; index < 600; ++index)
+	{
+		ChatSession chat;
+		chat.id = "unrelated-chat-" + std::to_string(index);
+		chat.provider_id = "claude-cli";
+		chat.computer_use_backend = "uam";
+		app.chats.push_back(std::move(chat));
+	}
+	ChatSession tracked;
+	tracked.id = "tracked-chat";
+	tracked.provider_id = "claude-cli";
+	tracked.computer_use_backend = "uam";
+	app.chats.push_back(tracked);
+
+	UAM_ASSERT(!uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.computer_use_by_chat_id.empty());
+
+	const fs::path directory = temp.root / "computer-use" / tracked.id;
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json",
+	    R"({"state":"running","targetId":"42","targetProcessId":"7"})" "\n"));
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(app.chats.back().computer_use_enabled);
+	UAM_ASSERT_EQ(app.chats.back().computer_use_target_id, std::string("42"));
+	const fs::file_time_type first_modified = fs::last_write_time(directory / "control.json");
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json",
+	    R"({"state":"running","targetId":"43","targetProcessId":"7"})" "\n"));
+	fs::last_write_time(directory / "control.json", first_modified + std::chrono::seconds(2));
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT_EQ(app.chats.back().computer_use_target_id, std::string("43"));
+
+	UAM_ASSERT(fs::remove_all(directory) > 0);
+	UAM_ASSERT(uam::ComputerUseService::Poll(app));
+	UAM_ASSERT(!app.chats.back().computer_use_enabled);
+	UAM_ASSERT(app.chats.back().computer_use_target_id.empty());
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at(tracked.id).state, std::string("stopped"));
+}
+
+UAM_TEST(ComputerUseTrustedTaskPersistsAndNamesApplicationsSafely)
+{
+	TempDir temp("uam-computer-use-task");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "task-chat";
+	chat.computer_use_enabled = true;
+	app.chats.push_back(chat);
+	const fs::path task_path = temp.root / "computer-use" / chat.id / "task.json";
+	std::string error;
+
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Safari", &error));
+	const nlohmann::json first = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT(!first.value("id", "").empty());
+	UAM_ASSERT_EQ(first.value("prompt", ""), std::string("Open Safari"));
+	const std::string first_id = first.value("id", "");
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Safari", &error));
+	const nlohmann::json repeated = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT_EQ(repeated.value("id", ""), first_id);
+
+	UAM_ASSERT(uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Firefox", &error));
+	const nlohmann::json changed = nlohmann::json::parse(ReadFile(task_path));
+	UAM_ASSERT(changed.value("id", "") != first_id);
+	UAM_ASSERT_EQ(changed.value("prompt", ""), std::string("Open Firefox"));
+
+	const std::string before_oversize = ReadFile(task_path);
+	UAM_ASSERT(!uam::ComputerUseService::PersistTrustedTask(app, chat.id, std::string(1024 * 1024 + 1, 'x'), &error));
+	UAM_ASSERT_EQ(ReadFile(task_path), before_oversize);
+
+	ChatSession remote = chat;
+	remote.id = "remote-task-chat";
+	remote.execution_host_id = "remote";
+	app.chats.push_back(remote);
+	UAM_ASSERT(!uam::ComputerUseService::PersistTrustedTask(app, remote.id, "Open Safari", &error));
+	UAM_ASSERT(!fs::exists(temp.root / "computer-use" / remote.id / "task.json"));
+
+	UAM_ASSERT(uam::computer_use::ApplicationNamedInTask("Open SAFARI now", "Safari"));
+	UAM_ASSERT(!uam::computer_use::ApplicationNamedInTask("Open Safariland", "Safari"));
+	UAM_ASSERT(uam::computer_use::ApplicationNamedInTask("Use Google Chrome browser", "Google Chrome"));
 }
 
 UAM_TEST(RemoteComputerUseFailsClosedBeforeProviderLaunchOrInput)
@@ -92,6 +212,22 @@ UAM_TEST(ExecutionHostsNormalizeAndPersistWithoutCredentials)
 	UAM_ASSERT_EQ(loaded.execution_hosts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.execution_hosts[1].ssh_alias, std::string("uam-lab"));
 	UAM_ASSERT_EQ(loaded.execution_hosts[1].runner_directory, std::string("helpers/uam"));
+}
+
+UAM_TEST(ComputerUseSettingsRoundTripPreservesStableApplicationPolicy)
+{
+	TempDir temp("uam-computer-use-settings");
+	AppSettings settings;
+	settings.computer_use_allowlist_enabled = true;
+	settings.computer_use_allowed_applications = {{"bundleId", "com.apple.TextEdit"}, {"executablePath", "/usr/bin/Calculator"}};
+	const fs::path path = temp.root / "settings.txt";
+	UAM_ASSERT(SettingsStore::Save(path, settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(path, loaded).loaded);
+	UAM_ASSERT(loaded.computer_use_allowlist_enabled);
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications[0].identity, std::string("com.apple.TextEdit"));
+	UAM_ASSERT_EQ(loaded.computer_use_allowed_applications[1].identity_kind, std::string("executablepath"));
 }
 
 UAM_TEST(ComputerUseCodexLaunchSelectsExactlyOneController)
@@ -226,8 +362,104 @@ UAM_TEST(ComputerUseToolSurfaceIsSmallBoundedAndAnnotated)
 	UAM_ASSERT_EQ(tools[1]["inputSchema"]["properties"]["durationMs"].value("maximum", 0), 2000);
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("elementId"));
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"].contains("clickCount"));
+	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["coordinateSpace"]["enum"] ==
+	           nlohmann::json::array({"normalized_1000", "image_pixels"}));
 	UAM_ASSERT(tools[1]["inputSchema"]["properties"]["action"]["enum"] ==
 	    nlohmann::json::array({"move", "click", "drag", "scroll", "type", "hotkey", "wait"}));
+}
+
+UAM_TEST(ComputerUsePointerCoordinatesConvertOnlyTrustedNormalizedInput)
+{
+	uam::computer_use::Capture capture;
+	capture.ok = true;
+	capture.width = 800;
+	capture.height = 600;
+
+	uam::computer_use::Action action;
+	action.kind = "click";
+	action.x = 12;
+	action.y = 34;
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(action, capture, {}).has_value());
+	UAM_ASSERT_EQ(action.x, 12.0);
+	UAM_ASSERT_EQ(action.y, 34.0);
+
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture, {{"coordinateSpace", "image_pixels"}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.x, 12.0);
+	UAM_ASSERT_EQ(action.y, 34.0);
+
+	action.x = 0;
+	action.y = 0;
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture,
+	                 {{"coordinateSpace", "normalized_1000"}, {"x", 125}, {"y", 250}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.x, 100.0);
+	UAM_ASSERT_EQ(action.y, 150.0);
+
+	action.kind = "drag";
+	UAM_ASSERT(!uam::computer_use::ConvertPointerCoordinates(
+	                 action, capture,
+	                 {{"coordinateSpace", "normalized_1000"}, {"x", 125}, {"y", 250},
+	                  {"endX", 750}, {"endY", 500}})
+	                 .has_value());
+	UAM_ASSERT_EQ(action.end_x, 600.0);
+	UAM_ASSERT_EQ(action.end_y, 300.0);
+
+	const auto rejects = [&](uam::computer_use::Action candidate, const nlohmann::json& arguments)
+	{
+		return uam::computer_use::ConvertPointerCoordinates(candidate, capture, arguments).has_value();
+	};
+	uam::computer_use::Action click;
+	click.kind = "click";
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", 1}, {"x", 1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "unknown"}, {"x", 1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", -1}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", 1000}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"}, {"x", true}, {"y", 1}}));
+	UAM_ASSERT(rejects(click, {{"coordinateSpace", "normalized_1000"},
+	                           {"x", std::numeric_limits<double>::quiet_NaN()}, {"y", 1}}));
+
+	uam::computer_use::Action move;
+	move.kind = "move";
+	UAM_ASSERT(rejects(move, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1},
+	                           {"elementId", 1}}));
+	move.kind = "type";
+	UAM_ASSERT(rejects(move, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}}));
+
+	uam::computer_use::Capture stale = capture;
+	stale.ok = false;
+	UAM_ASSERT(uam::computer_use::ConvertPointerCoordinates(
+	               click, stale, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}})
+	               .has_value());
+	stale.ok = true;
+	stale.width = 0;
+	UAM_ASSERT(uam::computer_use::ConvertPointerCoordinates(
+	               click, stale, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1}})
+	               .has_value());
+
+	UAM_ASSERT(rejects(action, {{"coordinateSpace", "normalized_1000"}, {"x", 1}, {"y", 1},
+	                           {"endX", 1}}));
+}
+
+UAM_TEST(ComputerUseElementReferencesRejectStaleIdentityState)
+{
+	uam::computer_use::Capture reference;
+	reference.elements.push_back({7, "button", "Save", 10, 20, 80, 30, true});
+	uam::computer_use::Capture current = reference;
+	UAM_ASSERT(uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current.elements[0].label = "Delete";
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements[0].enabled = false;
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements[0].x += 1;
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
+	current = reference;
+	current.elements.clear();
+	UAM_ASSERT(!uam::computer_use::ElementReferenceIsCurrentForTests(reference, current, 7));
 }
 
 UAM_TEST(ComputerUseMcpRejectsStorageUnsafeChatIds)
@@ -351,15 +583,31 @@ UAM_TEST(ComputerUseActionResultsPreventDuplicateInput)
 	UAM_ASSERT_EQ(failure["structuredContent"].value("frameId", ""), std::string("8"));
 	UAM_ASSERT(failure["content"][0].value("text", "").find("frameId: 8") != std::string::npos);
 	UAM_ASSERT(failure["content"][0].value("text", "").find("actionApplied: true") != std::string::npos);
+	UAM_ASSERT(failure["content"][0].value("text", "").find("does not verify the intended outcome") != std::string::npos);
+
+	const nlohmann::json stale = uam::computer_use::StaleFrameFailureForTests("The supplied frameId '21' is stale; the current frameId is '22'. No input was applied.", "22");
+	UAM_ASSERT(!stale.value("isError", true));
+	UAM_ASSERT(stale["structuredContent"].value("staleFrame", false));
+	UAM_ASSERT(stale["structuredContent"].value("actionRejected", false));
+	UAM_ASSERT(!stale["structuredContent"].value("actionApplied", true));
+	UAM_ASSERT_EQ(stale["structuredContent"].value("frameId", ""), std::string("22"));
+	UAM_ASSERT(stale["content"][0].value("text", "").find("Screenshot: 1024x642 pixels") != std::string::npos);
+	UAM_ASSERT(stale["content"][0].value("text", "").find("actionApplied: false") != std::string::npos);
+	UAM_ASSERT(std::ranges::any_of(stale["content"], [](const nlohmann::json& item) { return item.value("type", "") == "image"; }));
 
 	const nlohmann::json observation =
 	    uam::computer_use::ObservationSuccessForTests("12");
+	UAM_ASSERT(observation["content"][0].value("text", "").find("Screenshot: 1024x661 pixels") != std::string::npos);
 	UAM_ASSERT_EQ(observation["structuredContent"].value("frameId", ""),
 	    std::string("12"));
+	UAM_ASSERT(!observation["structuredContent"].value("elementsTruncated", true));
 	UAM_ASSERT(observation["content"][0].value("text", "").find("frameId: 12") !=
 	    std::string::npos);
 	UAM_ASSERT(observation["content"][0].value("text", "").find("actionApplied: false") !=
 	    std::string::npos);
+	const nlohmann::json truncated = uam::computer_use::ObservationSuccessForTests("13", true);
+	UAM_ASSERT(truncated["structuredContent"].value("elementsTruncated", false));
+	UAM_ASSERT(truncated["content"][0].value("text", "").find("element list is incomplete") != std::string::npos);
 
 	const nlohmann::json wait = uam::computer_use::WaitSuccessForTests("9");
 	UAM_ASSERT(!wait.value("isError", true));
@@ -367,10 +615,14 @@ UAM_TEST(ComputerUseActionResultsPreventDuplicateInput)
 	UAM_ASSERT(wait["content"][0].value("text", "").find("computer_observe") != std::string::npos);
 }
 
-UAM_TEST(ComputerUseModelMustNameItsTargetBeforeUserApproval)
+UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 {
 	TempDir temp("uam-computer-use-request");
 	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	const fs::path directory = temp.root / "computer-use" / "request-chat";
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"armed"})" "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "task.json", R"({"id":"task-1","prompt":"Open Firefox"})" "\n"));
 	std::istringstream input(
 	    R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"computer_observe","arguments":{}}})"
 	    "\n");
@@ -386,11 +638,40 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeUserApproval)
 	UAM_ASSERT_EQ(exit_code, 0);
 	const nlohmann::json response = nlohmann::json::parse(output.str());
 	UAM_ASSERT(response["result"].value("isError", false));
+	const std::string response_text = response["result"]["content"][0].value("text", "");
+	UAM_ASSERT(response_text.find("Call computer_observe with target") != std::string::npos);
 	UAM_ASSERT(response["result"]["content"][0].value("text", "").find(
-	               "Retry computer_observe with target") != std::string::npos);
+	               "UAM will ask") == std::string::npos);
 	const fs::path request_path =
 	    temp.root / "computer-use" / "request-chat" / "request.json";
 	UAM_ASSERT(!fs::exists(request_path));
+}
+
+UAM_TEST(ComputerUseMcpCannotReenableStoppedControl)
+{
+	TempDir temp("uam-computer-use-stopped");
+	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	const fs::path directory = temp.root / "computer-use" / "stopped-chat";
+	UAM_ASSERT(fs::create_directories(directory));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"stopped"})" "\n"));
+	std::istringstream input(
+	    R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"computer_observe","arguments":{"target":"anything"}}})"
+	    "\n");
+	std::ostringstream output;
+	std::streambuf* previous_input = std::cin.rdbuf(input.rdbuf());
+	std::streambuf* previous_output = std::cout.rdbuf(output.rdbuf());
+	const int exit_code = uam::computer_use::RunMcpServer({
+	    uam::computer_use::kMcpServerFlag, "--chat-id", "stopped-chat"});
+	std::cin.rdbuf(previous_input);
+	std::cin.clear();
+	std::cout.rdbuf(previous_output);
+
+	UAM_ASSERT_EQ(exit_code, 0);
+	const nlohmann::json response = nlohmann::json::parse(output.str());
+	UAM_ASSERT(response["result"].value("isError", false));
+	UAM_ASSERT(response["result"]["content"][0].value("text", "").find("stopped") != std::string::npos);
+	UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(directory / "control.json")).value("state", ""),
+	    std::string("stopped"));
 }
 
 UAM_TEST(ComputerUseControlStateAndRedactedHistoryAreBounded)

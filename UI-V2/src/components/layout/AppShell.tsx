@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
 
@@ -25,19 +27,22 @@ function SvnLogo({ size = 17 }: { size?: number }) {
 }
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
-import { VcsCommitPanel } from './VcsCommitPanel'
 import { UpdatesPanel } from './UpdatesPanel'
-import { NewChatModal } from '../sidebar/NewChatModal'
-import { SettingsModal } from '../settings/SettingsModal'
-import { MemoryLibraryModal } from '../settings/MemoryLibraryModal'
-import { MemoryScanModal } from '../settings/MemoryScanModal'
-import { MarkdownStoreModal } from '../settings/MarkdownStoreModal'
+import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
 import { Button, IconButton, Notice, StatusDot } from '../ui'
+import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
+
+const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
+const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
+const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
+const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
+const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
+const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
 const SIDEBAR_WIDTH_MIN = 260
 const SIDEBAR_WIDTH_MAX = 520
@@ -55,6 +60,10 @@ function shellActionNotificationId(detail: string): string {
 
 function statusLineNotificationId(detail: string): string {
   return `status-line-${detail}`
+}
+
+function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResults'][number]): string {
+  return `provider-update-${result.executionHostId ? JSON.stringify([result.executionHostId, result.providerId]) : result.providerId}-${result.installedVersion}-${result.message}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -153,9 +162,11 @@ function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   })}`
 }
 
-function LeftActivityRail() {
-  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
-  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
+function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
+  settingsOpen: boolean
+  onToggleSettings: () => void
+  onOpenMemory: () => void
+}) {
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed)
   const memoryActivity = useAppStore((s) => s.memoryActivity)
@@ -169,6 +180,8 @@ function LeftActivityRail() {
       <IconButton
         icon={sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
         label={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
+        disabled={settingsOpen}
+        style={settingsOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
         tooltipSide="right"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
@@ -181,7 +194,7 @@ function LeftActivityRail() {
           tooltip={memoryTitle}
           tooltipSide="right"
           active={hasMemories}
-          onClick={() => { void openAllMemoryLibrary() }}
+          onClick={onOpenMemory}
         />
         {hasActivity && (
           <span className="absolute -right-0.5 -top-0.5 pointer-events-none" data-testid="memory-activity-dot" aria-hidden="true">
@@ -193,7 +206,8 @@ function LeftActivityRail() {
         icon={<Settings2 size={17} />}
         label="Settings"
         tooltipSide="right"
-        onClick={() => setSettingsOpen(true)}
+        active={settingsOpen}
+        onClick={onToggleSettings}
       />
     </aside>
   )
@@ -202,15 +216,19 @@ function LeftActivityRail() {
 function NotificationsPanel({
   dismissedNotificationIds,
   remoteNotifications,
+  collectionFailures,
+  providerUpdateResults,
   onClose,
   onDismiss,
 }: {
   dismissedNotificationIds: ReadonlySet<string>
   remoteNotifications: RemoteConnectionNotification[]
+  collectionFailures: CollectionMoveFailure[]
+  providerUpdateResults: UpdateMonitor['providerUpdateResults']
   onClose: () => void
   onDismiss: (id: string) => void
 }) {
-  const missingFolders = useAppStore((s) => s.folders.filter((folder) => folder.missing))
+  const missingFolders = useAppStore(useShallow((s) => s.folders.filter((folder) => folder.missing)))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
   const statusLine = useAppStore((s) => s.statusLine)
   const sessions = useAppStore((s) => s.sessions)
@@ -223,7 +241,7 @@ function NotificationsPanel({
   const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
-  type Notification = { id: string; title: string; detail: string; warning?: boolean; actions?: NotificationAction[] }
+  type Notification = { id: string; title: string; detail: string; warning?: boolean; failure?: CollectionMoveFailure; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -237,7 +255,13 @@ function NotificationsPanel({
       title: 'Finder / Explorer action',
       detail: shellActionNotification,
     }] : []),
+    ...collectionFailures.map((failure) => ({ id: failure.id, title: 'Collection move failed', detail: failure.detail, failure })),
     ...remoteNotifications,
+    ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
+      id: providerUpdateNotificationId(result),
+      title: `${result.name} update completed`,
+      detail: result.message || `Installed ${result.installedVersion}.`,
+    })),
     ...missingFolders.map((folder): Notification => ({
       id: missingFolderNotificationId(folder),
       title: `Workspace folder missing: ${folder.name}`,
@@ -340,7 +364,7 @@ function NotificationsPanel({
             {notifications.map((notification) => (
               <Notice
                 key={notification.id}
-                tone={notification.warning ? 'warning' : 'info'}
+                tone={notification.failure ? 'error' : notification.warning ? 'warning' : 'info'}
                 title={notification.title}
                 dismissLabel={`Dismiss ${notification.title}`}
                 onDismiss={() => {
@@ -367,6 +391,13 @@ function NotificationsPanel({
                   </>
                 )}
               >
+                {notification.failure && (
+                  <div className="mb-1">
+                    <span style={{ color: 'var(--red)' }}>Error</span>{' · '}
+                    <time dateTime={notification.failure.time}>{new Date(notification.failure.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                    <div>{notification.failure.message}</div>
+                  </div>
+                )}
                 <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
               </Notice>
             ))}
@@ -442,6 +473,9 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
 }
 
 export function AppShell() {
+  const settingsRef = useRef<SettingsHandle>(null)
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
+  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
   const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
@@ -462,6 +496,24 @@ export function AppShell() {
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
+  const [collectionFailures, setCollectionFailures] = useState<CollectionMoveFailure[]>([])
+  const [collectionToast, setCollectionToast] = useState<CollectionMoveFailure | null>(null)
+
+  useEffect(() => {
+    const onFailure = (event: Event) => {
+      const failure = (event as CustomEvent<CollectionMoveFailure>).detail
+      setCollectionFailures((history) => [...history, failure])
+      setCollectionToast(failure)
+    }
+    window.addEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
+    return () => window.removeEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
+  }, [])
+
+  useEffect(() => {
+    if (!collectionToast) return
+    const timer = window.setTimeout(() => setCollectionToast(null), 8000)
+    return () => window.clearTimeout(timer)
+  }, [collectionToast])
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
   const connectionIssues = useMemo(() => {
@@ -477,11 +529,13 @@ export function AppShell() {
   const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
+    ...collectionFailures.map((failure) => failure.id),
     ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
     ...connectionIssues.map((notification) => notification.id),
     ...connectionRecoveries.map((notification) => notification.id),
+    ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
   ]
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
@@ -516,18 +570,20 @@ export function AppShell() {
 
   useEffect(() => {
     const activeIds = new Set([
+      ...collectionFailures.map((failure) => failure.id),
       ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
       ...connectionIssues.map((notification) => notification.id),
       ...connectionRecoveries.map((notification) => notification.id),
+      ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
     ])
     setDismissedNotificationIds((dismissed) => {
       const currentIds = [...dismissed]
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine])
+  }, [collectionFailures, connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -603,7 +659,23 @@ export function AppShell() {
       data-right-panel-open={commitPanelOpen || alertsOpen || updatesOpen ? 'true' : 'false'}
       style={{ color: 'var(--text)' }}
     >
-      <LeftActivityRail />
+      <LeftActivityRail
+        settingsOpen={isSettingsOpen}
+        onToggleSettings={() => {
+          if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
+          else setSettingsOpen(!isSettingsOpen)
+        }}
+        onOpenMemory={() => {
+          if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
+          else {
+            if (isSettingsOpen) setSettingsOpen(false)
+            void openAllMemoryLibrary()
+          }
+        }}
+      />
+
+      {/* Keep chat components mounted while Settings occupies the middle region. */}
+      <div data-testid="chat-region" hidden={isSettingsOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen ? 'none' : 'flex'}}>
 
       {!sidebarCollapsed && !sidebarWouldStarveChat && (
         <>
@@ -632,6 +704,8 @@ export function AppShell() {
       <main className="min-w-0 flex-1 overflow-hidden" style={{ background: 'var(--bg)' }}>
         <MainPanel />
       </main>
+      </div>
+      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></main>}
 
       {commitPanelOpen && (
         <>
@@ -652,7 +726,7 @@ export function AppShell() {
             data-testid="commit-panel"
             style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)' }}
           >
-            <VcsCommitPanel />
+            <Suspense fallback={null}><VcsCommitPanel /></Suspense>
           </aside>
         </>
       )}
@@ -663,12 +737,15 @@ export function AppShell() {
         <NotificationsPanel
           dismissedNotificationIds={dismissedNotificationIds}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
+          collectionFailures={collectionFailures}
+          providerUpdateResults={updateMonitor.providerUpdateResults}
           onClose={() => setAlertsOpen(false)}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {
               void dismissShellActionNotification()
               return
             }
+            setCollectionToast((toast) => toast?.id === id ? null : toast)
             setDismissedNotificationIds((dismissed) => new Set(dismissed).add(id))
           }}
         />
@@ -696,12 +773,25 @@ export function AppShell() {
         }}
       />
 
+      {collectionToast && (
+        <div role="alert" className="fixed bottom-4 left-4 flex items-start gap-3 rounded-md p-3 text-xs"
+          style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 340, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
+          <div className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>
+            <div className="mb-1 flex items-center gap-2">
+              <strong style={{ color: 'var(--red)' }}>Error</strong>
+              <time dateTime={collectionToast.time}>{new Date(collectionToast.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+            </div>
+            {collectionToast.message}
+          </div>
+          <IconButton icon={<X size={13} />} size="sm" label="Dismiss collection notification" onClick={() => setCollectionToast(null)} />
+        </div>
+      )}
+
       {/* Modals */}
-      {isNewChatModalOpen && <NewChatModal />}
-      {isSettingsOpen && <SettingsModal />}
-      {memoryLibraryScope && <MemoryLibraryModal />}
-      {isMemoryScanModalOpen && <MemoryScanModal />}
-      {isMarkdownStoreOpen && <MarkdownStoreModal />}
+      {isNewChatModalOpen && <Suspense fallback={null}><NewChatModal /></Suspense>}
+      {memoryLibraryScope && !isSettingsOpen && <Suspense fallback={null}><MemoryLibraryModal /></Suspense>}
+      {isMemoryScanModalOpen && <Suspense fallback={null}><MemoryScanModal /></Suspense>}
+      {isMarkdownStoreOpen && <Suspense fallback={null}><MarkdownStoreModal /></Suspense>}
     </div>
   )
 }

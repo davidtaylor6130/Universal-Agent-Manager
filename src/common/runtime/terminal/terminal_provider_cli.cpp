@@ -1,14 +1,9 @@
 #include "common/runtime/terminal/terminal_provider_cli.h"
 
 #include "app/chat_domain_service.h"
-#include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
-#include "app/runtime_orchestration_services.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/codex/cli/codex_thread_id.h"
-#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
-#include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -34,16 +29,10 @@ std::string CliTerminalIdForChat(std::string_view chat_id)
 	return terminal_id;
 }
 
-bool ProviderUsesCodexCli(const ProviderProfile& provider)
-{
-	return uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCodexCli);
-}
-
 bool ProviderSupportsInteractiveTerminal(const ProviderProfile& provider)
 {
 	return ProviderRuntime::IsRuntimeEnabled(provider) &&
 	       ProviderRuntime::UsesCliOutput(provider) &&
-	       !ProviderRuntime::UsesInternalEngine(provider) &&
 	       provider.supports_interactive;
 }
 
@@ -59,22 +48,12 @@ std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& 
 		return "CLI output is unavailable for the selected provider.";
 	}
 
-	if (ProviderRuntime::UsesInternalEngine(provider) || !provider.supports_interactive)
+	if (!provider.supports_interactive)
 	{
 		return "Provider does not expose an interactive CLI runtime.";
 	}
 
 	return "";
-}
-
-std::string ProviderInteractivePermissionFlagError(const AppState& app, const ProviderProfile& provider)
-{
-	const AppSettings settings = uam::provider_runtime_internal::MergeProviderSettings(provider, app.settings);
-	if (!uam::provider_runtime_internal::HasPermissionBypassExtraFlags(settings))
-	{
-		return {};
-	}
-	return "Terminal fallback permissions are controlled by the provider. Remove permission-bypass flags from provider settings and approve requests in the terminal.";
 }
 
 std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider)
@@ -84,31 +63,10 @@ std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSe
 		return uam::strings::Trim(acp_session->session_id);
 	}
 
-	const std::string resolved_native_session_id = ResolvedNativeSessionIdForChat(app, chat);
-	if (!resolved_native_session_id.empty())
-	{
-		if (ProviderUsesCodexCli(provider))
-		{
-			return uam::codex::ValidThreadIdOrEmpty(resolved_native_session_id);
-		}
-
-		return resolved_native_session_id;
-	}
-
-	if (ProviderUsesCodexCli(provider))
-	{
-		return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
-	}
-
-	const NativeSessionLinkService native_session_linker;
-	if (native_session_linker.HasRealNativeSessionId(chat))
-	{
-		return native_session_linker.RealNativeSessionId(chat);
-	}
-
-	return ChatHistorySyncService().ResolveResumeSessionIdForChat(app, chat);
+	return ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, chat);
 }
 
+/// <summary>False with an empty error means a remote stop is pending; retry after confirmation.</summary>
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out)
 {
 	if (error_out != nullptr)
@@ -116,12 +74,14 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		error_out->clear();
 	}
 
-	AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-	if (session == nullptr)
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
 	{
-		return true;
+		if (error_out != nullptr) *error_out = update_error;
+		return false;
 	}
-	if (AcpSessionHasBlockingRuntimeWork(*session))
+	AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	if (session != nullptr && AcpSessionHasBlockingRuntimeWork(*session))
 	{
 		if (error_out != nullptr)
 		{
@@ -132,66 +92,20 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 
 	if (!StopAcpSession(app, chat.id))
 	{
+		if ((session != nullptr && session->remote_stop_pending) ||
+		    (session == nullptr && AcpStopInProgress(app, chat.id)))
+		{
+			return false;
+		}
 		if (error_out != nullptr)
 		{
-			*error_out = "Failed to stop the idle structured runtime before starting terminal fallback.";
+			*error_out = session != nullptr && session->remote_stop_unconfirmed
+			    ? "The remote stop could not be confirmed. Reconnect structured chat before retrying the terminal."
+			    : "Failed to stop the idle structured runtime before starting terminal fallback.";
 		}
 		return false;
 	}
 	return true;
-}
-
-bool EnsureCopilotInteractiveSessionIdForLaunch(AppState& app, ChatSession& chat, const ProviderProfile& provider, std::string* error_out)
-{
-	if (error_out != nullptr)
-	{
-		error_out->clear();
-	}
-	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli))
-	{
-		return true;
-	}
-	ProviderCliCompatibilityService().Poll(app);
-	if (const std::string compatibility_error = CopilotLaunchBlockReason(app); !compatibility_error.empty())
-	{
-		if (error_out != nullptr)
-			*error_out = compatibility_error;
-		return false;
-	}
-
-	const std::string resolved_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
-	if (!resolved_session_id.empty())
-	{
-		return true;
-	}
-
-	const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
-	if (session_id.empty())
-	{
-		if (error_out != nullptr)
-			*error_out = "Failed to create a Copilot session id.";
-		return false;
-	}
-
-	const std::string previous_session_id = chat.native_session_id;
-	const auto previous_resolved_session = app.resolved_native_sessions_by_chat_id.find(chat.id);
-	const std::string previous_resolved_session_id = previous_resolved_session == app.resolved_native_sessions_by_chat_id.end() ? std::string() : previous_resolved_session->second;
-	const bool had_resolved_session = previous_resolved_session != app.resolved_native_sessions_by_chat_id.end();
-	app.resolved_native_sessions_by_chat_id.erase(chat.id);
-	chat.native_session_id = session_id;
-	if (ProviderRuntime::SaveHistory(provider, app.data_root, chat))
-	{
-		return true;
-	}
-
-	chat.native_session_id = previous_session_id;
-	if (had_resolved_session)
-	{
-		app.resolved_native_sessions_by_chat_id[chat.id] = previous_resolved_session_id;
-	}
-	if (error_out != nullptr)
-		*error_out = "Failed to persist the Copilot session id.";
-	return false;
 }
 
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)

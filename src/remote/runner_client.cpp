@@ -9,10 +9,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <ranges>
 #include <string>
@@ -49,14 +51,45 @@ namespace uam::remote
 			frame += body;
 			return frame;
 		}
+
+		std::string ChannelCursorKey(std::string_view channel_id, std::string_view direction)
+		{
+			return std::string(channel_id) + "\n" + std::string(direction);
+		}
+
+		/** Validate fields consumed by RunnerClient before any caller updates its cursors. */
+		bool ValidResultFields(const nlohmann::json& result)
+		{
+			if (!result.is_object()) return false;
+			for (const char* key : {"dataBase64", "stdoutBase64", "stderrBase64"})
+			{
+				const auto field = result.find(key);
+				if (field != result.end() && !field->is_string()) return false;
+			}
+			for (const char* key : {"cursor", "stdoutCursor", "stderrCursor", "inputSequence",
+			                        "remoteToDesktopCursor", "desktopToRemoteCursor",
+			                        "remoteToDesktopWriteSequence", "desktopToRemoteWriteSequence"})
+			{
+				const auto field = result.find(key);
+				if (field != result.end() && !field->is_number_unsigned()) return false;
+			}
+			const auto running = result.find("running");
+			if (running != result.end() && !running->is_boolean()) return false;
+			const auto exit_code = result.find("exitCode");
+			return exit_code == result.end() || exit_code->is_null() ||
+			    (exit_code->is_number_integer() && *exit_code >= std::numeric_limits<int>::min() &&
+			     *exit_code <= std::numeric_limits<int>::max());
+		}
 	}
 
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
 	                                       const std::string& version,
-	                                       const std::string& runner_directory)
+	                                       const std::string& runner_directory,
+	                                       int protocol_version)
 	{
 		if (!uam::execution_hosts::IsSafeSshAlias(ssh_alias) || version.empty() ||
+		    protocol_version < 2 || protocol_version > kRunnerProtocolVersion ||
 		    !uam::execution_hosts::IsSafeRunnerDirectory(runner_directory) ||
 		    !std::ranges::all_of(version, [](unsigned char character)
 		    { return std::isalnum(character) != 0 || character == '-' || character == '_' || character == '.'; }))
@@ -67,8 +100,10 @@ namespace uam::remote
 		{
 			const std::string root = uam::execution_hosts::RunnerDirectory(platform, runner_directory);
 			const std::string runner = "~/" + root + "/" + version + "/uam-runner";
-			command = runner + " start --socket ~/" + root + "/uam.sock && exec " +
-			          runner + " bridge --socket ~/" + root + "/uam.sock";
+			const std::string socket = "~/" + root + "/" +
+			                           RunnerEndpointName(version, protocol_version) + ".sock";
+			command = runner + " start --socket " + socket + " && exec " +
+			          runner + " bridge --socket " + socket;
 		}
 		else if (platform == "windows" || platform == "Windows")
 		{
@@ -87,9 +122,11 @@ namespace uam::remote
 
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
 	                           std::vector<std::string> bridge_argv,
-	                           std::string expected_version)
+	                           std::string expected_version,
+	                           int expected_protocol_version)
 	    : m_processService(process_service), m_bridgeArgv(std::move(bridge_argv)),
-	      m_expectedVersion(std::move(expected_version))
+	      m_expectedVersion(std::move(expected_version)),
+	      m_expectedProtocolVersion(expected_protocol_version)
 	{
 	}
 
@@ -99,6 +136,7 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::Connect(std::string* error_out)
+	try
 	{
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())
@@ -107,8 +145,16 @@ namespace uam::remote
 			return false;
 		}
 		std::string error;
-		if (!m_processService.StartStdioProcess(m_bridge, std::filesystem::current_path(),
-		                                        m_bridgeArgv, &error))
+		std::error_code current_path_error;
+		const std::optional<std::filesystem::path> current_path =
+		    uam::paths::CurrentPathNoThrow(&current_path_error);
+		if (!current_path)
+		{
+			if (error_out != nullptr)
+				*error_out = "The remote runner bridge working directory is unavailable.";
+			return false;
+		}
+		if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner bridge could not start." : error;
@@ -117,10 +163,10 @@ namespace uam::remote
 		m_connected = true;
 		const std::string nonce = Nonce();
 		nlohmann::json response;
-		if (!Request({{"type", "hello"}, {"protocolVersion", kRunnerProtocolVersion},
+		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 		              {"nonce", nonce}},
 		             response, &error) || response.value("nonce", "") != nonce ||
-		    response.value("protocolVersion", 0) != kRunnerProtocolVersion ||
+		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
 		    (!m_expectedVersion.empty() &&
 		     response.value("runnerVersion", "") != m_expectedVersion) ||
 		    !response.value("capabilities", nlohmann::json::object())
@@ -136,13 +182,24 @@ namespace uam::remote
 			return false;
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
+		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
+		    response["capabilities"].value("processOutputAcknowledgement", false);
 		return true;
+	}
+
+	catch (const nlohmann::json::exception&)
+	{
+		Disconnect();
+		if (error_out != nullptr) *error_out = "The remote runner returned malformed handshake fields.";
+		return false;
 	}
 
 	bool RunnerClient::Request(nlohmann::json request, nlohmann::json& response,
 	                           std::string* error_out,
 	                           const std::function<bool()>& interrupt,
 	                           bool* interrupted_out)
+	try
 	{
 		if (interrupted_out != nullptr) *interrupted_out = false;
 		if (!m_connected)
@@ -178,7 +235,21 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = ResponseError(response);
 			return false;
 		}
+		if (request.value("type", "") != "hello" &&
+		    (!response.contains("result") || !ValidResultFields(response["result"])))
+		{
+			Disconnect();
+			if (error_out != nullptr) *error_out = "The remote runner returned malformed result fields.";
+			return false;
+		}
 		return true;
+	}
+
+	catch (const nlohmann::json::exception&)
+	{
+		Disconnect();
+		if (error_out != nullptr) *error_out = "The remote runner returned malformed response fields.";
+		return false;
 	}
 
 	bool RunnerClient::ReadResponse(nlohmann::json& response, std::string* error_out,
@@ -245,60 +316,283 @@ namespace uam::remote
 	    const std::string& session_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
-	    std::string* error_out, bool attach_if_exists)
+	    std::string* error_out, bool attach_if_exists, std::string control_token,
+	    bool retry_lost_reply)
 	{
 		if (!Connect(error_out)) return false;
+		const bool transient_lease = control_token.empty();
+		if (transient_lease)
+		{
+			const auto existing = m_processControlTokens.find(session_id);
+			control_token = existing == m_processControlTokens.end() ? Nonce() : existing->second;
+		}
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
+		m_processControlTokens[session_id] = control_token;
+		nlohmann::json request = {{"type", "process.start"}, {"sessionId", session_id},
+		                          {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
+		                          {"environment", std::move(environment_json)},
+		                          {"attachIfExists", attach_if_exists}};
+		if (m_expectedProtocolVersion >= 3) request["controlToken"] = control_token;
+		if (m_expectedProtocolVersion >= 3 && transient_lease)
+			request["transientLeaseMs"] = 60000;
 		nlohmann::json response;
-		return Request({{"type", "process.start"}, {"sessionId", session_id},
-		                {"cwd", working_directory.string()}, {"argv", argv},
-		                {"environment", std::move(environment_json)},
-		                {"attachIfExists", attach_if_exists}},
-		               response, error_out);
+		bool started = Request(request, response, error_out);
+		if (!started && retry_lost_reply && !m_connected && Connect(error_out))
+		{
+			request["attachIfExists"] = true;
+			started = Request(std::move(request), response, error_out);
+		}
+		if (started)
+			m_processInputSequences[session_id] = response.value(
+			    "result", nlohmann::json::object()).value("inputSequence", std::uint64_t{0});
+		return started;
+	}
+
+	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
+	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
+	    int timeout_ms, std::stop_token stop_token)
+	{
+		ProcessExecutionResult result;
+		const std::chrono::steady_clock::time_point deadline = timeout_ms < 0
+		    ? std::chrono::steady_clock::time_point::max()
+		    : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+		const auto interrupted = [&]()
+		{
+			result.canceled = stop_token.stop_requested();
+			result.timed_out = !result.canceled && std::chrono::steady_clock::now() >= deadline;
+			return result.canceled || result.timed_out;
+		};
+		if (interrupted()) return result;
+		if (m_expectedProtocolVersion < 3)
+		{
+			result.error = "Remote command execution requires runner protocol 3 or newer.";
+			return result;
+		}
+		if (!Connect(&result.error)) return result;
+		if (!m_processOutputAcknowledgement)
+		{
+			result.error = "Remote command execution requires acknowledged process output.";
+			return result;
+		}
+		if (interrupted()) return result;
+		ProcessPollResult poll;
+		bool have_poll = false;
+		bool started = StartProcess(session_id, working_directory, argv, {}, &result.error,
+		                            false, {}, false);
+		// An uncertain start is recovered only by observing its original ID and token.
+		if (!started && !m_connected && !interrupted() && Connect(&result.error))
+		{
+			have_poll = PollProcess(session_id, poll, &result.error, interrupted);
+			started = have_poll;
+		}
+		bool exited = false;
+		if (started)
+		{
+			result.error.clear();
+			if (!interrupted() && CloseProcessInput(session_id, &result.error))
+			{
+				while (!interrupted())
+				{
+					if (!have_poll && !PollProcess(session_id, poll, &result.error, interrupted))
+					{
+						if (m_connected || interrupted() || !Connect(&result.error) ||
+						    !PollProcess(session_id, poll, &result.error, interrupted)) break;
+					}
+					have_poll = false;
+					result.error.clear();
+					if (!uam::platform::AppendCapturedCommandOutput(result,
+					        poll.standard_output.data(), poll.standard_output.size()) ||
+					    !uam::platform::AppendCapturedCommandOutput(result,
+					        poll.standard_error.data(), poll.standard_error.size())) break;
+					if (!AcknowledgeProcessOutput(session_id, poll, &result.error)) break;
+					if (!poll.running)
+					{
+						result.exit_code = poll.exit_code;
+						exited = true;
+						break;
+					}
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				}
+			}
+		}
+		if (result.canceled) result.error = "Remote command canceled.";
+		else if (result.timed_out) result.error = "Remote command timed out.";
+		else if (result.output_truncated)
+			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+		std::string cleanup_error;
+		if (!exited && !StopProcess(session_id, &cleanup_error))
+			result.error += " Remote process stop failed: " + cleanup_error;
+		if (!RemoveProcess(session_id, &cleanup_error))
+			result.error += " Remote process cleanup failed: " + cleanup_error;
+		result.ok = exited && result.exit_code == 0 && result.error.empty() &&
+		    !result.canceled && !result.timed_out && !result.output_truncated;
+		return result;
+	}
+
+	void RunnerClient::SetProcessControlToken(const std::string& session_id,
+	                                          std::string control_token)
+	{
+		m_processControlTokens[session_id] = std::move(control_token);
+	}
+
+	bool RunnerClient::AddProcessControlToken(nlohmann::json& request,
+	                                          const std::string& session_id,
+	                                          std::string* error_out)
+	{
+		if (m_expectedProtocolVersion < 3) return true;
+		const auto found = m_processControlTokens.find(session_id);
+		if (found == m_processControlTokens.end() || found->second.empty())
+		{
+			if (error_out != nullptr) *error_out = "The remote process control token is unavailable.";
+			return false;
+		}
+		request["controlToken"] = found->second;
+		return true;
 	}
 
 	bool RunnerClient::WriteProcess(const std::string& session_id, std::string_view bytes,
-	                                std::string* error_out)
+	                                std::string* error_out, std::string_view delivery_id)
 	{
+		nlohmann::json request = {{"type", "process.write"}, {"sessionId", session_id},
+		                          {"dataBase64", uam::base64::Encode(bytes)}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
+		const std::uint64_t sequence = m_processInputSequences[session_id] + 1;
+		if (m_expectedProtocolVersion >= 3) request["inputSequence"] = sequence;
+		if (m_expectedProtocolVersion >= 3 && !delivery_id.empty())
+			request["deliveryId"] = delivery_id;
 		nlohmann::json response;
-		return Request({{"type", "process.write"}, {"sessionId", session_id},
-		                {"dataBase64", uam::base64::Encode(bytes)}},
-		               response, error_out);
+		bool written = Request(request, response, error_out);
+		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out))
+			written = Request(std::move(request), response, error_out);
+		if (written)
+		{
+			const std::uint64_t accepted_sequence = response.value(
+			    "result", nlohmann::json::object()).value("inputSequence", sequence);
+			m_processInputSequences[session_id] = std::max(
+			    m_processInputSequences[session_id], accepted_sequence);
+		}
+		return written;
 	}
 
 	bool RunnerClient::OpenChannel(const std::string& channel_id, std::string* error_out,
-	                               bool attach_if_exists)
+	                               bool attach_if_exists, std::int64_t lease_ms)
 	{
 		if (!Connect(error_out)) return false;
+		if (lease_ms != 0 && !m_leasedChannelTake)
+		{
+			if (error_out != nullptr) *error_out = "The remote runner does not support leased channel handoff.";
+			return false;
+		}
 		nlohmann::json response;
-		return Request({{"type", "channel.open"}, {"channelId", channel_id},
-		                {"attachIfExists", attach_if_exists}}, response, error_out);
+		if (!Request({{"type", "channel.open"}, {"channelId", channel_id},
+		              {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}}, response, error_out)) return false;
+		if (m_expectedProtocolVersion >= 3)
+		{
+			const nlohmann::json& result = response["result"];
+			m_channelCursors[ChannelCursorKey(channel_id, "remoteToDesktop")] =
+			    result.value("remoteToDesktopCursor", static_cast<std::uintmax_t>(0));
+			m_channelCursors[ChannelCursorKey(channel_id, "desktopToRemote")] =
+			    result.value("desktopToRemoteCursor", static_cast<std::uintmax_t>(0));
+			m_channelWriteSequences[ChannelCursorKey(channel_id, "remoteToDesktop")] =
+			    result.value("remoteToDesktopWriteSequence", std::uint64_t{0});
+			m_channelWriteSequences[ChannelCursorKey(channel_id, "desktopToRemote")] =
+			    result.value("desktopToRemoteWriteSequence", std::uint64_t{0});
+		}
+		return true;
+	}
+
+	bool RunnerClient::TakeChannel(const std::string& channel_id, std::string_view direction,
+	                               std::string& bytes, std::string* error_out)
+	{
+		bytes.clear();
+		if (!Connect(error_out)) return false;
+		if (!m_leasedChannelTake)
+		{
+			if (error_out != nullptr) *error_out = "The remote runner does not support leased channel handoff.";
+			return false;
+		}
+		nlohmann::json response;
+		// Consumption is destructive: an uncertain response must never be retried.
+		if (!Request({{"type", "channel.take"}, {"channelId", channel_id},
+		              {"direction", direction}}, response, error_out)) return false;
+		const nlohmann::json& result = response["result"];
+		if (!result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+		    result["dataBase64"].get_ref<const std::string&>().size() > 87384 ||
+		    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), bytes) || bytes.size() > 65536)
+		{
+			bytes.clear();
+			if (error_out != nullptr) *error_out = "The remote runner returned invalid channel handoff bytes.";
+			return false;
+		}
+		return true;
 	}
 
 	bool RunnerClient::WriteChannel(const std::string& channel_id,
 	                                std::string_view direction, std::string_view bytes,
 	                                std::string* error_out)
 	{
+		const std::string sequence_key = ChannelCursorKey(channel_id, direction);
+		nlohmann::json request = {{"type", "channel.write"}, {"channelId", channel_id},
+		                          {"direction", direction},
+		                          {"dataBase64", uam::base64::Encode(bytes)}};
+		const std::uint64_t sequence = m_channelWriteSequences[sequence_key] + 1;
+		if (m_expectedProtocolVersion >= 3) request["writeSequence"] = sequence;
 		nlohmann::json response;
-		return Request({{"type", "channel.write"}, {"channelId", channel_id},
-		                {"direction", direction}, {"dataBase64", uam::base64::Encode(bytes)}},
-		               response, error_out);
+		bool written = Request(request, response, error_out);
+		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out))
+			written = Request(std::move(request), response, error_out);
+		if (written) m_channelWriteSequences[sequence_key] = sequence;
+		return written;
 	}
 
 	bool RunnerClient::PollChannel(const std::string& channel_id,
 	                               std::string_view direction, std::string& bytes,
-	                               std::string* error_out)
+	                               std::string* error_out, std::uintmax_t* cursor_out)
 	{
+		const std::string cursor_key = ChannelCursorKey(channel_id, direction);
+		nlohmann::json request = {{"type", "channel.poll"}, {"channelId", channel_id},
+		                          {"direction", direction}};
+		if (m_expectedProtocolVersion >= 3)
+		{
+			request["acknowledgedOutput"] = true;
+			request["cursor"] = m_channelCursors[cursor_key];
+		}
 		nlohmann::json response;
-		if (!Request({{"type", "channel.poll"}, {"channelId", channel_id},
-		              {"direction", direction}}, response, error_out)) return false;
+		if (!Request(std::move(request), response, error_out)) return false;
+		std::string parsed;
 		if (!response.contains("result") || !response["result"].is_object() ||
-		    !uam::base64::Decode(response["result"].value("dataBase64", ""), bytes))
+		    !uam::base64::Decode(response["result"].value("dataBase64", ""), parsed))
 		{
 			if (error_out != nullptr) *error_out = "The runner channel returned invalid data.";
 			return false;
 		}
+		const std::uintmax_t cursor = response["result"].value(
+		    "cursor", m_channelCursors[cursor_key] + parsed.size());
+		if (cursor_out != nullptr) *cursor_out = cursor;
+		bytes = std::move(parsed);
+		return true;
+	}
+
+	bool RunnerClient::AcknowledgeChannel(const std::string& channel_id,
+	                                      std::string_view direction,
+	                                      std::uintmax_t cursor,
+	                                      std::string* error_out)
+	{
+		const std::string cursor_key = ChannelCursorKey(channel_id, direction);
+		if (m_expectedProtocolVersion < 3)
+		{
+			m_channelCursors[cursor_key] = cursor;
+			return true;
+		}
+		nlohmann::json request = {{"type", "channel.ack"}, {"channelId", channel_id},
+		                          {"direction", direction}, {"cursor", cursor}};
+		nlohmann::json response;
+		bool acknowledged = Request(request, response, error_out);
+		if (!acknowledged && !m_connected && Connect(error_out))
+			acknowledged = Request(std::move(request), response, error_out);
+		if (!acknowledged) return false;
+		m_channelCursors[cursor_key] = cursor;
 		return true;
 	}
 
@@ -327,7 +621,7 @@ namespace uam::remote
 		    digest, reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
 		nlohmann::json response;
 		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id},
-		              {"path", remote_path.string()}, {"size", bytes.size()},
+		              {"path", uam::paths::Utf8PathString(remote_path)}, {"size", bytes.size()},
 		              {"digest", uam::hashing::Hex64Padded(digest)}},
 		             response, error_out))
 		{
@@ -359,7 +653,7 @@ namespace uam::remote
 	{
 		nlohmann::json response;
 		return Request({{"type", "file.remove"}, {"uploadId", request_id},
-		                {"path", remote_path.string()}}, response, error_out);
+		                {"path", uam::paths::Utf8PathString(remote_path)}}, response, error_out);
 	}
 
 	bool RunnerClient::CopyFile(const std::string& request_id,
@@ -369,8 +663,8 @@ namespace uam::remote
 	{
 		nlohmann::json response;
 		return Request({{"type", "file.copy"}, {"uploadId", request_id},
-		                {"sourcePath", source_path.string()},
-		                {"targetPath", target_path.string()}, {"overwrite", overwrite}},
+		                {"sourcePath", uam::paths::Utf8PathString(source_path)},
+		                {"targetPath", uam::paths::Utf8PathString(target_path)}, {"overwrite", overwrite}},
 		               response, error_out);
 	}
 
@@ -437,46 +731,112 @@ namespace uam::remote
 
 	bool RunnerClient::CloseProcessInput(const std::string& session_id, std::string* error_out)
 	{
+		nlohmann::json request = {{"type", "process.closeInput"}, {"sessionId", session_id}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
 		nlohmann::json response;
-		return Request({{"type", "process.closeInput"}, {"sessionId", session_id}}, response,
-		               error_out);
+		bool closed = Request(request, response, error_out);
+		if (!closed && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out))
+			closed = Request(std::move(request), response, error_out);
+		return closed;
 	}
 
 	bool RunnerClient::PollProcess(const std::string& session_id, ProcessPollResult& result,
 	                               std::string* error_out,
 	                               const std::function<bool()>& interrupt,
-	                               bool* interrupted_out)
+	                               bool* interrupted_out,
+	                               const ProcessPollResult* resume_after)
 	{
+		nlohmann::json request = {{"type", "process.poll"}, {"sessionId", session_id},
+		                          {"acknowledgedOutput", m_processOutputAcknowledgement}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
+		if (m_processOutputAcknowledgement && resume_after != nullptr)
+		{
+			request["stdoutCursor"] = resume_after->stdout_cursor;
+			request["stderrCursor"] = resume_after->stderr_cursor;
+		}
 		nlohmann::json response;
-		if (!Request({{"type", "process.poll"}, {"sessionId", session_id}}, response,
+		if (!Request(std::move(request), response,
 		             error_out, interrupt, interrupted_out))
 			return false;
+		ProcessPollResult parsed;
 		const nlohmann::json& value = response["result"];
-		result.running = value.value("running", false);
-		result.exit_code = value.contains("exitCode") && value["exitCode"].is_number_integer()
+		parsed.running = value.value("running", false);
+		parsed.exit_code = value.contains("exitCode") && value["exitCode"].is_number_integer()
 		    ? value["exitCode"].get<int>()
 		    : -1;
-		if (!uam::base64::Decode(value.value("stdoutBase64", ""), result.standard_output) ||
-		    !uam::base64::Decode(value.value("stderrBase64", ""), result.standard_error))
+		if (!uam::base64::Decode(value.value("stdoutBase64", ""), parsed.standard_output) ||
+		    !uam::base64::Decode(value.value("stderrBase64", ""), parsed.standard_error))
 		{
 			if (error_out != nullptr) *error_out = "The remote runner returned invalid process output.";
 			return false;
 		}
+		parsed.stdout_cursor = value.value("stdoutCursor", static_cast<std::uintmax_t>(0));
+		parsed.stderr_cursor = value.value("stderrCursor", static_cast<std::uintmax_t>(0));
+		if (m_processOutputAcknowledgement &&
+		    (parsed.stdout_cursor < parsed.standard_output.size() ||
+		     parsed.stderr_cursor < parsed.standard_error.size()))
+		{
+			if (error_out != nullptr)
+				*error_out = "The remote runner returned process cursors before the delivered output.";
+			return false;
+		}
+		parsed.input_sequence = value.value("inputSequence", static_cast<std::uint64_t>(0));
+		m_processInputSequences[session_id] = std::max(
+		    m_processInputSequences[session_id], parsed.input_sequence);
+		parsed.acknowledgement_required = m_processOutputAcknowledgement &&
+		    (!parsed.standard_output.empty() || !parsed.standard_error.empty());
+		result = std::move(parsed);
 		return true;
+	}
+
+	bool RunnerClient::AcknowledgeProcessOutput(const std::string& session_id,
+	                                            const ProcessPollResult& result,
+	                                            std::string* error_out)
+	{
+		if (!result.acknowledgement_required) return true;
+		nlohmann::json request = {{"type", "process.ack"}, {"sessionId", session_id},
+		                          {"stdoutCursor", result.stdout_cursor},
+		                          {"stderrCursor", result.stderr_cursor}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
+		nlohmann::json response;
+		bool acknowledged = Request(request, response, error_out);
+		if (!acknowledged && !m_connected && Connect(error_out))
+			acknowledged = Request(std::move(request), response, error_out);
+		return acknowledged;
 	}
 
 	bool RunnerClient::StopProcess(const std::string& session_id, std::string* error_out)
 	{
+		if (!Connect(error_out)) return false;
+		nlohmann::json request = {{"type", "process.stop"}, {"sessionId", session_id}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
 		nlohmann::json response;
-		return Request({{"type", "process.stop"}, {"sessionId", session_id}}, response,
-		               error_out);
+		bool stopped = Request(request, response, error_out);
+		if (!stopped && !m_connected && Connect(error_out))
+			stopped = Request(std::move(request), response, error_out);
+		return stopped;
 	}
 
 	bool RunnerClient::RemoveProcess(const std::string& session_id, std::string* error_out)
 	{
+		if (!Connect(error_out)) return false;
+		nlohmann::json request = {{"type", "process.remove"}, {"sessionId", session_id}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
 		nlohmann::json response;
-		return Request({{"type", "process.remove"}, {"sessionId", session_id}}, response,
-		               error_out);
+		bool removed = Request(request, response, error_out);
+		if (!removed && !m_connected && Connect(error_out))
+		{
+			removed = Request(std::move(request), response, error_out);
+			if (!removed && error_out != nullptr &&
+			    error_out->find("does not exist") != std::string::npos)
+				removed = true;
+		}
+		if (removed)
+		{
+			m_processControlTokens.erase(session_id);
+			m_processInputSequences.erase(session_id);
+		}
+		return removed;
 	}
 
 	void RunnerClient::Disconnect()
@@ -486,5 +846,6 @@ namespace uam::remote
 		m_received.clear();
 		m_connected = false;
 		m_directoryBrowsing = false;
+		m_leasedChannelTake = false;
 	}
 }

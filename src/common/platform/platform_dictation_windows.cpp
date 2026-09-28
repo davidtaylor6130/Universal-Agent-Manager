@@ -36,6 +36,7 @@ class WindowsDictationService final : public IPlatformDictationService
 
 			previous_worker = std::move(m_worker);
 			m_running = true;
+			m_dictationId = options.dictation_id;
 			m_stopRequested = false;
 			generation = ++m_generation;
 		}
@@ -59,10 +60,10 @@ class WindowsDictationService final : public IPlatformDictationService
 		return true;
 	}
 
-	void Stop() override
+	void Stop(std::string_view dictation_id = {}) override
 	{
 		std::scoped_lock lock(m_mutex);
-		if (!m_running)
+		if (!m_running || (!dictation_id.empty() && dictation_id != m_dictationId))
 		{
 			return;
 		}
@@ -184,6 +185,7 @@ class WindowsDictationService final : public IPlatformDictationService
 		std::scoped_lock lock(m_mutex);
 		if (m_running && m_generation == generation && !event.text.empty())
 		{
+			event.dictation_id = m_dictationId;
 			m_events.push_back(std::move(event));
 		}
 	}
@@ -197,7 +199,7 @@ class WindowsDictationService final : public IPlatformDictationService
 		}
 		m_running = false;
 		m_stopRequested = false;
-		m_events.push_back({DictationEventType::End, {}});
+		m_events.push_back({DictationEventType::End, {}, m_dictationId});
 	}
 
 	void Fail(std::uint64_t generation, std::string message)
@@ -209,12 +211,13 @@ class WindowsDictationService final : public IPlatformDictationService
 		}
 		m_running = false;
 		m_stopRequested = false;
-		m_events.push_back({DictationEventType::Error, std::move(message)});
-		m_events.push_back({DictationEventType::End, {}});
+		m_events.push_back({DictationEventType::Error, std::move(message), m_dictationId});
+		m_events.push_back({DictationEventType::End, {}, m_dictationId});
 	}
 
 	mutable std::mutex m_mutex;
 	std::vector<DictationEvent> m_events;
+	std::string m_dictationId;
 	std::jthread m_worker;
 	std::uint64_t m_generation = 0;
 	bool m_running = false;

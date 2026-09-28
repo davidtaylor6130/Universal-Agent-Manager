@@ -6,8 +6,8 @@
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/diagnostic_log.h"
 
-#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -171,7 +171,7 @@ void AppendAcpDiagnostic(
 	entry.detail = CapDiagnosticString(detail, kMaxAcpDiagnosticDetailBytes);
 	entry.lifecycle_state = session.lifecycle_state;
 
-	std::cerr << FormatAcpDiagnosticLogLine(session, entry) << '\n';
+	uam::diagnostics::Write(FormatAcpDiagnosticLogLine(session, entry));
 
 	session.diagnostics.push_back(std::move(entry));
 	if (session.diagnostics.size() > kMaxAcpDiagnosticEntries)

@@ -74,6 +74,10 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR
 int main(int argc, char* argv[])
 {
 #if defined(__APPLE__)
+	if (const std::optional<int> terminal_exit = uam::platform::RunMacTerminalChildIfRequested(argc, argv); terminal_exit.has_value())
+	{
+		return *terminal_exit;
+	}
 	if (const std::optional<int> watchdog_exit = uam::platform::RunMacParentDeathWatchdogIfRequested(argc, argv); watchdog_exit.has_value())
 	{
 		return *watchdog_exit;

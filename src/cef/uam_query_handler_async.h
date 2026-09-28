@@ -20,6 +20,8 @@ struct AsyncCefResult
 	int status = 500;
 	std::string body;
 	std::string error;
+	// A completion may hand the callback to a second asynchronous query.
+	bool callback_deferred = false;
 };
 
 inline AsyncCefResult AsyncSuccess(nlohmann::json body)
@@ -35,15 +37,16 @@ inline AsyncCefResult AsyncFailure(int status, std::string error)
 class CefQueryCallbackTask : public CefTask
 {
   public:
-	CefQueryCallbackTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+	CefQueryCallbackTask(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
 	                     AsyncCefResult result,
 	                     std::function<void(AsyncCefResult&)> completion = {})
-	    : m_callback(std::move(callback)), m_result(std::move(result)), m_completion(std::move(completion))
+	    : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)), m_result(std::move(result)), m_completion(std::move(completion))
 	{
 	}
 
 	void Execute() override
 	{
+		if (m_lifetime.expired()) return;
 		CEF_REQUIRE_UI_THREAD();
 		if (m_completion)
 		{
@@ -53,14 +56,14 @@ class CefQueryCallbackTask : public CefTask
 			}
 			catch (const std::exception& ex)
 			{
-				m_result = AsyncFailure(500, ex.what());
+				if (!m_result.callback_deferred) m_result = AsyncFailure(500, ex.what());
 			}
 			catch (...)
 			{
-				m_result = AsyncFailure(500, "Async bridge completion failed.");
+				if (!m_result.callback_deferred) m_result = AsyncFailure(500, "Async bridge completion failed.");
 			}
 		}
-		if (!m_callback) return;
+		if (!m_callback || m_result.callback_deferred) return;
 		if (m_result.ok)
 		{
 			m_callback->Success(m_result.body);
@@ -72,6 +75,7 @@ class CefQueryCallbackTask : public CefTask
 	}
 
   private:
+	std::weak_ptr<void> m_lifetime;
 	CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
 	AsyncCefResult m_result;
 	std::function<void(AsyncCefResult&)> m_completion;
@@ -81,15 +85,16 @@ class CefQueryCallbackTask : public CefTask
 class CefQueryWorkerTask : public CefTask
 {
   public:
-	CefQueryWorkerTask(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+	CefQueryWorkerTask(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
 	                   std::function<AsyncCefResult()> worker,
 	                   std::function<void(AsyncCefResult&)> completion = {})
-	    : m_callback(std::move(callback)), m_worker(std::move(worker)), m_completion(std::move(completion))
+	    : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)), m_worker(std::move(worker)), m_completion(std::move(completion))
 	{
 	}
 
 	void Execute() override
 	{
+		if (m_lifetime.expired()) return;
 		AsyncCefResult result;
 		try
 		{
@@ -103,10 +108,11 @@ class CefQueryWorkerTask : public CefTask
 		{
 			result = AsyncFailure(500, "Async bridge request failed.");
 		}
-		(void)CefPostTask(TID_UI, new CefQueryCallbackTask(m_callback, std::move(result), std::move(m_completion)));
+		(void)CefPostTask(TID_UI, new CefQueryCallbackTask(m_lifetime, m_callback, std::move(result), std::move(m_completion)));
 	}
 
   private:
+	std::weak_ptr<void> m_lifetime;
 	CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
 	std::function<AsyncCefResult()> m_worker;
 	std::function<void(AsyncCefResult&)> m_completion;
@@ -114,22 +120,26 @@ class CefQueryWorkerTask : public CefTask
 };
 
 template <typename Worker>
-void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
 {
-	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(callback, std::move(worker))))
+	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker))))
 	{
 		callback->Failure(503, "The background task queue is unavailable.");
+		return false;
 	}
+	return true;
 }
 
 template <typename Worker, typename Completion>
-void RunAsyncCefQuery(CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion)
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion)
 {
 	if (!CefPostTask(TID_FILE_BACKGROUND,
-	                 new CefQueryWorkerTask(callback, std::move(worker), std::move(completion))))
+	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))
 	{
 		callback->Failure(503, "The background task queue is unavailable.");
+		return false;
 	}
+	return true;
 }
 
 } // namespace uam::query_handler_async

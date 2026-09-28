@@ -1,7 +1,7 @@
 import type { Folder, RemoteDirectoryBrowseResult, RemoteDirectoryListing, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope, MemoryScanCandidate } from '../../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
 import {
   clearPendingRequest,
@@ -11,6 +11,10 @@ import {
 import type { CppFolder, ShellAction } from '../cpp/types'
 import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
+import { deleteSessionsFromState } from './sessionsSlice'
+import { discardPendingPushesForChats } from '../push/pushBuffers'
+import { removeChatsFromGrid } from '../../utils/chatGridStorage'
+import { removeComposerDrafts } from '../../utils/composerDraftStorage'
 
 let folderCounter = 10
 
@@ -220,8 +224,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           set((state) => ({
             folders: state.folders.map((folder) => (folder.id === id ? {
               ...folder,
-              name: previousFolder.name,
-              directory: previousFolder.directory,
+              name: folder.name === name ? previousFolder.name : folder.name,
+              directory: folder.directory === directory ? previousFolder.directory : folder.directory,
             } : folder)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
@@ -241,43 +245,34 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         if (!deletedFolder) {
           return false
         }
+		const deletedSessionIds = new Set(get().sessions
+		  .filter((session) => session.folderId === id)
+		  .map((session) => session.id))
 
         const requestId = createRequestId('deleteFolder')
-        const response = await sendToCEF({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        const response = await sendWhenRemoteStopSettles({ action: 'deleteFolder', payload: { folderId: id }, requestId })
+        if (response.ok) {
+          discardPendingPushesForChats(deletedSessionIds)
+          set((state) => ({
+            ...deleteSessionsFromState(state, deletedSessionIds),
+            folders: state.folders.filter((folder) => folder.id !== id),
+          }))
+          removeChatsFromGrid(deletedSessionIds)
+          removeComposerDrafts(deletedSessionIds)
+        }
         return response.ok
       }
 
-      set((state) => {
-        const deletedSessionIds = new Set(
-          state.sessions.filter((session) => session.folderId === id).map((session) => session.id)
-        )
-        const remainingFolders = state.folders.filter((f) => f.id !== id)
-        const sessions = state.sessions.filter((session) => !deletedSessionIds.has(session.id))
-        const messages = { ...state.messages }
-        const cliBindingBySessionId = { ...state.cliBindingBySessionId }
-        const acpBindingBySessionId = { ...state.acpBindingBySessionId }
-        const cliTranscriptBySessionId = { ...state.cliTranscriptBySessionId }
-
-        deletedSessionIds.forEach((sessionId) => {
-          delete messages[sessionId]
-          delete cliBindingBySessionId[sessionId]
-          delete acpBindingBySessionId[sessionId]
-          delete cliTranscriptBySessionId[sessionId]
-        })
-
-        return {
-          folders: remainingFolders,
-          sessions,
-          messages,
-          cliBindingBySessionId,
-          acpBindingBySessionId,
-          cliTranscriptBySessionId,
-          activeSessionId:
-            state.activeSessionId !== null && deletedSessionIds.has(state.activeSessionId)
-              ? (sessions[0]?.id ?? null)
-              : state.activeSessionId,
-        }
-      })
+      const deletedSessionIds = new Set(get().sessions
+        .filter((session) => session.folderId === id)
+        .map((session) => session.id))
+      discardPendingPushesForChats(deletedSessionIds)
+      set((state) => ({
+        ...deleteSessionsFromState(state, deletedSessionIds),
+        folders: state.folders.filter((folder) => folder.id !== id),
+      }))
+      removeChatsFromGrid(deletedSessionIds)
+      removeComposerDrafts(deletedSessionIds)
       return true
     },
 
@@ -369,7 +364,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           return false
         }
       }
-      set({ shellActions: actions, shellActionNotification: 'Shell action settings saved. Choose Apply to update Finder or Explorer.' })
+      set({ shellActions: actions, shellActionNotification: 'Shell action configuration saved.' })
       return true
     },
 
@@ -593,7 +588,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     })),
 
     openAllMemoryLibrary: async () => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      set({
+        memoryLibraryScope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -640,7 +640,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     },
 
     openGlobalMemoryLibrary: async () => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      set({
+        memoryLibraryScope: { scopeType: 'global', folderId: '', label: 'Global memory', rootPath: '' },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -686,7 +691,16 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     },
 
     openFolderMemoryLibrary: async (folderId: string) => {
-      set({ memoryLibraryLoading: true, memoryLibraryError: '' })
+      const folder = get().folders.find((candidate) => candidate.id === folderId)
+      set({
+        memoryLibraryScope: {
+          scopeType: 'folder', folderId, label: folder?.name ?? folderId,
+          rootPath: folder?.directory ? `${folder.directory}/.UAM` : '',
+        },
+        memoryLibraryEntries: [],
+        memoryLibraryLoading: true,
+        memoryLibraryError: '',
+      })
 
       if (isCefContext()) {
         const requestKey = 'listMemoryEntries:open'
@@ -717,7 +731,6 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         return true
       }
 
-      const folder = get().folders.find((candidate) => candidate.id === folderId)
       if (!folder) {
         set({
           memoryLibraryLoading: false,
@@ -740,12 +753,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    closeMemoryLibrary: () => set({
-      memoryLibraryScope: null,
-      memoryLibraryEntries: [],
-      memoryLibraryLoading: false,
-      memoryLibraryError: '',
-    }),
+    closeMemoryLibrary: () => {
+      for (const key of pendingRequestIdsByKey.keys()) {
+        if (key.startsWith('listMemoryEntries:')) pendingRequestIdsByKey.delete(key)
+      }
+      set({memoryLibraryScope: null, memoryLibraryEntries: [], memoryLibraryLoading: false, memoryLibraryError: ''})
+    },
 
     refreshMemoryLibrary: async () => {
       const scope = get().memoryLibraryScope
@@ -821,7 +834,9 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           return false
         }
 
-        return get().refreshMemoryLibrary()
+        // Creation already succeeded; a refresh failure must not invite a duplicate save.
+        await get().refreshMemoryLibrary()
+        return true
       }
 
       const syntheticEntry: MemoryEntry = {

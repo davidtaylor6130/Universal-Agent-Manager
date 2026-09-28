@@ -46,8 +46,33 @@ int main(int argc, char** argv)
 	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
 	    std::string(argv[6]) == "--version" && std::string(argv[8]) == "--directory")
 		return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7], argv[9]);
+	if (argc == 10 && std::string(argv[1]) == "proxy" &&
+	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
+	    std::string(argv[6]) == "--version" && std::string(argv[8]) == "--protocol")
+	{
+		try { return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7], {},
+			                                    std::stoi(argv[9])); }
+		catch (...) { return 2; }
+	}
+	if (argc == 12 && std::string(argv[1]) == "proxy" &&
+	    std::string(argv[2]) == "--alias" && std::string(argv[4]) == "--platform" &&
+	    std::string(argv[6]) == "--version" && std::string(argv[8]) == "--directory" &&
+	    std::string(argv[10]) == "--protocol")
+	{
+		try
+		{
+			return uam::remote::RunProcessProxy(argv[3], argv[5], argv[7], argv[9],
+			                                    std::stoi(argv[11]));
+		}
+		catch (...) { return 2; }
+	}
 	if (argc == 3 && std::string(argv[1]) == "terminal")
 		return uam::remote::RunTerminalProcess(argv[2]);
+	if (argc == 4 && std::string(argv[1]) == "terminal" && std::string(argv[2]) == "--channel")
+		return uam::remote::RunTerminalProcessFromChannel(argv[3]);
+	if (argc == 6 && std::string(argv[1]) == "terminal" &&
+	    std::string(argv[2]) == "--channel" && std::string(argv[4]) == "--socket")
+		return uam::remote::RunTerminalProcessFromChannel(argv[3], argv[5]);
 #if defined(__APPLE__) || defined(__linux__)
 	if (argc == 6 && std::string(argv[1]) == "mcp" &&
 	    std::string(argv[2]) == "--channel" && std::string(argv[4]) == "--socket")
@@ -73,8 +98,10 @@ int main(int argc, char** argv)
 			return uam::remote::RunRunnerService(UAM_REMOTE_RUNNER_VERSION);
 		if (std::string(argv[1]) == "start")
 			return uam::remote::StartRunnerService(UAM_REMOTE_RUNNER_VERSION);
-		if (std::string(argv[1]) == "stop") return uam::remote::StopRunnerService();
-		if (std::string(argv[1]) == "bridge") return uam::remote::RunRunnerBridge();
+		if (std::string(argv[1]) == "stop")
+			return uam::remote::StopRunnerService(UAM_REMOTE_RUNNER_VERSION);
+		if (std::string(argv[1]) == "bridge")
+			return uam::remote::RunRunnerBridge(UAM_REMOTE_RUNNER_VERSION);
 	}
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")

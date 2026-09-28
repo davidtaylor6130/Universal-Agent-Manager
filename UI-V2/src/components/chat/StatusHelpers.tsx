@@ -1,30 +1,30 @@
 // Status labels, colors, and diagnostic display helpers for the chat view.
-// Extracted from ChatView.tsx (MO-3).
 
 import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, CircleCheck, CircleX, Clock3, Copy, LoaderCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { AcpBinding, AcpToolCall } from '../../store/useAppStore'
+import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Tooltip } from '../ui'
 
-export function statusLabel(acp?: AcpBinding) {
-  if (!acp) return 'Stopped'
-  if (acp.lifecycleState === 'waitingPermission') return 'Permission'
-  if (acp.lifecycleState === 'waitingUserInput') return 'Input'
-  if (acp.processing) return 'Running'
-  if (acp.lifecycleState === 'error') return 'Error'
-  if (acp.running) return 'Ready'
+export function statusLabel(runtime?: AcpBinding | CliBinding) {
+  if (!runtime) return 'Stopped'
+  if (runtime.lifecycleState === 'unknown') return runtime.running ? 'Connected' : 'Stopped'
+  if (runtime.lifecycleState === 'waitingPermission') return 'Permission'
+  if (runtime.lifecycleState === 'waitingUserInput') return 'Input'
+  if (runtime.processing) return 'Running'
+  if (runtime.lifecycleState === 'error') return 'Error'
+  if (runtime.running) return 'Ready'
   return 'Stopped'
 }
 
-export function statusColor(acp?: AcpBinding) {
-  if (!acp) return 'var(--text-3)'
-  if (acp.lifecycleState === 'error') return 'var(--red)'
-  if (acp.lifecycleState === 'waitingPermission') return 'var(--yellow)'
-  if (acp.lifecycleState === 'waitingUserInput') return 'var(--yellow)'
-  if (acp.processing) return 'var(--blue)'
-  if (acp.running) return 'var(--green)'
+export function statusColor(runtime?: AcpBinding | CliBinding) {
+  if (!runtime || runtime.lifecycleState === 'unknown') return 'var(--text-3)'
+  if (runtime.lifecycleState === 'error') return 'var(--red)'
+  if (runtime.lifecycleState === 'waitingPermission') return 'var(--yellow)'
+  if (runtime.lifecycleState === 'waitingUserInput') return 'var(--yellow)'
+  if (runtime.processing) return 'var(--blue)'
+  if (runtime.running) return 'var(--green)'
   return 'var(--text-3)'
 }
 
@@ -33,7 +33,6 @@ export function ToolStatusIcon({ status }: { status: string }) {
   let Icon: LucideIcon = Circle
   let label = normalized ? normalized.replace(/_/g, ' ') : 'unknown'
   let color = 'var(--text-3)'
-  let spinning = false
 
   if (normalized === 'completed' || normalized === 'complete' || normalized === 'success' || normalized === 'succeeded') {
     Icon = CircleCheck
@@ -46,7 +45,6 @@ export function ToolStatusIcon({ status }: { status: string }) {
     Icon = LoaderCircle
     label = 'running'
     color = 'var(--blue)'
-    spinning = true
   } else if (normalized === 'pending') {
     Icon = Clock3
   }
@@ -60,7 +58,7 @@ export function ToolStatusIcon({ status }: { status: string }) {
         className="inline-flex shrink-0 items-center justify-center"
         style={{ color }}
       >
-        <Icon size={15} className={spinning ? 'animate-spin' : undefined} aria-hidden />
+        <Icon size={15} aria-hidden />
         <span className="sr-only">{accessibleLabel}</span>
       </span>
     </Tooltip>
