@@ -150,6 +150,7 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
       {...props}
       ref={menuRef}
       data-viewport-menu=""
+      data-menu-side={point ? 'point' : side}
       style={{
         ...style,
         position: 'fixed',

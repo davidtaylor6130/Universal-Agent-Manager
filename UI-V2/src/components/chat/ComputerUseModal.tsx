@@ -106,7 +106,7 @@ export function ComputerUseModal({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
     >

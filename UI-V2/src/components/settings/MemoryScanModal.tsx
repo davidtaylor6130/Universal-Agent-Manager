@@ -2,9 +2,10 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, useOverlayState } from '../ui'
 
 export function MemoryScanModal() {
+  const overlayState = useOverlayState()
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const memoryScanCandidates = useAppStore(useShallow((s) => s.memoryScanCandidates))
   const selectedMemoryScanChatIds = useAppStore(useShallow((s) => s.selectedMemoryScanChatIds))
@@ -32,13 +33,14 @@ export function MemoryScanModal() {
     return () => window.removeEventListener('keydown', handler)
   }, [closeMemoryScanModal, isMemoryScanModalOpen, memoryScanRunning])
 
-  if (!isMemoryScanModalOpen) {
+  if (!isMemoryScanModalOpen && overlayState === 'open') {
     return null
   }
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
+      data-state={overlayState}
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(event) => {
         if (event.target === event.currentTarget && !memoryScanRunning) {

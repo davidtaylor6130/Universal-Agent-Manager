@@ -473,6 +473,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
     existing.processing === next.processing &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
     existing.processingStartedAtMs === next.processingStartedAtMs &&
@@ -570,6 +572,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     running,
     lifecycleState,
     processing: effectiveProcessing,
+    idleShutdownAtMs: acp?.idleShutdownAtMs,
+    idleShutdownTimeoutSeconds: acp?.idleShutdownTimeoutSeconds,
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing

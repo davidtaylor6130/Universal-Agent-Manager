@@ -123,7 +123,7 @@ function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onC
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1100] flex items-center justify-center p-4"
+      className="uam-overlay fixed inset-0 z-[1100] flex items-center justify-center p-4"
       style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
       onMouseDown={() => { if (!saving) onClose() }}
     >

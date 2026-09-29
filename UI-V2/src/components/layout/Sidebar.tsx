@@ -8,6 +8,7 @@ import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import './SidebarGlide.css'
+import { shortcutLabel } from '../../utils/shortcuts'
 
 interface SearchChatMessagesResponse {
   chatIds?: string[]
@@ -133,9 +134,11 @@ export function Sidebar() {
           size="lg"
           block
           leadingIcon={<Plus size={16} />}
+          title={`New chat (${shortcutLabel('newChat')})`}
           onClick={() => setNewChatModalOpen(true)}
         >
           New Chat
+          <kbd className="uam-btn__kbd" aria-hidden>{shortcutLabel('newChat')}</kbd>
         </Button>
       </div>
     </div>

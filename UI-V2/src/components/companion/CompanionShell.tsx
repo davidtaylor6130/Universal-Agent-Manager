@@ -8,7 +8,7 @@ import { FolderTree } from '../sidebar/FolderTree'
 import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, Presence } from '../ui'
 import './companion.css'
 
 const TOKEN_KEY = 'uam-companion-token'
@@ -352,7 +352,7 @@ export function CompanionShell() {
           </div>
         </div>}
       </main>
-      {storeNewChatModalOpen && <Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense>}
+      <Presence open={storeNewChatModalOpen}><Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense></Presence>
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
       <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>

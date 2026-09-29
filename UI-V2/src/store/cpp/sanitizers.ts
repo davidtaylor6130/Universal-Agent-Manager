@@ -708,6 +708,8 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     threadId: isString(value.threadId) ? value.threadId : undefined,
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
+    idleShutdownAtMs: typeof value.idleShutdownAtMs === 'number' && Number.isFinite(value.idleShutdownAtMs) ? value.idleShutdownAtMs : undefined,
+    idleShutdownTimeoutSeconds: typeof value.idleShutdownTimeoutSeconds === 'number' && Number.isFinite(value.idleShutdownTimeoutSeconds) ? value.idleShutdownTimeoutSeconds : undefined,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
     attentionKind: sanitizeAcpAttentionKind(value.attentionKind),
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,

@@ -6,6 +6,7 @@
 #include "common/config/mcp_server_config.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "remote/runner_proxy.h"
 
 using namespace uam_test;
@@ -655,6 +656,35 @@ UAM_TEST(AcpRetryFailedPromptRejectsAssistantOutputAfterFailedUser)
 		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
 		UAM_ASSERT(error.find("no longer the latest") != std::string::npos);
 	}
+}
+
+UAM_TEST(AcpRetryUndeliveredBranchStartsWithoutOriginalNativeSession)
+{
+	TempDir temp("uam-acp-retry-undelivered-branch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-undelivered-branch";
+	chat.branch_root_chat_id = "original-chat";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = "missing-host";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Earlier prompt."});
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Earlier reply."});
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retry this branch."});
+	app.chats.push_back(std::move(chat));
+
+	std::string error;
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 2, &error));
+	UAM_ASSERT_EQ(error, std::string("The selected execution host no longer exists."));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(app.chats.front().native_session_id.empty());
+
+	app.chats.front().remote_prompt_delivery_id = "possibly-delivered";
+	error.clear();
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 2, &error));
+	UAM_ASSERT_EQ(error, std::string("Reconnect the original native session before retrying."));
 }
 
 UAM_TEST(AcpRetryEmptyCompletedTurnKeepsChatAndGoalContext)
@@ -9301,6 +9331,24 @@ UAM_TEST(AcpIdleControlInactivityTimeoutStopsAndReconnects)
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->reconnect_pending);
 	UAM_ASSERT(raw_session->last_error.find("setup timed out") != std::string::npos);
+}
+
+UAM_TEST(AcpIdleShutdownDeadlineOnlyExistsWhileReadyAndUnblocked)
+{
+	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 600;
+	ChatSession chat;
+	uam::AcpSessionState session;
+	session.running = true;
+	session.session_ready = true;
+	session.lifecycle_state = "ready";
+	session.last_runtime_activity_time_s = 42.0;
+	UAM_ASSERT_EQ(*uam::AcpIdleShutdownDeadlineSeconds(app, session, chat), 642.0);
+	session.processing = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat).has_value());
+	session.processing = false;
+	chat.remote_turn_reconnect_pending = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat).has_value());
 }
 
 UAM_TEST(AcpReadyRuntimeStopsAfterIdleTimeoutWithoutStoppingWork)

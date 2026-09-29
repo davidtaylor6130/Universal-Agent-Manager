@@ -15,6 +15,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -986,6 +987,17 @@ namespace uam
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing;
+			if (const std::optional<double> idle_deadline =
+			        AcpIdleShutdownDeadlineSeconds(app, *session, chat))
+			{
+				static const std::int64_t app_epoch_ms =
+				    std::chrono::duration_cast<std::chrono::milliseconds>(
+				        std::chrono::system_clock::now().time_since_epoch()).count() -
+				    static_cast<std::int64_t>(GetAppTimeSeconds() * 1000.0);
+				acp_json["idleShutdownAtMs"] = app_epoch_ms +
+				    static_cast<std::int64_t>(*idle_deadline * 1000.0);
+				acp_json["idleShutdownTimeoutSeconds"] = app.settings.cli_idle_timeout_seconds;
+			}
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
 			const std::optional<AcpPendingUserInputState> uam_control_approval =
 				UamControlService::PendingApprovalForChat(app, chat.id);

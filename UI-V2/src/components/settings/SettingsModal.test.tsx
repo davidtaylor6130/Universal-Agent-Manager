@@ -195,7 +195,7 @@ describe('SettingsModal memory settings', () => {
       }
     }
     const { host, root } = renderModal()
-    openDefaultsSection(host)
+    act(() => (host.querySelector('button[aria-label="Phone Access"]') as HTMLButtonElement).click())
 
     await act(async () => {})
     expect(host.textContent).toContain('https://phone.example/companion')
@@ -710,7 +710,7 @@ describe('SettingsModal memory settings', () => {
     search('no-such-setting')
     expect(host.textContent).toContain('No settings found.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Clear settings search"]')!.click())
-    expect(host.querySelectorAll('nav button')).toHaveLength(16)
+    expect(host.querySelectorAll('nav button')).toHaveLength(17)
     act(() => root.unmount())
     host.remove()
   })
@@ -778,7 +778,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Memory Store')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     act(() => {
       root.unmount()
@@ -1185,7 +1185,7 @@ describe('SettingsModal memory settings', () => {
     openMemorySettingsSection(host)
 
     expect(host.querySelector('[aria-label="Memory Workers"]')).toBeTruthy()
-    expect(host.textContent).toContain('Gemini memory worker')
+    expect(host.textContent).toContain('Gemini chats')
     expect(host.textContent).toContain('Default')
     expect(host.textContent).not.toContain('CLI default')
     expect(host.textContent).not.toContain('Build and release information')
@@ -1194,7 +1194,7 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelector('[aria-label="Search memory library"]')).toBeTruthy()
     expect(host.textContent).not.toContain('Memory Backfill')
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     const aboutSectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('About')
@@ -1207,7 +1207,7 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
     expect(host.textContent).toContain(`V${packageVersion}`)
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     act(() => {
       root.unmount()

@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { IconButton } from '../ui'
+import { EXIT_MS, IconButton } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -433,7 +433,14 @@ function ToolCallDetails({
     ? [...contentPages].sort((left, right) => left.offset - right.offset).map(page => page.content).join('')
     : shouldLoadContent ? '' : tool.content)
   const [tab, setTab] = useState('Output')
-  const dialogRef = useToolQuestionDialog(onClose)
+  const [closing, setClosing] = useState(false)
+  // Play the exit animation before the parent unmounts the dialog.
+  const requestClose = useCallback(() => {
+    if (typeof window.matchMedia !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { onClose(); return }
+    setClosing(true)
+    window.setTimeout(onClose, EXIT_MS)
+  }, [onClose])
+  const dialogRef = useToolQuestionDialog(requestClose)
   const outputRef = useRef<HTMLPreElement>(null)
   const id = useId()
   const tabs = transcriptChatId ? ['Output', 'Details', 'Transcript'] : ['Output', 'Details']
@@ -564,14 +571,21 @@ function ToolCallDetails({
   }
 
   return createPortal(
-    <div className="tool-details-backdrop" style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
-      onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="tool-details-backdrop" data-state={closing ? 'closed' : 'open'} style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
+      onMouseDown={event => { if (event.target === event.currentTarget) requestClose() }}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} className="uam-tool-modal tool-details-dialog">
         <header className="tool-details-header">
-          <ToolStatusIcon status={tool.status} />
-          <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
+          <span className="tool-details-icon"><ToolStatusIcon status={tool.status} /></span>
+          <div className="tool-details-heading">
+            <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
+            <div className="tool-details-subtitle">
+              {toolDisplayKind(tool) && <span className="tool-details-chip">{toolDisplayKind(tool)}</span>}
+              {tool.status && <span className="tool-details-chip" data-status={tool.status}>{tool.status.replace(/_/g, ' ')}</span>}
+              {tool.isSubAgent && <span>{tool.subAgentTitle || 'Sub-agent'}</span>}
+            </div>
+          </div>
           <CopyTextButton text={toolCopyText} label="Copy loaded output" title="Copy loaded output" />
-          <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={onClose} />
+          <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={requestClose} />
         </header>
         <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
           {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}

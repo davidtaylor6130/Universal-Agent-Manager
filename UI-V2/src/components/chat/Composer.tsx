@@ -2,7 +2,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check, Paperclip, ChevronRight } from 'lucide-react'
 import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -416,7 +416,7 @@ export function ComposerToolbar({
           aria-expanded={optionsOpen}
           aria-controls={optionsOpen ? optionsMenuId : undefined}
           onClick={() => setOptionsOpen((v) => !v)}
-          className="uam-composer-action inline-flex items-center"
+          className="uam-composer-action uam-composer-plus inline-flex items-center"
           style={{
             ...iconChipStyle,
             color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
@@ -434,176 +434,87 @@ export function ComposerToolbar({
             role="menu"
             aria-label="Composer options"
             onRequestClose={() => setOptionsOpen(false)}
-            className="flex flex-col gap-1.5 animate-fade-in"
-            style={{
-              minWidth: 210, padding: 8,
-              border: '1px solid var(--border-bright)', borderRadius: 8,
-              background: 'var(--surface)', boxShadow: 'var(--elev-3)',
-            }}
+            className="uam-cmenu"
           >
-            {!isCompanionContext() && <button
-              type="button"
-              role="menuitem"
-              title="Attach files to the next message"
-              onClick={() => { setOptionsOpen(false); onAttachFile() }}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle }}
-            >
-              <Plus size={13} aria-hidden />
-              <span>Attach files</span>
-            </button>}
+            {!isCompanionContext() && <>
+              <button type="button" role="menuitem" className="uam-cmenu__item" title="Attach files to the next message" onClick={() => { setOptionsOpen(false); onAttachFile() }}>
+                <Paperclip size={15} aria-hidden className="uam-cmenu__icon" />
+                <span className="uam-cmenu__text"><span>Attach files</span><small>Add files to the next message</small></span>
+              </button>
+              <button type="button" role="menuitem" className="uam-cmenu__item" title="Open Skills" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
+                <span className="uam-cmenu__icon"><ComposerIcon name="markdown" /></span>
+                <span className="uam-cmenu__text"><span>Skills</span><small>Insert a saved prompt</small></span>
+                <ChevronRight size={14} aria-hidden className="uam-cmenu__trail" />
+              </button>
+              <div className="uam-cmenu__divider" />
+            </>}
+            <div className="uam-cmenu__section">Modes</div>
             <button
               type="button"
               role="menuitem"
+              className="uam-cmenu__item"
+              data-on={goalActive || goalArmed}
               title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
               aria-pressed={goalActive || goalArmed}
+              disabled={modelDisabled}
               onClick={() => { setOptionsOpen(false); onToggleGoal() }}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 55%, var(--border))' : 'var(--border)', background: goalActive || goalArmed ? 'color-mix(in srgb, var(--purple) 16%, var(--surface))' : chipStyle.background, color: goalActive || goalArmed ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
             >
-              <Target size={13} aria-hidden style={{ color: goalActive || goalArmed ? 'var(--purple)' : 'var(--text-3)' }} />
-              <span>{goalArmed ? 'Goal: next message' : 'Goal'}</span>
+              <Target size={15} aria-hidden className="uam-cmenu__icon" style={{ color: goalActive || goalArmed ? 'var(--purple)' : undefined }} />
+              <span className="uam-cmenu__text"><span>{goalArmed ? 'Goal: next message' : 'Goal'}</span><small>{goalActive ? 'Running · click to pause' : goalPaused ? 'Paused · click to resume' : 'Keep working until a goal is met'}</small></span>
+              <span className="uam-cmenu__pill" data-on={goalActive || goalArmed}>{goalActive || goalArmed ? 'On' : 'Off'}</span>
             </button>
-            <label className="grid gap-1 px-1 py-1 text-xs">
-              <span style={{ color: 'var(--text-3)' }}>Goal token budget</span>
+            <label className="uam-cmenu__setting uam-cmenu__setting--nested" aria-label="Goal token budget">
+              <span>Token budget</span>
               <input
                 type="number"
                 min={0}
                 value={defaultGoalTokenBudget || ''}
                 placeholder="Unlimited"
                 onChange={(event) => onSetDefaultGoalTokenBudget(parseInt(event.target.value || '0', 10))}
-                className="w-full px-2 py-1 text-xs"
-                style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
+                className="uam-field w-full text-right"
+                style={{ height: 28 }}
               />
             </label>
             {!isCompanionContext() && <button
               type="button"
               role="menuitem"
+              className="uam-cmenu__item"
+              data-on={computerUseMode}
               title={computerUseMode ? 'Turn off computer use' : 'Turn on computer use'}
               aria-pressed={computerUseMode}
               onClick={() => { setOptionsOpen(false); onToggleComputerUseMode() }}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: computerUseMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: computerUseMode ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : chipStyle.background, color: computerUseMode ? 'var(--text)' : 'var(--text-2)' }}
             >
-              <MousePointer2 size={13} aria-hidden style={{ color: computerUseMode ? 'var(--accent)' : 'var(--text-3)' }} />
-              <span>Computer use…</span>
+              <MousePointer2 size={15} aria-hidden className="uam-cmenu__icon" style={{ color: computerUseMode ? 'var(--accent)' : undefined }} />
+              <span className="uam-cmenu__text"><span>Computer use…</span><small>Let the agent see and control an app</small></span>
+              <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? 'On' : 'Off'}</span>
             </button>}
-            {(hasReasoningEffort || caps.hasServiceTier || variantOptions.length > 0) && (
-              <>
-                <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Model</div>
-                {hasReasoningEffort && (
-                  <MenuSelect
-                    label="Reasoning"
-                    value={currentReasoning.id}
-                    options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
-                    onChange={onSelectReasoning}
-                    disabled={modelDisabled}
-                  />
-                )}
-                {caps.hasServiceTier && (
-                  <MenuSelect
-                    label="Speed"
-                    value={currentSpeed.id}
-                    options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
-                    onChange={onSelectSpeed}
-                    disabled={modelDisabled}
-                  />
-                )}
-                {variantOptions.map((option) => (
-                  <div key={option.id} className="grid gap-1">
-                    <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{option.name || option.id}</div>
-                    <MenuSelect
-                      label={option.name || option.id}
-                      value={option.currentValue}
-                      options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))}
-                      onChange={(value) => onSelectConfigOption(option.id, value)}
-                      disabled={modelDisabled}
-                    />
-                  </div>
-                ))}
-              </>
-            )}
-            {featurePreference === 'uam' && <>
-			  <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-			  <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>UAM agent</div>
-			  <MenuSelect
-				label={uamAgentNextTurn ? "Next turn agent" : "UAM agent"}
-				value={uamAgentId}
-				options={uamAgents.map((agent) => ({
-				  value: agent.id,
-				  label: agent.name,
-				  description: agent.description,
-				  icon: permissionModeIcon(agent.id === 'plan' ? 'plan' : 'default'),
-				}))}
-				onChange={onSelectUamAgent}
-			  />
-			</>}
-			{featurePreference === 'provider' && providerModes.length > 0 && <>
-			  <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-			  <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Provider mode</div>
-			  <MenuSelect
-				label="Provider mode"
-				value={providerModeId ?? 'default'}
-				options={providerModes.map((mode) => ({
-				  value: mode.id,
-				  label: mode.name,
-				  description: mode.description,
-				  icon: permissionModeIcon(mode.id),
-				}))}
-				onChange={onSelectProviderMode}
-				disabled={modelDisabled}
-			  />
-			</>}
-			<div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <div className="px-1 pb-0.5 text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Permissions</div>
-            <MenuSelect
-              label="Permissions"
-              value={permissionModeId}
-              options={permissionModes.map((mode) => ({
-                value: mode.id,
-                label: mode.name,
-                description: mode.description,
-                icon: permissionModeIcon(mode.id),
-              }))}
-              onChange={onSelectPermissionMode}
-              disabled={!permissionsManagedByUam || permissionControlsDisabled}
-            />
-            <div className="mt-1 border-t" style={{ borderColor: 'var(--border)' }} />
-            <MenuSelect
-              label="Memory"
-              value={memoryLevel}
-              options={MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: `Memory ${option.label}`, description: option.detail }))}
-              onChange={(level) => onSelectMemoryLevel(level as MemoryLevel)}
-              disabled={memoryDisabled}
-            />
             {featurePreference === 'uam' && <button
               type="button"
               role="menuitem"
+              className="uam-cmenu__item"
+              data-on={smallModelMode}
               title="Plan first, then run and review one verified step at a time"
               aria-pressed={smallModelMode}
               onClick={onToggleSmallModelMode}
               disabled={modelDisabled}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle, borderColor: smallModelMode ? 'color-mix(in srgb, var(--accent) 55%, var(--border))' : 'var(--border)', background: smallModelMode ? 'var(--accent-dim)' : chipStyle.background, color: smallModelMode ? 'var(--text)' : 'var(--text-2)', opacity: modelDisabled ? 0.55 : 1 }}
             >
-              <Cpu size={13} aria-hidden />
-              <span>Architect + worker {smallModelMode ? 'on' : 'off'}</span>
+              <Cpu size={15} aria-hidden className="uam-cmenu__icon" style={{ color: smallModelMode ? 'var(--accent)' : undefined }} />
+              <span className="uam-cmenu__text"><span>Architect + worker</span><small>Plan, then run and review step by step</small></span>
+              <span className="uam-cmenu__pill" data-on={smallModelMode}>{smallModelMode ? 'On' : 'Off'}</span>
             </button>}
-            {featurePreference === 'uam' && smallModelMode && (
-              <div className="grid gap-2">
-                <div className="grid gap-1">
-                  <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{goalPairLocked ? 'Worker model · locked for active Goal' : 'Worker model'}</div>
-                  <MenuSelect
-                    label="Worker model"
-                    value={currentModel.id}
-                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
-                    onChange={onSelectModel}
-                    disabled={modelDisabled}
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <div className="px-1 text-xs" style={{ color: 'var(--text-3)' }}>{goalPairLocked ? 'Reviewer model · locked for active Goal' : 'Reviewer model'}</div>
+            {featurePreference === 'uam' && smallModelMode && <>
+              <div className="uam-cmenu__setting uam-cmenu__setting--nested">
+                <span>{goalPairLocked ? 'Worker · locked' : 'Worker model'}</span>
+                <MenuSelect
+                  label="Worker model"
+                  value={currentModel.id}
+                  options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  onChange={onSelectModel}
+                  disabled={modelDisabled}
+                />
+              </div>
+              <div className="uam-cmenu__setting uam-cmenu__setting--nested">
+                <span>{goalPairLocked ? 'Reviewer · locked' : 'Reviewer model'}</span>
                 <MenuSelect
                   label="Reviewer model"
                   value={currentReviewerModel.id}
@@ -611,20 +522,104 @@ export function ComposerToolbar({
                   onChange={onSelectReviewerModel}
                   disabled={modelDisabled}
                 />
-                </div>
+              </div>
+            </>}
+            <div className="uam-cmenu__divider" />
+            <div className="uam-cmenu__section">This chat</div>
+            {hasReasoningEffort && (
+              <div className="uam-cmenu__setting">
+                <span>Reasoning</span>
+                <MenuSelect
+                  label="Reasoning"
+                  value={currentReasoning.id}
+                  options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  onChange={onSelectReasoning}
+                  disabled={modelDisabled}
+                />
               </div>
             )}
-            {!isCompanionContext() && <button
-              type="button"
-              role="menuitem"
-              title="Open Skills"
-              onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}
-              className="uam-choice-button inline-flex items-center gap-1.5 px-2 w-full justify-start"
-              style={{ ...chipStyle }}
-            >
-              <ComposerIcon name="markdown" />
-              <span>Skills</span>
-            </button>}
+            {caps.hasServiceTier && (
+              <div className="uam-cmenu__setting">
+                <span>Speed</span>
+                <MenuSelect
+                  label="Speed"
+                  value={currentSpeed.id}
+                  options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  onChange={onSelectSpeed}
+                  disabled={modelDisabled}
+                />
+              </div>
+            )}
+            {variantOptions.map((option) => (
+              <div key={option.id} className="uam-cmenu__setting">
+                <span className="truncate">{option.name || option.id}</span>
+                <MenuSelect
+                  label={option.name || option.id}
+                  value={option.currentValue}
+                  options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))}
+                  onChange={(value) => onSelectConfigOption(option.id, value)}
+                  disabled={modelDisabled}
+                />
+              </div>
+            ))}
+            {featurePreference === 'uam' && (
+              <div className="uam-cmenu__setting">
+                <span>{uamAgentNextTurn ? 'Next turn' : 'Agent'}</span>
+                <MenuSelect
+                  label={uamAgentNextTurn ? "Next turn agent" : "UAM agent"}
+                  value={uamAgentId}
+                  options={uamAgents.map((agent) => ({
+                    value: agent.id,
+                    label: agent.name,
+                    description: agent.description,
+                    icon: permissionModeIcon(agent.id === 'plan' ? 'plan' : 'default'),
+                  }))}
+                  onChange={onSelectUamAgent}
+                />
+              </div>
+            )}
+            {featurePreference === 'provider' && providerModes.length > 0 && (
+              <div className="uam-cmenu__setting">
+                <span>Mode</span>
+                <MenuSelect
+                  label="Provider mode"
+                  value={providerModeId ?? 'default'}
+                  options={providerModes.map((mode) => ({
+                    value: mode.id,
+                    label: mode.name,
+                    description: mode.description,
+                    icon: permissionModeIcon(mode.id),
+                  }))}
+                  onChange={onSelectProviderMode}
+                  disabled={modelDisabled}
+                />
+              </div>
+            )}
+            <div className="uam-cmenu__setting">
+              <span>Permissions</span>
+              <MenuSelect
+                label="Permissions"
+                value={permissionModeId}
+                options={permissionModes.map((mode) => ({
+                  value: mode.id,
+                  label: mode.name,
+                  description: mode.description,
+                  icon: permissionModeIcon(mode.id),
+                }))}
+                onChange={onSelectPermissionMode}
+                disabled={!permissionsManagedByUam || permissionControlsDisabled}
+              />
+            </div>
+            <div className="uam-cmenu__setting">
+              <span>Memory</span>
+              <MenuSelect
+                label="Memory"
+                value={memoryLevel}
+                options={MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                onChange={(level) => onSelectMemoryLevel(level as MemoryLevel)}
+                disabled={memoryDisabled}
+              />
+            </div>
           </ViewportMenu>
         )}
       </div>

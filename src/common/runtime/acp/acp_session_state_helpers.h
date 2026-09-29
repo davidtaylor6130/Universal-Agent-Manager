@@ -3,6 +3,7 @@
 #include "common/state/app_state.h"
 
 #include <algorithm>
+#include <optional>
 
 namespace uam
 {
@@ -70,6 +71,25 @@ inline bool AcpSessionHasDeferredUserQueueOnly(const AcpSessionState& session)
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)
 {
 	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session);
+}
+
+inline std::optional<double> AcpIdleShutdownDeadlineSeconds(
+    const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	if (!session.running || !session.session_ready || session.lifecycle_state != "ready" ||
+	    session.model_discovery_only || session.reconnect_pending ||
+	    session.recovering_remote_turn || session.recovering_remote_process ||
+	    session.remote_stop_pending || session.remote_stop_unconfirmed ||
+	    !session.managed_agent_run_id.empty() || session.goal_review_scheduled ||
+	    AcpSessionHasBlockingRuntimeWork(session) ||
+	    chat.remote_turn_reconnect_pending || chat.remote_restart_pending ||
+	    chat.remote_stop_cleanup_pending || !chat.acp_queued_prompts.empty() ||
+	    !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() ||
+	    !chat.remote_prompt_delivery_id.empty() || session.last_runtime_activity_time_s <= 0.0)
+	{
+		return std::nullopt;
+	}
+	return session.last_runtime_activity_time_s + app.settings.cli_idle_timeout_seconds;
 }
 
 } // namespace uam
