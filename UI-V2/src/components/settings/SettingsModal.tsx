@@ -32,7 +32,7 @@ import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/ses
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Search, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
 import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
@@ -121,7 +121,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'phone-access' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -158,21 +158,42 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
+  { id: 'phone-access', label: 'Phone Access', icon: Smartphone },
   { id: 'about', label: 'About', icon: Info },
 ]
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
-  { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
+  { label: 'General', sections: ['appearance', 'defaults', 'voice-input', 'phone-access'] },
   { label: 'Providers', sections: ['cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
   { label: 'Security', sections: ['computer-use'] },
   { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
+const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
+  appearance: 'Theme, sidebar and how agent activity is shown.',
+  defaults: 'Default provider, reviewer and per-provider chat settings.',
+  'voice-input': 'Dictation for the message box.',
+  'cli-version': 'Installed provider CLIs and their versions.',
+  agents: 'Agent favourites and the shortcut that cycles between them.',
+  'remote-hosts': 'Computers that can run workspaces over SSH.',
+  'mcp-servers': 'Model Context Protocol servers available to agents.',
+  'computer-use': 'Which apps agents may see and control.',
+  editors: 'Which editor opens each kind of file.',
+  'shell-actions': 'Finder and Explorer actions for workspaces.',
+  'memory-settings': 'What gets remembered between chats, and which models do it.',
+  'memory-store': 'Browse, add and remove saved memories.',
+  'markdown-store': 'Reusable prompts you can insert with a slash command.',
+  'goal-loops': 'Limits for long-running goal mode.',
+  'chat-data': 'Export and manage stored chats.',
+  'phone-access': 'Use UAM from your phone on the same network.',
+  about: 'Version and build information.',
+}
+
 
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
-  defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode',
+  defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents instructions import providers codex gemini claude copilot opencode',
   'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
   'remote-hosts': 'computers ssh connections hosts runners servers install',
@@ -186,6 +207,7 @@ const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
   editors: 'editors extensions associations groups default vscode clion',
   'shell-actions': 'finder explorer context menus shell actions groups save',
   'chat-data': 'chat data history storage import export backup',
+  'phone-access': 'phone mobile companion tablet remote access token url network',
   about: 'version build release updates app information',
 }
 
@@ -257,8 +279,13 @@ function versionStatusText(manager: CliVersionProviderState) {
   return 'Version has not been checked'
 }
 
-function SectionCard({ title, children }: { title: string; children: ReactNode }) {
-  return <section aria-label={title} className="pb-4">{children}</section>
+function SectionCard({ title, children, hideTitle = false }: { title: string; children: ReactNode; hideTitle?: boolean }) {
+  return (
+    <section aria-label={title} className="uam-settings-group">
+      {!hideTitle && <h3 className="uam-settings-group__title">{title}</h3>}
+      <div className="uam-settings-group__body">{children}</div>
+    </section>
+  )
 }
 
 function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, togglePosition = 'left' }: {
@@ -273,19 +300,17 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
   actions?: ReactNode
   togglePosition?: 'left' | 'right'
 }) {
-  return <div className="py-3" style={{borderBottom:'1px solid var(--border)'}}>
-    <div className="flex items-center gap-2">
-      {togglePosition === 'left' && <>
-      <IconButton size="sm" icon={<ChevronRight size={14} className={expanded ? 'rotate-90' : undefined}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle} style={{border:'1px solid var(--border)',background:'var(--surface-up)'}}/>
-      </>}
+  const chevron = <IconButton size="sm" className="uam-disclosure-row__toggle" icon={<ChevronRight size={14}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle}/>
+  return <div className="uam-disclosure-row" data-expanded={expanded}>
+    <div className="uam-disclosure-row__header">
+      {togglePosition === 'left' && chevron}
       {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId}/> : null)}
-      <span className="min-w-0 flex-1 text-sm truncate">{title}</span>
+      {/* Clicking the name also toggles; the chevron stays the keyboard control. */}
+      <span className="min-w-0 flex-1 cursor-pointer select-none truncate text-sm" onClick={onToggle}>{title}</span>
       {actions}
-      {togglePosition === 'right' && <>
-      <IconButton size="sm" icon={<ChevronRight size={14} className={expanded ? 'rotate-90' : undefined}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle} style={{border:'1px solid var(--border)',background:'var(--surface-up)'}}/>
-      </>}
+      {togglePosition === 'right' && chevron}
     </div>
-    {expanded && <div id={panelId} className="mt-3 pt-3" style={{borderTop:'1px solid var(--border)'}}>{children}</div>}
+    {expanded && <div id={panelId} className="uam-disclosure-row__panel uam-reveal">{children}</div>}
   </div>
 }
 
@@ -984,7 +1009,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     } catch { setMcpMessage('MCP server configuration could not be saved. Try again.') }
     finally { mcpSavePending.current = false; setMcpSaving(false) }
   }
-  const renderMcpSave = () => <IconButton icon={<Save size={15}/>} label="Save MCP server configuration" disabled={mcpSaving} aria-busy={mcpSaving || undefined} onClick={() => { const servers = parseMcpDraft(); if (servers) void saveMcpConfiguration(servers) }}/>
+  const renderMcpSave = () => <Button size="sm" variant={mcpDraftDirty ? "primary" : "secondary"} leadingIcon={<Save size={14}/>} aria-label="Save MCP server configuration" loading={mcpSaving} onClick={() => { const servers = parseMcpDraft(); if (servers) void saveMcpConfiguration(servers) }}>Save</Button>
   const configureBrowserControl = () => {
     const configured = parseMcpDraft()
     if (!configured || !mcpWorkspace.trim() || !mcpExecutable.trim()) return
@@ -1000,9 +1025,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderAddEditor = () => (
-              <IconButton
-                icon={<Plus size={15} />}
-                label="Add editor group"
+              <Button
+                leadingIcon={<Plus size={14} />}
+                aria-label="Add editor group"
                 size="sm"
                 disabled={editorSaving}
                 onClick={() => {
@@ -1019,7 +1044,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
                   saveEditorSettings(nextAssociations)
                 }}
-              />
+              >Add group</Button>
   )
 
   const renderThemeEditor = () => themeDraft ? (
@@ -1186,7 +1211,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusy(false)
   }
   useEffect(() => {
-    if (selectedSection === 'defaults') void loadCompanionSettings()
+    if (selectedSection === 'phone-access') void loadCompanionSettings()
   }, [selectedSection])
   const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
     if (computerUseSaveInFlight.current) return
@@ -1205,25 +1230,34 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setComputerUseSaveBusy(false)
     }
   }
-  const renderPhoneAccess = () => <SectionCard title="Phone Access">
-    <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
+  const renderPhoneAccess = () => <div>
+    <SectionCard title="Access">
       <Switch
         label="Enable phone access"
+        description={companionSettings?.configured ? 'Open the companion URL on a phone or tablet on your network.' : 'Phone access is not configured.'}
         checked={Boolean(companionSettings?.enabled)}
         disabled={!companionSettings?.configured || companionBusy}
         onChange={(event) => void setCompanionEnabled(event.target.checked)}
       />
-      <p style={{ color: 'var(--text-3)' }}>
-        {companionSettings?.configured ? 'Use the companion URL from another device on your network.' : 'Phone access is not configured.'}
-      </p>
-      {companionSettings?.url && <div className="flex flex-wrap items-center justify-between gap-2 border-b py-2" style={{ borderColor: 'var(--border)' }}><span>URL</span><code className="break-all">{companionSettings.url}</code></div>}
-      <div className="flex flex-wrap items-center gap-2 pt-1">
-        <Button size="sm" variant="secondary" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanionToken()}><Copy size={14}/> Copy token</Button>
-        <span style={{ color: 'var(--text-3)' }}>Restart UAM after changing access.</span>
+      {companionSettings?.restartRequired && <p className="text-xs" style={{ color: 'var(--warning)' }}>Restart UAM after changing access.</p>}
+    </SectionCard>
+    <SectionCard title="Connect a device">
+      <div className="uam-settings-row">
+        <div className="min-w-0">
+          <div className="text-sm" style={{ color: 'var(--text)' }}>Companion URL</div>
+          <code className="block truncate text-xs" style={{ color: 'var(--text-2)' }}>{companionSettings?.url || 'Not available yet'}</code>
+        </div>
       </div>
-      {companionMessage && <div role="status" style={{ color: 'var(--text-2)' }}>{companionMessage}</div>}
-    </div>
-  </SectionCard>
+      <div className="uam-settings-row">
+        <div className="min-w-0">
+          <div className="text-sm" style={{ color: 'var(--text)' }}>Connection token</div>
+          <div className="text-xs" style={{ color: 'var(--text-3)' }}>Paste it into the phone when asked. Keep it private.</div>
+        </div>
+        <Button size="sm" variant="secondary" leadingIcon={<Copy size={14}/>} disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanionToken()}>Copy token</Button>
+      </div>
+      {companionMessage && <div role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>{companionMessage}</div>}
+    </SectionCard>
+  </div>
 
   const renderComputerUse = () => {
     const activeSession = sessions.find((session) => session.id === activeSessionId)
@@ -1258,8 +1292,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
               }).finally(() => setComputerUseBusy(false))
             }}
-            className="w-full rounded-md px-3 py-2"
-            style={{ border: '1px solid var(--border)', background: 'var(--surface-up)', color: 'var(--text)' }}
+            className="uam-field uam-field--select w-full"
           >
             <option value="auto">Automatic (recommended)</option>
             <option value="provider" disabled={!activeComputerUseProviderAvailable}>Provider built-in</option>
@@ -1337,7 +1370,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return (
         <div className="space-y-4">
           <SectionCard
-            title="Appearance"
+            title="Theme"
           >
             <div className="flex flex-wrap items-end gap-2">
               <div className="grid gap-1 text-xs min-w-40 flex-1" style={{ color: 'var(--text-2)' }}>
@@ -1380,11 +1413,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <div className="grid gap-3">
               <Switch
                 label="Show provider icons in sidebar"
+                description="Show which agent each chat runs on."
                 checked={showProviderIconsInSidebar}
                 onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar: event.target.checked, showWorktreePathInSidebar })}
               />
               <Switch
                 label="Show worktree path in sidebar"
+                description="Show a chat's isolated worktree folder under its name."
                 checked={showWorktreePathInSidebar}
                 onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar, showWorktreePathInSidebar: event.target.checked })}
               />
@@ -1393,16 +1428,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SectionCard title="Chat activity">
             <Switch
               label="Compact working"
+                description="Condense tool activity while an agent is working."
               checked={workingDisplayMode === 'compact'}
               onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')}
             />
             <Switch
               label="Expand work traces"
+                description="Open each turn's tool and reasoning trace by default."
               checked={expandWorkTraces}
               onChange={(event) => setExpandWorkTraces(event.target.checked)}
             />
             <Switch
               label="Allow work sections to collapse"
+                description="Let finished work sections fold away."
               checked={collapsibleWorkSections}
               onChange={(event) => setCollapsibleWorkSections(event.target.checked)}
             />
@@ -1680,7 +1718,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             </div>
           </SectionCard>
-          {renderPhoneAccess()}
         </div>
       )
     }
@@ -1799,6 +1836,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Import provider agent"
           >
             <div className="grid gap-3">
+              <p className="text-xs" style={{ color: 'var(--text-3)' }}>Turn an agent defined for another CLI into a UAM agent.</p>
+              <span className="uam-inline-form__label" style={{ marginBottom: -8 }}>Source provider</span>
               <MenuSelect
                 label="Source provider"
                 value={agentImportProvider}
@@ -2157,14 +2196,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 return (
                   <div
                     key={provider.id}
-                    className="grid gap-2 rounded-lg p-3 text-xs"
-                    style={{
-                      color: 'var(--text-2)',
-                      background: 'var(--surface)',
-                      border: '1px solid var(--border)',
-                    }}
+                    className="uam-memory-worker-row text-xs"
+                    style={{ color: 'var(--text-2)' }}
                   >
-                    <div>{providerDisplayName(provider, provider.id)} memory worker</div>
+                    <div className="min-w-0">
+                      <div className="text-sm" style={{ color: 'var(--text)' }}>{providerDisplayName(provider, provider.id)} chats</div>
+                      <div style={{ color: 'var(--text-3)' }}>Memory worker and model</div>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div className="relative">
                         <button
@@ -2353,11 +2391,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
+    if (selectedSection === 'phone-access') return renderPhoneAccess()
+
     if (selectedSection === 'voice-input') {
       return (
-        <SectionCard title="Voice Input">
-          <div role="status" className="rounded-lg p-3 text-xs" style={{ color: 'var(--text-2)', background: 'var(--surface)', border: '1px solid var(--border)' }}>
-            Dictation stays on the native system speech service. Start it with the microphone button in the composer.
+        <SectionCard title="Dictation">
+          <div role="status" className="flex items-start gap-3">
+            <span className="uam-settings-icon" aria-hidden><Mic size={16} /></span>
+            <div className="min-w-0 text-xs leading-5" style={{ color: 'var(--text-2)' }}>
+              <div className="text-sm" style={{ color: 'var(--text)' }}>System speech recognition</div>
+              Dictation stays on the native system speech service. Start it with the microphone button in the composer.
+            </div>
           </div>
         </SectionCard>
       )
@@ -2365,10 +2409,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
-      <details className="shrink-0">
-        <summary className="cursor-pointer text-xs py-2">Skills folder</summary>
-        <div className="flex items-center gap-2">
-          <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="min-w-0 flex-1 text-xs" style={{border:'1px solid var(--border)',borderRadius:8,background:'var(--bg)',color:'var(--text)',padding:'8px 10px'}}/>
+      <details className="uam-skill-folder shrink-0">
+        <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/><FolderOpen size={14} aria-hidden style={{color:'var(--text-3)'}}/><span>Skills folder</span><span className="min-w-0 truncate" style={{color:'var(--text-3)',fontFamily:'var(--font-mono)',fontSize:'var(--fs-xs)'}}>{markdownStoreDirectory || 'Not set'}</span></summary>
+        <div className="flex items-center gap-2 pt-2 pl-6">
+          <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="uam-field min-w-0 flex-1"/>
           <IconButton icon={<FolderOpen size={15}/>} label="Browse for Skills directory" onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) setMarkdownStoreDraftDirectory(selected) })}/>
           <IconButton icon={<Save size={15}/>} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}/>
         </div>
@@ -2520,15 +2564,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'mcp-servers') {
       const browserConfigured = mcpServers.some(server => server.enabled && server.transport === 'stdio' && workspaceKey(server.workspaceDirectory) === workspaceKey(mcpWorkspace) && server.args.some(arg => /^@playwright\/mcp(?:@|$)/.test(arg)))
-      return <div className="grid gap-4">
-        <div className="text-sm">Browser control</div>
-        <input aria-label="Browser control workspace directory" placeholder="Workspace directory" value={mcpWorkspace} disabled={mcpSaving} onChange={event => { setMcpWorkspace(event.currentTarget.value); setBrowserSetupSaved(false) }} className="rounded-lg px-3 py-2 text-sm" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+      return <div>
+        <SectionCard title="Browser control">
+        <p className="text-xs" style={{color:'var(--text-3)'}}>Give agents a Playwright browser for this workspace.</p>
+        <label className="uam-inline-form__label" htmlFor="uam-mcp-workspace" style={{marginBottom:-8}}>Workspace</label>
+        <input id="uam-mcp-workspace" aria-label="Browser control workspace directory" placeholder="Workspace directory" value={mcpWorkspace} disabled={mcpSaving} onChange={event => { setMcpWorkspace(event.currentTarget.value); setBrowserSetupSaved(false) }} className="uam-field w-full"/>
         <div>
           {providers.map(provider => {
             const supported = provider.supportsStructured !== false && ['gemini-acp','opencode-acp','copilot-acp'].includes(provider.structuredProtocol || providerMetadataForId(provider.id).structuredProtocol)
-            return <div key={provider.id} className="flex items-center gap-2 py-3 text-sm" style={{borderBottom:'1px solid var(--border)'}}>
-              <ProviderLogo providerId={provider.id}/><span className="flex-1">{providerDisplayName(provider,provider.id)}</span>
-              {!supported ? <span style={{color:'var(--text-3)'}}>Unavailable</span> : mcpSaving ? <span>Saving…</span> : browserConfigured ? <span>Configured</span> : <Button size="sm" aria-label={`Setup ${providerDisplayName(provider,provider.id)} browser control`} onClick={() => { setBrowserSetupProvider(provider.id); setBrowserSetupSaved(false); setMcpMessage('') }}>Setup</Button>}
+            return <div key={provider.id} className="uam-settings-row text-sm">
+              <span className="flex min-w-0 flex-1 items-center gap-2"><ProviderLogo providerId={provider.id}/><span>{providerDisplayName(provider,provider.id)}</span></span>
+              {!supported ? <span className="text-xs" style={{color:'var(--text-3)'}}>Not supported</span> : mcpSaving ? <span className="text-xs">Saving…</span> : browserConfigured ? <span className="uam-memory-chip" data-confidence="high">Configured</span> : <Button size="sm" aria-label={`Setup ${providerDisplayName(provider,provider.id)} browser control`} onClick={() => { setBrowserSetupProvider(provider.id); setBrowserSetupSaved(false); setMcpMessage('') }}>Setup</Button>}
             </div>
           })}
         </div>
@@ -2545,11 +2591,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           {browserSetupSaved && <Button size="sm" onClick={() => setBrowserSetupProvider(null)}>Done</Button>}
         </div>}
         {mcpMessage && <p role="status" className="text-xs">{mcpMessage}</p>}
-        <details>
-          <summary className="cursor-pointer py-2 text-sm">Advanced JSON</summary>
+        </SectionCard>
+        <SectionCard title="Advanced">
+        <details className="uam-skill-folder">
+          <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/>Edit server configuration as JSON</summary>
           <textarea aria-label="MCP server configuration" value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
-          <p className="text-xs">Use absolute workspace and executable paths. HTTP and SSE must use localhost. Reference secrets by environment-variable name. Changes apply to the next session.</p>
+          <p className="text-xs" style={{color:'var(--text-3)'}}>Use absolute workspace and executable paths. HTTP and SSE must use localhost. Reference secrets by environment-variable name. Changes apply to the next session.</p>
         </details>
+        </SectionCard>
       </div>
     }
 
@@ -2646,33 +2695,36 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
                   const active = selectedSection === section.id
                   const SectionIcon = section.icon
-                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-choice-button w-full flex items-center gap-2 text-left px-2 py-2" style={{background:active?'var(--surface-up)':'transparent',border:'none',color:active?'var(--text)':'var(--text-2)'}}><SectionIcon size={15} className="shrink-0" aria-hidden/><span className="text-sm">{section.label}</span></button>
+                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}><SectionIcon size={15} className="shrink-0" aria-hidden/><span className="text-sm">{section.label}</span></button>
                 })}
               </div>)}
             </nav>
           </aside>
           <div className="min-w-0 min-h-0 flex flex-col p-5 md:p-6 overflow-hidden">
-            <div className="w-full mx-auto min-h-0 flex-1 flex flex-col" style={{maxWidth: !themeDraft && (selectedSection === 'memory-store' || selectedSection === 'markdown-store') ? 1040 : 800}}>
+            <div className="w-full mx-auto min-h-0 flex-1 flex flex-col" style={{maxWidth: 1040}}>
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
                 {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
-                <div className="flex items-center justify-between gap-3 mb-5">
-                  <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
+                <div className="flex items-start justify-between gap-3 mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
+                  <div key={selectedSection} className="uam-reveal min-w-0">
+                    <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
+                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="mt-0.5 text-xs" style={{color:'var(--text-3)'}}>{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
+                  </div>
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                     {selectedSection === 'editors' && renderAddEditor()}
                     {selectedSection === 'mcp-servers' && renderMcpSave()}
                   </div>
                 </div>
-                <div key={selectedSection} className={`flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto'}`}>{renderSectionContent()}</div>
+                <div key={selectedSection} className={`uam-settings-page flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto uam-settings-page--narrow'}`}>{renderSectionContent()}</div>
               </>}
             </div>
           </div>
         </div>
       </div>
-      {editorExit && <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
+      {editorExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
         <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="max-w-md p-5 space-y-4 rounded-xl" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
           <h2 className="text-sm font-semibold">Save editor changes?</h2>
           {editorError && <p role="alert" className="text-xs">{editorError}</p>}
@@ -2682,7 +2734,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           }}>Save</Button></div>
         </div>
       </div>}
-      {themeExit && <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
+      {themeExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
         <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="max-w-md rounded-xl p-5 space-y-4" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
           <h2 className="text-sm font-semibold">Save theme changes?</h2>
           <div className="flex gap-2"><Button autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button><Button disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button><Button disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button></div>
@@ -2690,7 +2742,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </div>
       </div>}
       {remotePreview && (
-		<div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
+		<div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
 		  <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
 			<div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
 			  <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
@@ -2727,7 +2779,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 		</div>
 	  )}
       {confirmDiscard && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
+        <div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
           <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
             <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Discard MCP changes?</div>
             <p className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
@@ -2739,7 +2791,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </div>
       )}
       {pendingDelete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
+        <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
           <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
             <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
             <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</div>

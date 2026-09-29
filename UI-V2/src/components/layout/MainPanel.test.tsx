@@ -117,7 +117,7 @@ describe('MainPanel', () => {
       root.render(<MainPanel />)
     })
 
-    expect(host.querySelectorAll('.uam-layout-button')).toHaveLength(3)
+    expect(host.querySelectorAll('.uam-layout-button')).toHaveLength(2)
     expect(host.querySelector('[data-testid="provider-badge-chat-1"] .lucide-chevron-down')).toBeNull()
 
     const chatButton = () => host.querySelector('button[aria-label="Chat view"]') as HTMLButtonElement
@@ -448,7 +448,7 @@ describe('MainPanel', () => {
 
     expect(host.querySelector('[data-testid="chat-grid-4"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid^="chat-pane-"]')).toHaveLength(1)
-    expect(Array.from(host.querySelectorAll('button')).filter((button) => button.textContent?.includes('Drag a chat here or select one'))).toHaveLength(3)
+    expect(host.querySelectorAll('[data-testid="empty-pane"]')).toHaveLength(3)
     const firstPane = host.querySelector('[data-testid="chat-pane-chat-1"]') as HTMLElement
     expect(firstPane.style.getPropertyValue('--pane-color')).toBe('#f97316')
     expect(firstPane.dataset.focused).toBe('false')
@@ -765,7 +765,7 @@ describe('MainPanel', () => {
     expect(useAppStore.getState().activeSessionId).toBeNull()
     expect(chatGridLeaves(readChatGridLayout().root).map((leaf) => leaf.sessionId)).toEqual(['', 'chat-2'])
     expect(host.querySelector('[data-testid="chat-grid-2"]')).toBeTruthy()
-    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent?.includes('Drag a chat here or select one'))).toBe(true)
+    expect(host.querySelector('[data-testid="empty-pane"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="chat-pane-chat-1"]')).toBeNull()
     expect(host.querySelector('[data-testid="chat-pane-chat-2"]')).toBeTruthy()
     expect(useAppStore.getState().messages['chat-1']).toBeUndefined()

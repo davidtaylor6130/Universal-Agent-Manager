@@ -6,7 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -492,6 +492,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     }
   }
 
+  const cancelAddFolder = () => {
+    setNewFolderName('')
+    setNewFolderDirectory('')
+    setNewFolderExecutionHostId('local')
+    setAddingFolder(false)
+  }
+
   const chooseNewFolderDirectory = async () => {
     const host = executionHosts.find((candidate) => candidate.id === newFolderExecutionHostId)
     if (host?.transport === 'ssh') {
@@ -501,6 +508,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     const selectedPath = await browseFolderDirectory(newFolderDirectory)
     if (selectedPath) {
       setNewFolderDirectory(selectedPath)
+      setNewFolderName((name) => name.trim() ? name : selectedPath.split(/[\\/]/).filter(Boolean).pop() ?? '')
     }
   }
 
@@ -851,26 +859,23 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {pendingBulkDeleteIds && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingBulkDeleteIds(null) }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingBulkDeleteIds.length} selected chats`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete selected chats?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              {pendingBulkDeleteIds.length} chats will be permanently deleted. This cannot be undone.
-              {bulkDeleteFailed && <div className="mt-2" role="alert" style={{ color: 'var(--red)' }}>The chats could not be deleted. A chat may still be running.</div>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button size="sm" onClick={() => setPendingBulkDeleteIds(null)}>Cancel</Button>
-              <Button size="sm" variant="danger" onClick={() => {
-                void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
-                  if (deleted) clearBulkSelection()
-                  else setBulkDeleteFailed(true)
-                })
-              }}>Delete chats</Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={Boolean(pendingBulkDeleteIds)}
+        title="Delete selected chats?"
+        label={`Delete ${pendingBulkDeleteIds?.length ?? 0} selected chats`}
+        confirmLabel="Delete chats"
+        error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
+        onCancel={() => setPendingBulkDeleteIds(null)}
+        onConfirm={() => {
+          if (!pendingBulkDeleteIds) return
+          void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
+            if (deleted) clearBulkSelection()
+            else setBulkDeleteFailed(true)
+          })
+        }}
+      >
+        {pendingBulkDeleteIds?.length ?? 0} chats will be permanently deleted. This cannot be undone.
+      </ConfirmDialog>
 
       {recoveryDialogOpen && (
         <WorkspaceFolderRecoveryModal
@@ -898,16 +903,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           </Notice>
         )}
         {addingFolder ? (
-          <div
-            className="rounded-md p-2 space-y-2"
-            style={{
-              background: 'var(--surface-up)',
-              border: '1px solid var(--border)',
-            }}
-          >
+          <div className="uam-inline-form uam-reveal" role="group" aria-label="New workspace">
+            <div className="uam-inline-form__title">New workspace</div>
             {executionHosts.length > 1 && (
               <div>
-                <label className="mb-1 block text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>Runs on</label>
+                <label className="uam-inline-form__label">Runs on</label>
                 <MenuSelect
                   label="Workspace computer"
                   value={newFolderExecutionHostId}
@@ -924,77 +924,53 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 />
               </div>
             )}
-            <input
-              autoFocus
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitAddFolder()
-                if (e.key === 'Escape') {
-                  setNewFolderName('')
-                  setNewFolderDirectory('')
-                  setNewFolderExecutionHostId('local')
-                  setAddingFolder(false)
-                }
-              }}
-              placeholder="Folder name"
-              className="w-full rounded px-2 py-1 text-xs outline-none"
-              style={{
-                background: 'var(--surface)',
-                color: 'var(--text)',
-                border: '1px solid var(--border)',
-                fontFamily: 'inherit',
-              }}
-            />
-            <div className="flex items-center gap-2">
+            <div>
+              <label className="uam-inline-form__label" htmlFor="uam-new-workspace-directory">Folder</label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  id="uam-new-workspace-directory"
+                  autoFocus
+                  value={newFolderDirectory}
+                  onChange={(e) => setNewFolderDirectory(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitAddFolder()
+                    if (e.key === 'Escape') cancelAddFolder()
+                  }}
+                  placeholder={newFolderIsRemote ? 'Absolute directory on selected computer' : 'Workspace directory'}
+                  className="uam-field min-w-0 flex-1"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={newFolderIsRemote && (!newFolderExecutionHost || !isRemoteDirectoryBrowseAvailable(newFolderExecutionHost))}
+                  onClick={() => { void chooseNewFolderDirectory() }}
+                >
+                  Browse
+                </Button>
+              </div>
+            </div>
+            <div>
+              <label className="uam-inline-form__label" htmlFor="uam-new-workspace-name">Name</label>
               <input
-                value={newFolderDirectory}
-                onChange={(e) => setNewFolderDirectory(e.target.value)}
+                id="uam-new-workspace-name"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') commitAddFolder()
-                  if (e.key === 'Escape') {
-                    setNewFolderName('')
-                    setNewFolderDirectory('')
-                    setNewFolderExecutionHostId('local')
-                    setAddingFolder(false)
-                  }
+                  if (e.key === 'Escape') cancelAddFolder()
                 }}
-                placeholder={newFolderIsRemote ? 'Absolute directory on selected computer' : 'Workspace directory'}
-                className="w-full flex-1 rounded px-2 py-1 text-xs outline-none"
-                style={{
-                  background: 'var(--surface)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border)',
-                  fontFamily: 'inherit',
-                }}
+                placeholder="Folder name"
+                className="uam-field w-full"
               />
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={newFolderIsRemote && (!newFolderExecutionHost || !isRemoteDirectoryBrowseAvailable(newFolderExecutionHost))}
-                onClick={() => { void chooseNewFolderDirectory() }}
-              >
-                Browse
-              </Button>
             </div>
             {newFolderIsRemote && (
               <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
                 The path is interpreted only by {newFolderExecutionHost?.label}. Browse is read-only and requires a ready helper.
               </p>
             )}
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setNewFolderName('')
-                  setNewFolderDirectory('')
-                  setNewFolderExecutionHostId('local')
-                  setAddingFolder(false)
-                }}
-              >
-                Cancel
-              </Button>
+            <div className="uam-inline-form__actions">
+              <span className="uam-inline-form__hint">↵ create · esc cancel</span>
+              <Button variant="ghost" size="sm" onClick={cancelAddFolder}>Cancel</Button>
               <Button
                 variant="primary"
                 size="sm"
@@ -1006,7 +982,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </div>
           </div>
         ) : addingCollection ? (
-          <div className="flex items-center gap-1">
+          <div className="uam-inline-form uam-reveal" role="group" aria-label="New collection">
+            <div className="uam-inline-form__title">New collection</div>
             <input
               autoFocus
               aria-label="Collection name"
@@ -1017,41 +994,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 if (event.key === 'Escape') { setNewCollectionName(''); setAddingCollection(false) }
               }}
               placeholder="Collection name"
-              className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
-              style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
+              className="uam-field w-full"
             />
-            <IconButton
-              icon={<Check size={14} />}
-              label="Create collection"
-              size="sm"
-              disabled={!newCollectionName.trim()}
-              onClick={commitAddCollection}
-              style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' }}
-            />
-            <IconButton
-              icon={<X size={14} />}
-              label="Cancel new collection"
-              variant="danger"
-              size="sm"
-              onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}
-              style={{ color: 'var(--error)' }}
-            />
+            <div className="uam-inline-form__actions">
+              <span className="uam-inline-form__hint">Groups workspaces together</span>
+              <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}>Cancel</Button>
+              <Button variant="primary" size="sm" aria-label="Create collection" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
+            </div>
           </div>
         ) : (
-          <div className="flex justify-center gap-4">
-            <button
-              onClick={() => { setActionError(''); setAddingFolder(true) }}
-              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
-              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
-            >
+          <div className="flex justify-center gap-1">
+            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
               <Plus size={14} aria-hidden />
               <span>New workspace</span>
             </button>
-            <button
-              onClick={() => { setActionError(''); setAddingCollection(true) }}
-              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
-              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
-            >
+            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
               <Plus size={14} aria-hidden />
               <span>New collection</span>
             </button>
@@ -1232,15 +1189,16 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
           </div>
         </div>
       </div>
-      {confirmingDelete && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setConfirmingDelete(false) }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${collection.name} collection`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete collection?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.</div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}><Button size="sm" onClick={() => setConfirmingDelete(false)}>Cancel</Button><Button size="sm" variant="danger" onClick={() => { setConfirmingDelete(false); void remove(collection.id) }}>Delete collection</Button></div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete collection?"
+        label={`Delete ${collection.name} collection`}
+        confirmLabel="Delete collection"
+        onCancel={() => setConfirmingDelete(false)}
+        onConfirm={() => { setConfirmingDelete(false); void remove(collection.id) }}
+      >
+        “{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.
+      </ConfirmDialog>
     </div>
   )
 }
@@ -1321,7 +1279,7 @@ function WorkspaceFolderRecoveryModal({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.55)' }}
       onClick={(event) => { if (event.target === event.currentTarget && !applying) onCancel() }}
     >
@@ -1444,7 +1402,7 @@ function DeleteFolderModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !deleting) onCancel()

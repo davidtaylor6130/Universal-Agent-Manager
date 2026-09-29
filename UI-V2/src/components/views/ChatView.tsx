@@ -240,7 +240,7 @@ function RepositoryDiffDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
+      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
       style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
       onMouseDown={onClose}
     >
@@ -352,7 +352,7 @@ function ProviderHandoffDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
+      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-4"
       style={{ background: 'rgba(0, 0, 0, 0.52)', backdropFilter: 'blur(3px)' }}
       onMouseDown={() => { if (!switching) onCancel() }}
     >
@@ -2944,7 +2944,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onKeyDown={onComposerKeyDown}
               onPaste={onComposerPaste}
               rows={1}
-              placeholder={`Message ${currentProviderName}`}
+              placeholder={`Message ${currentProviderName} · / for commands`}
               disabled={submitting || dictationActive || session.importedReadOnly}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"

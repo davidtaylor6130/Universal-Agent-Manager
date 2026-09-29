@@ -4,7 +4,7 @@ import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
 import { Notice } from '../ui/Notice'
 
-export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onClose: () => void }) {
+export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: UpdateMonitor; onClose: () => void; closing?: boolean }) {
   const [installError, setInstallError] = useState('')
   const [checkError, setCheckError] = useState('')
   const [updatingAll, setUpdatingAll] = useState(false)
@@ -22,8 +22,9 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
     <aside
       aria-label="Updates"
       data-testid="updates-panel"
-      className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] max-w-full shrink-0 flex-col overflow-hidden"
-      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
+      data-state={closing ? 'closed' : 'open'}
+      className="uam-shell-panel uam-shell-panel--right flex h-full w-[360px] max-w-full shrink-0 flex-col overflow-hidden"
+      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', '--panel-w': '360px' } as React.CSSProperties}
     >
       <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="min-w-0">

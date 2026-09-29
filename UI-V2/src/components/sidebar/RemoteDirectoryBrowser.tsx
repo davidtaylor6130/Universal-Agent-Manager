@@ -79,7 +79,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.56)' }}
       onClick={(event) => { if (event.target === event.currentTarget) onCancel() }}
     >

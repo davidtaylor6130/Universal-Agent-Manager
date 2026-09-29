@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, RotateCw, Sparkles, X } from 'lucide-react'
+import { Check, CheckCircle2, GitBranch, GitCommitHorizontal, LoaderCircle, Minus, RotateCw, Sparkles, X } from 'lucide-react'
 import { useAppStore, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
 import { Button, IconButton, MenuSelect } from '../ui'
 
@@ -137,135 +137,163 @@ export function VcsCommitPanel() {
     await refresh(selectedVcsType, true)
   }
 
+  const noticeIsError = Boolean(status.error) || /fail|error|could not|cannot/i.test(notice)
+  const selectedCount = selectedFiles.length
+
   return (
-    <aside className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}>
-      <div className="flex h-12 flex-shrink-0 items-center gap-2 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+    <aside className="uam-commit-panel flex h-full flex-col overflow-hidden">
+      <div className="uam-commit-panel__header">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Commit</div>
-          <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{status.workspaceDirectory || 'No workspace selected'}</div>
+          <div className="mt-1 flex min-w-0 items-center gap-1.5" title={status.workspaceDirectory || undefined}>
+            {status.vcsTypes.length > 1 ? (
+              <MenuSelect
+                label="VCS"
+                value={selectedVcsType}
+                options={status.vcsTypes.map((type) => ({ value: type, label: type.toUpperCase() }))}
+                onChange={(type) => { void refresh(type as VcsType) }}
+              />
+            ) : (
+              <span className="uam-commit-chip">{status.available ? status.activeVcsType.toUpperCase() : 'No VCS'}</span>
+            )}
+            {status.branchOrRevision && (
+              <span className="uam-commit-chip uam-commit-chip--branch min-w-0">
+                <GitBranch size={11} aria-hidden />
+                <span className="truncate">{status.branchOrRevision}</span>
+              </span>
+            )}
+          </div>
         </div>
         <IconButton
-          icon={<RotateCw size={16} />}
+          icon={<RotateCw size={15} className={loading ? 'uam-spin' : undefined} />}
           label="Refresh VCS status"
+          size="sm"
           disabled={loading}
           onClick={() => { void refresh(selectedVcsType, true) }}
         />
         <IconButton
-          icon={<X size={16} />}
+          icon={<X size={15} />}
           label="Close commit panel"
+          size="sm"
           onClick={() => setCommitPanelOpen(false)}
         />
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {(status.warning || status.error || notice) && (
-          <div className="mb-3 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: status.error || notice ? 'var(--text)' : 'var(--text-2)' }}>
+          <div role={noticeIsError ? 'alert' : 'status'} className="uam-commit-notice uam-reveal" data-tone={noticeIsError ? 'error' : 'info'}>
             {notice || status.error || status.warning}
           </div>
         )}
 
-        <div className="mb-3 flex items-center gap-5 text-xs">
-          <div className="min-w-0 flex-1">
-            <div style={{ color: 'var(--text-3)' }}>VCS</div>
-            {status.vcsTypes.length > 1 ? (
-              <div className="mt-1">
-                <MenuSelect
-                  label="VCS"
-                  value={selectedVcsType}
-                  options={status.vcsTypes.map((type) => ({ value: type, label: type.toUpperCase() }))}
-                  onChange={(type) => { void refresh(type as VcsType) }}
-                />
-              </div>
-            ) : (
-              <div className="mt-1 font-medium" style={{ color: 'var(--text)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'None'}</div>
-            )}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div style={{ color: 'var(--text-3)' }}>Branch/revision</div>
-            <div className="mt-1 flex items-center gap-1.5 truncate font-medium" style={{ color: 'var(--text)' }}>
-              <GitBranch size={13} aria-hidden style={{ color: 'var(--accent)' }} />
-              <span className="truncate">{status.branchOrRevision || '-'}</span>
-            </div>
-          </div>
+        <div className="uam-commit-list-header">
+          <button
+            type="button"
+            role="checkbox"
+            aria-label="Select all changed files"
+            aria-checked={allSelected ? true : selectedCount > 0 ? 'mixed' : false}
+            disabled={status.changedFiles.length === 0}
+            onClick={toggleAllFiles}
+            className="uam-commit-check"
+          >
+            {allSelected ? <Check size={11} strokeWidth={3} aria-hidden /> : selectedCount > 0 ? <Minus size={11} strokeWidth={3} aria-hidden /> : null}
+          </button>
+          <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
+          {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} className="uam-spin" aria-label="Loading VCS status" />}
+          <span style={{ color: 'var(--text-3)' }}>{selectedCount} selected</span>
         </div>
-
-        <div className="mb-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden">
-          <div className="flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
-            <button
-              type="button"
-              role="checkbox"
-              aria-label="Select all changed files"
-              aria-checked={allSelected}
-              disabled={status.changedFiles.length === 0}
-              onClick={toggleAllFiles}
-              className="uam-icon-button"
-            >
-              {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
-            </button>
-            <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
-            {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" />}
-            <span>{selectedFiles.length} selected</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {status.changedFiles.length === 0 ? (
-              <div className="px-3 py-4 text-xs" style={{ color: 'var(--text-3)' }}>No changed files.</div>
-            ) : status.changedFiles.map((file) => (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {status.changedFiles.length === 0 ? (
+            <div className="uam-commit-empty">
+              <CheckCircle2 size={22} aria-hidden />
+              <span>{status.available ? 'Working tree clean' : 'No changes to show'}</span>
+            </div>
+          ) : status.changedFiles.map((file) => {
+            const selected = selectedFileSet.has(file.path)
+            const code = file.status.trim() || 'M'
+            const slash = file.path.replace(/\\/g, '/').lastIndexOf('/')
+            const name = slash >= 0 ? file.path.slice(slash + 1) : file.path
+            const dir = slash >= 0 ? file.path.slice(0, slash) : ''
+            return (
               <button
                 type="button"
                 role="checkbox"
-                aria-checked={selectedFileSet.has(file.path)}
-                aria-label={`${selectedFileSet.has(file.path) ? 'Deselect' : 'Select'} ${file.path}`}
+                aria-checked={selected}
+                aria-label={`${selected ? 'Deselect' : 'Select'} ${file.path}`}
                 key={file.path}
                 onClick={() => toggleFile(file.path)}
-                className="flex w-full items-center gap-2 px-1 py-2 text-left text-xs transition-[background-color,transform] duration-150 hover:translate-x-0.5"
-                style={{ color: selectedFileSet.has(file.path) ? 'var(--text)' : 'var(--text-2)', background: selectedFileSet.has(file.path) ? 'var(--surface-up)' : 'transparent', borderBottom: '1px solid var(--border)' }}
+                className="uam-commit-file"
+                data-selected={selected}
+                title={file.path}
               >
-                {selectedFileSet.has(file.path) ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
-                <span className="w-8 flex-shrink-0 text-center font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-                <span className="min-w-0 flex-1 truncate">{file.path}</span>
+                <span className="uam-commit-check" aria-hidden>{selected && <Check size={11} strokeWidth={3} />}</span>
+                <span className="uam-commit-status" data-code={code[0]}>{code}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="uam-commit-file__name">{name}</span>
+                  {dir && <span className="uam-commit-file__dir">{dir}</span>}
+                </span>
                 {!lineStatsReady ? (
-                  <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
+                  <span className="uam-commit-file__stat" style={{ color: 'var(--text-3)' }}>…</span>
                 ) : file.binary ? (
-                  <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
+                  <span className="uam-commit-file__stat" style={{ color: 'var(--text-3)' }}>BIN</span>
                 ) : (
-                  <span className="flex flex-shrink-0 items-center gap-2 font-mono text-[11px]">
-                    <span style={{ color: 'var(--green)' }}>+{file.additions}</span>
-                    <span style={{ color: 'var(--red)' }}>-{file.deletions}</span>
+                  <span className="uam-commit-file__stat">
+                    {file.additions > 0 && <span style={{ color: 'var(--green)' }}>+{file.additions}</span>}
+                    {file.deletions > 0 && <span style={{ color: 'var(--red)' }}>-{file.deletions}</span>}
                   </span>
                 )}
               </button>
-            ))}
-          </div>
+            )
+          })}
         </div>
 
-        <div className="mb-2 flex items-center gap-2">
-          <input
-            className="min-w-0 flex-1 rounded-md px-2 py-2 text-sm"
-            style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-            placeholder="Summary"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-          />
-          <IconButton
-            icon={generating ? <LoaderCircle size={16} /> : <Sparkles size={16} />}
-            label="Generate commit message"
-            disabled={generateDisabled}
-            onClick={() => { void generateMessage() }}
-          />
+        <div className="uam-commit-composer">
+          <div className="uam-commit-message">
+            <div className="flex items-center gap-1">
+              <input
+                className="min-w-0 flex-1 bg-transparent px-2.5 py-2 text-sm outline-none"
+                style={{ color: 'var(--text)' }}
+                placeholder="Summary (required)"
+                aria-label="Commit summary"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+              {title.length > 50 && (
+                <span className="text-[11px] tabular-nums" style={{ color: title.length > 72 ? 'var(--warning)' : 'var(--text-3)' }} title="Keep summaries under about 72 characters">{title.length}</span>
+              )}
+              <IconButton
+                icon={generating ? <LoaderCircle size={15} className="uam-spin" /> : <Sparkles size={15} />}
+                label="Generate commit message"
+                tooltip={selectedCount === 0 ? 'Select files to generate a message' : 'Generate commit message'}
+                size="sm"
+                disabled={generateDisabled}
+                onClick={() => { void generateMessage() }}
+              />
+            </div>
+            <textarea
+              className="block h-20 w-full resize-none bg-transparent px-2.5 py-2 text-sm outline-none"
+              style={{ color: 'var(--text)', borderTop: '1px solid var(--border)' }}
+              placeholder="Description (optional)"
+              aria-label="Commit description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </div>
+          <Button
+            variant="primary"
+            block
+            disabled={commitDisabled}
+            leadingIcon={committing ? <LoaderCircle size={15} className="uam-spin" /> : <GitCommitHorizontal size={15} />}
+            onClick={() => { void commit() }}
+          >
+            {committing ? 'Committing…' : selectedCount > 0 ? `Commit ${selectedCount} file${selectedCount === 1 ? '' : 's'}` : 'Commit selected files'}
+          </Button>
+          {!committing && commitDisabled && status.available && (
+            <div className="text-center text-[11px]" style={{ color: 'var(--text-3)' }}>
+              {selectedCount === 0 ? 'Select files to commit' : 'Add a summary to commit'}
+            </div>
+          )}
         </div>
-        <textarea
-          className="mb-2 h-24 w-full resize-none rounded-md p-2 text-sm"
-          style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-          placeholder="Description"
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-        />
-        <Button variant="primary" block disabled={commitDisabled} onClick={() => { void commit() }}>
-          <span className="inline-flex items-center justify-center gap-2">
-            {committing ? <LoaderCircle size={15} /> : <GitCommitHorizontal size={15} />}
-            {committing ? 'Committing…' : 'Commit selected files'}
-          </span>
-        </Button>
       </div>
     </aside>
   )

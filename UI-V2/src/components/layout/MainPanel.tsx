@@ -1,11 +1,12 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Columns2, MessageSquare, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
+import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext } from '../../ipc/cefBridge'
-import { IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { shortcutLabel } from '../../utils/shortcuts'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import './MainPanel.css'
@@ -220,35 +221,51 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
-        {runtimeStopState.visible && (
-          <IconButton
-            icon={<span className="uam-runtime-stop-icon">
-              <PowerOff size={14} aria-hidden />
-              {!runtimeStopState.disabled && idleFraction !== null && (
-                <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
-                  <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2"
-                    strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
-                </svg>
-              )}
-            </span>}
-            label="Stop runtime"
-            tooltip={runtimeStopState.disabled
-              ? 'Available when this turn finishes'
-              : idleSecondsLeft !== null
-                ? `Stop runtime · automatic shutdown in ${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
-                : 'Stop this chat’s runtime'}
-            tooltipSide="bottom"
-            variant="danger"
-            size="sm"
-            disabled={runtimeStopState.disabled}
-            onClick={() => {
-              setStopRuntimeError('')
-              void stopAcpSession(session.id).then((ok) => {
-                if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-              }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-            }}
-          />
-        )}
+        {runtimeStopState.visible && (() => {
+          const countdown = idleSecondsLeft !== null
+            ? `${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
+            : ''
+          const phase = runtimeStopState.disabled ? 'busy' : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
+          return (
+            <Tooltip
+              label={runtimeStopState.disabled
+                ? 'Runtime busy · stop is available when this turn finishes'
+                : countdown
+                  ? `Runtime idle · shuts down automatically in ${countdown}. Click to stop now.`
+                  : 'Runtime running · click to stop it'}
+              side="bottom"
+            >
+              <button
+                type="button"
+                className="uam-runtime-pill"
+                data-phase={phase}
+                aria-label="Stop runtime"
+                disabled={runtimeStopState.disabled}
+                onClick={() => {
+                  setStopRuntimeError('')
+                  void stopAcpSession(session.id).then((ok) => {
+                    if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+                  }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+                }}
+              >
+                <span className="uam-runtime-stop-icon">
+                  <PowerOff size={12} aria-hidden />
+                  {!runtimeStopState.disabled && idleFraction !== null && (
+                    <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
+                      <circle className="uam-runtime-stop-track" cx="14" cy="14" r="12" fill="none" strokeWidth="2.5" />
+                      <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+                        strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
+                    </svg>
+                  )}
+                </span>
+                <span className="uam-runtime-pill__label" aria-hidden>
+                  <span className="uam-runtime-pill__state">{phase === 'busy' ? 'Busy' : countdown || 'Live'}</span>
+                  <span className="uam-runtime-pill__stop">Stop</span>
+                </span>
+              </button>
+            </Tooltip>
+          )
+        })()}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
@@ -279,21 +296,30 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
 
 const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane, onActivate }: { active: boolean; leafId: string; paneIndex: number; multiPane: boolean; onActivate: (leafId: string, sessionId?: string) => void }) {
   const paneColor = chatPaneColors[paneIndex]
+  const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   return (
-    <button
-      type="button"
+    <div
       className="uam-chat-pane relative flex h-full w-full items-center justify-center text-center"
+      data-testid="empty-pane"
       data-focused={active}
       data-multi-pane={multiPane}
-      onClick={() => onActivate(leafId)}
-      onFocus={() => { if (!active) onActivate(leafId) }}
+      onMouseDown={() => { if (!active) onActivate(leafId) }}
+      onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      <span>
-        <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
+      <div className="flex flex-col items-center gap-3 px-4">
+        <MessageSquare size={28} aria-hidden style={{ opacity: 0.3 }} />
         <span className="block text-sm">Drag a chat here or select one</span>
-      </span>
-    </button>
+        <Button
+          size="sm"
+          leadingIcon={<Plus size={14} aria-hidden />}
+          title={`New chat (${shortcutLabel('newChat')})`}
+          onClick={() => setNewChatModalOpen(true)}
+        >
+          New chat
+        </Button>
+      </div>
+    </div>
   )
 })
 
@@ -518,7 +544,7 @@ export function MainPanel() {
           aria-label={label}
           disabled={paneLimitReached}
           onClick={() => splitActivePane(direction)}
-          style={{ color: 'var(--text-2)', background: 'transparent', opacity: paneLimitReached ? 0.45 : 1 }}
+          style={{ color: 'var(--text-2)', background: 'transparent' }}
         >
           {icon}
         </button>
@@ -535,18 +561,19 @@ export function MainPanel() {
         <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
-          <Tooltip label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'} side="bottom">
-            <button
-              type="button"
-              className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-              aria-label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'}
-              disabled={!activeLeaf?.sessionId && leaves.length === 1}
-              onClick={() => activeLeaf && closePane(activeLeaf.id)}
-              style={{ color: 'var(--text-2)', background: 'transparent', opacity: !activeLeaf?.sessionId && leaves.length === 1 ? 0.45 : 1 }}
-            >
-              <X size={15} aria-hidden />
-            </button>
-          </Tooltip>
+          {leaves.length > 1 && (
+            <Tooltip label="Close active pane" side="bottom">
+              <button
+                type="button"
+                className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+                aria-label="Close active pane"
+                onClick={() => activeLeaf && closePane(activeLeaf.id)}
+                style={{ color: 'var(--text-2)', background: 'transparent' }}
+              >
+                <X size={15} aria-hidden />
+              </button>
+            </Tooltip>
+          )}
         </div>
         {isCefContext() && <PushStatusDot />}
       </div>

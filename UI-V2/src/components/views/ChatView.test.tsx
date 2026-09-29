@@ -1540,7 +1540,7 @@ describe('ChatView', () => {
     expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
 
     openComposerOptions(host)
-    expect(document.body.textContent).toContain('Goal token budget')
+    expect(document.body.textContent).toContain('Token budget')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
@@ -1956,7 +1956,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
     expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('Default')
-    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
+    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands')
 
     act(() => {
       root.unmount()

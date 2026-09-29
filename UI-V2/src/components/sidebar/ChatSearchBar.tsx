@@ -99,6 +99,7 @@ export function ChatSearchBar({
                 event.currentTarget.blur()
               }
             }}
+            data-chat-search-input
             placeholder="Search chats..."
             aria-label="Search chats"
             className="min-w-0 flex-1 bg-transparent text-xs outline-none"
@@ -162,7 +163,7 @@ export function ChatSearchBar({
             {activeFilterCount > 0 && (
               <span
                 aria-hidden="true"
-                className="absolute -right-1 -top-1 flex items-center justify-center rounded-full text-[9px] font-semibold"
+                className="absolute -right-1 -top-1 flex items-center justify-center rounded-full text-[10px] font-semibold"
                 style={{
                   minWidth: 14,
                   height: 14,

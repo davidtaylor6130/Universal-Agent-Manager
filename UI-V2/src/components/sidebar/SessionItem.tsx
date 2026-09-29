@@ -8,7 +8,7 @@ import {
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
-import { Button, Tooltip, ViewportMenu } from '../ui'
+import { ConfirmDialog, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -97,6 +97,8 @@ export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
     default: return <CircleAlert {...props} />
   }
 }
+
+const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
 export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityContext, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
@@ -286,6 +288,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             selectChat()
+          } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
+            event.preventDefault()
+            setDeleteError('')
+            setConfirmDelete(true)
           } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
@@ -375,10 +381,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
-            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 self-stretch flex-col items-end justify-between py-1' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
+            <div className={`ml-auto flex ${activityLayout ? `shrink-0 self-stretch flex-col items-end justify-between py-1 ${HOVER_FADE}` : 'items-center gap-1'}`}>
               {lastOpenedLabel && (
                 <span
-                  className={`${activityLayout ? 'max-w-[100px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
+                  className={`${activityLayout ? 'max-w-[100px]' : `max-w-[58px] ${HOVER_FADE}`} truncate text-[10px] tabular-nums`}
                   title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
@@ -415,7 +421,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             <div
               data-testid={`session-actions-${sessionId}`}
               style={isCompanionContext() ? { display: 'none' } : undefined}
-              className={`absolute right-2.5 flex items-center gap-0.5 transition-opacity duration-100 ${
+              className={`absolute ${!activityLayout && lifecycleStatus ? 'right-[30px]' : 'right-2.5'} flex items-center gap-0.5 transition-opacity duration-100 ${
                 menuPos
                   ? 'opacity-100 pointer-events-auto'
                   : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
@@ -502,6 +508,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           >
             <Pencil size={13} aria-hidden />
             Rename
+            <kbd className="uam-menu-kbd">F2</kbd>
           </button>
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
@@ -511,27 +518,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             onClick={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }}
           >
             <Trash2 size={13} aria-hidden />
-            Delete
+            Delete…
+            <kbd className="uam-menu-kbd">Del</kbd>
           </button>
         </ViewportMenu>
       )}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.5)' }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${sessionName}`} className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete chat?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>{familySessionIds.length > 1
-                ? `${sessionName} and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
-                : `${sessionName} will be permanently deleted.`} This cannot be undone.</p>
-              {deleteError && <p role="alert" className="mt-3" style={{ color: 'var(--red)' }}>{deleteError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button size="sm" disabled={deleting} onClick={() => { setConfirmDelete(false); setDeleteError(''); rowRef.current?.focus() }}>Cancel</Button>
-              <Button size="sm" variant="danger" loading={deleting} onClick={() => { void confirmSessionDelete() }}>Delete chat</Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete chat?"
+        label={`Delete ${sessionName}`}
+        confirmLabel="Delete chat"
+        busy={deleting}
+        error={deleteError}
+        onCancel={() => { setConfirmDelete(false); setDeleteError('') }}
+        onConfirm={() => { void confirmSessionDelete() }}
+      >
+        {familySessionIds.length > 1
+          ? `“${sessionName}” and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
+          : `“${sessionName}” will be permanently deleted.`} This cannot be undone.
+      </ConfirmDialog>
     </div>
   )
 })

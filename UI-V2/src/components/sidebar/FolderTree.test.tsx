@@ -1566,7 +1566,7 @@ describe('FolderTree', () => {
     HTMLElement.prototype.scrollIntoView = previousScrollIntoView
   })
 
-  it('uses icon-only confirm and cancel actions when naming a collection', async () => {
+  it('uses labelled confirm and cancel actions when naming a collection', async () => {
     const createResourceCollection = vi.fn(async (name: string) => ({ id: 'ideas', name, collapsed: false, references: [] }))
     useAppStore.setState({ createResourceCollection })
     const host = document.createElement('div')
@@ -1579,11 +1579,10 @@ describe('FolderTree', () => {
 
     const confirm = host.querySelector('button[aria-label="Create collection"]') as HTMLButtonElement
     const cancel = host.querySelector('button[aria-label="Cancel new collection"]') as HTMLButtonElement
-    expect(confirm.textContent).toBe('')
+    expect(confirm.textContent).toBe('Create')
     expect(confirm.disabled).toBe(true)
-    expect(confirm.style.background).toBe('var(--accent)')
-    expect(cancel.textContent).toBe('')
-    expect(cancel.style.color).toBe('var(--error)')
+    expect(confirm.className).toContain('uam-btn--primary')
+    expect(cancel.textContent).toBe('Cancel')
 
     act(() => cancel.click())
     expect(host.querySelector('input[aria-label="Collection name"]')).toBeNull()

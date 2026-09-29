@@ -1,5 +1,5 @@
 .uam-notice {
-  animation: uam-notice-enter 140ms ease-out both;
+  animation: uam-notice-enter 140ms ease-out backwards;
 }
 
 @keyframes uam-notice-enter {
