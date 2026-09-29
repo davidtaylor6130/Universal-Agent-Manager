@@ -360,7 +360,8 @@ namespace uam::remote
 		else if (platform == "windows" || platform == "Windows")
 		{
 			command = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-			          "-Command \"& (Join-Path $HOME '" + uam::execution_hosts::RunnerDirectory(
+			          "-Command \"$env:PATH = (Join-Path $HOME '.local/bin') + ';' + $env:PATH; "
+			          "& (Join-Path $HOME '" + uam::execution_hosts::RunnerDirectory(
 			              platform, runner_directory) + "/" + version +
 			          "/uam-runner.exe') terminal " + (launch_channel_id.empty()
 			              ? "'" + BuildProcessProxySpec("terminal", working_directory, argv, {}) + "'"
