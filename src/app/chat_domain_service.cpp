@@ -614,6 +614,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	ChatSession chat;
 	chat.id = uam::chat_ids::NewChatId();
 	chat.provider_id = uam::strings::Trim(provider_id);
+	chat.remote_claude_session_unstarted = true;
 	chat.parent_chat_id.clear();
 	chat.branch_root_chat_id = chat.id;
 	chat.branch_from_message_index = -1;

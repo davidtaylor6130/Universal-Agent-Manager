@@ -424,6 +424,47 @@ UAM_TEST(OpenCodeTerminalLaunchPersistsTheSameSessionBeforeStarting)
 #endif
 }
 
+UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
+{
+	TempDir temp("uam-remote-claude-session");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	UAM_ASSERT(chat.remote_claude_session_unstarted);
+	std::vector<std::string> first_argv{"claude"};
+	std::string error;
+	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, chat, first_argv, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(first_argv[first_argv.size() - 2], std::string("--session-id"));
+	UAM_ASSERT_EQ(first_argv.back(), chat.native_session_id);
+	UAM_ASSERT(!chat.remote_claude_session_unstarted);
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().native_session_id, chat.native_session_id);
+	UAM_ASSERT(!saved.front().remote_claude_session_unstarted);
+
+	ProviderProfile claude = ProviderProfileStore::DefaultClaudeProfile();
+	const std::vector<std::string> resumed = ProviderRuntimeRegistry::Resolve(claude).BuildInteractiveArgv(claude, chat, app.settings);
+	const auto resume_argument = std::ranges::find(resumed, "--resume");
+	UAM_ASSERT(resume_argument != resumed.end());
+	UAM_ASSERT_EQ(*(resume_argument + 1), chat.native_session_id);
+
+	ChatSession legacy;
+	std::vector<std::string> legacy_argv{"claude"};
+	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, legacy, legacy_argv, error));
+	UAM_ASSERT_EQ(legacy_argv.back(), std::string("--resume"));
+	UAM_ASSERT(legacy.native_session_id.empty());
+
+	app.data_root = temp.root / "blocked";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "storage unavailable"));
+	ChatSession blocked = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	std::vector<std::string> blocked_argv{"claude"};
+	UAM_ASSERT(!uam::PrepareRemoteClaudeTerminalArgv(app, blocked, blocked_argv, error));
+	UAM_ASSERT(blocked.native_session_id.empty());
+	UAM_ASSERT(blocked.remote_claude_session_unstarted);
+	UAM_ASSERT_EQ(blocked_argv.size(), static_cast<std::size_t>(1));
+}
+
 UAM_TEST(CliTerminalRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)
 {
 	uam::AppState app;
@@ -938,6 +979,69 @@ UAM_TEST(CliOutputDoesNotTriggerRedundantStateSerialization)
 	uam::StopCliTerminal(terminal);
 	UAM_ASSERT(polled_output);
 }
+
+#if defined(__APPLE__)
+UAM_TEST(CliOutputIsDrainedInBoundedUiThreadBatches)
+{
+	TempDir temp("uam-terminal-output-budget");
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	uam::CliTerminalState terminal;
+	terminal.rows = 24;
+	terminal.cols = 80;
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(
+	    terminal, temp.root, {"/bin/sh", "-c", "yes x | head -c 131072; sleep 10"}, &error));
+	terminal.running = true;
+	std::size_t previous_bytes = 0;
+	bool drained_multiple_batches = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline && !drained_multiple_batches)
+	{
+		(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+		const std::size_t current_bytes = terminal.recent_output_bytes.size();
+		UAM_ASSERT(current_bytes - previous_bytes <= 32 * 1024);
+		previous_bytes = current_bytes;
+		drained_multiple_batches = current_bytes > 64 * 1024;
+		if (!drained_multiple_batches) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	uam::StopCliTerminal(terminal);
+	UAM_ASSERT(drained_multiple_batches);
+}
+
+UAM_TEST(RemoteTerminalFindsUserInstalledCliOutsideSshPath)
+{
+	TempDir temp("uam-remote-terminal-path");
+	const fs::path cli_directory = temp.root / ".local/bin";
+	fs::create_directories(cli_directory);
+	const fs::path cli = cli_directory / "remote-cli-fixture";
+	UAM_ASSERT(uam::io::WriteTextFile(cli, "#!/bin/sh\nprintf 'remote-cli-ready\\n'\n"));
+	fs::permissions(cli, fs::perms::owner_exec, fs::perm_options::add);
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const std::string spec = uam::remote::BuildProcessProxySpec(
+	    "terminal", temp.root, {"remote-cli-fixture"}, {});
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, {runner.string(), "terminal", spec},
+	    &error, {{"HOME", temp.root.string()}, {"PATH", "/usr/bin:/bin"}}));
+	std::string output;
+	bool exited = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline && !exited)
+	{
+		char buffer[256];
+		const std::ptrdiff_t bytes = service.ReadStdioProcessStdout(process, buffer, sizeof(buffer));
+		if (bytes > 0) output.append(buffer, static_cast<std::size_t>(bytes));
+		exited = service.PollStdioProcessExited(process);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT(exited);
+	UAM_ASSERT(uam::strings::Contains(output, "remote-cli-ready"));
+}
+#endif
 
 UAM_TEST(CliTerminalSteeringInputIsBracketedAndDropsUnsafeControls)
 {

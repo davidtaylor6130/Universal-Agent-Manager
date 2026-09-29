@@ -998,6 +998,8 @@ UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 	        {"opencode.cmd", "--help"});
 	UAM_ASSERT(!windows_ssh.empty());
 	UAM_ASSERT(windows_ssh.back().starts_with("powershell.exe "));
+	UAM_ASSERT(windows_ssh.back().find("(Join-Path $HOME '.local/bin') + ';' + $env:PATH") !=
+	           std::string::npos);
 	const std::string windows_command = windows_ssh.back();
 	const std::size_t spec_end = windows_command.rfind("'\"");
 	UAM_ASSERT(spec_end != std::string::npos);

@@ -8391,9 +8391,25 @@ UAM_TEST(RemoteWorkspacePathsRemainNativeToTheTargetHost)
 	              chat.workspace_directory);
 	UAM_ASSERT(uam::paths::ResolveControllerWorkspaceRootPath(app, chat).empty());
 	ChatFolder folder;
+	folder.id = "remote-folder";
 	folder.execution_host_id = "remote";
 	UAM_ASSERT(!uam::paths::IsControllerLocalWorkspace(folder));
+	folder.directory = R"(C:\Users\builder\project)";
+	app.folders.push_back(folder);
+	chat.folder_id = folder.id;
+	chat.workspace_directory.clear();
+	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)),
+	              folder.directory);
+	UAM_ASSERT(!uam::remote::BuildRemoteTerminalSshArgv(
+	    "test-host", "windows", "4.9.0", uam::paths::ResolveWorkspaceRootPath(app, chat),
+	    {"codex"}).empty());
+	chat.execution_host_id = "different-remote";
+	UAM_ASSERT(uam::paths::ResolveWorkspaceRootPath(app, chat).empty());
+	chat.execution_host_id = "remote";
+	chat.folder_id.clear();
+	UAM_ASSERT(uam::paths::ResolveWorkspaceRootPath(app, chat).empty());
 	chat.execution_host_id = "local";
+	chat.workspace_directory = (temp.root / "local-collision").string();
 	UAM_ASSERT_EQ(uam::paths::ResolveControllerWorkspaceRootPath(app, chat),
 	              uam::paths::AbsolutePathNoThrow(chat.workspace_directory));
 	chat.execution_host_id = "remote";

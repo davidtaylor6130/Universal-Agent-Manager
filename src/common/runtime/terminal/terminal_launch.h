@@ -12,6 +12,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
@@ -37,6 +38,40 @@ namespace uam
 
 		terminal.last_error = std::move(error_message);
 		return false;
+	}
+
+	/// <summary>Bind a new remote Claude terminal before launch, or open the native picker for a legacy chat.</summary>
+	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
+	    std::vector<std::string>& argv, std::string& error)
+	{
+		if (!chat.native_session_id.empty()) return true;
+		if (!chat.remote_claude_session_unstarted)
+		{
+			// Older chats may have launched before UAM recorded remote Claude IDs.
+			argv.push_back("--resume");
+			return true;
+		}
+
+		// Claude has no empty-session creation command. Save the ID before SSH
+		// starts so every later launch can target the same conversation.
+		const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (session_id.empty())
+		{
+			error = "Could not create a Claude session ID.";
+			return false;
+		}
+		chat.native_session_id = session_id;
+		chat.remote_claude_session_unstarted = false;
+		if (!ChatRepository::SaveChat(app.data_root, chat))
+		{
+			chat.native_session_id.clear();
+			chat.remote_claude_session_unstarted = true;
+			error = "Could not save the Claude session ID. Retry when storage is available.";
+			return false;
+		}
+		argv.push_back("--session-id");
+		argv.push_back(session_id);
+		return true;
 	}
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
@@ -103,13 +138,18 @@ namespace uam
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, session_id_error);
 		}
 
-		const std::vector<std::string> provider_argv = BuildProviderInteractiveArgv(app, chat);
-
+		std::vector<std::string> provider_argv = BuildProviderInteractiveArgv(app, chat);
 		if (provider_argv.empty())
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, "Active provider does not expose an interactive CLI command.");
 		}
-
+		if (remote && provider.id == uam::provider_ids::kClaudeCli &&
+		    ResolveProviderInteractiveResumeId(app, chat, provider).empty())
+		{
+			std::string error;
+			if (!PrepareRemoteClaudeTerminalArgv(app, chat, provider_argv, error))
+				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, error);
+		}
 		terminal.rows = ClampCliTerminalLaunchRows(rows);
 		terminal.cols = ClampCliTerminalLaunchCols(cols);
 		terminal.attached_chat_id = chat.id;

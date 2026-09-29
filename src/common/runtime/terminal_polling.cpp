@@ -289,8 +289,9 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
 	constexpr double kInputReadyFallbackSeconds = 1.5;
-	constexpr int kReadBudgetChunksPerTick = 72;
-	constexpr std::size_t kReadBudgetBytesPerTick = 512 * 1024;
+	// Keep PTY draining and CEF delivery within a small UI-thread slice.
+	constexpr int kReadBudgetChunksPerTick = 4;
+	constexpr std::size_t kReadBudgetBytesPerTick = 32 * 1024;
 
 	bool changed = false;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
