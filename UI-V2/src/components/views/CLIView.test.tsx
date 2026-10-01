@@ -31,6 +31,10 @@ vi.mock('@xterm/xterm', () => ({
     write(data: string | Uint8Array) {
       xtermState.writesByInstance[this.index].push(data)
     }
+    reset() {}
+    resize(cols: number, rows: number) { this.cols = cols; this.rows = rows }
+    focus() {}
+    input(data: string) { xtermState.inputByInstance[this.index]?.(data) }
     writeln() {}
     dispose() {
       xtermState.disposeCount += 1
@@ -101,6 +105,7 @@ describe('CLIView', () => {
     })
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.history.replaceState({}, '', '/')
     resetStore()
     delete (window as TestWindow).cefQuery
   })
@@ -471,6 +476,51 @@ describe('CLIView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('passively attaches on mobile, reads and writes the same process, and cleans polling without detaching desktop', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/companion')
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => key === 'uam-companion-token' ? 'paired' : null, setItem: vi.fn(), removeItem: vi.fn() } })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    let disconnected = false
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      const request = JSON.parse(init.body)
+      requests.push(request)
+      if (disconnected && request.payload.operation === 'read') return { ok: false, json: async () => ({ error: 'Connection lost.' }) }
+      return { ok: true, json: async () => ({ terminalId: 'term-owned', sourceChatId: 'chat-owned', startupTime: 42,
+        cursor: request.payload.operation === 'read' ? 6 : 5, cols: 100, rows: 30,
+        replayData: btoa(request.payload.operation === 'read' ? '!' : request.payload.operation === 'write' ? '' : 'hello') }) }
+    }))
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#fff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    useAppStore.getState().setCliBinding('chat-owned', { terminalId: 'term-owned', boundChatId: 'chat-owned', running: true })
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const session = { id: 'chat-owned', name: 'Owned', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    try {
+      await act(async () => { root.render(<CLIView session={session} />) })
+      expect(requests[0]).toMatchObject({ action: 'companionCliTerminal', payload: { operation: 'attach', chatId: 'chat-owned', terminalId: 'term-owned' } })
+      await act(async () => { vi.advanceTimersByTime(500); await Promise.resolve() })
+      expect(requests[1].payload).toMatchObject({ operation: 'read', startupTime: 42, cursor: 5 })
+      await act(async () => { xtermState.inputByInstance[0]('x'); await Promise.resolve() })
+      expect(requests[2].payload).toMatchObject({ operation: 'write', startupTime: 42, data: 'x' })
+      await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Interrupt terminal"]')!.click() })
+      expect(requests.at(-1)?.payload).toMatchObject({ operation: 'write', startupTime: 42, data: '\x03' })
+      expect(xtermState.writesByInstance[0].map((bytes) => new TextDecoder().decode(bytes as Uint8Array))).toEqual(['hello', '!'])
+      disconnected = true
+      await act(async () => { vi.advanceTimersByTime(500); await Promise.resolve() })
+      expect(host.textContent).toContain('Connection lost.')
+      disconnected = false
+      await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Retry terminal attachment"]')!.click() })
+      expect(requests.at(-1)?.payload).toMatchObject({ operation: 'attach', chatId: 'chat-owned', terminalId: 'term-owned' })
+      expect(host.textContent).not.toContain('Connection lost.')
+      await act(async () => root.unmount())
+      const count = requests.length
+      await act(async () => { vi.advanceTimersByTime(5000) })
+      expect(requests).toHaveLength(count)
+      expect(requests.every((request) => request.action === 'companionCliTerminal')).toBe(true)
+    } finally { vi.useRealTimers(); window.history.replaceState({}, '', '/'); window.localStorage.removeItem('uam-companion-token') }
   })
 
 })
