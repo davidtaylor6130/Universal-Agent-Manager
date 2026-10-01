@@ -1209,9 +1209,8 @@ namespace uam
 			const bool check_running_for_provider = app.runtime_cli_version_check_task.running &&
 			                                        NormalizedCliVersionManagedProviderId(app.runtime_cli_version_provider_id) == provider_id &&
 			                                        app.runtime_cli_version_check_task.execution_host.id == execution_host.id;
-			const bool install_running_for_provider = app.runtime_cli_pin_task.running &&
-			                                          NormalizedCliVersionManagedProviderId(app.runtime_cli_pin_provider_id) == provider_id &&
-			                                          app.runtime_cli_pin_task.execution_host.id == execution_host.id;
+			const auto install = app.runtime_cli_install_tasks.find(CliProviderVersionStateKey(provider_id, execution_host.id));
+			const bool install_running_for_provider = install != app.runtime_cli_install_tasks.end() && install->second.running;
 			const auto state_it = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host.id));
 			const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end();
 			const CliProviderVersionState provider_state = has_provider_state ? state_it->second : CliProviderVersionState{};
@@ -1258,11 +1257,12 @@ namespace uam
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
 			provider_json["checkError"] = provider_state.check_error;
-			provider_json["running"] = check_running_for_provider || install_running_for_provider;
+			provider_json["running"] = check_running_for_provider || install_running_for_provider || app.pending_cli_updates.contains(CliProviderVersionStateKey(provider_id, execution_host.id));
+			provider_json["blockingChatIds"] = ProviderCliBlockingChatIds(app, provider_id, execution_host.id);
 			provider_json["installMethod"] = provider_state.install_method;
 			provider_json["lastInstallStatus"] = provider_state.last_install_status;
 			provider_json["lastCommand"] = install_running_for_provider
-			                                   ? app.runtime_cli_pin_task.command_preview
+			                                   ? install->second.command_preview
 			                                   : (check_running_for_provider ? app.runtime_cli_version_check_task.command_preview : provider_state.install_command);
 			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
 			return provider_json;

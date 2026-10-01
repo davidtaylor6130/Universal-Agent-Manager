@@ -75,6 +75,7 @@ export interface AppState {
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
   updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
@@ -163,7 +164,7 @@ export interface AppState {
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
-  setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
+  setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>

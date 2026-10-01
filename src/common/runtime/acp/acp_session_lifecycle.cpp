@@ -265,6 +265,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	InterruptUnconfirmedAcpSteers(app, session, chat);
+	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;

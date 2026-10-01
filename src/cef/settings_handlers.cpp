@@ -22,9 +22,12 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include "common/config/execution_host_config.h"
+
 #include <fstream>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <string_view>
 
@@ -361,6 +364,7 @@ void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, co
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	m_app.settings.automatic_provider_updates = payload.value("automaticProviderUpdates", m_app.settings.automatic_provider_updates);
 	m_app.settings.update_checks_enabled = payload.value("enabled", m_app.settings.update_checks_enabled);
 	m_app.settings.update_last_checked_at = uam::strings::SafeLine(
 	    payload.value("lastCheckedAt", m_app.settings.update_last_checked_at), 64, true);
@@ -476,7 +480,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 
 	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
-	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id))
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false)))
 	{
 		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -567,4 +571,43 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 		return;
 	}
 	cb->Success(nlohmann::json{{"token", token}, {"url", CompanionUrl(config)}}.dump());
+}
+
+void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("targets") || !payload["targets"].is_array() || payload["targets"].empty() || payload["targets"].size() > 64)
+	{
+		cb->Failure(400, "Choose between 1 and 64 provider installations to update.");
+		return;
+	}
+	std::vector<std::tuple<std::string, std::string, std::string>> targets;
+	std::unordered_set<std::string> seen;
+	for (const auto& target : payload["targets"])
+	{
+		if (!target.is_object() || !target.contains("providerId") || !target["providerId"].is_string() ||
+		    !target.contains("version") || !target["version"].is_string() ||
+		    (target.contains("executionHostId") && !target["executionHostId"].is_string()))
+		{
+			cb->Failure(400, "Each update requires a provider, version and valid machine ID.");
+			return;
+		}
+		const std::string provider = uam::provider_ids::CanonicalCliProviderLookupId(target["providerId"].get<std::string>());
+		const std::string host = target.value("executionHostId", "local");
+		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr)
+		{
+			cb->Failure(400, "The update list references a machine that no longer exists.");
+			return;
+		}
+		if (!seen.insert(CliProviderVersionStateKey(provider, host)).second ||
+		    !ProviderProfileStore::FindById(m_app.provider_profiles, provider) ||
+		    !ProviderCliCompatibilityService().IsSupportedVersionForProvider(provider, target["version"].get<std::string>()))
+		{
+			cb->Failure(400, "The update list contains duplicate or unsupported provider versions.");
+			return;
+		}
+		targets.emplace_back(provider, target["version"].get<std::string>(), host);
+	}
+	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }

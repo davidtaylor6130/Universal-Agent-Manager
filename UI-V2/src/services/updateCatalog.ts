@@ -208,12 +208,12 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
     }
   }
 
-  if (!release.tag_name) throw new Error('UAM update service is currently unavailable.')
+  if (!release.tag_name && Object.keys(providers).length === 0) throw new Error('Update services are currently unavailable.')
 
   const catalog: LatestUpdateCatalog = {
     checkedAt: new Date().toISOString(),
     uam: {
-      version: release.tag_name ?? '',
+      version: release.tag_name || readCachedUpdateCatalog()?.uam.version || '',
       url: release.html_url || 'https://github.com/davidtaylor6130/Universal-Agent-Manager/releases/latest',
     },
     providers,
