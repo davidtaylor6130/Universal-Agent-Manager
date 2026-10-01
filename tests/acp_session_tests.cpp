@@ -10151,3 +10151,146 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	UAM_ASSERT(session.queued_prompt.find("Prior conversation from another provider") == std::string::npos);
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
 }
+
+UAM_TEST(CodexCompactionNotificationsDeduplicateEnrichAndPreserveDistinctEvents)
+{
+	TempDir temp("uam-codex-compaction");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compaction-chat";
+	chat.provider_id = "codex-cli";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "codex-app-server";
+	session.processing = true;
+	const nlohmann::json legacy = {{"method", "thread/compacted"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}}}};
+	const auto completed = [](const std::string& id, const std::string& summary)
+	{
+		return nlohmann::json{{"method", "item/completed"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"type", "contextCompaction"}, {"id", id}, {"summary", summary}}}}}};
+	};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, legacy.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, completed("first", "").dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, legacy.dump()));
+	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, completed("first", "Remember the chosen workspace.").dump()));
+	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(session.turn_events.front().text, std::string("Remember the chosen workspace."));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, completed("second", "A later compaction.").dump()));
+	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(chat.messages.back().content.empty());
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->messages.back().blocks.front().text, std::string("Remember the chosen workspace."));
+}
+
+#if !defined(_WIN32)
+UAM_TEST(CodexUamControlUsesVersionGatedPerThreadConfigLocallyAndRemotely)
+{
+	for (const bool remote : {false, true})
+	{
+		TempDir temp("uam-codex-control-setup");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "lab";
+		host.label = "Lab";
+		host.transport = "ssh";
+		host.ssh_alias = "isolated-test";
+		host.runner_status = "ready";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		host.platform = "linux";
+		host.architecture = "arm64";
+		app.settings.execution_hosts = {host};
+		uam::execution_hosts::Normalize(app.settings.execution_hosts);
+		ChatSession chat;
+		chat.id = "codex-control";
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.execution_host_id = remote ? "lab" : "local";
+		chat.uam_control_enabled = true;
+		app.chats.push_back(std::move(chat));
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		uam::AcpSessionState session;
+		session.chat_id = app.chats.front().id;
+		session.provider_id = "codex-cli";
+		session.protocol_kind = "codex-app-server";
+		session.running = true;
+		session.initialized = true;
+		session.agent_version = "0.158.0";
+		UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, app.chats.front()));
+		UAM_ASSERT(session.last_error.find("0.159.2") != std::string::npos);
+		UAM_ASSERT(session.uam_control_capability_id.empty());
+		session.agent_version = "0.159.2";
+		session.running = true;
+		session.initialized = true;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, {"/bin/cat"}, &error));
+		UAM_ASSERT(uam::acp_detail::SendSessionSetupIfReady(app, session, app.chats.front()));
+		std::string output;
+		std::array<char, 16 * 1024> buffer{};
+		for (int attempt = 0; attempt < 100 && output.find("\n") == std::string::npos; ++attempt)
+		{
+			const std::ptrdiff_t read = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, buffer.data(), buffer.size(), &error);
+			if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+			if (output.find("\n") == std::string::npos) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (remote)
+		{
+			UAM_ASSERT(output.starts_with(uam::remote::kRemoteMcpControlPrefix));
+			output = output.substr(output.find('\n') + 1);
+			for (int attempt = 0; attempt < 100 && output.find("\n") == std::string::npos; ++attempt)
+			{
+				const std::ptrdiff_t read = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, buffer.data(), buffer.size(), &error);
+				if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+				if (output.find("\n") == std::string::npos) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+		const nlohmann::json request = nlohmann::json::parse(output.substr(0, output.find('\n')));
+		UAM_ASSERT_EQ(request.value("method", ""), std::string("thread/start"));
+		const nlohmann::json& server = request["params"]["config"]["mcp_servers.uam-control"];
+		UAM_ASSERT(server.value("required", false));
+		UAM_ASSERT(!session.uam_control_capability_id.empty());
+		UAM_ASSERT(request["params"]["developerInstructions"].get<std::string>().find("user_question") != std::string::npos);
+		if (remote)
+		{
+			UAM_ASSERT_EQ(server.value("command", ""), std::string("/bin/sh"));
+			UAM_ASSERT(server.dump().find("--uam-control-mcp") == std::string::npos);
+		}
+		else UAM_ASSERT(server["args"].dump().find("--uam-control-mcp") != std::string::npos);
+		UAM_ASSERT(!fs::exists(temp.root / "config.toml"));
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+		uam::UamControlService::Shutdown(app);
+	}
+}
+#endif
+
+UAM_TEST(RejectedProviderHandoffPromptRetainsContextForRetry)
+{
+	TempDir temp("uam-handoff-rejection");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "handoff-rejected";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_context = "User: Remember 4821.";
+	chat.provider_handoff_session_id = "thread-1";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "codex-app-server";
+	session.session_id = "thread-1";
+	session.processing = true;
+	session.prompt_request_id = 9;
+	session.pending_request_methods[9] = "turn/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"id":9,"error":{"code":-32602,"message":"Rejected prompt"}})"));
+	UAM_ASSERT(chat.provider_handoff_session_id.empty());
+	UAM_ASSERT_EQ(chat.provider_handoff_context, std::string("User: Remember 4821."));
+}

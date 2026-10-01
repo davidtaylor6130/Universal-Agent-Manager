@@ -528,6 +528,13 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
   )
 }
 
+export function CompactionSeparator({ summary }: { summary: string }) {
+  return <details className="context-compaction">
+    <summary>Context compacted</summary>
+    <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
+  </details>
+}
+
 export function PersistedMessageBlocksContent({
   message,
   disclosureState,
@@ -577,6 +584,7 @@ export function PersistedMessageBlocksContent({
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {blocks.map((block, index) => {
+        if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} />
         if (block.type === 'assistant_text') {
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
@@ -894,6 +902,7 @@ export function TurnTimelineContent({
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {events.map((event, index) => {
+        if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null
           return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} /></div>

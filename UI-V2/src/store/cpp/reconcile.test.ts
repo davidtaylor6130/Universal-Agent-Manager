@@ -257,3 +257,18 @@ describe('historical model provenance', () => {
     expect(sanitizeCppMessage(message)?.modelId).toBeUndefined()
   })
 })
+
+
+describe('compaction reload and live event parity', () => {
+  it('keeps provider summaries as compaction blocks through save reload reconciliation', () => {
+    const summary = { type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1' }
+    const persisted = sanitizeCppMessage({ ...message, role: 'assistant', content: '', blocks: [summary] })!
+    const reconciled = reconcileCppMessages('chat-1', undefined, [persisted])
+    expect(reconciled[0].content).toBe('')
+    expect(reconciled[0].blocks).toEqual([summary])
+    const live = sanitizeCppAcpSession({ turnEvents: [summary] })
+    expect(live?.turnEvents).toEqual(reconciled[0].blocks)
+    const reloaded = reconcileCppMessages('chat-1', reconciled, [persisted])
+    expect(reloaded[0].blocks).toEqual([summary])
+  })
+})

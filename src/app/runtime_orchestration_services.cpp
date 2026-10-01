@@ -1725,6 +1725,9 @@ try
 		}
 		const nlohmann::json& info = entry["info"];
 		const std::string role = info.value("role", "");
+		const bool compaction_summary = role == "assistant" && info.value("summary", false);
+		if (role == "user" && std::ranges::any_of(entry["parts"], [](const nlohmann::json& part)
+		    { return part.is_object() && part.value("type", "") == "compaction"; })) continue;
 		Message message;
 		if (role == "user") message.role = MessageRole::User;
 		else if (role == "assistant") message.role = MessageRole::Assistant;
@@ -1807,7 +1810,15 @@ try
 				        part.value("filename", ""), part.value("name", "file")) + "]");
 			}
 		}
-		if (message.interrupted || !message.content.empty() || !message.thoughts.empty() || !message.tool_calls.empty())
+		if (compaction_summary)
+		{
+			std::string summary = std::move(message.content);
+			message.content.clear();
+			message.thoughts.clear();
+			message.blocks = {{"context_compaction", std::move(summary), "", info.value("id", "")}};
+			message.tool_calls.clear();
+		}
+		if (compaction_summary || message.interrupted || !message.content.empty() || !message.thoughts.empty() || !message.tool_calls.empty())
 			result.messages.push_back(std::move(message));
 	}
 	result.success = true;

@@ -505,7 +505,7 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("gemini-acp"));
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("opencode-acp"));
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("copilot-acp"));
-	UAM_ASSERT(!uam::UamControlService::SupportsStructuredProtocol("codex-app-server"));
+	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("codex-app-server"));
 	UAM_ASSERT(!uam::UamControlService::SupportsStructuredProtocol("claude-code-stream-json"));
 	TempDir temp("uam-control-capability");
 	uam::AppState app;
@@ -18551,4 +18551,75 @@ int main(int argc, char** argv)
 	}
 
 	return 0;
+}
+
+UAM_TEST(CliViewHandoffDiscoversIdentityBeforeFirstPollAndResumesAcrossRepeatedSwitches)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cli-view-handoff");
+	ScopedEnvVar codex_home_env("CODEX_HOME", temp.root.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::string identity = "33333333-3333-4333-8333-333333333333";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	fs::create_directories(temp.root / "sessions" / "2026");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl", nlohmann::json{{"id", identity}, {"updated_at", "2026-04-18T10:02:00Z"}}.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / "2026" / ("rollout-" + identity + ".jsonl"),
+	    nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", identity}, {"cwd", workspace.string()}}}}.dump() + "\n"));
+	ChatSession chat;
+	chat.id = "chat-view-switch";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+	std::string error;
+	UAM_ASSERT(!uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT(app.chats.front().native_session_id.empty());
+	app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	UAM_ASSERT(uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, identity);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->native_session_id, identity);
+	app.chats.front() = *saved;
+	for (int transition = 0; transition < 2; ++transition)
+	{
+		UAM_ASSERT(uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error));
+		const std::vector<std::string> args = uam::BuildProviderInteractiveArgv(app, app.chats.front());
+		UAM_ASSERT(uam::ranges::Contains(args, "resume"));
+		UAM_ASSERT(uam::ranges::Contains(args, identity));
+		app.cli_terminals.front()->running = true;
+		app.cli_terminals.front()->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		UAM_ASSERT(uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+		UAM_ASSERT_EQ(uam::ResolveAcpSessionResumeIdForTests(app, app.chats.front()), identity);
+	}
+#endif
+}
+
+UAM_TEST(OpenCodeCompactionImportUsesMetadataAndKeepsOrdinaryReplies)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const nlohmann::json exported = {
+	    {"info", {{"id", "ses_compaction"}, {"directory", "/tmp/workspace"}}},
+	    {"messages", nlohmann::json::array({
+	        {{"info", {{"role", "user"}, {"id", "compact-trigger"}}}, {"parts", nlohmann::json::array({{{"type", "compaction"}, {"auto", true}}})}},
+	        {{"info", {{"role", "assistant"}, {"id", "compact-summary"}, {"summary", true}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "Remember the workspace."}}})}},
+	        {{"info", {{"role", "assistant"}, {"id", "ordinary"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "Remember the workspace."}}})}},
+	    })},
+	};
+	const auto parsed = ChatHistorySyncService::ParseRemoteOpenCodeTranscript(exported.dump());
+	UAM_ASSERT(parsed.success);
+	UAM_ASSERT_EQ(parsed.messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(parsed.messages.front().content.empty());
+	UAM_ASSERT_EQ(parsed.messages.front().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(parsed.messages.front().blocks.front().text, std::string("Remember the workspace."));
+	UAM_ASSERT_EQ(parsed.messages.back().content, std::string("Remember the workspace."));
+#endif
 }

@@ -436,6 +436,8 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		return false;
 	}
 
+	// Bind the native identity before closing the CLI, including a view switch before its first poll.
+	DiscoverCliTerminalNativeSession(app, *terminal);
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	terminal->should_launch = false;
 	terminal->last_error.clear();

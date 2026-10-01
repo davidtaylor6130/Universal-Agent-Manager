@@ -438,30 +438,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (terminal.running && terminal_is_controller_local && !terminal_uses_native_history && CliTerminalAttachedSessionId(terminal).empty() && sync_interval_elapsed)
 	{
 		terminal.last_sync_time_s = now;
-		ChatSession* native_chat = FindChatForCliTerminal(app, terminal);
-		if (native_chat == nullptr)
-		{
-			return changed;
-		}
-
-		const std::filesystem::path workspace_root =
-		    uam::paths::ResolveControllerWorkspaceRootPath(app, *native_chat);
-		const std::string discovered = ProviderRuntimeRegistry::Resolve(terminal_provider).DiscoverInteractiveSessionId(terminal.session_ids_before, workspace_root);
-		if (!discovered.empty())
-		{
-			native_chat->native_session_id = discovered;
-			native_chat->updated_at = uam::time::TimestampNow();
-			terminal.attached_session_id = discovered;
-			app.resolved_native_sessions_by_chat_id[native_chat->id] = discovered;
-			if (!ProviderRuntime::SaveHistory(terminal_provider, app.data_root, *native_chat))
-			{
-				app.pending_chat_save_at_by_chat_id[native_chat->id] = now + 1.0;
-				uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_save_failed", &terminal,
-				                          "Could not save the native session link; retrying.");
-			}
-			uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "native_session_rebound", &terminal, "discovered=" + discovered);
-			changed = true;
-		}
+		changed |= DiscoverCliTerminalNativeSession(app, terminal);
 	}
 
 	if (should_refresh_native_history)

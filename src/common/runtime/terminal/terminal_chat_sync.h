@@ -10,6 +10,9 @@
 namespace uam
 {
 
+/// <summary>Discovers and saves a local CLI session link before polling or changing views.</summary>
+bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal);
+
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs);
 std::string NormalizeChatSyncTargetId(std::string_view chat_id);
 bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id);

@@ -261,7 +261,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'assistant_text' || type === 'thought') {
+  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction') {
     return {
       type,
       text: stringOr(value.text),

@@ -144,6 +144,45 @@ namespace
 	                            nlohmann::json& request)
 	{
 		if (session.model_discovery_only) return true;
+		if (method == uam::acp_methods::kThreadStart || method == uam::acp_methods::kThreadResume)
+		{
+			ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
+			if (chat == nullptr || !chat->uam_control_enabled) return true;
+			// The installed 0.159.2 schema verifies per-thread config on start and resume.
+			if (!CliProviderVersionAtLeast(session.agent_version, "0.159.2"))
+			{
+				session.last_error = "UAM Control needs Codex 0.159.2 or newer. Update Codex, or turn off UAM Control for this chat.";
+				return false;
+			}
+			nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			std::string error;
+			if (chat->execution_host_id != uam::execution_hosts::kLocalHostId)
+			{
+				const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id);
+				if (host == nullptr || host->runner_status != "ready")
+				{
+					session.last_error = "The selected remote runner is not ready.";
+					return false;
+				}
+				if (!ConfigureRemoteUamControlRelay(app, session, *chat, *host, uam::acp_methods::kSessionNew, &control_request)) return false;
+			}
+			else if (!UamControlService::AppendSessionMcpServer(app, session, *chat, uam::acp_methods::kSessionNew, control_request, &error))
+			{
+				session.last_error = std::move(error);
+				return false;
+			}
+			const nlohmann::json& server = control_request["params"]["mcpServers"].back();
+			nlohmann::json environment = nlohmann::json::object();
+			for (const nlohmann::json& entry : server["env"]) environment[entry["name"].get<std::string>()] = entry["value"];
+			request["params"]["config"]["mcp_servers.uam-control"] = {
+			    {"command", server["command"]}, {"args", server["args"]}, {"env", std::move(environment)},
+			    {"enabled", true}, {"required", true}, {"tool_timeout_sec", 300}, {"default_tools_approval_mode", "approve"}};
+			std::string instructions = request["params"].value("developerInstructions", nlohmann::json{}).is_string()
+			    ? request["params"]["developerInstructions"].get<std::string>() : "";
+			if (!instructions.empty()) instructions += "\n\n";
+			request["params"]["developerInstructions"] = instructions + "When you need user input, use the UAM Control user_question tool to ask one question and wait for the answer. Do not replace an interactive question with choices in ordinary answer text.";
+			return true;
+		}
 		const bool accepts = method == uam::acp_methods::kSessionNew ||
 		                     method == uam::acp_methods::kSessionLoad ||
 		                     method == uam::acp_methods::kSessionResume;

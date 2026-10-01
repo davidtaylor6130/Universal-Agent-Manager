@@ -1232,9 +1232,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeProvider = providers.find((provider) => provider.id === activeSession?.providerId)
     const activeUamControlSupported = Boolean(
       activeSession
-      && (activeSession.executionHostId || 'local') === 'local'
       && activeProvider?.supportsStructured !== false
-      && ['gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+      && ['codex-app-server', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )

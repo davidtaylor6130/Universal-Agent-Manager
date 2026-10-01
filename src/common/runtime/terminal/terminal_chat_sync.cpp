@@ -2,9 +2,16 @@
 
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
+#include "app/provider_resolution_service.h"
+#include "common/paths/workspace_root.h"
+#include "common/runtime/app_time.h"
+#include "common/runtime/terminal_polling.h"
+#include "common/utils/time_utils.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/provider_runtime.h"
+#include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
@@ -38,6 +45,36 @@ namespace
 			app.native_chat_refresh_error_status.clear();
 		}
 	}
+}
+
+bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
+{
+	ChatSession* chat = FindChatForCliTerminal(app, terminal);
+	if (chat == nullptr) return false;
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+	std::string identity = CliTerminalAttachedSessionId(terminal);
+	if (identity.empty() && chat->execution_host_id == uam::execution_hosts::kLocalHostId)
+	{
+		if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *chat))
+		{
+			const std::filesystem::path directory = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *chat);
+			TryAttachNativeSessionFromHistory(app, terminal, ChatHistorySyncService().LoadNativeSessionChats(directory, provider));
+			identity = CliTerminalAttachedSessionId(terminal);
+		}
+		else identity = ProviderRuntimeRegistry::Resolve(provider).DiscoverInteractiveSessionId(
+		    terminal.session_ids_before, uam::paths::ResolveControllerWorkspaceRootPath(app, *chat));
+	}
+	if (identity.empty() || chat->native_session_id == identity) return false;
+	chat->native_session_id = identity;
+	chat->updated_at = uam::time::TimestampNow();
+	terminal.attached_session_id = identity;
+	app.resolved_native_sessions_by_chat_id[chat->id] = identity;
+	if (!ProviderRuntime::SaveHistory(provider, app.data_root, *chat))
+	{
+		app.pending_chat_save_at_by_chat_id[chat->id] = GetAppTimeSeconds() + 1.0;
+		LogCliDiagnosticEvent(app, "native_session_link", "save_failed", &terminal, "Could not save the native session link; retrying.");
+	}
+	return true;
 }
 
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs)
