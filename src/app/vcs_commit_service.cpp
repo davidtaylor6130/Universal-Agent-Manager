@@ -883,6 +883,8 @@ namespace uam
 			{
 				status.branch_or_revision = output;
 			}
+			else if (context_only) status.error = "Could not read the Git branch.";
+			if (context_only) return;
 			if (status.branch_or_revision.empty() && OutputCommand(BuildGitCommandInDirectory(workspace, "rev-parse --short HEAD"), &output))
 			{
 				status.branch_or_revision = output;
@@ -1270,8 +1272,9 @@ namespace uam
 			}
 
 			if (git_root.empty()) git_root = status.workspace_directory;
-			RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
-			             &status.branch_or_revision);
+			if (!RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
+			                  &status.branch_or_revision) && context_only) status.error = "Could not read the Git branch.";
+			if (context_only) return status;
 			if (status.branch_or_revision.empty())
 				RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
 				             &status.branch_or_revision);

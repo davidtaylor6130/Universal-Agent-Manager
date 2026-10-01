@@ -18737,6 +18737,12 @@ UAM_TEST(VcsRepositoryContextReadsActualBranchWithoutChangedFileScan)
 	const uam::VcsCommitStatus second = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false, {}, true);
 	UAM_ASSERT_EQ(second.branch_or_revision, std::string("context-two"));
 	UAM_ASSERT(second.changed_files.empty());
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " -c user.name=UAM -c user.email=uam@example.invalid commit --allow-empty -m context"));
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " checkout --detach"));
+	const uam::VcsCommitStatus detached = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false, {}, true);
+	UAM_ASSERT(detached.available);
+	UAM_ASSERT(detached.branch_or_revision.empty());
+	UAM_ASSERT(detached.changed_files.empty());
 }
 
 UAM_TEST(TemporarySideTerminalCleanupKeepsUnrelatedParentOwned)

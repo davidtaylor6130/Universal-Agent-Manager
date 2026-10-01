@@ -1,3 +1,4 @@
+import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
@@ -1090,6 +1091,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 }
 
 function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderDrop, children }: { collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; onFolderDrop: (folderId: string) => void; children: ReactNode }) {
+  const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
   const remove = useAppStore((state) => state.deleteResourceCollection)
@@ -1174,11 +1176,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
             <ChevronRight size={14} className="transition-transform duration-200 ease-out motion-reduce:transition-none" style={{ transform: collection.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
           </button>
         </Tooltip>
-        <PaneColorIcon
-          Icon={Library}
-          colors={collection.collapsed ? hiddenPaneColors : []}
-          testId={`collection-icon-${collection.id}`}
-        />
+        <CustomIcon icon={collection.customIcon} fallback={<PaneColorIcon Icon={Library} colors={collection.collapsed ? hiddenPaneColors : []} testId={`collection-icon-${collection.id}`} />} />
         {editing ? (
           <input
             autoFocus
@@ -1210,6 +1208,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
       {menuOpen && (
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
+          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }}>Change icon</button>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--red)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
         </ViewportMenu>
       )}
@@ -1228,10 +1227,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
             }}
           >
             {children}
+            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></div>)}
             {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
       </div>
+      {iconPicker.dialog}
       {confirmingDelete && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setConfirmingDelete(false) }}>
           <div role="alertdialog" aria-modal="true" aria-label={`Delete ${collection.name} collection`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
@@ -1616,6 +1617,8 @@ const FolderRow = memo(function FolderRow({
   onMove,
   onDrop,
 }: FolderRowProps) {
+  const iconPicker = useCustomIconPicker()
+  const host = useAppStore((state) => state.executionHosts.find((candidate) => candidate.id === (folder.executionHostId || 'local')))
   const [showAllSessions, setShowAllSessions] = useState(false)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -1704,11 +1707,11 @@ const FolderRow = memo(function FolderRow({
           setMenuPos({ x: event.clientX, y: event.clientY })
         }}
       >
-        {shouldShowSessions ? (
+        <CustomIcon icon={folder.customIcon} secondary={host?.customIcon} fallback={shouldShowSessions ? (
           <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
         ) : (
           <PaneColorIcon Icon={FolderIcon} colors={hiddenPaneColors} testId={`folder-icon-${folder.id}`} />
-        )}
+        )} />
         <span className="font-semibold truncate flex-1" style={{ fontSize: 13 }}>
           {folder.name}
         </span>
@@ -1764,6 +1767,7 @@ const FolderRow = memo(function FolderRow({
         </div>
       </div>
 
+      {iconPicker.dialog}
       {menuPos && (
         <ViewportMenu
           ref={menuRef}
@@ -1785,6 +1789,8 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />
+          <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
+          <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
         </ViewportMenu>

@@ -764,7 +764,7 @@ describe('AppShell', () => {
     })
     const commitVcsChanges = vi.fn().mockResolvedValue({
       ok: true,
-      message: 'Git commit created.',
+      message: 'Git commit created.\n1 file changed.',
       error: '',
     })
     useAppStore.setState({
@@ -825,6 +825,8 @@ describe('AppShell', () => {
     })
 
     expect(commitVcsChanges).toHaveBeenCalledWith('chat-1', 'git', 'Update commit panel\n\n- Refresh checklist file controls', ['src/app.ts'])
+    expect(host.querySelector('details')?.open).toBe(false)
+    expect(host.querySelector('details pre')?.textContent).toContain('1 file changed.')
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
     act(() => {

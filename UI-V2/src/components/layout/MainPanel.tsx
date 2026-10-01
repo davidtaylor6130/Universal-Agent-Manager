@@ -4,14 +4,15 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
-import { isCefContext } from '../../ipc/cefBridge'
-import { IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { createRequestId, sendToCEF, isCefContext } from '../../ipc/cefBridge'
+import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 import {
+  assignChatToPane,
   chatGridLeaves,
   chatPaneColors,
   clearChatLeaf,
@@ -68,6 +69,21 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   onActivate: (leafId: string, sessionId?: string) => void
   onClose: (leafId: string, sessionId: string) => void
 }) {
+  const [sideDismissBusy, setSideDismissBusy] = useState(false)
+  const returnToParent = () => {
+    if (!session.temporaryParentChatId) return
+    assignChatToPane(session.temporaryParentChatId, leafId)
+    useAppStore.getState().setActiveSession(session.temporaryParentChatId)
+  }
+  const dismissSide = async () => {
+    if (sideDismissBusy) return
+    setSideDismissBusy(true)
+    try {
+      const response = await sendToCEF({ action: 'dismissSideChat', payload: { chatId: session.id }, requestId: createRequestId('dismissSide') })
+      if (!response.ok) setStopRuntimeError(response.error || 'Side chat could not be dismissed.')
+      else if ([session.id, session.temporaryParentChatId].includes(useAppStore.getState().activeSessionId ?? '')) returnToParent()
+    } finally { setSideDismissBusy(false) }
+  }
   const view = session.importedReadOnly ? 'chat' : session.viewMode
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
@@ -202,6 +218,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
+        {session.temporaryParentChatId && <><Button size="sm" variant="ghost" onClick={returnToParent}>Return</Button><Button size="sm" variant="danger" disabled={sideDismissBusy} onClick={() => void dismissSide()}>Dismiss</Button></>}
         {canStopAcpRuntime && (
           <IconButton
             icon={<PowerOff size={14} aria-hidden />}
@@ -246,23 +263,42 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   )
 })
 
-const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane, onActivate }: { active: boolean; leafId: string; paneIndex: number; multiPane: boolean; onActivate: (leafId: string, sessionId?: string) => void }) {
+const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane, onActivate, onClose }: {
+  active: boolean
+  leafId: string
+  paneIndex: number
+  multiPane: boolean
+  onActivate: (leafId: string, sessionId?: string) => void
+  onClose: (leafId: string) => void
+}) {
   const paneColor = chatPaneColors[paneIndex]
   return (
-    <button
-      type="button"
+    <div
       className="uam-chat-pane relative flex h-full w-full items-center justify-center text-center"
       data-focused={active}
       data-multi-pane={multiPane}
-      onClick={() => onActivate(leafId)}
-      onFocus={() => { if (!active) onActivate(leafId) }}
+      onMouseDown={() => { if (!active) onActivate(leafId) }}
+      onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      <span>
-        <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
-        <span className="block text-sm">Drag a chat here or select one</span>
-      </span>
-    </button>
+      <div className="flex flex-col items-center gap-3">
+        <button type="button" className="cursor-pointer text-sm hover:text-white focus-visible:outline" onClick={() => onActivate(leafId)}>
+          <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
+          Drag a chat here or select one
+        </button>
+        <div className="flex flex-col items-center gap-1">
+          <Button variant="primary" onClick={() => {
+            onActivate(leafId)
+            useAppStore.getState().setNewChatModalOpen(true)
+          }}>New Chat</Button>
+          <Tooltip label={multiPane ? 'Close this view' : 'Keep one view open'}>
+            <span>
+              <Button variant="ghost" size="sm" disabled={!multiPane} style={{ color: 'var(--error)' }} onClick={() => onClose(leafId)}>Close View</Button>
+            </span>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
   )
 })
 
@@ -422,7 +458,7 @@ export function MainPanel() {
     const session = sessions.find((candidate) => candidate.id === sessionId)
     return session
       ? <ChatPane key={session.id} session={session} active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} glide={glideSessionId === session.id} onActivate={selectPane} onClose={clearChat} />
-      : <EmptyPane active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} />
+      : <EmptyPane active={layout.activeLeafId === leafId} leafId={leafId} paneIndex={index} multiPane={leaves.length > 1} onActivate={selectPane} onClose={closePane} />
   }
 
   const paneDropTarget = (leafId: string, index: number, sessionId: string) => (
