@@ -2,10 +2,13 @@
 
 #include "common/models/app_models.h"
 #include "common/utils/base64.h"
+#if defined(_WIN32) || defined(__APPLE__)
 #include "common/utils/io_utils.h"
+#endif
 #include "common/utils/uuid.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <functional>
 #include <string_view>
 
 namespace uam::icons
@@ -54,6 +57,7 @@ namespace uam::icons
 		return width > 0 && height > 0 && width <= 256 && height <= 256;
 	}
 
+#if defined(_WIN32) || defined(__APPLE__)
 	/// <summary>Reads only bounded, regular assets inside the owned icons directory.</summary>
 	inline std::string PngDataUrl(const std::filesystem::path& data_root, const CustomIcon& icon)
 	{
@@ -76,4 +80,5 @@ namespace uam::icons
 		if (icon.type == "png" && !object["customIcon"].is_null())
 			object["customIcon"]["dataUrl"] = PngDataUrl(data_root, icon);
 	}
+#endif
 }
