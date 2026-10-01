@@ -9,6 +9,7 @@
 #include "app/provider_worker_command.h"
 
 #include "common/chat/chat_branching.h"
+#include "common/chat/conversation_handoff.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/native_chat_identity.h"
@@ -974,6 +975,11 @@ namespace
 
 		native.title = local.title;
 		native.folder_id = local.folder_id;
+		native.native_session_reset_pending = local.native_session_reset_pending;
+		native.provider_handoff_context = local.provider_handoff_context;
+		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.remote_recovery_enabled = local.remote_recovery_enabled;
+		native.remote_recovery_state = local.remote_recovery_state;
 		native.pinned = local.pinned;
 		native.linked_files = local.linked_files;
 		native.parent_chat_id = local.parent_chat_id;
@@ -2635,8 +2641,37 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	}
 	if (current_host != uam::execution_hosts::kLocalHostId)
 	{
-		app.status_line = "Moving remote chats between workspace directories is not supported yet.";
-		return false;
+		if (ChatNeedsTranscriptPreserved(app, chat) || uam::ChatHasActiveCliTerminal(app, chat.id))
+		{
+			app.status_line = "Stop the chat before moving its workspace.";
+			return false;
+		}
+		for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)
+		{
+			if (session != nullptr && session->chat_id == chat.id && session->running)
+			{
+				app.status_line = "Stop the chat before moving its workspace.";
+				return false;
+			}
+		}
+		ChatSession moved_chat = chat;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, moved_chat)) return false;
+		std::string error;
+		if (!uam::chat::BuildConversationHandoff(moved_chat, moved_chat.provider_handoff_context, &error))
+		{
+			app.status_line = error;
+			return false;
+		}
+		moved_chat.folder_id = target_folder_id;
+		moved_chat.workspace_directory = new_folder->directory;
+		moved_chat.native_session_id.clear();
+		moved_chat.native_session_reset_pending = true;
+		moved_chat.provider_handoff_session_id.clear();
+		moved_chat.updated_at = uam::time::TimestampNow();
+		if (!ChatRepository::SaveChat(app.data_root, moved_chat)) return false;
+		chat = std::move(moved_chat);
+		app.resolved_native_sessions_by_chat_id.erase(chat.id);
+		return true;
 	}
 
 	const ChatSession original_chat = chat;
@@ -3056,6 +3091,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					loaded_raw_match->provider_id = source_provider_id;
 				}
 				loaded_raw_match->native_session_id = target_native_session_id;
+				loaded_raw_match->native_session_reset_pending = false;
 				loaded_raw_match->messages = imported_chat.messages;
 				loaded_raw_match->messages_loaded = imported_chat.messages_loaded;
 				loaded_raw_match->updated_at = imported_chat.updated_at;
@@ -3073,6 +3109,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					resolved_only_match->provider_id = source_provider_id;
 				}
 				resolved_only_match->native_session_id = target_native_session_id;
+				resolved_only_match->native_session_reset_pending = false;
 				resolved_only_match->messages = imported_chat.messages;
 				resolved_only_match->messages_loaded = imported_chat.messages_loaded;
 				resolved_only_match->updated_at = imported_chat.updated_at;
@@ -3090,6 +3127,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					existing->provider_id = source_provider_id;
 				}
 				existing->native_session_id = target_native_session_id;
+				existing->native_session_reset_pending = false;
 				existing->messages = imported_chat.messages;
 				existing->messages_loaded = imported_chat.messages_loaded;
 				existing->updated_at = imported_chat.updated_at;
@@ -3143,6 +3181,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 				existing->provider_id = source_provider_id;
 			}
 			existing->native_session_id = target_native_session_id;
+				existing->native_session_reset_pending = false;
 			existing->updated_at = uam::time::TimestampNow();
 			app.resolved_native_sessions_by_chat_id[existing->id] = target_native_session_id;
 			return existing;
@@ -3170,6 +3209,7 @@ std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::
 		if (inferred_session_id && PersistLocalDraftNativeSessionLink(app, local_chat, *inferred_session_id))
 		{
 			local_chat.native_session_id = *inferred_session_id;
+			local_chat.native_session_reset_pending = false;
 		}
 	}
 

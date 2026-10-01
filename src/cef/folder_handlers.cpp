@@ -203,6 +203,39 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 	const std::string title = payload.value("title", "");
 	const std::string directory = payload.value("directory", "");
 
+	const ChatFolder* existing = ChatDomainService().FindFolderById(m_app, folder_id);
+	if (existing != nullptr && !uam::paths::IsControllerLocalWorkspace(*existing) && directory != existing->directory)
+	{
+		const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, existing->execution_host_id);
+		if (host == nullptr) { cb->Failure(404, "The workspace's SSH host no longer exists."); return; }
+		if (!uam::execution_hosts::IsAbsoluteRemotePath(host->platform, directory) || directory.size() > 4096)
+		{ cb->Failure(400, "Choose an absolute directory on this SSH host."); return; }
+		const ExecutionHost observed_host = *host;
+		const ChatFolder observed_folder = *existing;
+		(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [observed_host, directory]()
+		    {
+			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			        uam::remote::SshBridgeArgv(observed_host.ssh_alias, observed_host.platform, observed_host.runner_version, observed_host.runner_directory, observed_host.runner_protocol_version), observed_host.runner_version, observed_host.runner_protocol_version);
+			    uam::remote::DirectoryListing listing;
+			    std::string error;
+			    return client.ListDirectories(uam::paths::PathFromUtf8(directory), listing, &error)
+			        ? uam::query_handler_async::AsyncSuccess({}) : uam::query_handler_async::AsyncFailure(502, error);
+		    },
+		    [this, browser, observed_host, observed_folder, title, directory](uam::query_handler_async::AsyncCefResult& response)
+		    {
+			    if (!response.ok) return;
+			    const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, observed_folder.id);
+			    const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, observed_host.id);
+			    if (folder == nullptr || host == nullptr || !uam::execution_hosts::SameConnection(*host, observed_host) || folder->execution_host_id != observed_folder.execution_host_id || folder->directory != observed_folder.directory || folder->title != observed_folder.title)
+			    { response = uam::query_handler_async::AsyncFailure(409, "The SSH workspace changed while its destination was being checked."); return; }
+			    if (!RenameFolderById(m_app, observed_folder.id, title, directory))
+			    { response = uam::query_handler_async::AsyncFailure(FolderFailureCode(m_app.status_line), m_app.status_line); return; }
+			    uam::PushStateUpdateIfChanged(browser, m_app);
+		    });
+		return;
+	}
+
 	if (!RenameFolderById(m_app, folder_id, title, directory))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);

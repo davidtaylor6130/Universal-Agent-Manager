@@ -842,6 +842,8 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
   return {
     id,
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
+    remoteRecoveryEnabled: booleanOr(value.remoteRecoveryEnabled, false),
+    remoteRecoveryState: stringOr(value.remoteRecoveryState),
     title: stringOr(value.title, 'Untitled'),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
@@ -1501,6 +1503,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         lastSeenAt: stringOr(entry.lastSeenAt),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
+        instructionFile: stringOr(entry.instructionFile),
+        startupEnabled: booleanOr(entry.startupEnabled, false),
+        startupStatus: stringOr(entry.startupStatus, 'disabled'),
       })
     }
   }

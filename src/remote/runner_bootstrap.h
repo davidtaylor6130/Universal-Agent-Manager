@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -37,12 +38,15 @@ namespace uam::remote
 		std::vector<BootstrapStep> steps;
 	};
 
+	class BootstrapInstallLease;
+
 	struct BootstrapResult
 	{
 		bool ok = false;
 		std::string platform;
 		std::string architecture;
 		std::string error;
+		std::shared_ptr<BootstrapInstallLease> install_lease;
 	};
 
 	bool BuildBootstrapPlan(const std::string& ssh_alias,
@@ -52,6 +56,9 @@ namespace uam::remote
 	                        BootstrapPlan& plan,
 	                        std::string* error_out = nullptr,
 	                        const std::string& runner_directory = {});
+	/// <summary>OS-held target lock, scoped to the helper root and owned until transaction finalization.</summary>
+	std::vector<std::string> BuildBootstrapLockArgv(const BootstrapPlan& plan, std::string_view platform);
+	std::shared_ptr<BootstrapInstallLease> AcquireBootstrapInstallLease(const BootstrapPlan& plan, std::string_view platform, std::string& error, std::stop_token stop_token = {});
 	std::string BootstrapPlanPreview(const BootstrapPlan& plan);
 	BootstrapResult ExecuteBootstrapPlan(const BootstrapPlan& plan,
 	                                     std::stop_token stop_token = {});

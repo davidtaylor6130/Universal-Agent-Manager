@@ -158,6 +158,24 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
+  it('keeps saved SSH workspaces in the existing location rail and target picker', () => {
+    const { host, root } = renderModal()
+    act(() => {
+      const local = useAppStore.getState().folders[0]
+      useAppStore.setState({
+        executionHosts: [{ id: 'ssh-one', label: 'Build host', transport: 'ssh', sshAlias: 'build-host', platform: 'linux', runnerVersion: '4.9.0', runnerProtocolVersion: 3, runnerDirectory: '.uam', runnerStatus: 'ready', architecture: 'x86_64', lastSeenAt: '' }],
+        folders: [local, { ...local, id: 'remote-project', name: 'Remote project', directory: '/srv/project', executionHostId: 'ssh-one' }],
+      })
+    })
+    expect(host.querySelector('nav[aria-label="Memory locations"]')?.textContent).toContain('Remote project · Build host')
+    clickButton(host, 'Add memory')
+    const target = Array.from(host.querySelectorAll('button')).find((button) => button.getAttribute('aria-haspopup') === 'listbox' && button.textContent?.includes('Global memory'))
+    act(() => { target?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).some((option) => option.textContent?.includes('Remote project · Build host'))).toBe(true)
+    act(() => { root.unmount() })
+    host.remove()
+  })
+
   it('shows a target picker when adding from all memory', () => {
     const createMemoryEntry = vi.fn().mockResolvedValue(true)
     const { host, root } = renderModal({ createMemoryEntry })

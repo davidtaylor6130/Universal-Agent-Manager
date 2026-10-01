@@ -591,6 +591,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteLabel('')
   }
 
+  const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean) => {
+    if (remoteBusy) return
+    setRemoteBusy(true)
+    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled } })
+    setRemoteBusy(false)
+    setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
+  }
+
   const removeRemoteHost = async (host: ExecutionHost) => {
     if (remoteBusy) return
     setRemoteBusy(true)
@@ -2066,6 +2074,37 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
                     </div>
 					<div className="mt-1" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer" style={{ color: 'var(--text)' }}>Host options</summary>
+                      <form className="mt-3 grid gap-2" onSubmit={(event) => {
+                        event.preventDefault()
+                        const fields = new FormData(event.currentTarget)
+                        void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on')
+                      }}>
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" name="startupEnabled" defaultChecked={host.startupEnabled || false} />
+                          Start runner at login
+                        </label>
+                        <div style={{ color: 'var(--text-3)' }}>{host.startupStatus || 'disabled'} · Windows login or Linux systemd user session</div>
+                        <label className="grid gap-1">
+                          Host instruction file
+                          <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="px-2 py-1 font-mono outline-none" style={{ color: 'var(--text)', background: '#000', border: '1px solid var(--border)' }} />
+                        </label>
+                        <div style={{ color: 'var(--text-3)' }}>Read on this host before project context. Leave empty to skip.</div>
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={remoteBusy} onClick={(event) => {
+                            const form = event.currentTarget.closest('form')
+                            if (!form) return
+                            setRemoteBusy(true)
+                            void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile: String(new FormData(form).get('instructionFile') || '') } }).then((response) => {
+                              setRemoteBusy(false)
+                              setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+                            })
+                          }}>Check file</Button>
+                          <Button size="sm" type="submit" disabled={remoteBusy}>Save host options</Button>
+                        </div>
+                      </form>
+                    </details>
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />

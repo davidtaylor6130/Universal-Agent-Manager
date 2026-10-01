@@ -258,6 +258,9 @@ struct ChatSession
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
+	bool native_session_reset_pending = false;
 	// Only chats created by a version that assigns remote Claude CLI IDs may
 	// create one on first launch. Older unbound chats may already have history.
 	bool remote_claude_session_unstarted = false;
@@ -272,6 +275,8 @@ struct ChatSession
 	// Persisted from a stop-then-restart request until the replacement prompt is
 	// durably delivered or the abandoned restart is cleaned up after relaunch.
 	bool remote_restart_pending = false;
+	bool remote_recovery_enabled = false;
+	std::string remote_recovery_state;
 	// Capability required to reattach to or control the helper-owned process.
 	std::string remote_process_control_token;
 	std::uintmax_t remote_delivered_stdout_cursor = 0;
@@ -461,6 +466,9 @@ struct ExecutionHost
 	std::string last_seen_at;
 	std::string runner_directory;
 	int runner_protocol_version = 0;
+	std::string instruction_file;
+	bool startup_enabled = false;
+	std::string startup_status = "disabled";
 	bool operator==(const ExecutionHost&) const = default;
 };
 

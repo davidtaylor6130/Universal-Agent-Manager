@@ -48,6 +48,7 @@ jobs:
             binary: Builds/runner/uam-runner
             checksum: Builds/runner/uam-runner.sha256
             version: Builds/runner/uam-runner.version
+            manifest: Builds/runner/uam-runner.manifest.json
           - os: ubuntu-24.04-arm
             platform: linux
             arch: arm64
@@ -55,6 +56,7 @@ jobs:
             binary: Builds/runner/uam-runner
             checksum: Builds/runner/uam-runner.sha256
             version: Builds/runner/uam-runner.version
+            manifest: Builds/runner/uam-runner.manifest.json
           - os: windows-latest
             platform: windows
             arch: x86_64
@@ -62,6 +64,7 @@ jobs:
             binary: Builds/runner/Release/uam-runner.exe
             checksum: Builds/runner/Release/uam-runner.sha256
             version: Builds/runner/Release/uam-runner.version
+            manifest: Builds/runner/Release/uam-runner.manifest.json
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +77,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: if ((& Builds/runner/Release/uam-runner.exe --version).Trim() -ne (Get-Content -Raw Builds/runner/Release/uam-runner.version).Trim()) { throw 'Runner version mismatch.' }
+      - name: Package standalone runner
+        shell: pwsh
+        run: Compress-Archive -LiteralPath '${{ matrix.binary }}','${{ matrix.checksum }}','${{ matrix.version }}','${{ matrix.manifest }}' -DestinationPath 'Builds/runner/${{ matrix.artifact }}.zip'
+      - name: Verify runner source and protocol metadata
+        shell: pwsh
+        run: |
+          $manifest = Get-Content '${{ matrix.manifest }}' -Raw | ConvertFrom-Json
+          if ((& '${{ matrix.binary }}' --source-fingerprint).Trim() -cne $manifest.sourceFingerprint) { throw 'Runner source mismatch.' }
+          if ([int](& '${{ matrix.binary }}' --protocol-version) -ne $manifest.protocolVersion) { throw 'Runner protocol mismatch.' }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -81,6 +93,8 @@ jobs:
             ${{ matrix.binary }}
             ${{ matrix.checksum }}
             ${{ matrix.version }}
+            ${{ matrix.manifest }}
+            Builds/runner/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
   build:
@@ -122,6 +136,12 @@ jobs:
         with:
           name: UAM-runner-windows-x86_64
           path: Builds/remote-artifacts/windows-x86_64
+
+      - name: Validate shared remote helper contract
+        shell: pwsh
+        run: |
+          $version = (Get-Content UI-V2/package.json -Raw | ConvertFrom-Json).version
+          ./scripts/acquire_remote_runners.ps1 -Version $version -ArtifactRoot Builds/remote-artifacts -ValidateOnly
 
       - name: Set up Node
         uses: actions/setup-node@v4

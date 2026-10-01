@@ -1,3 +1,4 @@
+param([string]$RemoteRunnerArchiveDirectory = '', [switch]$Offline)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
@@ -50,6 +51,9 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     }
     if ($LASTEXITCODE -ne 0) { throw 'MSVC initialization failed.' }
 }
+
+$version = (Get-Content -LiteralPath 'UI-V2/package.json' -Raw | ConvertFrom-Json).version
+& "$PSScriptRoot/scripts/acquire_remote_runners.ps1" -Version $version -ArtifactRoot "$PSScriptRoot/Builds/remote-artifacts" -ArchiveDirectory $RemoteRunnerArchiveDirectory -Offline:$Offline
 
 & npm --prefix UI-V2 ci
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
