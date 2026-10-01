@@ -112,12 +112,12 @@ namespace
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
-		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		for (auto& [key, task] : app.runtime_cli_install_tasks) uam::ResetAsyncCommandTask(task);
+		app.runtime_cli_install_tasks.clear();
+		app.pending_cli_updates.clear();
 		app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
-		app.runtime_cli_pin_task.execution_host = ExecutionHost{};
 		app.runtime_cli_version_provider_id.clear();
 		app.runtime_cli_version_check_queue.clear();
-		app.runtime_cli_pin_provider_id.clear();
 		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
@@ -174,11 +174,8 @@ namespace
 	struct RuntimeCliCompatibilitySnapshot
 	{
 		std::string runtime_cli_version_provider_id;
-		std::string runtime_cli_pin_provider_id;
 		std::string check_execution_host_id;
-		std::string install_execution_host_id;
 		bool check_running = false;
-		bool install_running = false;
 		std::string provider_state_signature;
 		std::string status_line;
 	};
@@ -187,11 +184,8 @@ namespace
 	{
 		RuntimeCliCompatibilitySnapshot snapshot;
 		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
-		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
 		snapshot.check_execution_host_id = app.runtime_cli_version_check_task.execution_host.id;
-		snapshot.install_execution_host_id = app.runtime_cli_pin_task.execution_host.id;
 		snapshot.check_running = app.runtime_cli_version_check_task.running;
-		snapshot.install_running = app.runtime_cli_pin_task.running;
 		snapshot.provider_state_signature = CalculateCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
 		snapshot.status_line = app.status_line;
 		return snapshot;
@@ -203,13 +197,8 @@ namespace
 		{
 			return true;
 		}
-		if (before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id)
-		{
-			return true;
-		}
 		if (before.check_execution_host_id != after.check_execution_host_id ||
-		    before.install_execution_host_id != after.install_execution_host_id ||
-		    before.check_running != after.check_running || before.install_running != after.install_running)
+		    before.check_running != after.check_running)
 		{
 			return true;
 		}

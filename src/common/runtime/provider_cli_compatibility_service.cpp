@@ -10,6 +10,8 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/state/app_state.h"
@@ -21,11 +23,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -73,6 +77,12 @@ namespace
 		return unsupported;
 	}
 
+	std::string InstallManager(std::string_view method)
+	{
+		if (method.starts_with("homebrew-")) return "homebrew";
+		return method == "winget" ? "winget" : "npm";
+	}
+
 	std::string LocalPlatform()
 	{
 #if defined(_WIN32)
@@ -100,7 +110,8 @@ namespace
 
 	ProcessExecutionResult RunCliCommand(const ExecutionHost& host, const std::string& provider_id,
 	    const std::string& command, bool installing, int timeout_ms, std::stop_token stop_token,
-	    const std::string& previous_probe, std::optional<bool>* remote_connected_out)
+	    const std::string& previous_probe, const std::string& install_manager,
+	    const std::vector<std::pair<std::string, std::string>>& additional_probes, std::optional<bool>* remote_connected_out)
 	{
 		if (remote_connected_out != nullptr) *remote_connected_out = std::nullopt;
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
@@ -132,35 +143,41 @@ namespace
 		}
 		if (installing)
 		{
-			const ProviderCliPolicy* policy = FindProviderCliPolicy(provider_id);
-			if (policy == nullptr) { result.error = "The provider update policy is unavailable."; return finish(); }
-			const std::string probe_command = BuildInstallAwareProbeCommand(*policy, host.platform);
-			const std::vector<std::string> probe_argv = host.platform == "windows"
-			    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", probe_command}
-			    : std::vector<std::string>{"sh", "-lc", probe_command};
-			result = client.ExecuteCommand("cli-check-" + service.GenerateUuid(), uam::paths::PathFromUtf8(home.directory), probe_argv, kProviderCliVersionProbeTimeoutMs, stop_token);
-			if (!result.ok || result.exit_code != 0 || result.output_truncated || stop_token.stop_requested())
+			std::vector<std::pair<std::string, std::string>> probes = additional_probes;
+			probes.insert(probes.begin(), {provider_id, previous_probe});
+			for (const auto& [probe_provider, previous_output] : probes)
 			{
-				if (result.error.empty()) result.error = "Could not recheck the installed CLI. No update was started.";
-				result.ok = false;
-				return finish();
-			}
-			if (!ValidateRemoteInstallProbe(previous_probe, result.output, host.platform, &result.error))
-			{
-				result.ok = false;
-				return finish();
+				const ProviderCliPolicy* policy = FindProviderCliPolicy(probe_provider);
+				if (policy == nullptr) { result.error = "The provider update policy is unavailable."; return finish(); }
+				const std::string probe_command = BuildInstallAwareProbeCommand(*policy, host.platform);
+				const std::vector<std::string> probe_argv = host.platform == "windows"
+				    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", probe_command}
+				    : std::vector<std::string>{"sh", "-lc", probe_command};
+				result = client.ExecuteCommand("cli-check-" + service.GenerateUuid(), uam::paths::PathFromUtf8(home.directory), probe_argv, kProviderCliVersionProbeTimeoutMs, stop_token);
+				if (!result.ok || result.exit_code != 0 || result.output_truncated || stop_token.stop_requested())
+				{
+					if (result.error.empty()) result.error = "Could not recheck the installed CLI. No update was started.";
+					result.ok = false;
+					return finish();
+				}
+				if (!ValidateRemoteInstallProbe(previous_output, result.output, host.platform, &result.error))
+				{
+					result.ok = false;
+					return finish();
+				}
 			}
 		}
 		const std::vector<std::string> argv = host.platform == "windows"
 		    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", command}
 		    : std::vector<std::string>{"sh", "-lc", command};
 		// The fixed install ID excludes a second installer while an uncertain old lease remains.
-		const std::string process_id = installing ? "cli-update-" + provider_id : "cli-check-" + service.GenerateUuid();
+		const std::string process_id = installing ? "cli-update-" + (install_manager.empty() || install_manager == "winget" ? provider_id : install_manager) : "cli-check-" + service.GenerateUuid();
 		result = client.ExecuteCommand(process_id, uam::paths::PathFromUtf8(home.directory), argv, timeout_ms, stop_token);
 		return finish();
 	}
 
-	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const ExecutionHost& host, const std::string& provider_id, const std::string& command, bool installing, int timeout_ms, const std::string& previous_probe = {})
+	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const ExecutionHost& host, const std::string& provider_id, const std::string& command, bool installing, int timeout_ms, const std::string& previous_probe = {}, const std::string& install_manager = {},
+	    const std::vector<std::pair<std::string, std::string>>& additional_probes = {})
 	{
 		uam::ResetAsyncCommandTask(task);
 		task.running = true;
@@ -169,10 +186,10 @@ namespace
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		std::shared_ptr<AsyncProcessTaskState> state = task.state;
 		task.worker = std::make_unique<std::jthread>(
-		    [host, provider_id, command, installing, timeout_ms, previous_probe, state](std::stop_token stop_token)
+		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state](std::stop_token stop_token)
 		    {
 			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
-			        stop_token, previous_probe, &state->remote_helper_connected);
+			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected);
 
 			    if (!state->result.error.empty() && state->result.output.empty())
 			    {
@@ -234,7 +251,8 @@ namespace
 			return false;
 		}
 
-		output_out = std::move(task.state->result.output);
+		// Bulk package transactions share the result across provider tasks.
+		output_out = task.state->result.output;
 		if (remote_connected_out != nullptr)
 			*remote_connected_out = task.state->remote_helper_connected;
 		uam::ResetAsyncCommandTask(task);
@@ -637,14 +655,47 @@ namespace
 
 } // namespace
 
+std::vector<std::string> ProviderCliBlockingChatIds(const uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id)
+{
+	const std::string_view host_id = execution_host_id.empty() ? "local" : execution_host_id;
+	std::vector<std::string> ids;
+	const auto add = [&ids](const std::string& id)
+	{
+		if (std::ranges::find(ids, id) == ids.end()) ids.push_back(id);
+	};
+	for (const auto& session : app.acp_sessions)
+	{
+		if (!session || !uam::provider_ids::IsCliProviderAliasOf(session->provider_id, provider_id)) continue;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, session->chat_id);
+		if (!chat)
+		{
+			const auto found = std::ranges::find(app.model_discovery_chats, session->chat_id, &ChatSession::id);
+			if (found != app.model_discovery_chats.end()) chat = &*found;
+		}
+		if ((chat ? chat->execution_host_id == host_id : host_id == "local") &&
+		    (session->running || AcpSessionHasProviderInstallBlockingWork(app, *session, host_id == "local") || uam::AcpStopInProgress(app, session->chat_id))) add(session->chat_id);
+	}
+	for (const uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+	{
+		if (task.finished && !task.finished->load() && task.execution_host_id == host_id &&
+		    uam::provider_ids::IsCliProviderAliasOf(task.provider_id, provider_id)) add(task.chat_id);
+	}
+	for (const auto& terminal : app.cli_terminals)
+	{
+		if (!terminal || (!terminal->running && !terminal->native_session_setup_cancel)) continue;
+		const ChatSession* chat = uam::FindChatForCliTerminal(app, *terminal);
+		if (chat && chat->execution_host_id == host_id &&
+		    uam::provider_ids::IsCliProviderAliasOf(ProviderResolutionService().ProviderForChatOrDefault(app, *chat).id, provider_id)) add(chat->id);
+	}
+	return ids;
+}
+
 std::string ProviderCliLaunchBlockReason(const uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id)
 {
-	if (!app.runtime_cli_pin_task.running ||
-	    !uam::provider_ids::IsCliProviderAliasOf(provider_id, app.runtime_cli_pin_provider_id)) return {};
-	const std::string_view requested_host = execution_host_id.empty() ? uam::execution_hosts::kLocalHostId : execution_host_id;
-	const std::string_view installer_host = app.runtime_cli_pin_task.execution_host.id.empty()
-	    ? uam::execution_hosts::kLocalHostId : std::string_view(app.runtime_cli_pin_task.execution_host.id);
-	return requested_host == installer_host
+	const std::string key = CliProviderVersionStateKey(provider_id, execution_host_id);
+	if (app.pending_cli_updates.contains(key)) return "This provider is stopping for an update. Retry when the update finishes.";
+	const auto task = app.runtime_cli_install_tasks.find(key);
+	return task != app.runtime_cli_install_tasks.end() && task->second.running
 	    ? "This provider is being updated on this machine. Retry when the update finishes." : "";
 }
 
@@ -657,7 +708,7 @@ std::string CliProviderVersionStateKey(std::string_view provider_id, std::string
 
 void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force, bool include_remote) const
 {
-	if (app.runtime_cli_version_check_task.running || app.runtime_cli_pin_task.running) return;
+	if (app.runtime_cli_version_check_task.running) return;
 	app.runtime_cli_version_check_queue.clear();
 	std::vector<ExecutionHost> hosts{uam::execution_hosts::LocalHost()};
 	if (include_remote)
@@ -698,7 +749,7 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
 	if (host == nullptr || !IsReadyCliHost(*host))
 		return FailProviderCliInstall(error_out, "The selected SSH helper is unavailable. Reconnect it and check again.");
-	if (app.runtime_cli_version_check_task.running || app.runtime_cli_pin_task.running)
+	if (app.runtime_cli_version_check_task.running || !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty())
 		return FailProviderCliInstall(error_out, "A provider CLI command is already running.");
 	const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id);
 	if (policy == nullptr)
@@ -718,19 +769,11 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	return true;
 }
 
-bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out, std::string_view execution_host_id) const
+bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out, std::string_view execution_host_id, bool stop_sessions, bool prepare_only) const
 {
 	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
 	const std::string unsupported_provider_id = uam::strings::NonEmptyOrFallback(resolved.provider_id, uam::strings::TrimAsciiView(provider_id));
 	std::string_view trimmed_version = uam::strings::TrimAsciiView(version);
-	if (app.runtime_cli_pin_task.running)
-	{
-		return FailProviderCliInstall(error_out, "A provider CLI install is already running.");
-	}
-	if (app.runtime_cli_version_check_task.running)
-	{
-		return FailProviderCliInstall(error_out, "A provider CLI version check is already running.");
-	}
 	if (resolved.policy == nullptr || ProviderProfileStore::FindById(app.provider_profiles, resolved.provider_id) == nullptr)
 	{
 		return FailProviderCliInstall(error_out, "Unsupported provider: " + unsupported_provider_id);
@@ -747,10 +790,11 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
 	if (host == nullptr || !IsReadyCliHost(*host))
 		return FailProviderCliInstall(error_out, "The selected SSH helper is unavailable. Reconnect it and check again.");
-	if (ProviderHasActiveRuntimeWork(app, resolved.provider_id, host->id))
-	{
-		return FailProviderCliInstall(error_out, "Cannot install a provider CLI version while that provider is processing.");
-	}
+	if (!ProviderCliLaunchBlockReason(app, resolved.provider_id, host->id).empty())
+		return FailProviderCliInstall(error_out, "This provider CLI install is already running.");
+	if (app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == resolved.provider_id &&
+	    app.runtime_cli_version_check_task.execution_host.id == host->id)
+		return FailProviderCliInstall(error_out, "This provider CLI version check is already running.");
 
 	uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(resolved.provider_id, host->id)];
 	if (host->id != "local" && (!provider_state.checked || provider_state.installed_version.empty() ||
@@ -763,22 +807,140 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	    (provider_state.install_method != InstallMethodFromProbeOutput(provider_state.raw_output, true) ||
 	     !ValidateRemoteInstallProbe(provider_state.raw_output, provider_state.raw_output, host->platform, error_out)))
 		return FailProviderCliInstall(error_out, "Check this machine's CLI installation again before updating.");
+	for (const auto& [key, task] : app.runtime_cli_install_tasks)
+	{
+		const auto installed = app.runtime_cli_versions_by_provider_id.find(key);
+		if (task.running && task.execution_host.id == host->id && installed != app.runtime_cli_versions_by_provider_id.end() &&
+		    InstallManager(installed->second.install_method) == InstallManager(provider_state.install_method))
+			return FailProviderCliInstall(error_out, "This machine's package manager is updating another provider. Retry when it finishes.");
+	}
 	const std::string command = BuildInstallCommand(*resolved.policy, trimmed_version, provider_state.install_method);
 	if (command.empty())
 	{
 		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
 	}
 
+	const auto blocking = ProviderCliBlockingChatIds(app, resolved.provider_id, host->id);
+	if (!blocking.empty())
+	{
+		if (!stop_sessions) return FailProviderCliInstall(error_out, "Provider sessions are running. Stop the affected sessions and retry the update.");
+		app.pending_cli_updates[CliProviderVersionStateKey(resolved.provider_id, host->id)] =
+		    {resolved.provider_id, std::string(trimmed_version), *host, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 30.0};
+		provider_state.provider_id = resolved.provider_id;
+		provider_state.execution_host = *host;
+		provider_state.selected_version.assign(trimmed_version);
+		provider_state.last_install_status = "running";
+		provider_state.message = "Stopping provider sessions before installing the update.";
+		for (const std::string& chat_id : blocking)
+		{
+			(void)uam::StopAcpSession(app, chat_id, uam::AcpStopPurpose::ProviderUpdate);
+			if (auto* terminal = uam::FindCliTerminalForChat(app, chat_id))
+			{
+				terminal->should_launch = false;
+				uam::StopCliTerminal(*terminal, false, uam::CliTerminalStopMode::Graceful);
+			}
+		}
+		return true;
+	}
+
 	provider_state.provider_id = resolved.provider_id;
 	provider_state.execution_host = *host;
-	app.runtime_cli_pin_provider_id = resolved.provider_id;
 	provider_state.selected_version.assign(trimmed_version);
 	provider_state.install_command = command;
 	provider_state.install_output.clear();
 	provider_state.last_install_status = "running";
-	StartAsyncCommandTask(app.runtime_cli_pin_task, *host, resolved.provider_id, command, true, kProviderCliInstallTimeoutMs, provider_state.raw_output);
+	if (prepare_only) return true;
+	StartAsyncCommandTask(app.runtime_cli_install_tasks[CliProviderVersionStateKey(resolved.provider_id, host->id)], *host, resolved.provider_id, command, true, kProviderCliInstallTimeoutMs, provider_state.raw_output, InstallManager(provider_state.install_method));
 	app.status_line = ProviderTitleMessage("Running ", ProviderTitle(app, resolved.provider_id), " install command...");
 	return true;
+}
+
+std::string BuildBulkNpmInstallCommand(const std::vector<std::pair<std::string, std::string>>& targets)
+{
+	std::string command = "npm install -g";
+	std::unordered_set<std::string> seen;
+	for (const auto& [provider, version] : targets)
+	{
+		const std::string id = uam::provider_ids::CanonicalCliProviderLookupId(provider);
+		if (!seen.insert(id).second || !ProviderCliCompatibilityService().IsSupportedVersionForProvider(id, version)) return {};
+		const std::string package = GetNpmPackageNameForProvider(id);
+		if (package.empty()) return {};
+		command += " " + package + "@" + std::string(uam::strings::TrimAsciiView(version));
+	}
+	return targets.empty() ? "" : command;
+}
+
+std::string BuildBulkHomebrewUpgradeCommand(const std::vector<std::pair<std::string, std::string>>& targets)
+{
+	std::string packages;
+	bool all_casks = true;
+	bool all_formulas = true;
+	std::unordered_set<std::string> seen;
+	for (const auto& [provider, method] : targets)
+	{
+		const std::string id = uam::provider_ids::CanonicalCliProviderLookupId(provider);
+		const ProviderCliPolicy* policy = FindProviderCliPolicy(id);
+		if (!seen.insert(id).second || !policy || policy->homebrew_package.empty() ||
+		    (method != "homebrew-cask" && method != "homebrew-formula")) return {};
+		packages += " " + std::string(policy->homebrew_package);
+		all_casks = all_casks && method == "homebrew-cask";
+		all_formulas = all_formulas && method == "homebrew-formula";
+	}
+	if (targets.empty()) return {};
+	return "brew upgrade" + std::string(all_casks ? " --cask" : all_formulas ? " --formula" : "") + packages;
+}
+
+void ProviderCliCompatibilityService::StartInstallProviderVersions(uam::AppState& app,
+    const std::vector<std::tuple<std::string, std::string, std::string>>& targets) const
+{
+	std::unordered_map<std::string, std::vector<std::string>> groups;
+	for (const auto& [provider, version, host_id] : targets)
+	{
+		std::string error;
+		if (!StartInstallProviderVersion(app, provider, version, &error, host_id, false, true))
+		{
+			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider, host_id)];
+			state.provider_id = uam::provider_ids::CanonicalCliProviderLookupId(provider);
+			if (const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, host_id)) state.execution_host = *host;
+			state.last_install_status = "failed";
+			state.message = error;
+			continue;
+		}
+		const std::string key = CliProviderVersionStateKey(provider, host_id);
+		const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(key);
+		const std::string manager = InstallManager(state.install_method);
+		// Winget owns individual installer jobs; npm and brew share one mutable prefix.
+		groups[state.execution_host.id + "/" + manager + (manager == "winget" ? "/" + state.provider_id : "")].push_back(key);
+	}
+	for (const auto& [group_id, keys] : groups)
+	{
+		std::vector<std::pair<std::string, std::string>> packages;
+		std::vector<std::pair<std::string, std::string>> methods;
+		std::vector<std::pair<std::string, std::string>> probes;
+		for (const std::string& key : keys)
+		{
+			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(key);
+			packages.emplace_back(state.provider_id, state.selected_version);
+			methods.emplace_back(state.provider_id, state.install_method);
+			if (key != keys.front()) probes.emplace_back(state.provider_id, state.raw_output);
+			state.verify_failed_install = keys.size() > 1;
+		}
+		uam::CliProviderVersionState& leader_state = app.runtime_cli_versions_by_provider_id.at(keys.front());
+		const std::string manager = InstallManager(leader_state.install_method);
+		const std::string command = manager == "npm" ? BuildBulkNpmInstallCommand(packages) :
+		    manager == "homebrew" ? BuildBulkHomebrewUpgradeCommand(methods) : leader_state.install_command;
+		uam::AsyncCommandTask& leader = app.runtime_cli_install_tasks[keys.front()];
+		StartAsyncCommandTask(leader, leader_state.execution_host, leader_state.provider_id, command, true,
+		    kProviderCliInstallTimeoutMs, leader_state.raw_output, manager, probes);
+		for (std::size_t index = 1; index < keys.size(); ++index)
+		{
+			uam::AsyncCommandTask& task = app.runtime_cli_install_tasks[keys[index]];
+			task.running = true;
+			task.execution_host = leader.execution_host;
+			task.command_preview = command;
+			task.state = leader.state;
+		}
+	}
 }
 
 void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
@@ -805,6 +967,22 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		return entry.second.execution_host.id != uam::execution_hosts::kLocalHostId &&
 		       !host_matches(entry.second.execution_host);
 	});
+	for (auto it = app.pending_cli_updates.begin(); it != app.pending_cli_updates.end();)
+	{
+		const std::string key = it->first;
+		const uam::PendingCliUpdate pending = it->second;
+		const bool stopped = ProviderCliBlockingChatIds(app, pending.provider_id, pending.execution_host.id).empty();
+		if (host_matches(pending.execution_host) && !stopped && std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() < pending.deadline) { ++it; continue; }
+		it = app.pending_cli_updates.erase(it);
+		std::string error;
+		if (!host_matches(pending.execution_host)) error = "Machine configuration changed. Check its CLI version again.";
+		else if (!stopped) error = "Provider session shutdown could not be confirmed. The update was not installed. Stop the session and retry.";
+		else if (StartInstallProviderVersion(app, pending.provider_id, pending.version, &error, pending.execution_host.id)) continue;
+		auto& state = app.runtime_cli_versions_by_provider_id[key];
+		state.last_install_status = "failed";
+		state.message = error;
+	}
+
 	std::string output;
 
 	const ExecutionHost check_host = app.runtime_cli_version_check_task.execution_host;
@@ -835,6 +1013,16 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			else if (parsed)
 			{
 				provider_state.installed_version = *parsed;
+				if (provider_state.selected_version != "latest" && !provider_state.install_output.empty())
+				{
+					if (provider_state.installed_version == provider_state.selected_version) provider_state.last_install_status = "succeeded";
+					else if (provider_state.last_install_status == "succeeded")
+					{
+						provider_state.last_install_status = "failed";
+						provider_state.install_output += "\nThe installer finished, but the selected version was not installed.";
+					}
+				}
+
 				const std::string compatibility = CompatibilityStatusForProvider(provider_id, provider_state.installed_version);
 				provider_state.supported = compatibility != "known-incompatible" && compatibility != "unavailable";
 
@@ -877,34 +1065,45 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		}
 	}
 
-	const ExecutionHost install_host = app.runtime_cli_pin_task.execution_host;
-	std::optional<bool> install_connected;
-	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_pin_task, output, &install_connected))
+	for (auto& [key, task] : app.runtime_cli_install_tasks)
 	{
-		apply_remote_health(install_host, install_connected);
-		if (!host_matches(install_host))
+		const ExecutionHost install_host = task.execution_host;
+		std::optional<bool> install_connected;
+		if (TryConsumeAsyncCommandTaskOutput(task, output, &install_connected))
 		{
-			app.status_line = "Machine configuration changed. Check its CLI version again.";
-			return;
-		}
-		const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(app.runtime_cli_pin_provider_id);
-		uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, install_host.id)];
-		provider_state.install_output = output;
+			apply_remote_health(install_host, install_connected);
+			if (!host_matches(install_host))
+			{
+				app.status_line = "Machine configuration changed. Check its CLI version again.";
+				continue;
+			}
+			const std::string provider_id = key.substr(key.find_last_of('/') == std::string::npos ? 0 : key.find_last_of('/') + 1);
+			uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, install_host.id)];
+			provider_state.install_output = output;
 
-		if (OutputIndicatesCommandFailure(output))
-		{
-			app.status_line = "Provider CLI update command failed. Review its output in Updates.";
-			provider_state.message = "Update command failed.";
-			provider_state.last_install_status = "failed";
-		}
-		else
-		{
-			app.status_line = "Provider CLI update completed. Re-checking installed version.";
-			provider_state.message = app.status_line;
-			provider_state.last_install_status = "succeeded";
-			StartProviderVersionCheck(app, provider_id, true, install_host.id);
+			if (OutputIndicatesCommandFailure(output))
+			{
+				app.status_line = "Provider CLI update command failed. Review its output in Updates.";
+				provider_state.message = "Update command failed.";
+				provider_state.last_install_status = "failed";
+				if (provider_state.verify_failed_install) app.runtime_cli_version_check_queue.emplace_back(provider_id, install_host.id);
+			}
+			else
+			{
+				app.status_line = "Provider CLI update completed. Re-checking installed version.";
+				provider_state.message = app.status_line;
+				provider_state.last_install_status = "succeeded";
+				app.runtime_cli_version_check_queue.emplace_back(provider_id, install_host.id);
+			}
 		}
 	}
+	while (!app.runtime_cli_version_check_task.running && !app.runtime_cli_version_check_queue.empty())
+	{
+		const auto target = app.runtime_cli_version_check_queue.front();
+		app.runtime_cli_version_check_queue.pop_front();
+		StartProviderVersionCheck(app, target.first, true, target.second);
+	}
+
 }
 
 std::vector<CliProviderVersionOption> ProviderCliCompatibilityService::SupportedVersionsForProvider(std::string_view provider_id) const

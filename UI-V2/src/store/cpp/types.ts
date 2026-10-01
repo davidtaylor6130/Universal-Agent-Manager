@@ -505,6 +505,7 @@ export interface CliVersionOption {
 
 export interface CliVersionProviderState {
   providerId: string
+  blockingChatIds?: string[]
   executionHostId?: string
   executionHostName?: string
   installedVersion: string
@@ -554,6 +555,7 @@ export interface CppSettings {
   acpSetupInactivityTimeoutSeconds?: number
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string

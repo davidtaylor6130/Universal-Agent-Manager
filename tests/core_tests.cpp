@@ -4686,6 +4686,8 @@ UAM_TEST(SettingsStorePersistsUpdateCheckPreferences)
 	const fs::path settings_file = temp.root / "settings.txt";
 	AppSettings settings;
 	settings.update_checks_enabled = false;
+	UAM_ASSERT(!settings.automatic_provider_updates);
+	settings.automatic_provider_updates = true;
 	settings.update_last_checked_at = "2026-07-13T20:00:00.000Z";
 	settings.dismissed_update_versions = {
 	    {"uam", "4.2.0"},
@@ -4697,6 +4699,7 @@ UAM_TEST(SettingsStorePersistsUpdateCheckPreferences)
 	SettingsStore::Load(settings_file, loaded);
 
 	UAM_ASSERT(!loaded.update_checks_enabled);
+	UAM_ASSERT(loaded.automatic_provider_updates);
 	UAM_ASSERT_EQ(loaded.update_last_checked_at, std::string("2026-07-13T20:00:00.000Z"));
 	UAM_ASSERT_EQ(loaded.dismissed_update_versions["uam"], std::string("4.2.0"));
 	UAM_ASSERT_EQ(loaded.dismissed_update_versions["codex-cli"], std::string("0.130.0"));
@@ -10231,9 +10234,9 @@ UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 	UAM_ASSERT_EQ(claude_it->value("preferredVersion", ""), std::string("latest"));
 	UAM_ASSERT(!(*claude_it)["availableVersions"].empty());
 
-	app.runtime_cli_pin_task.running = true;
-	app.runtime_cli_pin_provider_id = " CoDeX ";
-	app.runtime_cli_pin_task.command_preview = "npm install -g @openai/codex@0.124.0";
+	app.runtime_cli_install_tasks[uam::provider_ids::kCodexCli].running = true;
+
+	app.runtime_cli_install_tasks[uam::provider_ids::kCodexCli].command_preview = "npm install -g @openai/codex@0.124.0";
 	const nlohmann::json running_manager = uam::StateSerializer::Serialize(app)["cliVersionManager"];
 	const nlohmann::json& running_providers = running_manager["providers"];
 	const auto running_codex_it = std::ranges::find_if(running_providers, [](const nlohmann::json& provider) { return provider.value("providerId", "") == "codex-cli"; });
@@ -10454,13 +10457,13 @@ UAM_TEST(CliProviderVersionCompletionsRejectReconfiguredOrRemovedHosts)
 			cached.installed_version = "0.149.0";
 			cached.raw_output = "replacement output";
 			cached.last_install_status = "untouched";
-			uam::AsyncCommandTask& task = installing ? app.runtime_cli_pin_task : app.runtime_cli_version_check_task;
+			uam::AsyncCommandTask& task = installing ? app.runtime_cli_install_tasks[key] : app.runtime_cli_version_check_task;
 			task.running = true;
 			task.execution_host = original;
 			task.state = std::make_shared<AsyncProcessTaskState>();
 			task.state->result.output = "codex-cli 0.148.0";
 			task.state->completed.store(true);
-			app.runtime_cli_pin_provider_id = uam::provider_ids::kCodexCli;
+
 			app.runtime_cli_version_provider_id = uam::provider_ids::kCodexCli;
 			if (!installing)
 			{
@@ -10470,7 +10473,7 @@ UAM_TEST(CliProviderVersionCompletionsRejectReconfiguredOrRemovedHosts)
 			}
 			ProviderCliCompatibilityService service;
 			service.Poll(app);
-			UAM_ASSERT(!app.runtime_cli_pin_task.running);
+			UAM_ASSERT(std::ranges::none_of(app.runtime_cli_install_tasks, [](const auto& entry) { return entry.second.running; }));
 			UAM_ASSERT(!app.runtime_cli_version_check_task.running);
 			if (removed)
 			{
@@ -10591,11 +10594,11 @@ UAM_TEST(CliProviderInstallTreatsLaunchAndTimeoutFailuresAsFailures)
 	{
 		uam::AppState app;
 		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-		app.runtime_cli_pin_provider_id = uam::provider_ids::kCopilotCli;
-		app.runtime_cli_pin_task.running = true;
-		app.runtime_cli_pin_task.state = std::make_shared<AsyncProcessTaskState>();
-		app.runtime_cli_pin_task.state->result.output = output;
-		app.runtime_cli_pin_task.state->completed.store(true);
+
+		app.runtime_cli_install_tasks[uam::provider_ids::kCopilotCli].running = true;
+		app.runtime_cli_install_tasks[uam::provider_ids::kCopilotCli].state = std::make_shared<AsyncProcessTaskState>();
+		app.runtime_cli_install_tasks[uam::provider_ids::kCopilotCli].state->result.output = output;
+		app.runtime_cli_install_tasks[uam::provider_ids::kCopilotCli].state->completed.store(true);
 
 		ProviderCliCompatibilityService().Poll(app);
 
@@ -10616,7 +10619,7 @@ UAM_TEST(CliProviderVersionInstallRejectsUnknownProvider)
 	UAM_ASSERT_EQ(error, std::string("Unsupported provider: unknown-provider"));
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, " UNKNOWN-PROVIDER ", "0.38.1", &error));
 	UAM_ASSERT_EQ(error, std::string("Unsupported provider: unknown-provider"));
-	UAM_ASSERT(!app.runtime_cli_pin_task.running);
+	UAM_ASSERT(std::ranges::none_of(app.runtime_cli_install_tasks, [](const auto& entry) { return entry.second.running; }));
 }
 
 UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
@@ -10632,7 +10635,7 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kCodexCli, "0.124.0", &error));
-	UAM_ASSERT_EQ(error, std::string("Cannot install a provider CLI version while that provider is processing."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
 #elif UAM_ENABLE_RUNTIME_GEMINI_CLI
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->provider_id = " GEMINI ";
@@ -10640,7 +10643,7 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kGeminiCli, std::string(uam::PreferredGeminiCliVersion()), &error));
-	UAM_ASSERT_EQ(error, std::string("Cannot install a provider CLI version while that provider is processing."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
 #else
 	(void)app;
 	(void)error;
@@ -10703,7 +10706,7 @@ UAM_TEST(CliProviderVersionInstallBlocksTerminalsMatchedByNativeSession)
 
 	const std::string version = ProviderCliCompatibilityService().PreferredVersionForProvider(provider_id);
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, provider_id, version, &error));
-	UAM_ASSERT_EQ(error, std::string("Cannot install a provider CLI version while that provider is processing."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
 
 	app.cli_terminals.clear();
 	app.chats.clear();
@@ -10720,7 +10723,7 @@ UAM_TEST(CliProviderVersionInstallBlocksTerminalsMatchedByNativeSession)
 
 	error.clear();
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, provider_id, version, &error));
-	UAM_ASSERT_EQ(error, std::string("Cannot install a provider CLI version while that provider is processing."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
 #else
 	(void)app;
 	(void)error;
@@ -18542,4 +18545,138 @@ int main(int argc, char** argv)
 	}
 
 	return 0;
+}
+
+UAM_TEST(BulkCliUpdatesUseOneSafeNpmTransaction)
+{
+	UAM_ASSERT_EQ(BuildBulkNpmInstallCommand({{"codex-cli", "0.124.0"}, {"claude-cli", "latest"}, {"copilot-cli", "latest"}}),
+	    std::string("npm install -g @openai/codex@0.124.0 @anthropic-ai/claude-code@latest @github/copilot@latest"));
+	UAM_ASSERT(BuildBulkNpmInstallCommand({{"codex-cli", "latest;touch /tmp/unsafe"}}).empty());
+	UAM_ASSERT(BuildBulkNpmInstallCommand({{"codex-cli", "latest"}, {" CoDeX ", "latest"}}).empty());
+	UAM_ASSERT(BuildBulkNpmInstallCommand({{"unknown", "latest"}}).empty());
+}
+
+UAM_TEST(ConcurrentCliInstallFailuresRemainIndependent)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const std::string provider : {"codex-cli", "claude-cli"})
+	{
+		auto& state = app.runtime_cli_versions_by_provider_id[provider];
+		state.provider_id = provider;
+		state.last_install_status = "running";
+		auto& task = app.runtime_cli_install_tasks[provider];
+		task.running = true;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.output = "Failed to run command: fixture " + provider;
+		task.state->completed.store(true);
+	}
+	ProviderCliCompatibilityService().Poll(app);
+	for (const std::string provider : {"codex-cli", "claude-cli"})
+	{
+		UAM_ASSERT_EQ(app.runtime_cli_versions_by_provider_id.at(provider).last_install_status, std::string("failed"));
+		UAM_ASSERT(uam::strings::Contains(app.runtime_cli_versions_by_provider_id.at(provider).install_output, provider));
+		UAM_ASSERT(!app.runtime_cli_install_tasks.at(provider).running);
+	}
+}
+
+UAM_TEST(CliUpdateBlockersIncludeIdleSessionsAndOnlyMatchingProviderAndHost)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const std::string id : {"local-codex", "remote-codex", "local-claude"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = id == "local-claude" ? "claude-cli" : "codex-cli";
+		chat.execution_host_id = id == "remote-codex" ? "remote" : "local";
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = id;
+		session->provider_id = chat.provider_id;
+		session->running = true;
+		app.acp_sessions.push_back(std::move(session));
+	}
+	UAM_ASSERT_EQ(ProviderCliBlockingChatIds(app, " CoDeX "), std::vector<std::string>{"local-codex"});
+	UAM_ASSERT_EQ(ProviderCliBlockingChatIds(app, "codex-cli", "remote"), std::vector<std::string>{"remote-codex"});
+	app.pending_cli_updates["codex-cli"] = {"codex-cli", "latest", ExecutionHost{}, 0.0};
+	ProviderCliCompatibilityService().Poll(app);
+	UAM_ASSERT(app.pending_cli_updates.empty());
+	UAM_ASSERT_EQ(app.runtime_cli_versions_by_provider_id.at("codex-cli").last_install_status, std::string("failed"));
+	UAM_ASSERT(app.runtime_cli_install_tasks.empty());
+	UAM_ASSERT(std::ranges::all_of(app.acp_sessions, [](const auto& session) { return session->running; }));
+}
+
+UAM_TEST(BulkCliTransactionRetainsOutputForEveryProvider)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::shared_ptr<AsyncProcessTaskState> shared = std::make_shared<AsyncProcessTaskState>();
+	shared->result.output = "Failed to run command: shared npm fixture failure";
+	shared->completed.store(true);
+	for (const std::string provider : {"codex-cli", "claude-cli"})
+	{
+		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[provider];
+		state.provider_id = provider;
+		state.last_install_status = "running";
+		uam::AsyncCommandTask& task = app.runtime_cli_install_tasks[provider];
+		task.running = true;
+		task.state = shared;
+	}
+	ProviderCliCompatibilityService().Poll(app);
+	for (const std::string provider : {"codex-cli", "claude-cli"})
+	{
+		UAM_ASSERT_EQ(app.runtime_cli_versions_by_provider_id.at(provider).last_install_status, std::string("failed"));
+		UAM_ASSERT_EQ(app.runtime_cli_versions_by_provider_id.at(provider).install_output, shared->result.output);
+	}
+}
+
+#if defined(__APPLE__)
+UAM_TEST(BulkCliNpmCommandRunsOneFixtureTransactionForAllPackages)
+{
+	TempDir temp("uam-bulk-npm-transaction");
+	const fs::path shim = temp.root / "npm";
+	UAM_ASSERT(uam::io::WriteTextFile(shim,
+	    "#!/bin/sh\nprintf 'transaction\\n' >> transactions.log\nprintf '%s\\n' \"$@\"\n"));
+	fs::permissions(shim, fs::perms::owner_exec, fs::perm_options::add);
+	const std::string command = BuildBulkNpmInstallCommand({{"codex-cli", "0.124.0"}, {"claude-cli", "latest"}});
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	// Set PATH inside the command, after login-shell setup, so only the fixture can run.
+	const ProcessExecutionResult result = process.ExecuteCommand(
+	    process.BuildShellCommandWithWorkingDirectory(temp.root, "PATH=\"$PWD\" " + command), 5000);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	UAM_ASSERT_EQ(result.output, std::string("install\n-g\n@openai/codex@0.124.0\n@anthropic-ai/claude-code@latest\n"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(temp.root / "transactions.log"), std::string("transaction\n"));
+}
+#endif
+
+UAM_TEST(BulkCliHomebrewTransactionUsesOnlyCuratedPackages)
+{
+	UAM_ASSERT_EQ(BuildBulkHomebrewUpgradeCommand({{"codex-cli", "homebrew-cask"}, {"opencode-cli", "homebrew-formula"}}), std::string("brew upgrade codex opencode"));
+	UAM_ASSERT_EQ(BuildBulkHomebrewUpgradeCommand({{"codex-cli", "homebrew-cask"}, {"claude-cli", "homebrew-cask"}}), std::string("brew upgrade --cask codex claude-code"));
+	UAM_ASSERT(BuildBulkHomebrewUpgradeCommand({{"codex-cli", "npm"}}).empty());
+	UAM_ASSERT(BuildBulkHomebrewUpgradeCommand({{"unknown", "homebrew-cask"}}).empty());
+}
+
+UAM_TEST(BulkCliPartialFailureReconcilesPinnedVersionsButNeverAssumesLatestSucceeded)
+{
+	for (const std::pair<std::string, std::string>& versions : std::vector<std::pair<std::string, std::string>>{{"0.124.0", "0.124.0"}, {"0.124.0", "0.123.0"}, {"latest", "0.125.0"}})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id["codex-cli"];
+		state.provider_id = "codex-cli";
+		state.selected_version = versions.first;
+		state.last_install_status = "failed";
+		state.install_output = "Failed to run command: shared transaction fixture";
+		app.runtime_cli_version_provider_id = "codex-cli";
+		app.runtime_cli_version_check_task.running = true;
+		app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+		app.runtime_cli_version_check_task.state->result.output = "codex-cli " + versions.second;
+		app.runtime_cli_version_check_task.state->completed.store(true);
+		ProviderCliCompatibilityService().Poll(app);
+		UAM_ASSERT_EQ(state.installed_version, versions.second);
+		UAM_ASSERT_EQ(state.last_install_status, std::string(versions.first == versions.second ? "succeeded" : "failed"));
+	}
 }

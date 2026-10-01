@@ -1,3 +1,4 @@
+import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
@@ -159,7 +160,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
   { id: 'about', label: 'About', icon: Info },
-]
+].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED)) as SettingsSection[]
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
@@ -372,7 +373,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [settingsSearch, setSettingsSearch] = useState('')
   const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
-    const section = SETTINGS_SECTIONS.find(item => item.id === id)!
+    const section = SETTINGS_SECTIONS.find(item => item.id === id)
+    if (!section) return false
     const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id]}`.toLocaleLowerCase()
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
@@ -500,7 +502,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }))
   }
   const changeSection = (section: SettingsSectionId) => {
-    if (section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
@@ -1186,7 +1188,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusy(false)
   }
   useEffect(() => {
-    if (selectedSection === 'defaults') void loadCompanionSettings()
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'defaults') void loadCompanionSettings()
   }, [selectedSection])
   const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
     if (computerUseSaveInFlight.current) return
@@ -1328,7 +1330,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderSectionContent = () => {
-    if (selectedSection === 'computer-use') return renderComputerUse()
+    if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
         ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
@@ -1680,7 +1682,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             </div>
           </SectionCard>
-          {renderPhoneAccess()}
+          {MOBILE_COMPANION_ENABLED && renderPhoneAccess()}
         </div>
       )
     }
@@ -2007,7 +2009,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
-    if (selectedSection === 'remote-hosts') {
+    if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
       return (
         <div className="space-y-4">

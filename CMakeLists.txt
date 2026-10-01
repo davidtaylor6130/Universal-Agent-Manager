@@ -5,6 +5,14 @@ endif()
 project(universal_agent_manager VERSION 4.9.0 LANGUAGES C CXX)
 set(UAM_PRODUCT_VERSION "4.9.0")
 
+option(UAM_ENABLE_COMPUTER_USE "Include UAM computer use and platform input/capture support." ON)
+option(UAM_ENABLE_SSH "Include SSH remote execution and bundled helpers." ON)
+option(UAM_ENABLE_MOBILE_COMPANION "Include the mobile companion server and frontend." ON)
+set(UAM_FEATURE_DEFINITIONS
+  UAM_ENABLE_COMPUTER_USE=$<BOOL:${UAM_ENABLE_COMPUTER_USE}>
+  UAM_ENABLE_SSH=$<BOOL:${UAM_ENABLE_SSH}>
+  UAM_ENABLE_MOBILE_COMPANION=$<BOOL:${UAM_ENABLE_MOBILE_COMPANION}>
+)
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
 set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
@@ -18,6 +26,12 @@ if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
 
+if(UAM_RUNNER_ONLY AND NOT UAM_ENABLE_SSH)
+  message(FATAL_ERROR "UAM_RUNNER_ONLY requires UAM_ENABLE_SSH=ON.")
+endif()
+if(UAM_PACKAGE_REMOTE_RUNNERS AND NOT UAM_ENABLE_SSH)
+  message(FATAL_ERROR "UAM_PACKAGE_REMOTE_RUNNERS requires UAM_ENABLE_SSH=ON. Disable runner packaging for a local-only build.")
+endif()
 if(NOT UAM_RUNNER_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
   include("${CMAKE_SOURCE_DIR}/cmake/validate_remote_runners.cmake")
 endif()
@@ -282,6 +296,10 @@ elseif(APPLE)
   )
 endif()
 
+if(NOT UAM_ENABLE_COMPUTER_USE)
+  set(UAM_COMPUTER_USE_PLATFORM_SOURCES src/computer_use/computer_use_disabled.cpp)
+endif()
+
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
@@ -294,6 +312,7 @@ add_executable(uam_runner
   src/remote/runner_state.cpp
 )
 set_target_properties(uam_runner PROPERTIES
+  EXCLUDE_FROM_ALL $<NOT:$<BOOL:${UAM_ENABLE_SSH}>>
   OUTPUT_NAME "uam-runner"
   CXX_STANDARD 20
   CXX_STANDARD_REQUIRED ON
@@ -336,6 +355,7 @@ elseif(MINGW)
   target_link_options(uam_runner PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 target_compile_definitions(uam_runner PRIVATE
+  ${UAM_FEATURE_DEFINITIONS}
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_HEADLESS_RUNNER=1
@@ -375,7 +395,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
 	  src/computer_use/computer_use_mcp_config.cpp
-	  src/computer_use/computer_use_mcp_server.cpp
+	  $<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:src/computer_use/computer_use_mcp_server.cpp>
 	  src/app/agent_definition_service.cpp
 	  src/app/agent_run_ledger.cpp
 	  src/app/agent_run_scheduler.cpp
@@ -406,7 +426,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_bridge_request.cpp
-  src/cef/companion_server.cpp
+  $<$<BOOL:${UAM_ENABLE_MOBILE_COMPANION}>:src/cef/companion_server.cpp>
   src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
@@ -493,7 +513,20 @@ target_include_directories(universal_agent_manager
     ${cef_binary_SOURCE_DIR}
 )
 
-find_package(ZLIB REQUIRED)
+find_package(ZLIB QUIET)
+if(NOT ZLIB_FOUND)
+  # A fresh desktop toolchain can build its dependency in this output folder.
+  set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(ZLIB_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(uam_zlib
+    URL https://zlib.net/zlib-1.3.2.tar.gz
+    URL_HASH SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+  )
+  FetchContent_MakeAvailable(uam_zlib)
+  add_library(ZLIB::ZLIB ALIAS zlibstatic)
+endif()
 target_link_libraries(universal_agent_manager PRIVATE ZLIB::ZLIB)
 
 # CEF link targets depend on platform.
@@ -517,11 +550,11 @@ if(APPLE)
     "-Wl,-framework,AVFoundation"
     "-Wl,-framework,Foundation"
     "-Wl,-framework,Speech"
-    "-Wl,-framework,ApplicationServices"
-    "-Wl,-framework,Carbon"
-    "-Wl,-framework,ImageIO"
-    "-Wl,-framework,QuartzCore"
-    "-Wl,-weak_framework,ScreenCaptureKit"
+    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,ApplicationServices>"
+    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,Carbon>"
+    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,ImageIO>"
+    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,QuartzCore>"
+    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-weak_framework,ScreenCaptureKit>"
   )
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
@@ -541,6 +574,7 @@ elseif(WIN32)
 endif()
 
 target_compile_definitions(universal_agent_manager PRIVATE
+  ${UAM_FEATURE_DEFINITIONS}
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
@@ -691,6 +725,7 @@ execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitl
 
     # Computer Use is a separate UI-element companion so macOS grants its
     # screen-capture and accessibility permissions to the least-privileged process.
+    if(UAM_ENABLE_COMPUTER_USE)
     set(_computer_use_name "UAM Computer Use")
     file(WRITE "${_cef_plists_dir}/computer-use-Info.plist"
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -729,6 +764,8 @@ if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.fra
 endif()
 ")
 
+    endif()
+
     # Sign the main executable binary with the JIT entitlement.
     # We sign only the binary (not the whole bundle) to avoid the sealed-resources
     # error caused by non-code assets (e.g. .woff fonts) inside the bundle.
@@ -736,17 +773,22 @@ endif()
 "require_dictation_usage_descriptions(\"\${UAM_BUNDLE_CONTENTS}/Info.plist\")
 execute_process(COMMAND codesign --force --sign - --entitlements \"${_jit_entitlements}\"
   \"\${UAM_MAIN_EXE}\")
-execute_process(COMMAND codesign --force --sign - --entitlements \"${_computer_use_entitlements}\"
+
+")
+
+
+    # Write the script to the build dir.
+    set(_helper_cmake_script "${_cef_plists_dir}/create_helpers.cmake")
+    if(UAM_ENABLE_COMPUTER_USE)
+      string(APPEND _helper_script_content "execute_process(COMMAND codesign --force --sign - --entitlements \"${_computer_use_entitlements}\"
   \"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app\"
   RESULT_VARIABLE _computer_use_sign_result)
 if(NOT _computer_use_sign_result EQUAL 0)
   message(FATAL_ERROR \"Failed to sign the Computer Use companion\")
 endif()
 ")
+    endif()
 
-
-    # Write the script to the build dir.
-    set(_helper_cmake_script "${_cef_plists_dir}/create_helpers.cmake")
     file(WRITE "${_helper_cmake_script}" "${_helper_script_content}")
 
     # POST_BUILD: run the generated script, passing bundle paths via -D.
@@ -855,13 +897,15 @@ set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD
 
 add_custom_target(uam_ui_v2_build
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
-  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" "VITE_UAM_OUT_DIR=${UAM_UI_DIST_SRC}" ${UAM_NPM_EXECUTABLE} run build
+  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" "VITE_UAM_OUT_DIR=${UAM_UI_DIST_SRC}" "VITE_UAM_COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}" "VITE_UAM_SSH=${UAM_ENABLE_SSH}" "VITE_UAM_MOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}" ${UAM_NPM_EXECUTABLE} run build
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
   COMMENT "Building UI-V2 dist in ${UAM_UI_DIST_SRC} (build id: ${UAM_UI_BUILD_ID})"
   VERBATIM
 )
 add_dependencies(universal_agent_manager uam_ui_v2_build)
-add_dependencies(universal_agent_manager uam_runner)
+if(UAM_ENABLE_SSH)
+  add_dependencies(universal_agent_manager uam_runner)
+endif()
 set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
 
 if(APPLE AND UAM_MACOS_BUNDLE)
@@ -882,84 +926,36 @@ if(UAM_PACKAGE_REMOTE_RUNNERS)
 endif()
 
 if(APPLE AND UAM_MACOS_BUNDLE)
-  add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${UAM_UI_DIST_SRC}"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E rm -f
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/skill-builder.uam"
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/markdown-store/bundled"
-    COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/gemini-policy.toml"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/SoftwareCursor.png"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "$<TARGET_FILE:uam_runner>"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${UAM_RUNNER_SHA256_FILE}"
-      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.sha256"
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	  "${UAM_RUNNER_VERSION_FILE}"
-	  "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.version"
-	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
-    COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
-  )
+  set(UAM_RESOURCE_DEST "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources")
 else()
+  set(UAM_RESOURCE_DEST "$<TARGET_FILE_DIR:universal_agent_manager>")
+endif()
+add_custom_command(TARGET universal_agent_manager POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/UI-V2/dist"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${UAM_UI_DIST_SRC}" "${UAM_RESOURCE_DEST}/UI-V2/dist"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store" "${UAM_RESOURCE_DEST}/markdown-store"
+  COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/markdown-store/skill-builder.uam"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store/bundled"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled" "${UAM_RESOURCE_DEST}/markdown-store/bundled"
+  COMMENT "Copying UI-V2 and bundled Markdown Store entries"
+  VERBATIM
+)
+if(UAM_ENABLE_COMPUTER_USE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_FILE_DIR:universal_agent_manager>/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${UAM_UI_DIST_SRC}"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/UI-V2/dist"
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store"
-    COMMAND ${CMAKE_COMMAND} -E rm -f
-      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/skill-builder.uam"
-    COMMAND ${CMAKE_COMMAND} -E remove_directory
-      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/markdown-store/bundled"
-    COMMAND ${CMAKE_COMMAND} -E echo "Bundled UI-V2 build id: ${UAM_UI_BUILD_ID}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/gemini-policy.toml"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png"
-      "$<TARGET_FILE_DIR:universal_agent_manager>/SoftwareCursor.png"
-	COMMAND ${CMAKE_COMMAND} -E make_directory
-	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote"
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	  "$<TARGET_FILE:uam_runner>"
-	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/$<TARGET_FILE_NAME:uam_runner>"
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	  "${UAM_RUNNER_SHA256_FILE}"
-	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.sha256"
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different
-	  "${UAM_RUNNER_VERSION_FILE}"
-	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.version"
-	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
-    COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml" "${UAM_RESOURCE_DEST}/gemini-policy.toml"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png" "${UAM_RESOURCE_DEST}/SoftwareCursor.png"
+    VERBATIM
+  )
+endif()
+if(UAM_ENABLE_SSH)
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${UAM_RESOURCE_DEST}/remote"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:uam_runner>" "${UAM_RESOURCE_DEST}/remote/$<TARGET_FILE_NAME:uam_runner>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_RUNNER_SHA256_FILE}" "${UAM_RESOURCE_DEST}/remote/uam-runner.sha256"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_RUNNER_VERSION_FILE}" "${UAM_RESOURCE_DEST}/remote/uam-runner.version"
+    ${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
+    VERBATIM
   )
 endif()
 
@@ -1016,7 +1012,7 @@ if(APPLE AND UAM_MACOS_BUNDLE AND EXISTS "${UAM_BUNDLE_ICON_ICNS}")
   )
 endif()
 
-if(APPLE AND UAM_MACOS_BUNDLE)
+if(APPLE AND UAM_MACOS_BUNDLE AND UAM_ENABLE_MOBILE_COMPANION)
   find_program(UAM_CADDY_EXECUTABLE NAMES caddy)
   if(UAM_CADDY_EXECUTABLE)
     get_filename_component(_uam_caddy_real "${UAM_CADDY_EXECUTABLE}" REALPATH)
@@ -1031,6 +1027,8 @@ if(APPLE AND UAM_MACOS_BUNDLE)
       COMMENT "Bundling companion HTTPS transport"
     )
   endif()
+endif()
+if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND /bin/sh -c
       "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign - '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
@@ -1042,6 +1040,34 @@ if(APPLE AND UAM_MACOS_BUNDLE)
     COMMENT "Signing and verifying final macOS app bundle"
   )
 endif()
+
+foreach(_disabled_feature IN ITEMS COMPUTER_USE SSH MOBILE_COMPANION)
+  if(NOT UAM_ENABLE_${_disabled_feature})
+    if(APPLE AND UAM_MACOS_BUNDLE)
+      set(_feature_root "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>")
+      if(_disabled_feature STREQUAL "COMPUTER_USE")
+        set(_feature_artifacts "${_feature_root}/Frameworks/UAM Computer Use.app" "${_feature_root}/Resources/SoftwareCursor.png" "${_feature_root}/Resources/gemini-policy.toml")
+      elseif(_disabled_feature STREQUAL "SSH")
+        set(_feature_artifacts "${_feature_root}/Resources/remote")
+      else()
+        set(_feature_artifacts "${_feature_root}/Resources/companion")
+      endif()
+    else()
+      set(_feature_root "$<TARGET_FILE_DIR:universal_agent_manager>")
+      if(_disabled_feature STREQUAL "COMPUTER_USE")
+        set(_feature_artifacts "${_feature_root}/SoftwareCursor.png" "${_feature_root}/gemini-policy.toml")
+      elseif(_disabled_feature STREQUAL "SSH")
+        set(_feature_artifacts "${_feature_root}/remote")
+      else()
+        set(_feature_artifacts "${_feature_root}/companion")
+      endif()
+    endif()
+    add_custom_command(TARGET universal_agent_manager PRE_LINK COMMAND ${CMAKE_COMMAND} -E rm -rf ${_feature_artifacts} VERBATIM)
+  endif()
+endforeach()
+
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/uam-build-manifest-$<CONFIG>.txt"
+  CONTENT "COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}\nSSH=${UAM_ENABLE_SSH}\nMOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}\nSOURCES\n$<JOIN:$<TARGET_GENEX_EVAL:universal_agent_manager,$<TARGET_PROPERTY:universal_agent_manager,SOURCES>>,\n>\n")
 
 # ---------------------------------------------------------------------------
 # Platform-specific settings
@@ -1228,6 +1254,7 @@ if(UAM_BUILD_TESTS)
     )
   endif()
   target_compile_definitions(uam_core_tests PRIVATE
+  ${UAM_FEATURE_DEFINITIONS}
     NOMINMAX
     UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
     UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>

@@ -1,3 +1,4 @@
+import { MOBILE_COMPANION_ENABLED } from './config/buildFeatures'
 import { lazy, Suspense, useEffect } from 'react'
 import { isCompanionContext } from './ipc/cefBridge'
 import { TooltipProvider } from './components/ui'
@@ -7,7 +8,7 @@ import { trapModalTab } from './utils/modalFocus'
 import { useResolvedTheme } from './hooks/useTheme'
 import { applyDocumentTheme } from './utils/themeStorage'
 
-const CompanionShell = lazy(() => import('./components/companion/CompanionShell').then(({ CompanionShell }) => ({ default: CompanionShell })))
+const CompanionShell = MOBILE_COMPANION_ENABLED ? lazy(() => import('./components/companion/CompanionShell').then(({ CompanionShell }) => ({ default: CompanionShell }))) : null
 const AppShell = lazy(() => import('./components/layout/AppShell').then(({ AppShell }) => ({ default: AppShell })))
 
 export default function App() {
@@ -31,7 +32,7 @@ export default function App() {
   return (
     <TooltipProvider>
       <Suspense fallback={<div role="status" className="p-4 text-sm">Loading Universal Agent Manager…</div>}>
-        {isCompanionContext() ? <CompanionShell /> : <AppShell />}
+        {isCompanionContext() && CompanionShell ? <CompanionShell /> : <AppShell />}
       </Suspense>
     </TooltipProvider>
   )

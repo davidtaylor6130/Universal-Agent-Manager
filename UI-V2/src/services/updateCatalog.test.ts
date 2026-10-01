@@ -204,7 +204,7 @@ describe('update catalog', () => {
     expect(fetch).toHaveBeenCalledTimes(11)
   })
 
-  it('does not report a successful catalog when the UAM release cannot be checked', async () => {
+  it('keeps independent provider releases when GitHub is unavailable', async () => {
     let call = 0
     vi.stubGlobal('fetch', vi.fn(async () => {
       call += 1
@@ -216,7 +216,10 @@ describe('update catalog', () => {
       }
     }))
 
-    await expect(fetchLatestUpdateCatalog()).rejects.toThrow('UAM update service is currently unavailable.')
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.providers['gemini-cli'].version).toBeTruthy()
+    expect(catalog.providers['codex-cli'].version).toBe('')
+    expect(catalog.providers['codex-cli'].homebrew?.version).toBeTruthy()
   })
 
   it('keeps successful results when one service returns invalid JSON', async () => {
