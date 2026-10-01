@@ -952,6 +952,33 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('shows expandable OpenCode provider groups and saves individual visibility choices', () => {
+    const defaultsSetter = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      providers: [fallbackProviderForId('opencode-cli')],
+      setProviderChatDefaults: defaultsSetter,
+      providerModelCatalogs: [{ providerId: 'opencode-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', availableModels: [
+        { id: 'openai/visible', name: 'Visible model', description: '' },
+        { id: 'anthropic/sonnet', name: 'Sonnet model', description: '' },
+      ], currentModelId: '', modelsLoading: false, modelRefreshError: '' }],
+    })
+    const { host, root } = renderModal()
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
+    const section = host.querySelector('#opencode-cli-defaults-panel')!
+    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent === 'Model visibility')!
+    expect(visibility).toBeTruthy()
+    const provider = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Show openai'))!
+    act(() => provider.querySelector<HTMLInputElement>('input')!.click())
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }))
+    const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
+    act(() => model.querySelector<HTMLInputElement>('input')!.click())
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }))
+    expect(useAppStore.getState().providerModelCatalogs[0].availableModels).toHaveLength(2)
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps provider chat defaults collapsed until toggled', () => {
     const { host, root } = renderModal()
 

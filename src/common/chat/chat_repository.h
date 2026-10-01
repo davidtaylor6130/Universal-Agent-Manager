@@ -4,9 +4,20 @@
 
 #include <filesystem>
 #include <optional>
+#include <memory>
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+struct PreparedChatSave
+{
+	std::filesystem::path primary_path;
+	std::filesystem::path primary_temp;
+	std::filesystem::path summary_path;
+	std::filesystem::path summary_temp;
+	bool preserve_backup = true;
+	~PreparedChatSave();
+};
 
 struct ChatStorageDeleteResult
 {
@@ -32,6 +43,11 @@ struct ChatStorageDeleteResult
 class ChatRepository
 {
   public:
+	/// <summary>Serializes and syncs temporary files on a worker without changing saved chat files.</summary>
+	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat);
+	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
+	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true);
+	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
 	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
@@ -53,5 +69,5 @@ class ChatRepository
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
 
   private:
-	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false);
+	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr);
 };

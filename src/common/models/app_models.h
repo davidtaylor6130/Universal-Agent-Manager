@@ -43,6 +43,7 @@ struct MessagePlanEntry
 	std::string content;
 	std::string priority;
 	std::string status;
+	bool operator==(const MessagePlanEntry&) const = default;
 };
 
 struct MessageBlock
@@ -51,6 +52,7 @@ struct MessageBlock
 	std::string text;
 	std::string tool_call_id;
 	std::string request_id_json;
+	bool operator==(const MessageBlock&) const = default;
 };
 
 struct MessageAttachment
@@ -62,6 +64,7 @@ struct MessageAttachment
 	std::string path;
 	std::uintmax_t size_bytes = 0;
 	bool copied = false;
+	bool operator==(const MessageAttachment&) const = default;
 };
 
 namespace uam
@@ -149,6 +152,7 @@ struct Message
 	std::string model_id;
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
+	bool operator==(const Message&) const = default;
 };
 
 /// <summary>
@@ -384,6 +388,8 @@ struct ProviderChatDefaults
 	bool small_model_mode = false;
 	std::string reviewer_model_id;
 	std::string feature_preference = "uam";
+	std::vector<std::string> hidden_model_ids;
+	std::vector<std::string> hidden_provider_ids;
 };
 
 /// <summary>

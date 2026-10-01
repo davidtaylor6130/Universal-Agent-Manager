@@ -195,8 +195,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
-	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)
+	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true, providerChatDefaults[providerId]).filter((option) => !option.disabled)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
+  useEffect(() => {
+    if (providerId === 'opencode-cli' && selectedModelId !== modelId) setModelId(selectedModelId)
+  }, [providerId, selectedModelId, modelId])
 	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
 	const capabilities = providerCapabilities(providerId, selectedProvider ?? undefined)
 	const reasoningOptions = (capabilities.hasReasoningEffort || runtimeSupportsReasoning) && !(selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length === 0)

@@ -64,6 +64,8 @@ namespace uam::settings_frontend_json
 			    {"smallModelMode", entry.second.small_model_mode},
 			    {"reviewerModelId", uam::strings::Trim(entry.second.reviewer_model_id)},
 			    {"featurePreference", entry.second.feature_preference == "provider" ? "provider" : "uam"},
+			    {"hiddenModelIds", entry.second.hidden_model_ids},
+			    {"hiddenProviderIds", entry.second.hidden_provider_ids},
 			};
 		}
 		return defaults_json;
