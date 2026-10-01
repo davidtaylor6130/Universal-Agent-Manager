@@ -177,10 +177,6 @@ namespace
 			request["params"]["config"]["mcp_servers.uam-control"] = {
 			    {"command", server["command"]}, {"args", server["args"]}, {"env", std::move(environment)},
 			    {"enabled", true}, {"required", true}, {"tool_timeout_sec", 300}, {"default_tools_approval_mode", "approve"}};
-			std::string instructions = request["params"].value("developerInstructions", nlohmann::json{}).is_string()
-			    ? request["params"]["developerInstructions"].get<std::string>() : "";
-			if (!instructions.empty()) instructions += "\n\n";
-			request["params"]["developerInstructions"] = instructions + "When you need user input, use the UAM Control user_question tool to ask one question and wait for the answer. Do not replace an interactive question with choices in ordinary answer text.";
 			return true;
 		}
 		const bool accepts = method == uam::acp_methods::kSessionNew ||

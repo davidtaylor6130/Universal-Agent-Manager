@@ -75,6 +75,7 @@ namespace uam
 		std::string attached_chat_id;
 		std::string attached_session_id;
 		std::vector<std::string> session_ids_before;
+		bool native_session_discovery_ambiguous = false;
 		std::vector<std::string> linked_files_snapshot;
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;

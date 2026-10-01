@@ -159,8 +159,9 @@ namespace uam::codex
 		return matched;
 	}
 
-	inline std::string PickNewSessionId(const std::vector<std::string>& ids_before, const std::filesystem::path& cwd, const std::filesystem::path& codex_home = CodexHomePath())
+	inline std::string PickNewSessionId(const std::vector<std::string>& ids_before, const std::filesystem::path& cwd, const std::filesystem::path& codex_home = CodexHomePath(), bool* ambiguous_out = nullptr)
 	{
+		if (ambiguous_out != nullptr) *ambiguous_out = false;
 		const std::unordered_set<std::string> before(ids_before.begin(), ids_before.end());
 		std::string discovered_id;
 
@@ -172,6 +173,7 @@ namespace uam::codex
 			}
 			if (!discovered_id.empty())
 			{
+				if (ambiguous_out != nullptr) *ambiguous_out = true;
 				return "";
 			}
 			discovered_id = id;

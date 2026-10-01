@@ -13777,7 +13777,15 @@ UAM_TEST(RuntimeHandoffRejectsBusyAcpAndStopsIdleAcpBeforeTerminalLaunch)
 	app.acp_sessions.front()->processing = false;
 	app.acp_sessions.front()->reconnect_pending = true;
 	app.acp_sessions.front()->lifecycle_state = "ready";
-	UAM_ASSERT(uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error));
+	bool prepared = uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error);
+	const std::chrono::steady_clock::time_point stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!prepared && error.empty() && std::chrono::steady_clock::now() < stop_deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		prepared = uam::PrepareAcpSessionForCliTerminalLaunch(app, app.chats.front(), &error);
+	}
+	UAM_ASSERT(prepared);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, chat.id));
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT(!app.acp_sessions.front()->reconnect_pending);
@@ -13875,7 +13883,11 @@ UAM_TEST(CodexSessionIndexRejectsAmbiguousNewSessionsForMatchingCwd)
 	UAM_ASSERT(!uam::ranges::Contains(indexed_ids, "not-a-session-id"));
 
 	const std::vector<std::string> before = {old_id};
-	UAM_ASSERT_EQ(runtime.DiscoverInteractiveSessionId(before, cwd), std::string(""));
+	bool ambiguous = false;
+	UAM_ASSERT_EQ(runtime.DiscoverInteractiveSessionId(before, cwd, &ambiguous), std::string(""));
+	UAM_ASSERT(ambiguous);
+	UAM_ASSERT_EQ(runtime.DiscoverInteractiveSessionId({old_id, newer_match_id}, cwd, &ambiguous), match_id);
+	UAM_ASSERT(!ambiguous);
 	UAM_ASSERT_EQ(runtime.DiscoverInteractiveSessionId({old_id, newer_match_id}, cwd), match_id);
 	UAM_ASSERT_EQ(runtime.DiscoverInteractiveSessionId({old_id, match_id, newer_match_id}, cwd), std::string(""));
 	const fs::path backup_rollout = match_rollout.string() + ".bak";

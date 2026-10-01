@@ -140,7 +140,11 @@ class IProviderRuntime
 	/// <summary>Captures native IDs before an unbound local CLI starts.</summary>
 	virtual std::vector<std::string> SnapshotInteractiveSessionIds() const { return {}; }
 	/// <summary>Discovers a new native binding using the provider's index and workspace rules.</summary>
-	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&) const { return {}; }
+	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&, bool* ambiguous_out = nullptr) const
+	{
+		if (ambiguous_out != nullptr) *ambiguous_out = false;
+		return {};
+	}
 	/// <summary>Maps provider-native message types to app message roles.</summary>
 	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const = 0;
 	/// <summary>Loads history according to runtime policy.</summary>

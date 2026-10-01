@@ -223,9 +223,9 @@ std::vector<std::string> CodexCliProviderRuntime::SnapshotInteractiveSessionIds(
 	return uam::codex::ReadSessionIndexIds();
 }
 
-std::string CodexCliProviderRuntime::DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace) const
+std::string CodexCliProviderRuntime::DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace, bool* ambiguous_out) const
 {
-	return uam::codex::PickNewSessionId(before, workspace);
+	return uam::codex::PickNewSessionId(before, workspace, uam::codex::CodexHomePath(), ambiguous_out);
 }
 
 

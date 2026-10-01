@@ -192,6 +192,8 @@ bool TryAttachNativeSessionFromHistory(uam::AppState& app, uam::CliTerminalState
 		return false;
 	}
 
+	terminal.native_session_discovery_ambiguous = HasCompetingUnboundCliSession(app, terminal);
+	if (terminal.native_session_discovery_ambiguous) return false;
 	const NativeSessionLinkService native_session_linker;
 	const std::unordered_set<std::string> blocked_ids = BlockedNativeSessionIdsForTerminal(app, terminal);
 	const std::string previous_chat_id = CliTerminalAttachedChatId(terminal);
@@ -207,8 +209,14 @@ bool TryAttachNativeSessionFromHistory(uam::AppState& app, uam::CliTerminalState
 	}
 	else
 	{
-		const std::vector<std::string> candidates = native_session_linker.CollectNewSessionIds(native_chats, terminal.session_ids_before);
-		discovered = native_session_linker.PickFirstUnblockedSessionId(candidates, blocked_ids);
+		std::vector<std::string> candidates = native_session_linker.CollectNewSessionIds(native_chats, terminal.session_ids_before);
+		std::erase_if(candidates, [&](const std::string& identity) { return blocked_ids.contains(identity); });
+		if (candidates.size() > 1)
+		{
+			terminal.native_session_discovery_ambiguous = true;
+			return false;
+		}
+		if (candidates.size() == 1) discovered = candidates.front();
 	}
 
 	if (discovered.empty())

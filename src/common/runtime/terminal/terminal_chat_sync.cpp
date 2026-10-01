@@ -47,12 +47,40 @@ namespace
 	}
 }
 
+bool HasCompetingUnboundCliSession(const AppState& app, const CliTerminalState& terminal)
+{
+	const ChatSession* chat = FindChatForCliTerminal(app, terminal);
+	if (chat == nullptr || !uam::paths::IsControllerLocalWorkspace(*chat)) return false;
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+	const std::filesystem::path workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, *chat);
+	for (const std::unique_ptr<CliTerminalState>& other : app.cli_terminals)
+	{
+		if (other == nullptr || other.get() == &terminal || !other->running || !CliTerminalAttachedSessionId(*other).empty()) continue;
+		const ChatSession* other_chat = FindChatForCliTerminal(app, *other);
+		if (other_chat == nullptr || other_chat->id == chat->id || !uam::paths::IsControllerLocalWorkspace(*other_chat)) continue;
+		const ProviderProfile& other_provider = ProviderResolutionService().ProviderForChatOrDefault(app, *other_chat);
+		if (other_provider.id != provider.id) continue;
+		const std::filesystem::path other_workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, *other_chat);
+		std::error_code path_error;
+		if (other_workspace != workspace && !std::filesystem::equivalent(workspace, other_workspace, path_error)) continue;
+		if (ProviderRuntimeRegistry::Resolve(other_provider).ResolveInteractiveResumeId(app, *other_chat).empty()) return true;
+	}
+	return false;
+}
+
 bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 {
 	ChatSession* chat = FindChatForCliTerminal(app, terminal);
 	if (chat == nullptr) return false;
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
 	std::string identity = CliTerminalAttachedSessionId(terminal);
+	if (identity.empty()) identity = ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, *chat);
+	terminal.native_session_discovery_ambiguous = false;
+	if (identity.empty() && HasCompetingUnboundCliSession(app, terminal))
+	{
+		terminal.native_session_discovery_ambiguous = true;
+		return false;
+	}
 	if (identity.empty() && chat->execution_host_id == uam::execution_hosts::kLocalHostId)
 	{
 		if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *chat))
@@ -62,9 +90,11 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 			identity = CliTerminalAttachedSessionId(terminal);
 		}
 		else identity = ProviderRuntimeRegistry::Resolve(provider).DiscoverInteractiveSessionId(
-		    terminal.session_ids_before, uam::paths::ResolveControllerWorkspaceRootPath(app, *chat));
+		    terminal.session_ids_before, uam::paths::ResolveControllerWorkspaceRootPath(app, *chat), &terminal.native_session_discovery_ambiguous);
 	}
-	if (identity.empty() || chat->native_session_id == identity) return false;
+	if (identity.empty()) return false;
+	terminal.attached_session_id = identity;
+	if (chat->native_session_id == identity) return false;
 	chat->native_session_id = identity;
 	chat->updated_at = uam::time::TimestampNow();
 	terminal.attached_session_id = identity;
@@ -101,7 +131,7 @@ bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id)
 bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 {
 	// Unknown activity must still block history rewrites and provider replacement.
-	return terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
+	return terminal.native_session_discovery_ambiguous || terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
 	       uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
 }
 

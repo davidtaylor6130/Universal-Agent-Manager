@@ -2385,3 +2385,61 @@ UAM_TEST(CodexCliProfileContextRetainsNativeInstructionsWithoutCopyingPolicy)
 	UAM_ASSERT(argv.back().find("Keep the synthetic profile instruction quince.") != std::string::npos);
 	UAM_ASSERT(argv.back().find("Native policy preserved.") == std::string::npos);
 }
+
+UAM_TEST(ConcurrentFreshCliSessionsNeverClaimAnotherWorkspaceSession)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cli-ownership");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	fs::create_directories(temp.root / "sessions");
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	const std::string first = "33333333-3333-4333-8333-333333333333";
+	const std::string second = "44444444-4444-4444-8444-444444444444";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl", nlohmann::json{{"id", first}}.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / ("rollout-" + first + ".jsonl"), nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", first}, {"cwd", workspace.string()}}}}.dump() + "\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const std::string id : {"fresh-first", "fresh-second"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = (id == "fresh-second" ? workspace / "." : workspace).string();
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+		terminal->frontend_chat_id = id;
+		terminal->attached_chat_id = id;
+		terminal->running = true;
+		terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		app.cli_terminals.push_back(std::move(terminal));
+	}
+	for (int index = 0; index < 2; ++index)
+	{
+		UAM_ASSERT(!DiscoverCliTerminalNativeSession(app, *app.cli_terminals[index]));
+		UAM_ASSERT(app.chats[index].native_session_id.empty());
+		UAM_ASSERT(app.cli_terminals[index]->native_session_discovery_ambiguous);
+		UAM_ASSERT(ChatHasBusyCliTerminal(app, app.chats[index].id));
+		std::string error;
+		UAM_ASSERT(!PrepareCliTerminalForAcpLaunch(app, app.chats[index].id, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(app.cli_terminals[index]->running);
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl", nlohmann::json{{"id", first}}.dump() + "\n" + nlohmann::json{{"id", second}}.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / ("rollout-" + second + ".jsonl"), nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", second}, {"cwd", workspace.string()}}}}.dump() + "\n"));
+	app.cli_terminals[1]->running = false;
+	std::string error;
+	UAM_ASSERT(!PrepareCliTerminalForAcpLaunch(app, app.chats[0].id, &error));
+	UAM_ASSERT(app.cli_terminals[0]->running);
+	UAM_ASSERT(app.cli_terminals[0]->native_session_discovery_ambiguous);
+	app.cli_terminals[0]->attached_session_id = first;
+	app.cli_terminals[1]->attached_session_id = second;
+	UAM_ASSERT(DiscoverCliTerminalNativeSession(app, *app.cli_terminals[0]));
+	UAM_ASSERT(DiscoverCliTerminalNativeSession(app, *app.cli_terminals[1]));
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, first);
+	UAM_ASSERT_EQ(app.chats[1].native_session_id, second);
+	app.cli_terminals[0]->running = false;
+	app.cli_terminals[1]->running = false;
+#endif
+}

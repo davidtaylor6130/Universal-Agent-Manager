@@ -10262,7 +10262,8 @@ UAM_TEST(CodexUamControlUsesVersionGatedPerThreadConfigLocallyAndRemotely)
 		const nlohmann::json& server = request["params"]["config"]["mcp_servers.uam-control"];
 		UAM_ASSERT(server.value("required", false));
 		UAM_ASSERT(!session.uam_control_capability_id.empty());
-		UAM_ASSERT(request["params"]["developerInstructions"].get<std::string>().find("user_question") != std::string::npos);
+		// Native configured instructions remain authoritative; the MCP tool description supplies question guidance.
+		UAM_ASSERT(!request["params"].contains("developerInstructions"));
 		if (remote)
 		{
 			UAM_ASSERT_EQ(server.value("command", ""), std::string("/bin/sh"));

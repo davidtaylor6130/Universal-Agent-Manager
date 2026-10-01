@@ -12,6 +12,8 @@ namespace uam
 
 /// <summary>Discovers and saves a local CLI session link before polling or changing views.</summary>
 bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal);
+/// <summary>Unbound concurrent consumers cannot own a workspace-only native history candidate.</summary>
+bool HasCompetingUnboundCliSession(const AppState& app, const CliTerminalState& terminal);
 
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs);
 std::string NormalizeChatSyncTargetId(std::string_view chat_id);

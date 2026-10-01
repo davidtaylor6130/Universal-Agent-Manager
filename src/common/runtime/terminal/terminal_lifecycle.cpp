@@ -374,6 +374,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 
 	CloseCliTerminalHandles(terminal);
 	terminal.running = false;
+	terminal.native_session_discovery_ambiguous = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
 	MarkCliTerminalStopped(terminal);
@@ -444,6 +445,11 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 
 	// Bind the native identity before closing the CLI, including a view switch before its first poll.
 	DiscoverCliTerminalNativeSession(app, *terminal);
+	if (terminal->native_session_discovery_ambiguous)
+	{
+		if (error_out != nullptr) *error_out = "Concurrent native CLI sessions could not be identified safely. Keep the CLI open until its session identity is available.";
+		return false;
+	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	terminal->should_launch = false;
 	terminal->last_error.clear();
