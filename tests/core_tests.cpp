@@ -18713,7 +18713,7 @@ UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)
 
 UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown)
 {
-	for (const std::string outcome : {"graceful", "forced", "unknown", "forged"})
+	for (const std::string outcome : {"graceful", "forced", "unknown", "forged", "lf", "crlf", "embedded", "incomplete", "suffix"})
 	{
 		TempDir temp("uam-remote-timeout-outcome");
 		uam::AppState app;
@@ -18740,11 +18740,18 @@ UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown
 		const std::string token = outcome == "forged" ? "wrong-delivery-token" : "owned-delivery-token";
 		const std::string reported = outcome == "forged" ? "graceful" : outcome;
 		const std::string marker = "UAM_REMOTE_STOP_OUTCOME " + token + " " + reported;
+		const bool synthetic = outcome == "lf" || outcome == "crlf" || outcome == "embedded" || outcome == "incomplete" || outcome == "suffix";
+		if (synthetic)
+		{
+			const std::string valid = "UAM_REMOTE_STOP_OUTCOME owned-delivery-token graceful";
+			pending->stderr_tail = outcome == "lf" ? valid + "\n" : outcome == "crlf" ? valid + "\r\n" :
+			                       outcome == "embedded" ? "diagnostic " + valid + "\n" : outcome == "suffix" ? valid + " extra\n" : valid;
+		}
 		std::string error;
 #if defined(_WIN32)
-		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", outcome == "unknown" ? "exit /b 0" : "echo " + marker + ">&2 & exit /b 0"};
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", outcome == "unknown" || synthetic ? "exit /b 0" : "(echo " + marker + ") >&2 & exit /b 0"};
 #else
-		const std::vector<std::string> argv = {"/bin/sh", "-c", outcome == "unknown" ? "exit 0" : "printf '" + marker + "\\n' >&2; exit 0"};
+		const std::vector<std::string> argv = {"/bin/sh", "-c", outcome == "unknown" || synthetic ? "exit 0" : "printf '" + marker + "\\n' >&2; exit 0"};
 #endif
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*pending, temp.root, argv, &error));
 		app.pending_acp_remote_stops.push_back(std::move(pending));
@@ -18754,9 +18761,10 @@ UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		UAM_ASSERT(app.pending_acp_remote_stops.empty());
-		const std::string expected = outcome == "graceful" ? "timeout" : outcome == "forced" ? "forced" : "unknown";
+		const bool graceful = outcome == "graceful" || outcome == "lf" || outcome == "crlf";
+		const std::string expected = graceful ? "timeout" : outcome == "forced" ? "forced" : "unknown";
 		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected);
-		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, outcome != "graceful");
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, !graceful);
 		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
 	}
 }

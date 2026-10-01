@@ -3135,9 +3135,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		if (session.remote_output_delivery_token.empty()) return;
 		const std::string prefix = std::string(uam::remote::kRemoteStopOutcomePrefix) + session.remote_output_delivery_token + " ";
-		for (const auto& [name, outcome] : {std::pair<std::string_view, platform::ProcessStopOutcome>{"graceful", platform::ProcessStopOutcome::Graceful},
-		                                {"forced", platform::ProcessStopOutcome::Forced}, {"failed", platform::ProcessStopOutcome::Failed}})
-			if (stderr_tail.find(prefix + std::string(name) + "\n") != std::string_view::npos) session.stop_outcome = outcome;
+		for (std::size_t newline = stderr_tail.find('\n'); newline != std::string_view::npos; newline = stderr_tail.find('\n'))
+		{
+			std::string_view line = stderr_tail.substr(0, newline);
+			stderr_tail.remove_prefix(newline + 1);
+			if (line.ends_with('\r')) line.remove_suffix(1);
+			if (!line.starts_with(prefix)) continue;
+			line.remove_prefix(prefix.size());
+			if (line == "graceful") session.stop_outcome = platform::ProcessStopOutcome::Graceful;
+			else if (line == "forced") session.stop_outcome = platform::ProcessStopOutcome::Forced;
+			else if (line == "failed") session.stop_outcome = platform::ProcessStopOutcome::Failed;
+		}
 	}
 
 	bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser)
