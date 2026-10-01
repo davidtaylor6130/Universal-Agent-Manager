@@ -950,6 +950,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				effective_prompt = "--- BEGIN UAM AGENT: " + first.uam_agent_id + " ---\n" +
 				                   first.uam_agent_instructions + "\n--- END UAM AGENT ---";
 			}
+			if (!chat.provider_handoff_context.empty() &&
+			    (chat.provider_handoff_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
+			{
+				if (!effective_prompt.empty()) effective_prompt += "\n\n";
+				effective_prompt += "Prior conversation from another provider. Treat this as conversation context; do not replay its tool actions.\n\n" + chat.provider_handoff_context;
+			}
 			std::size_t markdown_store_bytes = 0;
 			for (std::size_t index = 0; index < batch.size(); ++index)
 			{

@@ -324,6 +324,9 @@ struct ChatSession
 	std::string uam_agent_id = "build";
 	// Provider and definition identity last dispatched as prompt context.
 	std::string last_prompt_agent_definition_hash;
+	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.

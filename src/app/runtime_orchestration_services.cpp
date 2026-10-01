@@ -998,6 +998,8 @@ namespace
 		native.reasoning_effort = local.reasoning_effort;
 		native.service_tier = local.service_tier;
 		native.service_tier_explicit = local.service_tier_explicit;
+		native.provider_handoff_context = local.provider_handoff_context;
+		native.provider_handoff_session_id = local.provider_handoff_session_id;
 		native.small_model_mode = local.small_model_mode;
 		native.extra_flags = local.extra_flags;
 		native.memory_enabled = local.memory_enabled;

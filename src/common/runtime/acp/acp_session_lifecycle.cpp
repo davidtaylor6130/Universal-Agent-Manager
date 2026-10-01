@@ -1197,6 +1197,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		chat.last_prompt_agent_definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
+	if (!chat.provider_handoff_context.empty())
+	{
+		chat.provider_handoff_session_id = session.session_id;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
 	session.queued_prompt.clear();
 	if (!remote && !SaveChatQuietly(app, chat))
 	{

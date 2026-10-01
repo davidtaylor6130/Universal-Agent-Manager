@@ -2506,6 +2506,9 @@ UAM_TEST(ChatProviderSwitchPreservesHistoryStopsIdleRuntimesAndClearsIdentity)
 	UAM_ASSERT_EQ(saved.front().messages.front().provider, source_provider_id);
 	UAM_ASSERT_EQ(saved.front().messages.back().provider, source_provider_id);
 	UAM_ASSERT(saved.front().native_session_id.empty());
+	UAM_ASSERT_EQ(saved.front().provider_handoff_context, changed.provider_handoff_context);
+	UAM_ASSERT(saved.front().provider_handoff_context.find("Preserve this history.") != std::string::npos);
+	UAM_ASSERT(saved.front().provider_handoff_session_id.empty());
 }
 
 UAM_TEST(ChatProviderSwitchRebindsOrConvertsProviderManagedGoals)
@@ -5842,6 +5845,8 @@ UAM_TEST(NativeHistoryRefreshPreservesIndependentModelControls)
 	local.reasoning_effort = "xhigh";
 	local.service_tier = "fast";
 	local.service_tier_explicit = true;
+	local.provider_handoff_context = "User: preserve context";
+	local.provider_handoff_session_id = "delivered-session";
 	local.small_model_mode = true;
 	local.command_safety_tier = "aiReview";
 	local.workspace_isolation_kind = "gitWorktree";
@@ -5860,6 +5865,8 @@ UAM_TEST(NativeHistoryRefreshPreservesIndependentModelControls)
 
 	ChatSession native = local;
 	native.reasoning_effort.clear();
+	native.provider_handoff_context.clear();
+	native.provider_handoff_session_id.clear();
 	native.service_tier.clear();
 	native.small_model_mode = false;
 	native.command_safety_tier = "off";
@@ -5878,6 +5885,8 @@ UAM_TEST(NativeHistoryRefreshPreservesIndependentModelControls)
 
 	UAM_ASSERT_EQ(native_chats.front().reasoning_effort, std::string("xhigh"));
 	UAM_ASSERT_EQ(native_chats.front().service_tier, std::string("fast"));
+	UAM_ASSERT_EQ(native_chats.front().provider_handoff_context, local.provider_handoff_context);
+	UAM_ASSERT_EQ(native_chats.front().provider_handoff_session_id, local.provider_handoff_session_id);
 	UAM_ASSERT(native_chats.front().small_model_mode);
 	UAM_ASSERT_EQ(native_chats.front().command_safety_tier, std::string("aiReview"));
 	UAM_ASSERT_EQ(native_chats.front().workspace_isolation_kind, std::string("gitWorktree"));

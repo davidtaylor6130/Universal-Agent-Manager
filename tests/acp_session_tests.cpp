@@ -10089,3 +10089,65 @@ UAM_TEST(OpenCodeDoomLoopRequiresUserDecision)
 	UAM_ASSERT(waiting_in_review);
 	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("pending"));
 }
+
+UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
+{
+	TempDir temp("uam-provider-handoff");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "handoff";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back(Message{MessageRole::User, "The launch code is 4821."});
+	chat.messages.push_back(Message{MessageRole::Assistant, "I will remember 4821."});
+	chat.messages.back().tool_calls.push_back(ToolCall{});
+	chat.messages.back().tool_calls.back().args_json = "never replay this action";
+	chat.messages.push_back(Message{MessageRole::User, "Keep it for the next provider."});
+	chat.messages.push_back(Message{MessageRole::Assistant, "Saved."});
+	app.chats.push_back(chat);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, "codex-cli"), uam::ChatProviderSwitchResult::Changed);
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reopened.has_value());
+	app.chats.front() = *reopened;
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
+	session.chat_id = chat.id;
+	session.provider_id = "codex-cli";
+	session.protocol_kind = "codex-app-server";
+	session.running = true;
+	session.initialized = true;
+	session.session_setup_request_id = 1;
+	app.acp_sessions.push_back(std::move(owned));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "What is the launch code?", {}, {}, false, &error));
+	UAM_ASSERT(session.queued_prompt.find("User: The launch code is 4821.") != std::string::npos);
+	UAM_ASSERT(session.queued_prompt.find("Assistant: I will remember 4821.") != std::string::npos);
+	UAM_ASSERT(session.queued_prompt.find("Assistant: Saved.") != std::string::npos);
+	UAM_ASSERT(session.queued_prompt.find("What is the launch code?") != std::string::npos);
+	UAM_ASSERT(session.queued_prompt.find("never replay this action") == std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(5));
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd", "/C", "more"};
+#else
+	const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, sink, &error));
+	session.session_ready = true;
+	session.session_setup_request_id = 0;
+	session.session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	app.chats.front().native_session_id = session.session_id;
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().provider_handoff_session_id, session.session_id);
+	const std::optional<ChatSession> delivered = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(delivered.has_value());
+	UAM_ASSERT_EQ(delivered->provider_handoff_session_id, session.session_id);
+	session.processing = false;
+	session.prompt_request_id = 0;
+	session.session_ready = false;
+	session.session_setup_request_id = 2;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Continue in the same session.", {}, {}, false, &error));
+	UAM_ASSERT(session.queued_prompt.find("Prior conversation from another provider") == std::string::npos);
+	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+}

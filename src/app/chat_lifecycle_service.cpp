@@ -982,6 +982,16 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 			message.provider = previous_provider_id;
 		}
 	}
+	chat->provider_handoff_context.clear();
+	for (const Message& message : chat->messages)
+	{
+		if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) &&
+		    !uam::strings::IsBlank(message.content))
+		{
+			chat->provider_handoff_context += (message.role == MessageRole::User ? "User: " : "Assistant: ") + message.content + "\n\n";
+		}
+	}
+	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
 	for (Goal& goal : chat->goals)
