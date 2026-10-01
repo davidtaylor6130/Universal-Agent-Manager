@@ -9,7 +9,11 @@ import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton } from '../ui'
+import { RuntimeTimeout } from '../shared/RuntimeTimeout'
+import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
 import './companion.css'
+
+const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
 
 const TOKEN_KEY = 'uam-companion-token'
 const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal: Modal }) => ({ default: Modal })))
@@ -27,6 +31,7 @@ export function CompanionShell() {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'activity' | 'chats' | 'settings'>('activity')
   const [conversationOpen, setConversationOpen] = useState(false)
+  const [conversationView, setConversationView] = useState<'chat' | 'cli'>('chat')
   const [search, setSearch] = useState('')
   const [projectFilter, setProjectFilter] = useState('all')
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
@@ -280,12 +285,19 @@ export function CompanionShell() {
     useAppStore.setState({ activeSessionId: null, lastAppliedStateRevision: -1, sessions: [], folders: [], messages: {}, acpBindingBySessionId: {}, cliBindingBySessionId: {} })
   }
 
-  return <div className="uam-companion uam-app">
+  const recordActivity = useRuntimeActivity(session?.id ?? '')
+  useEffect(() => setConversationView('chat'), [session?.id, conversationOpen])
+
+  return <div className="uam-companion uam-app" onPointerDownCapture={conversationOpen ? recordActivity : undefined} onKeyDownCapture={conversationOpen ? recordActivity : undefined} onWheelCapture={conversationOpen ? recordActivity : undefined} onTouchMoveCapture={conversationOpen ? recordActivity : undefined}>
     <header className="uam-companion-header">
       {conversationOpen && session && <IconButton icon={<ArrowLeft size={18} />} label="Back to chats" onClick={() => setConversationOpen(false)} />}
       {!conversationOpen && <span className="uam-companion-brand"><img src="/app_icon-180.png" alt="UAM" /><strong className="truncate">Universal Agent Manager</strong></span>}
       {conversationOpen && <strong className="truncate">{session?.name}</strong>}
       {conversationOpen && session && <>
+        <select aria-label="Conversation view" value={conversationView} onChange={(event) => setConversationView(event.target.value as 'chat' | 'cli')}>
+          <option value="chat">Chat view</option>
+          <option value="cli" disabled={session.importedReadOnly}>CLI view</option>
+        </select>
         <IconButton icon={session.isPinned ? <PinOff size={16} /> : <Pin size={16} />} label={session.isPinned ? 'Unpin chat' : 'Pin chat'} active={Boolean(session.isPinned)} disabled={pinning} aria-busy={pinning || undefined} onClick={() => void togglePin()} />
         <span role="status" aria-label={currentStatus?.type === 'processing' ? 'Agent running' : currentStatus?.type === 'attention' ? `Needs attention: ${currentStatus.kind}` : currentStatus?.type === 'done' ? 'Done' : 'Idle'} className={`session-status session-status--${currentStatus?.type === 'processing' ? 'processing' : currentStatus?.type === 'attention' ? 'attention' : 'idle'}`}>
           {currentStatus?.type === 'attention' ? <CircleAlert size={16} /> : currentStatus?.type === 'done' ? <Check size={16} /> : <span />}
@@ -293,6 +305,7 @@ export function CompanionShell() {
       </>}
       {!conversationOpen && <IconButton icon={<Settings size={18} />} label="Settings" active={tab === 'settings'} onClick={() => { manualTabChoice.current = true; setTab('settings'); setPinError('') }} />}
     </header>
+    {conversationOpen && session && <div className="uam-companion-timeout-row"><RuntimeTimeout chatId={session.id} /></div>}
     {pinError && <div className="uam-companion-error" role="alert">{pinError}</div>}
     {error && <div className="uam-companion-error" role="alert">{error}</div>}
     {!token ? <form className="uam-companion-connect" onSubmit={(event) => {
@@ -313,7 +326,7 @@ export function CompanionShell() {
       <Button variant="ghost" onClick={disconnect}>Logout</Button>
     </main> : ready ? <>
       <main className="uam-companion-main">
-        {conversationOpen && session ? <ChatView key={session.id} session={session} /> : <div
+        {conversationOpen && session ? (conversationView === 'chat' ? <ChatView key={session.id} session={session} /> : <Suspense fallback={<p>Attaching terminal…</p>}><CLIView session={session} /></Suspense>) : <div
           className={`uam-companion-page-viewport uam-companion-page-viewport--${tab}`}
           onClickCapture={(event) => {
             const target = event.target as Element

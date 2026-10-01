@@ -2501,11 +2501,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    stopAcpSession: async (sessionId: string): Promise<boolean> => {
+    stopAcpSession: async (sessionId: string, purpose?: 'timeout'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
-          payload: { chatId: sessionId },
+          payload: { chatId: sessionId, ...(purpose ? { purpose } : {}) },
         })
         return response.ok
       }

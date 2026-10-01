@@ -316,6 +316,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.stderr_poll_pending = false;
 	session.recent_stderr.clear();
 	session.last_runtime_activity_time_s = 0.0;
+	session.idle_interaction_started_time_s = 0.0;
 	session.last_error.clear();
 	session.has_last_exit_code = false;
 	session.last_exit_code = 0;

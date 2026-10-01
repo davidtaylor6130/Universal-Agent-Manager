@@ -266,7 +266,7 @@ export interface AppState {
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
-  stopAcpSession: (sessionId: string) => Promise<boolean>
+  stopAcpSession: (sessionId: string, purpose?: 'timeout') => Promise<boolean>
 
   // UI actions
   setTheme: (theme: StoredTheme) => void
