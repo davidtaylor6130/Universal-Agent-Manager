@@ -995,6 +995,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (!terminal_prompt.empty()) effective_prompt = terminal_prompt + "\n\n" + effective_prompt;
 				}
 			}
+			if (!chat.provider_handoff_context.empty() &&
+			    (chat.provider_handoff_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
+				effective_prompt = chat.provider_handoff_context + "\n\nCurrent request:\n" + effective_prompt;
 			return true;
 		}
 
@@ -1528,6 +1531,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		ChatSession& chat = *chat_ptr;
+		if (chat.side_cleanup_requested)
+		{
+			if (error_out != nullptr) *error_out = "The temporary side chat is closing.";
+			return false;
+		}
 		if (chat.imported_read_only)
 		{
 			if (error_out != nullptr)
@@ -1824,6 +1832,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (chat == nullptr)
 		{
 			if (error_out != nullptr) *error_out = "Chat not found: " + chat_id;
+			return false;
+		}
+		if (chat->side_cleanup_requested)
+		{
+			if (error_out != nullptr) *error_out = "The temporary side chat is closing.";
 			return false;
 		}
 		if (chat->imported_read_only)
@@ -2462,17 +2475,27 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return !AcpStopInProgress(app, chat_id);
 	}
 
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process)
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, bool observe_exit)
 	{
-		auto owned = std::make_unique<platform::StdioProcessPlatformFields>();
+		std::shared_ptr<platform::StdioProcessPlatformFields> owned = std::make_shared<platform::StdioProcessPlatformFields>();
 		TransferStdioProcessFields(process, *owned);
 		AsyncAcpProcessStopTask task;
+		task.observe_exit = observe_exit;
+		task.owned_process = owned;
+		task.result = std::make_shared<platform::ObservedProcessStopResult>();
+		const std::shared_ptr<platform::ObservedProcessStopResult> result = task.result;
 		task.finished = std::make_shared<std::atomic<bool>>(false);
 		const std::shared_ptr<std::atomic<bool>> finished = task.finished;
 		task.worker = std::make_unique<std::jthread>(
-		    [owned = std::move(owned), finished](std::stop_token)
+		    [owned, finished, result, observe_exit](std::stop_token)
 		    {
-			    PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
+			    IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			    if (observe_exit)
+			    {
+				    *result = platform::StopStdioProcessObserved(service, *owned);
+				    if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
+			    }
+			    else service.StopStdioProcess(*owned, true);
 			    finished->store(true);
 		    });
 		app.acp_process_stop_tasks.push_back(std::move(task));
@@ -2723,7 +2746,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (session->running)
-			QueueAcpProcessStop(app, *session);
+		{
+			const bool temporary = chat != nullptr && !chat->temporary_parent_chat_id.empty();
+			QueueAcpProcessStop(app, *session, temporary);
+			if (temporary) chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
+		}
 		return FinalizeStoppedAcpSession(app, *session, chat);
 	}
 
@@ -3044,7 +3071,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool changed = RetryPendingRemoteAcpSessionHydration(app) > 0;
 		std::erase_if(app.acp_process_stop_tasks, [](const AsyncAcpProcessStopTask& task)
 		{
-			return task.finished != nullptr && task.finished->load();
+			return task.finished != nullptr && task.finished->load() && (!task.observe_exit || (task.result != nullptr && task.result->exit_confirmed));
 		});
 		const double stop_now = GetAppTimeSeconds();
 		for (auto stop = app.pending_acp_remote_stops.begin();

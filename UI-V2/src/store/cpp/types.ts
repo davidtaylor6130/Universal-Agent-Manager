@@ -1,3 +1,4 @@
+import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
 // store re-exports everything here so existing imports keep working.
@@ -68,6 +69,8 @@ export interface CppChat {
   folderId: string
   pinned?: boolean
   providerId: string
+  temporaryParentChatId?: string
+  sideCleanupRequested?: boolean
   parentChatId?: string
   branchRootChatId?: string
   branchFromMessageIndex?: number
@@ -440,6 +443,7 @@ export interface CppCliDebugState {
 }
 
 export interface CppFolder {
+  customIcon?: CustomIcon
   id: string
   title: string
   directory: string
@@ -563,6 +567,7 @@ export interface CppSettings {
   defaultNewChatProviderId?: string
   providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
+  fileExplorerApplication?: string
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
   mcpServers?: McpServerConfiguration[]

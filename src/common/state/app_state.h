@@ -4,6 +4,7 @@
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
@@ -531,6 +532,9 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		bool observe_exit = false;
+		std::shared_ptr<platform::StdioProcessPlatformFields> owned_process;
+		std::shared_ptr<platform::ObservedProcessStopResult> result;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};

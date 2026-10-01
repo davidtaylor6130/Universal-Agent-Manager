@@ -346,12 +346,12 @@ namespace uam
 			return false;
 		}
 
-		bool GitAvailable(const std::filesystem::path& workspace, std::string* root_out = nullptr)
+		bool GitAvailable(const std::filesystem::path& workspace, std::string* root_out = nullptr, bool validate = false)
 		{
 			std::string root;
 			if (!OutputCommand(BuildGitCommandInDirectory(workspace, "rev-parse --show-toplevel"), &root))
 			{
-				return HasGitDirectory(workspace);
+				return !validate && HasGitDirectory(workspace);
 			}
 			if (root_out != nullptr)
 			{
@@ -360,10 +360,10 @@ namespace uam
 			return true;
 		}
 
-		bool SvnAvailable(const std::filesystem::path& workspace)
+		bool SvnAvailable(const std::filesystem::path& workspace, bool validate = false)
 		{
 			std::string ignored;
-			return HasSvnDirectory(workspace) || OutputCommand(BuildSvnCommandInDirectory(workspace, "info"), &ignored);
+			return (!validate && HasSvnDirectory(workspace)) || OutputCommand(BuildSvnCommandInDirectory(workspace, "info"), &ignored);
 		}
 
 		std::vector<VcsChangedFile> ParseGitStatus(const std::string& status)
@@ -842,10 +842,10 @@ namespace uam
 			result.message = CommandOutputOrFallback(commit_result, fallback_message);
 		}
 
-		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root)
+		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate = false)
 		{
 			std::string root;
-			if (GitAvailable(workspace, &root))
+			if (GitAvailable(workspace, &root, validate))
 			{
 				status.vcs_types.push_back(VcsType::Git);
 				if (!root.empty())
@@ -853,7 +853,7 @@ namespace uam
 					git_root = uam::paths::PathFromUtf8(root);
 				}
 			}
-			if (SvnAvailable(workspace))
+			if (SvnAvailable(workspace, validate))
 			{
 				status.vcs_types.push_back(VcsType::Svn);
 			}
@@ -875,7 +875,7 @@ namespace uam
 			}
 		}
 
-		void PopulateGitStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, const std::filesystem::path& git_root, bool include_line_stats)
+		void PopulateGitStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, const std::filesystem::path& git_root, bool include_line_stats, bool context_only = false)
 		{
 			std::string output;
 			std::string error;
@@ -887,6 +887,7 @@ namespace uam
 			{
 				status.branch_or_revision = output;
 			}
+			if (context_only) return;
 			if (OutputCommandRaw(BuildGitCommandInDirectory(workspace, "status --porcelain=v1 -z --untracked-files=all"), &output, &error))
 			{
 				status.changed_files = ParseGitStatus(output);
@@ -931,7 +932,7 @@ namespace uam
 			if (include_line_stats) ApplyGitComparisonDetails(git_root, comparison_ref, status.changed_files);
 		}
 
-		void PopulateSvnStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats)
+		void PopulateSvnStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats, bool context_only = false)
 		{
 			std::string output;
 			std::string error;
@@ -939,6 +940,7 @@ namespace uam
 			{
 				status.branch_or_revision = output;
 			}
+			if (context_only) return;
 			if (OutputCommandRaw(BuildSvnCommandInDirectory(workspace, "status"), &output, &error))
 			{
 				status.changed_files = ParseSvnStatus(output);
@@ -1220,7 +1222,7 @@ namespace uam
 		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const ChatSession& chat,
 		                             const VcsType requested_type,
 		                             const bool include_line_stats,
-		                             const std::string& comparison_ref)
+		                             const std::string& comparison_ref, bool context_only = false)
 		{
 			VcsCommitStatus status;
 			status.line_stats_ready = include_line_stats;
@@ -1248,6 +1250,7 @@ namespace uam
 				RemoteOutput(context, status.workspace_directory,
 				             {"svn", "info", "--show-item", "revision", "."},
 				             &status.branch_or_revision);
+				if (context_only) return status;
 				std::string output;
 				if (!RemoteOutput(context, status.workspace_directory, {"svn", "status"},
 				                  &output, &status.error, true)) return status;
@@ -1273,6 +1276,7 @@ namespace uam
 				RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
 				             &status.branch_or_revision);
 
+			if (context_only) return status;
 			std::string output;
 			if (comparison_ref.empty())
 			{
@@ -1483,13 +1487,13 @@ namespace uam
 		return uam::strings::TrimmedEqualsIgnoreCase(value, "svn") ? VcsType::Svn : VcsType::Git;
 	}
 
-	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref) const
+	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref, bool context_only) const
 	{
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
 			return RemoteStatus(context, chat, requested_type, include_line_stats,
-			                    uam::strings::Trim(comparison_ref));
+			                    uam::strings::Trim(comparison_ref), context_only);
 		}
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
@@ -1497,7 +1501,7 @@ namespace uam
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 		std::filesystem::path git_root = workspace;
 
-		PopulateAvailableVcsTypes(status, workspace, git_root);
+		PopulateAvailableVcsTypes(status, workspace, git_root, context_only);
 		if (!status.available)
 		{
 			status.warning = "No Git or SVN repository detected for this workspace.";
@@ -1510,11 +1514,11 @@ namespace uam
 			const std::string ref = uam::strings::Trim(comparison_ref);
 			if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
 			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
-			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats);
+			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats, context_only);
 		}
 		else
 		{
-			PopulateSvnStatusDetails(status, workspace, include_line_stats);
+			PopulateSvnStatusDetails(status, workspace, include_line_stats, context_only);
 		}
 		return status;
 	}

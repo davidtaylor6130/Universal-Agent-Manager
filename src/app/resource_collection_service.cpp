@@ -1,6 +1,7 @@
 #include "app/resource_collection_service.h"
 
 #include "common/chat/chat_ids.h"
+#include "common/config/custom_icon.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
@@ -106,7 +107,7 @@ namespace uam
 
 		nlohmann::json ReferenceJson(const ResourceReference& reference)
 		{
-			return {{"id", reference.id}, {"type", reference.type}, {"target", reference.target}, {"label", reference.label}};
+			return {{"id", reference.id}, {"type", reference.type}, {"target", reference.target}, {"label", reference.label}, {"customIcon", uam::icons::Serialize(reference.custom_icon)}};
 		}
 
 		nlohmann::json CollectionJson(const ResourceCollection& collection)
@@ -116,7 +117,7 @@ namespace uam
 			{
 				references.push_back(ReferenceJson(reference));
 			}
-			return {{"id", collection.id}, {"name", collection.name}, {"collapsed", collection.collapsed}, {"references", std::move(references)}};
+			return {{"id", collection.id}, {"name", collection.name}, {"collapsed", collection.collapsed}, {"customIcon", uam::icons::Serialize(collection.custom_icon)}, {"references", std::move(references)}};
 		}
 
 		std::optional<std::vector<ResourceCollection>> ParseCollections(const std::string& text)
@@ -141,6 +142,7 @@ namespace uam
 				collection.id = uam::strings::Trim(JsonString(value, "id"));
 				collection.name = uam::strings::Trim(JsonString(value, "name"));
 				collection.collapsed = JsonBool(value, "collapsed", false);
+				collection.custom_icon = uam::icons::Parse(value.value("customIcon", nlohmann::json(nullptr)));
 				if (!IsValidId(collection.id) || collection.name.empty() || collection.name.size() > kMaxNameBytes || !collection_ids.insert(collection.id).second)
 				{
 					continue;
@@ -160,6 +162,7 @@ namespace uam
 						reference.type = uam::strings::Trim(JsonString(item, "type"));
 						reference.target = uam::strings::Trim(JsonString(item, "target"));
 						reference.label = uam::strings::Trim(JsonString(item, "label"));
+						reference.custom_icon = uam::icons::Parse(item.value("customIcon", nlohmann::json(nullptr)));
 						const std::string resource_target = reference.type + "\n" + reference.target;
 						if (!IsValidId(reference.id) || !IsReferenceType(reference.type) || reference.target.empty() || reference.target.size() > kMaxTargetBytes || reference.label.size() > kMaxLabelBytes || !reference_ids.insert(reference.id).second || !resource_targets.insert(resource_target).second)
 						{

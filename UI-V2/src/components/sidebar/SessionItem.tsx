@@ -333,9 +333,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </span>
         )}
         {!editing && isPinned && (
-          <span role="img" aria-label="Pinned" title="Pinned" className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
+          <button
+            type="button"
+            aria-label={`Unpin ${sessionName}`}
+            title={`Unpin ${sessionName}`}
+            draggable={false}
+            className="inline-flex shrink-0 cursor-pointer rounded hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+            style={{ color: 'var(--accent)' }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); void setSessionPinned(sessionId, false) }}
+          >
             <Pin size={12} fill="currentColor" aria-hidden />
-          </span>
+          </button>
         )}
 
         {/* Name or edit input */}

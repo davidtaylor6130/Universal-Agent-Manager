@@ -413,6 +413,7 @@ void Application::PollTick()
 	}
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
+	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
@@ -450,7 +451,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || remote_host_health_changed;
+	const bool runtime_state_changed = side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -649,6 +650,9 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
+		if (!chat.temporary_parent_chat_id.empty())
+			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
 	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);

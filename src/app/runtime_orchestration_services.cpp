@@ -976,6 +976,11 @@ namespace
 		native.folder_id = local.folder_id;
 		native.pinned = local.pinned;
 		native.linked_files = local.linked_files;
+		native.temporary_parent_chat_id = local.temporary_parent_chat_id;
+		native.provider_handoff_context = local.provider_handoff_context;
+		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.side_cleanup_requested = local.side_cleanup_requested;
+		native.side_cleanup_retry_time_s = local.side_cleanup_retry_time_s;
 		native.parent_chat_id = local.parent_chat_id;
 		native.branch_root_chat_id = local.branch_root_chat_id;
 		native.branch_from_message_index = local.branch_from_message_index;
@@ -2639,6 +2644,11 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 		return false;
 	}
 
+	if (!uam::StopAndEraseCliTerminalForChat(app, chat.id))
+	{
+		app.status_line = "The terminal is still stopping. Retry moving the chat after it exits.";
+		return false;
+	}
 	const ChatSession original_chat = chat;
 	const std::string old_workspace = chat.workspace_directory;
 	const std::string old_folder_id = chat.folder_id;

@@ -296,6 +296,12 @@ struct ChatSession
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
+	std::string temporary_parent_chat_id;
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
+	bool side_cleanup_requested = false;
+	double side_cleanup_retry_time_s = 0.0;
+	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
@@ -389,6 +395,14 @@ struct ProviderChatDefaults
 /// <summary>
 /// User-defined chat folder metadata.
 /// </summary>
+/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
+struct CustomIcon
+{
+	std::string type;
+	std::string value;
+	bool operator==(const CustomIcon&) const = default;
+};
+
 struct ChatFolder
 {
 	std::string id;
@@ -396,6 +410,7 @@ struct ChatFolder
 	std::string directory;
 	bool collapsed = false;
 	std::string execution_host_id;
+	CustomIcon custom_icon;
 };
 
 struct ResourceReference
@@ -404,6 +419,7 @@ struct ResourceReference
 	std::string type;
 	std::string target;
 	std::string label;
+	CustomIcon custom_icon;
 };
 
 struct ResourceCollection
@@ -412,6 +428,7 @@ struct ResourceCollection
 	std::string name;
 	bool collapsed = false;
 	std::vector<ResourceReference> references;
+	CustomIcon custom_icon;
 };
 
 struct ShellAction
@@ -461,6 +478,7 @@ struct ExecutionHost
 	std::string last_seen_at;
 	std::string runner_directory;
 	int runner_protocol_version = 0;
+	CustomIcon custom_icon;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -510,6 +528,7 @@ struct AppSettings
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
+	std::string file_explorer_application;
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	std::vector<McpServerConfiguration> mcp_servers;

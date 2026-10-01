@@ -70,7 +70,7 @@ void UamQueryHandler::HandleOpenWorkspaceDirectory(CefRefPtr<CefBrowser> /*brows
 	}
 
 	std::string error;
-	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(*workspace_root, &error))
+	if (!PlatformServicesFactory::Instance().file_dialog_service.OpenFolderInFileManager(*workspace_root, &error, std::filesystem::u8path(m_app.settings.file_explorer_application)))
 	{
 		cb->Failure(500, FailureDetailOrFallback(error, "Failed to open workspace directory."));
 		return;

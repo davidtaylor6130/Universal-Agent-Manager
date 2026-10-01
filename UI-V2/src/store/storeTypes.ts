@@ -1,3 +1,4 @@
+import type { CustomIconInput, CustomIconTarget } from '../types/customIcon'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
 import type { Provider } from '../types/provider'
@@ -86,6 +87,7 @@ export interface AppState {
   markdownStoreDirectory: string
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
+  fileExplorerApplication: string
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
   mcpServers: McpServerConfiguration[]
@@ -166,7 +168,7 @@ export interface AppState {
   setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
-  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
+  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
   setMcpServers: (servers: McpServerConfiguration[]) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
@@ -200,7 +202,7 @@ export interface AppState {
   portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
   previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
-  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>
@@ -228,6 +230,7 @@ export interface AppState {
   deleteFolder: (id: string) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
   listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
+  setCustomIcon: (targetType: CustomIconTarget, targetId: string, icon: CustomIconInput) => Promise<boolean>
   createResourceCollection: (name: string) => Promise<ResourceCollection | null>
   renameResourceCollection: (collectionId: string, name: string) => Promise<boolean>
   deleteResourceCollection: (collectionId: string) => Promise<boolean>
