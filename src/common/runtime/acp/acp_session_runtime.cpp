@@ -2581,7 +2581,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				reason = session.stop_outcome == platform::ProcessStopOutcome::Forced ? "forced" :
 				         session.stop_outcome == platform::ProcessStopOutcome::Failed ? "failed" : "unknown";
 			chat->last_stop_reason = reason;
-			session.last_turn_outcome = reason;
+			if (session.last_turn_outcome != "error") session.last_turn_outcome = reason;
 			const int assistant = session.current_assistant_message_index >= 0 ? session.current_assistant_message_index : session.turn_assistant_message_index;
 			if (active_response && assistant >= 0 && assistant < static_cast<int>(chat->messages.size()) && chat->messages[static_cast<std::size_t>(assistant)].role == MessageRole::Assistant)
 				chat->messages[static_cast<std::size_t>(assistant)].stop_reason = reason;

@@ -18649,6 +18649,7 @@ UAM_TEST(AcpTimeoutStopPreservesContentAndPersistsObservedOutcome)
 		session->running = true;
 		session->lifecycle_state = failed ? "error" : "processing";
 		session->last_error = failed ? "Provider failed." : "";
+		session->last_turn_outcome = failed ? "error" : "";
 		session->current_assistant_message_index = 0;
 		std::string error;
 #if defined(_WIN32)
@@ -18682,6 +18683,7 @@ UAM_TEST(AcpTimeoutStopPreservesContentAndPersistsObservedOutcome)
 		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
 		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, failed || !cooperative);
 		const std::string expected_reason = failed ? "failed" : cooperative ? "timeout" : "forced";
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_turn_outcome, failed ? std::string("error") : expected_reason);
 		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected_reason);
 		UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, failed ? std::string("Provider failed.") : std::string{});
 		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
