@@ -15,6 +15,8 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/base64.h"
+#include "common/runtime/terminal/terminal_output_cursor.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -500,4 +502,65 @@ void UamQueryHandler::HandleSteerCliTerminal(CefRefPtr<CefBrowser> browser, cons
 	uam::LogCliDiagnosticEvent(m_app, "handle_steer_cli_terminal", "steer_requested", terminal);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(BuildCliBindingResponse(*terminal).dump());
+}
+
+/// <summary>Passively reads an owned live terminal without launching, resizing, or replacing its desktop attachment.</summary>
+void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string terminal_id = payload.value("terminalId", "");
+	uam::CliTerminalState* terminal = FindCliTerminalByRoutingKey(m_app, chat_id, terminal_id);
+	if (chat_id.empty() || terminal_id.empty() || ChatDomainService().FindChatById(m_app, chat_id) == nullptr || terminal == nullptr ||
+	    !uam::CliTerminalMatchesChatId(*terminal, chat_id) || terminal->terminal_id != terminal_id ||
+	    !terminal->running || terminal->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown)
+	{
+		cb->Failure(409, "This chat has no live terminal to attach. Open its CLI view on the desktop first.");
+		return;
+	}
+	const std::string operation = payload.value("operation", "attach");
+	if (operation != "attach")
+	{
+		if (!payload.contains("startupTime") || !payload["startupTime"].is_number() ||
+		    payload["startupTime"].get<double>() != terminal->startup_time_s)
+		{
+			cb->Failure(409, "The terminal session changed. Attach again to continue.");
+			return;
+		}
+	}
+	if (operation == "write")
+	{
+		const std::string data = payload.value("data", "");
+		if (data.size() > 64 * 1024) { cb->Failure(400, "Terminal input is too large."); return; }
+		HandleWriteCliInput(browser, payload, cb);
+		return;
+	}
+	if (operation != "attach" && operation != "read") { cb->Failure(400, "Invalid terminal operation."); return; }
+	nlohmann::json response = {{"terminalId", terminal_id}, {"sourceChatId", chat_id},
+	    {"startupTime", terminal->startup_time_s}, {"cursor", terminal->output_cursor}, {"running", true},
+	    {"cols", terminal->cols}, {"rows", terminal->rows}};
+	std::string_view output = terminal->recent_output_bytes;
+	if (operation == "read")
+	{
+		if (!payload.contains("cursor") || !payload["cursor"].is_number_unsigned()) { cb->Failure(400, "Invalid output cursor."); return; }
+		const std::optional<std::string_view> chunk = uam::ReadTerminalOutputAfter(output, terminal->output_cursor, payload["cursor"].get<std::uint64_t>());
+		if (!chunk) { cb->Failure(409, "Terminal output expired. Attach again to reload it."); return; }
+		output = *chunk;
+	}
+	response["replayData"] = uam::base64::Encode(std::string(output));
+	cb->Success(response.dump());
+}
+
+/// <summary>Records deliberate UI activity in transient runtime state; backend pushes never call this.</summary>
+void UamQueryHandler::HandleRuntimeActivity(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
+	if (chat == nullptr) return;
+	const double now = uam::GetAppTimeSeconds();
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && uam::AcpSessionCanIdleShutdown(*session, *chat))
+		session->idle_interaction_started_time_s = now;
+	if (uam::CliTerminalState* terminal = uam::FindCliTerminalForChat(m_app, *chat); terminal != nullptr && terminal->running && terminal->lifecycle_state == uam::CliTerminalLifecycleState::Idle)
+		terminal->idle_interaction_started_time_s = now;
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }

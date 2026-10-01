@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+import { acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages } from './reconcile'
+import { sanitizeCppAcpSession, sanitizeCppChat, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
@@ -255,5 +255,22 @@ describe('historical model provenance', () => {
     expect(next[0].modelId).toBe('model-second')
     expect(first[0].modelId).toBe('model-first')
     expect(sanitizeCppMessage(message)?.modelId).toBeUndefined()
+  })
+})
+
+
+describe('native inactivity deadlines', () => {
+  it('preserves grace and shutdown timing for both views and clears stale timing', () => {
+    const timing = { idleCountdownStartsAtMs: 60_000, idleShutdownAtMs: 660_000, idleShutdownTimeoutSeconds: 600 }
+    const chat = sanitizeCppChat({ id: 'timing', name: 'Timing', createdAt: '', updatedAt: '',
+      cliTerminal: { running: true, lifecycleState: 'idle', ...timing },
+      acpSession: { running: true, lifecycleState: 'ready', ...timing } })!
+    const cli = cliBindingFromCppChat(chat, undefined)!
+    const acp = acpBindingFromCppChat(chat, undefined)
+    expect(cli.idleCountdownStartsAtMs).toBe(60_000)
+    expect(cli.idleShutdownAtMs).toBe(acp.idleShutdownAtMs)
+    expect(acp.idleShutdownTimeoutSeconds).toBe(600)
+    expect(cliBindingFromCppChat({ ...chat, cliTerminal: { running: false, lastError: '' } }, cli)?.idleShutdownAtMs).toBeUndefined()
+    expect(acpBindingFromCppChat({ ...chat, acpSession: { running: false } }, acp).idleShutdownAtMs).toBeUndefined()
   })
 })

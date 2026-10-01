@@ -112,6 +112,9 @@ export interface CppChat {
     terminalId?: string
     frontendChatId?: string
     sourceChatId?: string
+    idleCountdownStartsAtMs?: number
+    idleShutdownAtMs?: number
+    idleShutdownTimeoutSeconds?: number
     running: boolean
     lifecycleState?: CliLifecycleState | string
     turnState?: 'idle' | 'busy' | string
@@ -360,6 +363,10 @@ export interface AcpProviderUsage {
 }
 
 export interface CppAcpSession {
+  idleCountdownStartsAtMs?: number
+  idleShutdownAtMs?: number
+  idleShutdownTimeoutSeconds?: number
+
   sessionId?: string
   providerId?: string
 	/** Exact UAM execution path: provider-native config/plugin or UAM prompt injection. */
@@ -728,6 +735,10 @@ export interface CppStatePatch {
 }
 
 export interface CliBinding {
+  idleCountdownStartsAtMs?: number
+  idleShutdownAtMs?: number
+  idleShutdownTimeoutSeconds?: number
+
   terminalId: string
   boundChatId: string
   running: boolean
@@ -741,6 +752,10 @@ export interface CliBinding {
 }
 
 export interface AcpBinding {
+  idleCountdownStartsAtMs?: number
+  idleShutdownAtMs?: number
+  idleShutdownTimeoutSeconds?: number
+
   sessionId: string
   providerId: string
   protocolKind: string
