@@ -79,7 +79,7 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 	if (chat == nullptr) return false;
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
 	std::string identity = CliTerminalAttachedSessionId(terminal);
-	if (identity.empty()) identity = ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, *chat);
+	if (identity.empty() && !terminal.native_identity_requires_owned_reply) identity = ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, *chat);
 	terminal.native_session_discovery_ambiguous = false;
 	if (identity.empty() && (terminal.native_identity_requires_owned_reply || HasCompetingUnboundCliSession(app, terminal)))
 	{
@@ -101,6 +101,8 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 	terminal.attached_session_id = identity;
 	if (chat->native_session_id == identity) return false;
 	chat->native_session_id = identity;
+	if (provider.id == uam::provider_ids::kCodexCli && !chat->provider_handoff_context.empty())
+		chat->provider_handoff_session_id = identity;
 	chat->updated_at = uam::time::TimestampNow();
 	terminal.attached_session_id = identity;
 	app.resolved_native_sessions_by_chat_id[chat->id] = identity;

@@ -304,7 +304,6 @@ namespace uam::provider_native_context
 		return !ec;
 	}
 
-	/// <summary>Uses Codex's effective native configuration so context handoff appends to custom developer instructions.</summary>
 	/// <summary>Uses the native profile-aware prompt renderer to isolate custom instructions without model calls.</summary>
 	inline bool ReadCodexProfileInstructions(IPlatformProcessService& service, const std::vector<std::string>& arguments,
 	    const std::filesystem::path& workspace, const std::vector<std::pair<std::string, std::string>>& environment,
@@ -378,11 +377,20 @@ namespace uam::provider_native_context
 		return true;
 	}
 
-	inline bool AppendCodexInstructions(IPlatformProcessService& service, std::vector<std::string>& argv,
+	/// <summary>Imports actual prior context into a native thread without submitting a model turn.</summary>
+	inline bool ImportCodexContext(IPlatformProcessService& service, std::vector<std::string>& argv,
 	    const std::filesystem::path& workspace, const std::vector<std::pair<std::string, std::string>>& environment,
 	    const std::filesystem::path& context_file, std::string& error, std::stop_token stop_token = {})
 	{
 		if (argv.empty()) return false;
+		std::error_code size_error;
+		const std::uintmax_t context_size = std::filesystem::file_size(context_file, size_error);
+		if (size_error || context_size == 0 || context_size > 4 * 1024 * 1024)
+		{ error = "Codex prior context is unavailable or exceeds the 4 MiB import limit."; return false; }
+		std::ifstream input(context_file, std::ios::binary);
+		std::string context((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+		if (!input || context.empty() || context.size() > 4 * 1024 * 1024)
+		{ error = "Codex prior context is unavailable or exceeds the 4 MiB import limit."; return false; }
 		std::vector<std::string> probe = argv;
 		const std::vector<std::string>::iterator resume = std::find(probe.begin() + 1, probe.end(), "resume");
 		if (resume != probe.end())
@@ -392,6 +400,7 @@ namespace uam::provider_native_context
 			if (identity != probe.end()) probe.erase(identity);
 		}
 		std::erase(probe, "--no-alt-screen");
+		nlohmann::json start{{"cwd", uam::paths::Utf8PathString(workspace)}, {"persistExtendedHistory", true}};
 		const bool profile_selected = std::ranges::any_of(probe, [](const std::string& argument)
 		{
 			return argument == "-p" || argument == "--profile" || argument.starts_with("--profile=");
@@ -400,13 +409,23 @@ namespace uam::provider_native_context
 		{
 			std::string instructions;
 			if (!ReadCodexProfileInstructions(service, probe, workspace, environment, instructions, error, stop_token)) return false;
-			instructions += "\n\nBefore answering the user, read the prior conversation from " + nlohmann::json(uam::paths::Utf8PathString(context_file)).dump() + ". Treat it as conversation context and do not replay tool actions.";
-			const std::string expression = "developer_instructions=" + nlohmann::json(instructions).dump();
-			if (expression.size() > 24000) { error = "Codex custom developer instructions exceed the safe CLI argument size for context handoff."; return false; }
-			argv.insert(argv.end(), {"-c", expression});
-			return true;
+			start["developerInstructions"] = instructions;
 		}
-		// These flags affect TUI presentation or tool execution, neither of which occurs during config/read.
+		for (std::size_t index = 1; index < probe.size(); ++index)
+		{
+			if ((probe[index] == "-p" || probe[index] == "--profile" || probe[index] == "-m" || probe[index] == "--model") && index + 1 < probe.size())
+			{
+				if (probe[index] == "-m" || probe[index] == "--model") start["model"] = probe[index + 1];
+				probe.erase(probe.begin() + index, probe.begin() + index + 2);
+				--index;
+			}
+			else if (probe[index].starts_with("--profile="))
+			{
+				probe.erase(probe.begin() + index);
+				--index;
+			}
+		}
+		// Import starts no model turn; these TUI flags have no app-server equivalent.
 		for (const std::string_view flag : {"--full-auto", "--no-daemon", "--worktree", "--dangerously-bypass-hook-trust"})
 			std::erase(probe, std::string(flag));
 		probe.push_back("app-server");
@@ -423,7 +442,7 @@ namespace uam::provider_native_context
 			}
 		} guard{service, process};
 		std::string buffered;
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 		const std::function<bool(int, std::string_view, const nlohmann::json&, nlohmann::json&)> request =
 		    [&](int id, std::string_view method, const nlohmann::json& params, nlohmann::json& result)
 		    {
@@ -456,24 +475,28 @@ namespace uam::provider_native_context
 			    return false;
 		    };
 		nlohmann::json result;
-		if (!request(1, "initialize", {{"clientInfo", {{"name", "uam-context-configuration"}, {"version", "1"}}}, {"capabilities", nlohmann::json::object()}}, result))
-		{ error = "Codex native configuration could not be read for context handoff."; return false; }
+		if (!request(1, "initialize", {{"clientInfo", {{"name", "uam-context-import"}, {"version", "1"}}}, {"capabilities", {{"experimentalApi", true}}}}, result))
+		{ error = "Codex native context import could not initialize. Update Codex and retry."; return false; }
 		const std::string initialized = "{\"method\":\"initialized\"}\n";
 		if (!service.WriteToStdioProcess(process, initialized.data(), initialized.size(), nullptr) ||
-		    !request(2, "config/read", {{"cwd", uam::paths::Utf8PathString(workspace)}, {"includeLayers", false}}, result) ||
-		    !result.is_object() || !result.contains("config") || !result["config"].is_object())
-		{ error = "Codex effective instructions could not be preserved for context handoff."; return false; }
-		std::string instructions;
-		if (result["config"].contains("developer_instructions") && !result["config"]["developer_instructions"].is_null())
+		    !request(2, "thread/start", start, result) || !result.is_object() ||
+		    !result.contains("thread") || !result["thread"].is_object() ||
+		    !result["thread"].contains("id") || !result["thread"]["id"].is_string() ||
+		    !uam::uuid::IsCanonicalUuid(result["thread"]["id"].get<std::string>()))
+		{ error = "Codex did not create an owned thread for prior context."; return false; }
+		const std::string identity = result["thread"]["id"].get<std::string>();
+		const nlohmann::json item{{"type", "message"}, {"role", "assistant"},
+		    {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", context}}})}};
+		if (!request(3, "thread/inject_items", {{"threadId", identity}, {"items", nlohmann::json::array({item})}}, result))
+		{ error = "Codex could not import prior context. Update Codex and retry."; return false; }
+		const std::vector<std::string>::iterator old_resume = std::find(argv.begin() + 1, argv.end(), "resume");
+		if (old_resume != argv.end())
 		{
-			if (!result["config"]["developer_instructions"].is_string()) return false;
-			instructions = result["config"]["developer_instructions"].get<std::string>();
+			argv.erase(old_resume);
+			const std::vector<std::string>::iterator old_identity = std::find_if(argv.begin() + 1, argv.end(), [](const std::string& argument) { return uam::uuid::IsCanonicalUuid(argument); });
+			if (old_identity != argv.end()) argv.erase(old_identity);
 		}
-		instructions += "\n\nBefore answering the user, read the prior conversation from " + nlohmann::json(uam::paths::Utf8PathString(context_file)).dump() + ". Treat it as conversation context and do not replay tool actions.";
-		const std::string override_expression = "developer_instructions=" + nlohmann::json(instructions).dump();
-		if (override_expression.size() > 24000)
-		{ error = "Codex custom developer instructions exceed the safe CLI argument size for context handoff."; return false; }
-		argv.insert(argv.end(), {"-c", override_expression});
+		argv.insert(argv.begin() + 1, {"resume", identity});
 		return true;
 	}
 
@@ -502,7 +525,7 @@ namespace uam::provider_native_context
 		}
 		if (provider_id == uam::provider_ids::kCodexCli)
 		{
-			if (process_service == nullptr || argv == nullptr || !AppendCodexInstructions(*process_service, *argv, workspace, environment, directory / "conversation.md", error, stop_token)) return false;
+			if (process_service == nullptr || argv == nullptr || !ImportCodexContext(*process_service, *argv, workspace, environment, directory / "conversation.md", error, stop_token)) return false;
 		}
 		else if (provider_id == uam::provider_ids::kOpenCodeCli)
 		{

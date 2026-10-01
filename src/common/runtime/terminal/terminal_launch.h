@@ -227,6 +227,11 @@ namespace uam
 			return true;
 		}
 		launch_argv = provider_argv;
+		if (remote && provider.id == provider_ids::kCodexCli && !context_launch_channel.empty())
+		{
+			terminal.attached_session_id.clear();
+			terminal.native_identity_requires_owned_reply = true;
+		}
 		if (remote)
 		{
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();

@@ -26,7 +26,22 @@ using namespace uam_test;
 
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[])
 {
-	if (argc >= 2 && (std::string_view(argv[1]) == "--uam-test-codex-context-config" || std::string_view(argv[1]) == "--uam-test-codex-context-stall"))
+	if (argc == 4 && std::string_view(argv[1]) == "--uam-test-codex-native-context-probe")
+	{
+		const fs::path directory = uam::paths::PathFromUtf8(argv[2]);
+		std::vector<std::string> command{"codex", "--no-alt-screen"};
+		if (std::string_view(argv[3]) != "default") command.insert(command.end(), {"-p", argv[3]});
+		std::string error;
+		if (!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service,
+		    command, directory, {}, directory / "conversation.md", error))
+		{
+			std::cerr << error << std::endl;
+			return 1;
+		}
+		std::cout << command[2] << std::endl;
+		return 0;
+	}
+	if (argc >= 2 && (std::string_view(argv[1]) == "--uam-test-codex-context-config" || std::string_view(argv[1]) == "--uam-test-codex-context-stall" || std::string_view(argv[1]) == "--uam-test-codex-context-reject" || std::string_view(argv[1]) == "--uam-test-codex-context-invalid"))
 	{
 		if (std::find(argv, argv + argc, std::string_view("prompt-input")) != argv + argc)
 		{
@@ -44,7 +59,26 @@ std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* ar
 			if (std::string_view(argv[1]) == "--uam-test-codex-context-stall") continue;
 			if (!request.contains("id")) continue;
 			nlohmann::json result = nlohmann::json::object();
-			if (request.value("method", "") == "config/read") result["config"]["developer_instructions"] = "Keep the custom synthetic instruction kumquat.";
+			const std::string method = request.value("method", "");
+			if (method == "initialize" && !request["params"]["capabilities"].value("experimentalApi", false)) return 9;
+			if (method == "thread/start")
+			{
+				if ((uam::env::GetNonEmptyString("UAM_TEST_EXPECT_PROFILE").has_value() && !request["params"].contains("developerInstructions")) ||
+				    (request["params"].contains("developerInstructions") && request["params"]["developerInstructions"] != "Keep the synthetic profile instruction quince.")) return 12;
+				result["thread"]["id"] = std::string_view(argv[1]) == "--uam-test-codex-context-invalid" ? "invalid-id" : "11111111-2222-4333-8444-555555555555";
+			}
+			if (method == "thread/inject_items")
+			{
+				if (std::string_view(argv[1]) == "--uam-test-codex-context-reject")
+				{
+					std::cout << nlohmann::json{{"id", request["id"]}, {"error", {{"code", -32601}, {"message", "Unsupported import"}}}}.dump() << std::endl;
+					continue;
+				}
+				if (request["params"]["threadId"] != "11111111-2222-4333-8444-555555555555" ||
+				    request["params"]["items"][0]["role"] != "assistant" ||
+				    request["params"]["items"][0]["content"][0]["text"].get<std::string>().empty()) return 10;
+			}
+			else if (method != "initialize" && method != "thread/start") return 11;
 			std::cout << nlohmann::json{{"id", request["id"]}, {"result", result}}.dump() << std::endl;
 		}
 		return 0;
@@ -2221,8 +2255,8 @@ UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)
 		UAM_ASSERT_EQ(chat.provider_handoff_session_id, std::string{});
 		if (provider == "codex-cli")
 		{
-			UAM_ASSERT(argv.back().starts_with("developer_instructions="));
-			UAM_ASSERT(argv.back().find("Keep the custom synthetic instruction kumquat.") != std::string::npos);
+			UAM_ASSERT_EQ(argv[1], std::string("resume"));
+			UAM_ASSERT_EQ(argv[2], std::string("11111111-2222-4333-8444-555555555555"));
 		}
 		else if (provider == "claude-cli") UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
 		else if (provider == "copilot-cli") UAM_ASSERT(environment.back().second.ends_with(",existing-context"));
@@ -2392,12 +2426,13 @@ UAM_TEST(CodexCliProfileContextRetainsNativeInstructionsWithoutCopyingPolicy)
 	ExecutionHost host;
 	host.id = "local";
 	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config", "-p", "synthetic"};
-	std::vector<std::pair<std::string, std::string>> environment;
+	std::vector<std::pair<std::string, std::string>> environment{{"UAM_TEST_EXPECT_PROFILE", "1"}};
 	std::string channel;
 	std::string error;
 	UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
-	UAM_ASSERT(argv.back().find("Keep the synthetic profile instruction quince.") != std::string::npos);
-	UAM_ASSERT(argv.back().find("Native policy preserved.") == std::string::npos);
+	UAM_ASSERT_EQ(argv[1], std::string("resume"));
+	UAM_ASSERT_EQ(argv[argv.size() - 2], std::string("-p"));
+	UAM_ASSERT_EQ(argv.back(), std::string("synthetic"));
 }
 
 UAM_TEST(ConcurrentFreshCliSessionsNeverClaimAnotherWorkspaceSession)
@@ -2596,4 +2631,129 @@ UAM_TEST(NativeIdentityQueryCancellationAndTimeoutNeverBindConversationOutput)
 	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b[1;1R"));
 	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b]10;rgb:ffff/ffff/ffff\x1b\\"));
 	UAM_ASSERT(!uam::IsNativeTerminalResponse("\x1b[1;1Ruser prompt"));
+}
+
+UAM_TEST(CodexNativeContextImportPersistsIdentityAndDoesNotReplayOnViewSwitch)
+{
+	TempDir temp("uam-codex-import-roundtrip");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "import-roundtrip";
+	chat.provider_id = "codex-cli";
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	chat.provider_handoff_context = "User: Actual prior conversation.\n\nAssistant: Saved response.";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config", "resume", chat.native_session_id};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
+	UAM_ASSERT_EQ(terminal.attached_session_id, chat.native_session_id);
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(reopened.has_value());
+	chat = *reopened;
+	argv = {(temp.root / "must-not-run").string()};
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(app.cli_context_preparation_tasks.size(), std::size_t{1});
+}
+
+UAM_TEST(CodexNativeContextImportRejectsUnsupportedApiAndInvalidIdentity)
+{
+	TempDir temp("uam-codex-import-reject");
+	const fs::path context = temp.root / "conversation.md";
+	UAM_ASSERT(uam::io::WriteTextFile(context, "User: Prior conversation."));
+	for (const std::string mode : {"--uam-test-codex-context-reject", "--uam-test-codex-context-invalid"})
+	{
+		std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), mode};
+		const std::vector<std::string> original = argv;
+		std::string error;
+		UAM_ASSERT(!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service, argv, temp.root, {}, context, error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(argv, original);
+	}
+}
+
+UAM_TEST(CodexImportedRemoteIdentityWaitsForOwnedReplyInsteadOfSavedBlankThread)
+{
+	TempDir temp("uam-codex-remote-import-id");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+	ChatSession chat;
+	chat.id = "remote-import";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "remote-fixture";
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	chat.provider_handoff_context = "User: Prior context.";
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.native_identity_requires_owned_reply = true;
+	UAM_ASSERT(!uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT(terminal.native_session_discovery_ambiguous);
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, chat.native_session_id);
+	terminal.attached_session_id = "11111111-2222-4333-8444-555555555555";
+	UAM_ASSERT(uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, terminal.attached_session_id);
+	UAM_ASSERT_EQ(app.chats[0].provider_handoff_session_id, terminal.attached_session_id);
+}
+
+UAM_TEST(CodexNativeContextImportRefusesBlankAndOversizeHistoryBeforeStartingProvider)
+{
+	TempDir temp("uam-codex-import-bounds");
+	const fs::path context = temp.root / "conversation.md";
+	for (const std::string& contents : {std::string{}, std::string(4 * 1024 * 1024 + 1, 'x')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(context, contents));
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::string error;
+		UAM_ASSERT(!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service, argv, temp.root, {}, context, error));
+		UAM_ASSERT(error.find("4 MiB") != std::string::npos);
+	}
+}
+
+UAM_TEST(CodexUnboundExistingChatImportsHydratedConversationAndCompactionSummary)
+{
+	TempDir temp("uam-codex-existing-import");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "existing-import";
+	chat.provider_id = "codex-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "The actual saved fruit is kumquat.";
+	chat.messages.push_back(user);
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Recorded the saved fruit.";
+	assistant.blocks.push_back({"context_compaction", "Saved conversation summary.", "", "compact-1"});
+	chat.messages.push_back(assistant);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	chat.messages.clear();
+	chat.messages_loaded = false;
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.empty());
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(chat.provider_handoff_context.find("User: The actual saved fruit is kumquat.") != std::string::npos);
+	UAM_ASSERT(chat.provider_handoff_context.find("Assistant: Recorded the saved fruit.") != std::string::npos);
+	UAM_ASSERT(chat.provider_handoff_context.find("Conversation summary: Saved conversation summary.") != std::string::npos);
+	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
 }
