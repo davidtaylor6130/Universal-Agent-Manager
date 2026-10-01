@@ -53,11 +53,11 @@ export function useCustomIconPicker() {
     <label className="mt-3 block text-xs">PNG image<input aria-label="PNG icon" type="file" accept="image/png" disabled={busy} className="mt-1 block w-full" onChange={async (event) => {
       const file = event.target.files?.[0]
       if (!file) return
+      const request = ++generation.current
       if (file.size > 256 * 1024 || file.type !== 'image/png') { setError('Choose a PNG up to 256 KiB.'); return }
-      const request = generation.current
       const reader = new FileReader()
       reader.onload = () => { if (request === generation.current) void save({ type: 'png', base64: String(reader.result).split(',')[1] ?? '' }) }
-      reader.onerror = () => setError('Image could not be read.')
+      reader.onerror = () => { if (request === generation.current) setError('Image could not be read.') }
       reader.readAsDataURL(file)
     }} /></label>
     {error && <p role="alert" className="mt-2 text-xs">{error}</p>}

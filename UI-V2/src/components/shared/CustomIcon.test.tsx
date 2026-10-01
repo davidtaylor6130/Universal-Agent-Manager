@@ -32,4 +32,38 @@ describe('Custom icons', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     act(() => root.unmount()); host.remove(); useAppStore.setState({ setCustomIcon: previous })
   })
+  it('keeps the latest selected PNG and ignores a stale read failure after closing', async () => {
+    const previous = useAppStore.getState().setCustomIcon
+    const save = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ setCustomIcon: save })
+    const readers: { result: string; onload?: () => void; onerror?: () => void }[] = []
+    vi.stubGlobal('FileReader', class {
+      result = ''
+      onload?: () => void
+      onerror?: () => void
+      constructor() { readers.push(this) }
+      readAsDataURL() {}
+    })
+    function Harness() { const picker = useCustomIconPicker(); return <><button onClick={() => picker.open('workspace', 'project', 'Project')}>Icon</button>{picker.dialog}</> }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<Harness />)); act(() => host.querySelector('button')!.click())
+      const input = document.body.querySelector<HTMLInputElement>('input[type="file"]')!
+      for (const name of ['first.png', 'second.png']) {
+        Object.defineProperty(input, 'files', { configurable: true, value: [new File(['PNG'], name, { type: 'image/png' })] })
+        act(() => input.dispatchEvent(new Event('change', { bubbles: true })))
+      }
+      readers[1].result = 'data:image/png;base64,SECOND'
+      await act(async () => readers[1].onload?.())
+      readers[0].result = 'data:image/png;base64,FIRST'
+      await act(async () => { readers[0].onload?.(); readers[0].onerror?.() })
+      expect(save).toHaveBeenCalledTimes(1)
+      expect(save).toHaveBeenCalledWith('workspace', 'project', { type: 'png', base64: 'SECOND' })
+      act(() => host.querySelector('button')!.click())
+      expect(document.body.querySelector('[role="dialog"]')!.textContent).not.toContain('Image could not be read.')
+    } finally {
+      act(() => root.unmount()); host.remove(); useAppStore.setState({ setCustomIcon: previous }); vi.unstubAllGlobals()
+    }
+  })
+
 })
