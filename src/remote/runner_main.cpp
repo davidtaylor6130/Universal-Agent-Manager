@@ -20,6 +20,10 @@
 #define UAM_REMOTE_RUNNER_VERSION "development"
 #endif
 
+#ifndef UAM_RUNNER_SOURCE_FINGERPRINT
+#define UAM_RUNNER_SOURCE_FINGERPRINT "development"
+#endif
+
 int main(int argc, char** argv)
 {
 #if defined(__APPLE__)
@@ -31,6 +35,11 @@ int main(int argc, char** argv)
 	if (argc == 2 && std::string(argv[1]) == "--version")
 	{
 		std::cout << UAM_REMOTE_RUNNER_VERSION << '\n';
+		return 0;
+	}
+	if (argc == 2 && std::string(argv[1]) == "--source-fingerprint")
+	{
+		std::cout << UAM_RUNNER_SOURCE_FINGERPRINT << '\n';
 		return 0;
 	}
 	if (argc == 2 && std::string(argv[1]) == "--protocol-version")
@@ -106,7 +115,7 @@ int main(int argc, char** argv)
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")
 	{
-		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version | --protocol-version\n";
+		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version | --protocol-version | --source-fingerprint\n";
 		return 2;
 	}
 

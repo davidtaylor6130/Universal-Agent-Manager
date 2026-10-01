@@ -118,7 +118,7 @@ void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/,
 		                 scope_json["scopeType"] = scope.scope_type;
 		                 scope_json["folderId"] = scope.folder_id;
 		                 scope_json["label"] = scope.label;
-		                 scope_json["rootPath"] = uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(scope.root_path), "Global and project memory roots");
+		                 scope_json["rootPath"] = scope.remote_host ? scope.remote_workspace + "/.UAM" : uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(scope.root_path), "Global and project memory roots");
 		                 scope_json["rootCount"] = scope.roots.size();
 
 		                 nlohmann::json response;
@@ -237,6 +237,11 @@ void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, co
 		cb->Failure(400, FailureDetailOrFallback(error, "Failed to resolve memory scope."));
 		return;
 	}
+	if (scope.remote_host)
+	{
+		cb->Failure(400, "Use this host's SSH terminal to open its memory files.");
+		return;
+	}
 	if (scope.scope_type == "all")
 	{
 		cb->Failure(400, "The all memory view has multiple roots. Reveal a memory entry instead.");
@@ -275,6 +280,13 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 		return;
 	}
 
+	if (scope.remote_host || entry_id.starts_with("remote:"))
+	{
+		cb->Failure(400, "Use this host's SSH terminal to open its memory files.");
+		return;
+	}
+	// Revealing a local entry does not need to contact unrelated SSH hosts.
+	scope.remote_scopes.clear();
 	const std::vector<MemoryLibraryService::Entry> entries = MemoryLibraryService::ListEntries(scope, &error);
 	if (!error.empty())
 	{

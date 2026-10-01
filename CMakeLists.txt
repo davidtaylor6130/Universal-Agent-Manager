@@ -4,6 +4,7 @@ if(POLICY CMP0091)
 endif()
 project(universal_agent_manager VERSION 4.9.0 LANGUAGES C CXX)
 set(UAM_PRODUCT_VERSION "4.9.0")
+include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
@@ -25,7 +26,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_SUPPRESS_REGENERATION ON)
+# Source contract metadata must follow changed runner and shared source files.
+set(CMAKE_SUPPRESS_REGENERATION OFF)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMake")
@@ -287,6 +289,7 @@ endif()
 # ---------------------------------------------------------------------------
 
 add_executable(uam_runner
+  src/common/memory/memory_library_store.cpp
   src/remote/runner_main.cpp
   src/remote/runner_client.cpp
   src/remote/runner_protocol.cpp
@@ -339,6 +342,7 @@ target_compile_definitions(uam_runner PRIVATE
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_HEADLESS_RUNNER=1
+  UAM_RUNNER_SOURCE_FINGERPRINT="${UAM_RUNNER_SOURCE_FINGERPRINT}"
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
@@ -353,6 +357,9 @@ add_custom_command(TARGET uam_runner POST_BUILD
     -DOUTPUT=${UAM_RUNNER_SHA256_FILE}
     -DVERSION=${UAM_PRODUCT_VERSION}
     -DVERSION_OUTPUT=${UAM_RUNNER_VERSION_FILE}
+    -DSOURCE_FINGERPRINT=${UAM_RUNNER_SOURCE_FINGERPRINT}
+    -DPROTOCOL_VERSION=${UAM_RUNNER_PROTOCOL_VERSION}
+    -DMANIFEST_OUTPUT=$<TARGET_FILE_DIR:uam_runner>/uam-runner.manifest.json
     -P "${CMAKE_SOURCE_DIR}/cmake/write_sha256.cmake"
   VERBATIM
   COMMENT "Writing the remote runner checksum and version"
@@ -388,6 +395,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/git_worktree_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
+  src/common/memory/memory_library_store.cpp
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
   src/app/goal_service.cpp
@@ -918,6 +926,8 @@ if(APPLE AND UAM_MACOS_BUNDLE)
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 	  "${UAM_RUNNER_VERSION_FILE}"
 	  "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.version"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE_DIR:uam_runner>/uam-runner.manifest.json"
+      "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/remote/uam-runner.manifest.json"
 	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to Contents/Resources/"
   )
@@ -958,6 +968,8 @@ else()
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 	  "${UAM_RUNNER_VERSION_FILE}"
 	  "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.version"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE_DIR:uam_runner>/uam-runner.manifest.json"
+      "$<TARGET_FILE_DIR:universal_agent_manager>/remote/uam-runner.manifest.json"
 	${UAM_REMOTE_ARTIFACT_COPY_COMMAND}
     COMMENT "Copying UI-V2/dist and bundled Markdown Store entries to build output"
   )
@@ -1100,7 +1112,8 @@ if(UAM_BUILD_TESTS)
     src/app/git_worktree_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
-    src/app/memory_library_service.cpp
+    src/common/memory/memory_library_store.cpp
+  src/app/memory_library_service.cpp
     src/app/memory_service.cpp
     src/app/goal_service.cpp
     src/app/native_session_link_service.cpp

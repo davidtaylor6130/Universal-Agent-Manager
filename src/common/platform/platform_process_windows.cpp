@@ -1,6 +1,7 @@
 #include "platform_services_windows_impl_internal.h"
 
 #include <atomic>
+#include "remote/remote_workspace_terminal.h"
 
 using namespace uam::platform_windows_impl;
 
@@ -779,6 +780,31 @@ class WindowsProcessService final : public IPlatformProcessService
 	{
 		// ES_CONTINUOUS alone clears the requirement; repeated calls are cheap.
 		SetThreadExecutionState(keep_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
+	}
+
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	{
+		if (argv.empty())
+		{
+			if (error_out != nullptr) *error_out = "The terminal command is empty.";
+			return false;
+		}
+		const std::string encoded_arguments = "-NoLogo -NoProfile -NoExit -EncodedCommand " + uam::remote::WindowsTerminalEncodedCommand(argv);
+		const std::wstring arguments(encoded_arguments.begin(), encoded_arguments.end());
+		SHELLEXECUTEINFOW launch{};
+		launch.cbSize = sizeof(launch);
+		launch.fMask = SEE_MASK_NOCLOSEPROCESS;
+		launch.lpVerb = L"open";
+		launch.lpFile = L"powershell.exe";
+		launch.lpParameters = arguments.c_str();
+		launch.nShow = SW_SHOWNORMAL;
+		if (!ShellExecuteExW(&launch))
+		{
+			if (error_out != nullptr) *error_out = "Windows could not open the SSH terminal (error " + std::to_string(GetLastError()) + ").";
+			return false;
+		}
+		if (launch.hProcess != nullptr) CloseHandle(launch.hProcess);
+		return true;
 	}
 
 	bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const override

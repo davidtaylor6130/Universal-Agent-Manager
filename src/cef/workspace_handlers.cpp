@@ -1,5 +1,9 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
+#include "cef/uam_query_handler_async.h"
+#include "remote/remote_workspace_terminal.h"
+#include "remote/runner_client.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -8,6 +12,8 @@
 
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <iostream>
+#include "app/chat_domain_service.h"
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -98,13 +104,57 @@ void UamQueryHandler::HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> /*browser*
 	cb->Success(nlohmann::json{{"editorPresetId", editor_preset_id}}.dump());
 }
 
-void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const auto workspace_root = ResolvePayloadWorkspaceRootOrFail(m_app, payload, cb);
-	if (!workspace_root)
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	if (host != nullptr && host->id != uam::execution_hosts::kLocalHostId)
 	{
+		const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
+		const std::vector<std::string> argv = uam::remote::BuildRemoteWorkspaceTerminalArgv(*host, directory);
+		if (host->runner_status != "ready" || argv.empty())
+		{
+			cb->Failure(409, "The remote workspace or runner is unavailable. Check the host in Settings.");
+			return;
+		}
+		const ExecutionHost observed = *host;
+		const std::string chat_id = chat->id;
+		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [observed]()
+		    {
+			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			        uam::remote::SshBridgeArgv(observed.ssh_alias, observed.platform, observed.runner_version,
+			            observed.runner_directory, observed.runner_protocol_version), observed.runner_version,
+			        observed.runner_protocol_version);
+			    std::string error;
+			    if (client.Connect(&error)) return uam::query_handler_async::AsyncSuccess({});
+			    std::cerr << "Remote workspace terminal connection failed: " << error << '\n';
+			    return uam::query_handler_async::AsyncFailure(502, "SSH connection failed: " + error);
+		    },
+		    [this, browser, observed, chat_id, directory, argv](uam::query_handler_async::AsyncCefResult& response)
+		    {
+			    if (!response.ok) return;
+			    const ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    const ExecutionHost* current_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, observed.id);
+			    if (current == nullptr || current->execution_host_id != observed.id || current_host == nullptr ||
+			        !uam::execution_hosts::SameConnection(*current_host, observed) ||
+			        uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *current)) != directory)
+			    {
+				    response = uam::query_handler_async::AsyncFailure(409, "The remote workspace changed. Open the terminal again.");
+				    return;
+			    }
+			    std::string error;
+			    if (!PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(argv, &error))
+			    {
+				    std::cerr << "Remote workspace terminal launch failed: " << error << '\n';
+				    response = uam::query_handler_async::AsyncFailure(500, FailureDetailOrFallback(error, "Failed to open SSH terminal."));
+			    }
+		    });
 		return;
 	}
+	const auto workspace_root = ResolvePayloadWorkspaceRootOrFail(m_app, payload, cb);
+	if (!workspace_root) return;
 
 	std::string error;
 	if (!PlatformServicesFactory::Instance().process_service.LaunchShellAt(*workspace_root, &error))

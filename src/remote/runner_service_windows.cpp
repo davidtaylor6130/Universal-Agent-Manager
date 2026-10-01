@@ -379,8 +379,13 @@ namespace uam::remote
 			if (!WritePipeFrame(service.Get(), {{"id", "stop"}, {"type", "service.shutdown"}}))
 				return 2;
 			nlohmann::json response;
-			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok ||
-			    !response.value("ok", false)) return 2;
+			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok)
+			{ std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n"; return 2; }
+			if (!response.value("ok", false))
+			{
+				std::cerr << response.value("error", nlohmann::json::object()).value("message", "The runner cannot stop safely.") << '\n';
+				return 2;
+			}
 		}
 		for (int attempt = 0; attempt < 200; ++attempt)
 		{

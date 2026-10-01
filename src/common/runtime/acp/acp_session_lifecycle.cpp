@@ -19,6 +19,8 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "remote/runner_proxy.h"
+#include "remote/host_context.h"
+#include "common/memory/memory_levels.h"
 #include "remote/runner_protocol.h"
 
 #include <cstring>
@@ -298,6 +300,8 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
+	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
+	session.remote_context_preparation.reset();
 	session.goal_turn_kind.clear();
 	session.goal_turn_model_id.clear();
 	session.goal_internal_session = false;
@@ -1043,6 +1047,55 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		return false;
 	}
 	const std::string prompt = session.queued_prompt;
+	std::string context;
+	if (chat.execution_host_id != execution_hosts::kLocalHostId)
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const std::string workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
+		const bool first_prompt = session.turn_first_user_message_index <= 0;
+		const int memory_budget = first_prompt && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		    ? app.settings.memory_recall_budget_bytes : 0;
+		if (host == nullptr)
+		{
+			FailAcpTurnOrSession(session, &chat, "The SSH host no longer exists.");
+			return true;
+		}
+		if (!host->instruction_file.empty() || memory_budget > 0)
+		{
+			std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
+			if (preparation != nullptr && (!execution_hosts::SameConnection(preparation->host, *host) ||
+			    preparation->workspace != workspace || preparation->prompt != prompt))
+			{
+				preparation->cancel.request_stop();
+				preparation.reset();
+			}
+			if (preparation == nullptr)
+			{
+				preparation = std::make_shared<RemoteContextPreparation>();
+				preparation->host = *host; preparation->workspace = workspace; preparation->prompt = prompt;
+				RemoteContextTask task;
+				task.state = preparation;
+				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)
+				{
+					std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
+					(void)remote::ResolveHostContext(PlatformServicesFactory::Instance().process_service,
+					    state->host, state->workspace, memory_budget, state->context, state->error, state->cancel.get_token());
+					state->finished.store(true, std::memory_order_release);
+				});
+				app.remote_context_tasks.push_back(std::move(task));
+				return false;
+			}
+			if (!preparation->finished.load(std::memory_order_acquire)) return false;
+			if (!preparation->error.empty())
+			{
+				const std::string error = preparation->error;
+				preparation.reset();
+				FailAcpTurnOrSession(session, &chat, error);
+				return true;
+			}
+			context = preparation->context;
+		}
+	}
 	session.lifecycle_state = kAcpLifecycleProcessing;
 
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
@@ -1055,7 +1108,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	std::string method;
 	ChatSession prompt_chat = chat;
 	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
-	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, prompt, prompt_chat, method);
+	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, context + prompt, prompt_chat, method);
 
 	if (msg.is_null() || msg.empty())
 	{
@@ -1197,7 +1250,14 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		chat.last_prompt_agent_definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
+	if (!chat.provider_handoff_context.empty())
+	{
+		chat.provider_handoff_session_id = session.session_id;
+		(void)SaveChatQuietly(app, chat);
+	}
 	session.queued_prompt.clear();
+	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
+	session.remote_context_preparation.reset();
 	if (!remote && !SaveChatQuietly(app, chat))
 	{
 		session.last_error = "Prompt was delivered, but chat state could not be saved.";
@@ -1300,6 +1360,7 @@ bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session
 	}
 
 	chat.native_session_id = normalized_session_id;
+	chat.native_session_reset_pending = false;
 	return true;
 }
 
@@ -1363,6 +1424,8 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
+	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
+	session.remote_context_preparation.reset();
 	session.current_assistant_message_index = -1;
 	session.codex_turn_id.clear();
 	session.load_history_replay_updates.clear();

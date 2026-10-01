@@ -16320,7 +16320,7 @@ UAM_TEST(MoveChatToFolderHandlesMissingWorkspacePaths)
 	UAM_ASSERT_EQ(app.chats.back().workspace_directory, missing_target.string());
 }
 
-UAM_TEST(MoveChatToFolderRejectsCrossMachineAndRemoteMovesWithoutMutation)
+UAM_TEST(MoveChatToFolderRejectsCrossMachineAndAllowsSafeSameHostMoves)
 {
 	TempDir temp("uam-move-chat-machine-boundary");
 	uam::AppState app;
@@ -16344,14 +16344,18 @@ UAM_TEST(MoveChatToFolderRejectsCrossMachineAndRemoteMovesWithoutMutation)
 	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("ssh-homelab"));
 	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
 
-	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(
-	    app, app.chats.front(), "homelab-other"));
-	UAM_ASSERT_EQ(app.status_line,
-	              std::string("Moving remote chats between workspace directories is not supported yet."));
-	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab"));
-	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
-	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(
-	    app, app.chats.front(), "homelab"));
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	app.chats.front().messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	app.chats.front().native_session_id = "previous-native";
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab-other"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/other"));
+	UAM_ASSERT(app.chats.front().native_session_id.empty());
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+	UAM_ASSERT(app.chats.front().provider_handoff_context.find("Keep this conversation") != std::string::npos);
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
 }
 
 UAM_TEST(MoveOpenCodeChatToDifferentWorkspaceStartsFreshNativeSession)

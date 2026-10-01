@@ -6012,7 +6012,7 @@ describe('ChatView', () => {
 
     const menu = openWorkspaceActions(host)
     expect(menu?.textContent).toContain('This directory lives on the remote computer')
-    expect(menu?.querySelector('[role="menuitem"]')).toBeNull()
+    expect(menu?.querySelector('[role="menuitem"]')?.textContent).toContain('Open terminal')
     expect(menu?.textContent).not.toContain('Open workspace')
     expect(menu?.textContent).not.toContain('Create worktree')
 
