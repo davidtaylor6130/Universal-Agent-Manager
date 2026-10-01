@@ -13715,6 +13715,21 @@ UAM_TEST(CopilotTerminalLaunchIdentityIsPersistedAndReused)
 	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(profile).PrepareInteractiveSession(app, chat, profile, uam::ResolveProviderInteractiveResumeId(app, chat, profile), ExecutionHost{}, &error));
 	UAM_ASSERT_EQ(chat.native_session_id, session_id);
 
+	ExecutionHost remote_host;
+	remote_host.id = "owned-copilot-remote";
+	ChatSession remote_chat;
+	remote_chat.id = "chat-copilot-remote-owned";
+	remote_chat.provider_id = uam::provider_ids::kCopilotCli;
+	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(profile).PrepareInteractiveSession(app, remote_chat, profile, "", remote_host, &error));
+	UAM_ASSERT(!remote_chat.native_session_id.empty());
+	UAM_ASSERT(remote_chat.native_session_id != session_id);
+	const std::optional<ChatSession> remote_saved = ChatRepository::LoadLocalChat(temp.root, remote_chat.id);
+	UAM_ASSERT(remote_saved.has_value());
+	UAM_ASSERT_EQ(remote_saved->native_session_id, remote_chat.native_session_id);
+	const std::vector<std::string> remote_argv = ProviderRuntimeRegistry::Resolve(profile).BuildInteractiveArgv(profile, remote_chat, app.settings);
+	UAM_ASSERT_EQ(remote_argv[1], std::string("--session-id"));
+	UAM_ASSERT_EQ(remote_argv[2], remote_chat.native_session_id);
+
 	ChatSession task_chat;
 	task_chat.id = "chat-copilot-task";
 	task_chat.provider_id = uam::provider_ids::kCopilotCli;

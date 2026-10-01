@@ -8,6 +8,7 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
 
 #include <algorithm>
 #include <string>
@@ -37,8 +38,26 @@ void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view messa
 
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len)
 {
+	const bool terminal_response = bytes != nullptr && IsNativeTerminalResponse(std::string_view(bytes, len));
+	// A correlated native status command must not share its composer with user input.
+	if ((terminal.native_identity_query_phase == 2 || terminal.native_identity_query_phase == 3) && !terminal_response && bytes != nullptr && len > 0)
+	{
+		if (len > 16384 - terminal.native_identity_deferred_input.size())
+		{
+			if (terminal.native_identity_query_phase == 2)
+				(void)PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, "\x15", 1);
+			terminal.native_identity_query_phase = 0;
+			terminal.native_identity_output.clear();
+			terminal.native_identity_deferred_input.clear();
+			terminal.last_error = "Terminal input exceeded the native startup buffer. Retry after startup completes.";
+			return false;
+		}
+		terminal.native_identity_deferred_input.append(bytes, len);
+		terminal.last_user_input_time_s = GetAppTimeSeconds();
+		return true;
+	}
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
-	if (wrote && bytes != nullptr && len > 0)
+	if (wrote && !terminal_response && bytes != nullptr && len > 0)
 	{
 		const double now = GetAppTimeSeconds();
 		terminal.last_activity_time_s = now;
@@ -374,6 +393,9 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 
 	CloseCliTerminalHandles(terminal);
 	terminal.running = false;
+	terminal.native_identity_query_phase = 0;
+	terminal.native_identity_output.clear();
+	terminal.native_identity_deferred_input.clear();
 	terminal.native_session_discovery_ambiguous = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
@@ -447,7 +469,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	DiscoverCliTerminalNativeSession(app, *terminal);
 	if (terminal->native_session_discovery_ambiguous)
 	{
-		if (error_out != nullptr) *error_out = "Concurrent native CLI sessions could not be identified safely. Keep the CLI open until its session identity is available.";
+		if (error_out != nullptr) *error_out = "The native CLI session identity could not be verified. Keep the CLI open until its identity is available.";
 		return false;
 	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);

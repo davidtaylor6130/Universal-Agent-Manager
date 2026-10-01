@@ -254,16 +254,15 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 	{
 		error_out->clear();
 	}
-	if (execution_host.id != uam::execution_hosts::kLocalHostId)
+	if (execution_host.id == uam::execution_hosts::kLocalHostId)
 	{
-		return true;
-	}
-	ProviderCliCompatibilityService().Poll(app);
-	if (const std::string compatibility_error = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app); !compatibility_error.empty())
-	{
-		if (error_out != nullptr)
-			*error_out = compatibility_error;
-		return false;
+		ProviderCliCompatibilityService().Poll(app);
+		if (const std::string compatibility_error = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app); !compatibility_error.empty())
+		{
+			if (error_out != nullptr)
+				*error_out = compatibility_error;
+			return false;
+		}
 	}
 
 	if (!resume_id.empty())

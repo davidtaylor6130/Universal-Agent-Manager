@@ -15,6 +15,10 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/platform/platform_services.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
 #include "common/utils/string_utils.h"
@@ -23,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 
 namespace uam
 {
@@ -76,7 +81,7 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 	std::string identity = CliTerminalAttachedSessionId(terminal);
 	if (identity.empty()) identity = ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, *chat);
 	terminal.native_session_discovery_ambiguous = false;
-	if (identity.empty() && HasCompetingUnboundCliSession(app, terminal))
+	if (identity.empty() && (terminal.native_identity_requires_owned_reply || HasCompetingUnboundCliSession(app, terminal)))
 	{
 		terminal.native_session_discovery_ambiguous = true;
 		return false;
@@ -107,6 +112,95 @@ bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
 	return true;
 }
 
+/// <summary>Native slash commands are separated from Enter so Codex cannot classify them as a paste.</summary>
+bool PollCliNativeIdentityQuery(AppState& app, CliTerminalState& terminal, std::string_view provider_id, std::string_view output, double now_s)
+{
+	if (terminal.native_identity_query_phase == 0 && terminal.native_identity_requires_owned_reply &&
+	    terminal.native_identity_command.empty() && terminal.last_user_input_time_s == 0.0 &&
+	    now_s - terminal.startup_time_s <= 30.0)
+	{
+		const ChatSession* chat = FindChatForCliTerminal(app, terminal);
+		if (chat != nullptr)
+		{
+			const std::string key = CliProviderVersionStateKey(provider_id, chat->execution_host_id);
+			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(key);
+			if (version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked)
+			{
+				terminal.native_identity_command = NativeSessionStatusCommand(provider_id, version->second.installed_version);
+				if (!terminal.native_identity_command.empty()) terminal.native_identity_query_phase = 1;
+			}
+		}
+	}
+	if (terminal.native_identity_query_phase == 0) return false;
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	const std::function<void(bool)> finish = [&](bool clear_composer)
+	{
+		if (clear_composer) (void)runtime.WriteToCliTerminal(terminal, "\x15", 1);
+		terminal.native_identity_query_phase = 0;
+		terminal.native_identity_output.clear();
+		if (terminal.running && !terminal.native_identity_deferred_input.empty())
+		{
+			const std::string deferred = std::exchange(terminal.native_identity_deferred_input, {});
+			if (WriteToCliTerminal(terminal, deferred.data(), deferred.size()) && deferred.find_first_of("\r\n") != std::string::npos)
+				MarkCliTerminalTurnBusy(terminal);
+		}
+		terminal.native_identity_deferred_input.clear();
+	};
+	if (!terminal.running || !terminal.attached_session_id.empty()) { finish(false); return false; }
+	if (terminal.native_identity_output.size() + output.size() > 65536)
+	{
+		finish(terminal.native_identity_query_phase == 2);
+		return false;
+	}
+	terminal.native_identity_output.append(output);
+	if (terminal.native_identity_query_phase == 1)
+	{
+		if (terminal.last_user_input_time_s > 0.0 || now_s - terminal.startup_time_s > 30.0)
+		{
+			finish(false);
+			return false;
+		}
+		const std::string text = StripTerminalControlSequencesForLifecycle(terminal.native_identity_output);
+		const bool codex_ready = provider_id == provider_ids::kCodexCli &&
+		    text.find("OpenAI Codex") != std::string::npos && text.find("(v") != std::string::npos &&
+		    terminal.native_identity_output.find("\x1b]0;") != std::string::npos &&
+		    text.rfind("Ask Codex to do anything") != std::string::npos &&
+		    (text.rfind("Folder access") == std::string::npos || text.rfind("Folder access") < text.rfind("Ask Codex to do anything"));
+		const bool gemini_ready = provider_id == provider_ids::kGeminiCli &&
+		    text.rfind("Type your message or @path/to/file") != std::string::npos;
+		if ((!codex_ready && !gemini_ready) || terminal.turn_state != CliTerminalTurnState::Idle) return false;
+		if (!runtime.WriteToCliTerminal(terminal, terminal.native_identity_command.data(), terminal.native_identity_command.size()))
+		{
+			finish(false);
+			return false;
+		}
+		terminal.native_identity_query_phase = 2;
+		terminal.native_identity_query_time_s = now_s;
+		terminal.native_identity_output.clear();
+		return false;
+	}
+	if (now_s - terminal.native_identity_query_time_s > 10.0)
+	{
+		LogCliDiagnosticEvent(app, "native_session_link", "owned_status_timeout", &terminal);
+		finish(terminal.native_identity_query_phase == 2);
+		return false;
+	}
+	if (terminal.native_identity_query_phase == 2)
+	{
+		if (now_s - terminal.native_identity_query_time_s < 0.75) return false;
+		if (!runtime.WriteToCliTerminal(terminal, "\r", 1)) { finish(true); return false; }
+		terminal.native_identity_query_phase = 3;
+		terminal.native_identity_output.clear();
+		return false;
+	}
+	const std::string identity = NativeStatusSessionId(provider_id, terminal.native_identity_output);
+	if (identity.empty()) return false;
+	terminal.attached_session_id = identity;
+	const bool changed = DiscoverCliTerminalNativeSession(app, terminal);
+	finish(false);
+	return changed;
+}
+
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs)
 {
 	return uam::strings::TrimmedEqualsNonEmpty(lhs, rhs);
@@ -131,7 +225,7 @@ bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id)
 bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 {
 	// Unknown activity must still block history rewrites and provider replacement.
-	return terminal.native_session_discovery_ambiguous || terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
+	return terminal.native_identity_query_phase == 2 || terminal.native_identity_query_phase == 3 || terminal.native_session_discovery_ambiguous || terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
 	       uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
 }
 

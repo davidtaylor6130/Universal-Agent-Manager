@@ -49,6 +49,20 @@ std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* ar
 		}
 		return 0;
 	}
+	if (argc == 4 && std::string_view(argv[1]) == "--uam-test-native-status")
+	{
+		const bool codex = std::string_view(argv[2]) == uam::provider_ids::kCodexCli;
+		std::cout << (codex ? "OpenAI Codex (v0.159.2)\x1b]0;owned-fixture\a\n› Ask Codex to do anything\n" : "Type your message or @path/to/file\n") << std::flush;
+		std::string line;
+		while (std::getline(std::cin, line))
+		{
+			line = uam::strings::Trim(line);
+			if (line == (codex ? "/status" : "/stats session"))
+				std::cout << (codex ? "OpenAI Codex (v0.159.2)\n  Session: " : "Session Stats\nInteraction Summary\nSession ID: ") << argv[3] << "\nToken usage: 0 total\n" << std::flush;
+			else std::cout << "USER-INPUT:" << line << "\n" << std::flush;
+		}
+		return 0;
+	}
 	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-opencode-terminal")
 	{
 		std::string line;
@@ -449,7 +463,7 @@ UAM_TEST(OpenCodeTerminalLaunchPersistsTheSameSessionBeforeStarting)
 #endif
 }
 
-UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
+UAM_TEST(ClaudeCliReusesItsAssignedSessionLocallyAndRemotelyAndOffersLegacyPicker)
 {
 	TempDir temp("uam-remote-claude-session");
 	uam::AppState app;
@@ -458,7 +472,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 	UAM_ASSERT(chat.remote_claude_session_unstarted);
 	std::vector<std::string> first_argv{"claude"};
 	std::string error;
-	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, chat, first_argv, error));
+	UAM_ASSERT(uam::PrepareFreshClaudeTerminalArgv(app, chat, first_argv, error));
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(first_argv[first_argv.size() - 2], std::string("--session-id"));
 	UAM_ASSERT_EQ(first_argv.back(), chat.native_session_id);
@@ -476,7 +490,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 
 	ChatSession legacy;
 	std::vector<std::string> legacy_argv{"claude"};
-	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, legacy, legacy_argv, error));
+	UAM_ASSERT(uam::PrepareFreshClaudeTerminalArgv(app, legacy, legacy_argv, error));
 	UAM_ASSERT_EQ(legacy_argv.back(), std::string("--resume"));
 	UAM_ASSERT(legacy.native_session_id.empty());
 
@@ -484,7 +498,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "storage unavailable"));
 	ChatSession blocked = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
 	std::vector<std::string> blocked_argv{"claude"};
-	UAM_ASSERT(!uam::PrepareRemoteClaudeTerminalArgv(app, blocked, blocked_argv, error));
+	UAM_ASSERT(!uam::PrepareFreshClaudeTerminalArgv(app, blocked, blocked_argv, error));
 	UAM_ASSERT(blocked.native_session_id.empty());
 	UAM_ASSERT(blocked.remote_claude_session_unstarted);
 	UAM_ASSERT_EQ(blocked_argv.size(), static_cast<std::size_t>(1));
@@ -2442,4 +2456,144 @@ UAM_TEST(ConcurrentFreshCliSessionsNeverClaimAnotherWorkspaceSession)
 	app.cli_terminals[0]->running = false;
 	app.cli_terminals[1]->running = false;
 #endif
+}
+
+UAM_TEST(OwnedNativeStatusQueriesBindConcurrentProcessesAndExcludeUserInput)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-owned-status");
+	for (const std::string provider_id : {std::string(uam::provider_ids::kCodexCli), std::string(uam::provider_ids::kGeminiCli)})
+	{
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		const std::string ids[2]{"01a0f73c-df28-7dd3-8253-64f706aeeebb", "01a0f73c-df28-7dd3-8253-64f706aeeebc"};
+		for (int index = 0; index < 2; ++index)
+		{
+			ChatSession chat;
+			chat.id = "owned-" + provider_id + std::to_string(index);
+			chat.provider_id = provider_id;
+			chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+			terminal->frontend_chat_id = chat.id;
+			terminal->attached_chat_id = chat.id;
+			terminal->native_identity_command = provider_id == uam::provider_ids::kCodexCli ? "/status" : "/stats session";
+			terminal->native_identity_query_phase = 1;
+			terminal->native_identity_requires_owned_reply = true;
+			terminal->startup_time_s = uam::GetAppTimeSeconds();
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(*terminal, temp.root,
+			    {uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()), "--uam-test-native-status", provider_id, ids[index]}, &error));
+			terminal->running = true;
+			uam::MarkCliTerminalTurnIdle(*terminal);
+			app.cli_terminals.push_back(std::move(terminal));
+		}
+		const double deadline = uam::GetAppTimeSeconds() + 8.0;
+		bool queued_input = false;
+		while (uam::GetAppTimeSeconds() < deadline &&
+		       (app.cli_terminals[0]->attached_session_id.empty() || app.cli_terminals[1]->attached_session_id.empty()))
+		{
+			for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
+			{
+				char output[8192];
+				const std::ptrdiff_t read = PlatformServicesFactory::Instance().terminal_runtime.ReadCliTerminalOutput(*terminal, output, sizeof(output));
+				(void)uam::PollCliNativeIdentityQuery(app, *terminal, provider_id, read > 0 ? std::string_view(output, static_cast<std::size_t>(read)) : std::string_view(), uam::GetAppTimeSeconds());
+				if (terminal.get() == app.cli_terminals[0].get() && terminal->native_identity_query_phase == 2 && !queued_input)
+				{
+					UAM_ASSERT(uam::WriteToCliTerminal(*terminal, "user input\r", 11));
+					UAM_ASSERT_EQ(terminal->native_identity_deferred_input, std::string("user input\r"));
+					queued_input = true;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		const std::string first = app.cli_terminals[0]->attached_session_id;
+		const std::string second = app.cli_terminals[1]->attached_session_id;
+		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals) uam::StopCliTerminal(*terminal, false, uam::CliTerminalStopMode::FastExit);
+		UAM_ASSERT(queued_input);
+		UAM_ASSERT_EQ(first, ids[0]);
+		UAM_ASSERT_EQ(second, ids[1]);
+		UAM_ASSERT_EQ(app.chats[0].native_session_id, ids[0]);
+		UAM_ASSERT_EQ(app.chats[1].native_session_id, ids[1]);
+	}
+#endif
+}
+
+UAM_TEST(NativeStatusIdentityRequiresVersionAndCorrelatedPanel)
+{
+	const std::string id = "01a0f73c-df28-7dd3-8253-64f706aeeebb";
+	UAM_ASSERT(uam::NativeSessionStatusCommand(uam::provider_ids::kCodexCli, "0.159.1").empty());
+	UAM_ASSERT(uam::NativeSessionStatusCommand(uam::provider_ids::kGeminiCli, "0.38.0").empty());
+	UAM_ASSERT_EQ(uam::NativeSessionStatusCommand(uam::provider_ids::kCodexCli, "0.159.3"), std::string("/status"));
+	UAM_ASSERT_EQ(uam::NativeSessionStatusCommand(uam::provider_ids::kGeminiCli, "0.39.0"), std::string("/stats session"));
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "Assistant: Session: " + id).empty());
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kGeminiCli, "Assistant: Session ID: " + id).empty());
+	UAM_ASSERT_EQ(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "OpenAI Codex\nSession: \x1b[22m" + id + "\nToken usage: 0"), id);
+	UAM_ASSERT_EQ(uam::NativeStatusSessionId(uam::provider_ids::kGeminiCli, "Session Stats\nInteraction Summary\nSession ID: " + id + "\n"), id);
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "OpenAI Codex\nSession: " + id + "\nSession: 01a0f73c-df28-7dd3-8253-64f706aeeebc\nToken usage: 0").empty());
+}
+
+UAM_TEST(BlankNativeCliViewDetachPreservesTheSameOwnedProcessAcrossRepeatedViews)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.native_session_id = "01a0f73c-df28-7dd3-8253-64f706aeeebb";
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::CliTerminalState> owned = std::make_unique<uam::CliTerminalState>();
+	owned->frontend_chat_id = chat.id;
+	owned->attached_chat_id = chat.id;
+	owned->attached_session_id = chat.native_session_id;
+	owned->running = true;
+	owned->ui_attached = true;
+	owned->ui_attachment_id = "first-view";
+	uam::CliTerminalState* identity = owned.get();
+	app.cli_terminals.push_back(std::move(owned));
+	for (int index = 0; index < 3; ++index)
+	{
+		UAM_ASSERT(uam::DetachCliTerminalUi(*identity, identity->ui_attachment_id));
+		UAM_ASSERT(identity->running);
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT_EQ(identity->attached_session_id, chat.native_session_id);
+		UAM_ASSERT(&uam::EnsureCliTerminalForChat(app, app.chats.front()) == identity);
+		identity->ui_attached = true;
+		identity->ui_attachment_id = "next-view-" + std::to_string(index);
+	}
+	identity->running = false;
+}
+
+UAM_TEST(NativeIdentityQueryCancellationAndTimeoutNeverBindConversationOutput)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "native-query-timeout";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.native_identity_query_phase = 3;
+	terminal.native_identity_query_time_s = 1.0;
+	terminal.running = true;
+	const std::string pending_input(16384, 'x');
+	UAM_ASSERT(uam::WriteToCliTerminal(terminal, pending_input.data(), pending_input.size()));
+	UAM_ASSERT(!uam::WriteToCliTerminal(terminal, "overflow", 8));
+	UAM_ASSERT(!terminal.last_error.empty());
+	UAM_ASSERT(terminal.native_identity_deferred_input.empty());
+	UAM_ASSERT_EQ(terminal.native_identity_query_phase, 0);
+	terminal.native_identity_query_phase = 3;
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id, "", 12.0));
+	UAM_ASSERT_EQ(terminal.native_identity_query_phase, 0);
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id,
+	    "OpenAI Codex\nSession: 01a0f73c-df28-7dd3-8253-64f706aeeebb\nToken usage: 0", 13.0));
+	UAM_ASSERT(terminal.attached_session_id.empty());
+	terminal.native_identity_query_phase = 3;
+	terminal.native_identity_deferred_input = "cancelled user input\r";
+	terminal.running = false;
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id, "", 14.0));
+	UAM_ASSERT(terminal.native_identity_deferred_input.empty());
+	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b[1;1R"));
+	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b]10;rgb:ffff/ffff/ffff\x1b\\"));
+	UAM_ASSERT(!uam::IsNativeTerminalResponse("\x1b[1;1Ruser prompt"));
 }

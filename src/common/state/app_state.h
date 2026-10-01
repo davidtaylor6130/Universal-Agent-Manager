@@ -76,6 +76,12 @@ namespace uam
 		std::string attached_session_id;
 		std::vector<std::string> session_ids_before;
 		bool native_session_discovery_ambiguous = false;
+		bool native_identity_requires_owned_reply = false;
+		std::string native_identity_command;
+		std::string native_identity_output;
+		std::string native_identity_deferred_input;
+		int native_identity_query_phase = 0;
+		double native_identity_query_time_s = 0.0;
 		std::vector<std::string> linked_files_snapshot;
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;

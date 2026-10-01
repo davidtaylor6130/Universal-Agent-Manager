@@ -18,6 +18,8 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
@@ -45,8 +47,8 @@ namespace uam
 		return false;
 	}
 
-	/// <summary>Bind a new remote Claude terminal before launch, or open the native picker for a legacy chat.</summary>
-	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
+	/// <summary>Bind a new Claude terminal before launch, or open the native picker for a legacy chat.</summary>
+	inline bool PrepareFreshClaudeTerminalArgv(AppState& app, ChatSession& chat,
 	    std::vector<std::string>& argv, std::string& error)
 	{
 		if (!chat.native_session_id.empty()) return true;
@@ -57,7 +59,7 @@ namespace uam
 			return true;
 		}
 
-		// Claude has no empty-session creation command. Save the ID before SSH
+		// Claude has no empty-session creation command. Save the ID before launch
 		// starts so every later launch can target the same conversation.
 		const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id.empty())
@@ -77,6 +79,12 @@ namespace uam
 		argv.push_back("--session-id");
 		argv.push_back(session_id);
 		return true;
+	}
+
+	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
+	    std::vector<std::string>& argv, std::string& error)
+	{
+		return PrepareFreshClaudeTerminalArgv(app, chat, argv, error);
 	}
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
@@ -148,11 +156,11 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, "Active provider does not expose an interactive CLI command.");
 		}
-		if (remote && provider.id == uam::provider_ids::kClaudeCli &&
+		if (provider.id == uam::provider_ids::kClaudeCli &&
 		    ResolveProviderInteractiveResumeId(app, chat, provider).empty())
 		{
 			std::string error;
-			if (!PrepareRemoteClaudeTerminalArgv(app, chat, provider_argv, error))
+			if (!PrepareFreshClaudeTerminalArgv(app, chat, provider_argv, error))
 				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, error);
 		}
 		terminal.rows = ClampCliTerminalLaunchRows(rows);
@@ -186,6 +194,21 @@ namespace uam
 		terminal.last_polled_time_s = 0.0;
 		terminal.input_ready = false;
 		terminal.startup_time_s = launch_time_s;
+		terminal.native_identity_requires_owned_reply = terminal.attached_session_id.empty() &&
+		    (provider.id == provider_ids::kCodexCli || provider.id == provider_ids::kGeminiCli);
+		terminal.native_identity_command.clear();
+		terminal.native_identity_output.clear();
+		terminal.native_identity_deferred_input.clear();
+		terminal.native_identity_query_phase = 0;
+		terminal.native_identity_query_time_s = launch_time_s;
+		const std::string version_key = CliProviderVersionStateKey(provider.id, execution_host->id);
+		if (terminal.attached_session_id.empty())
+		{
+			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
+			if (version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked)
+				terminal.native_identity_command = NativeSessionStatusCommand(provider.id, version->second.installed_version);
+		}
+		if (!terminal.native_identity_command.empty()) terminal.native_identity_query_phase = 1;
 		MarkCliTerminalStopped(terminal);
 
 		const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);

@@ -192,7 +192,7 @@ bool TryAttachNativeSessionFromHistory(uam::AppState& app, uam::CliTerminalState
 		return false;
 	}
 
-	terminal.native_session_discovery_ambiguous = HasCompetingUnboundCliSession(app, terminal);
+	terminal.native_session_discovery_ambiguous = terminal.native_identity_requires_owned_reply || HasCompetingUnboundCliSession(app, terminal);
 	if (terminal.native_session_discovery_ambiguous) return false;
 	const NativeSessionLinkService native_session_linker;
 	const std::unordered_set<std::string> blocked_ids = BlockedNativeSessionIdsForTerminal(app, terminal);
@@ -498,6 +498,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			}
 		}
 	}
+
+	changed = PollCliNativeIdentityQuery(app, terminal, terminal_provider.id, output_for_frontend, GetAppTimeSeconds()) || changed;
 
 	return changed;
 }
