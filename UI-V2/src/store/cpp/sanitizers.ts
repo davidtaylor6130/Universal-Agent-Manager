@@ -713,6 +713,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
+    lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
       ? value.diagnostics.flatMap((entry) => {
@@ -805,6 +806,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
 		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
+    pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
     remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,
     currentStep: isString(value.currentStep) ? value.currentStep : undefined,

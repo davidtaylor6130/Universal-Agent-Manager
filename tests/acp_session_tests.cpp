@@ -9354,6 +9354,14 @@ UAM_TEST(AcpReadyRuntimeStopsAfterIdleTimeoutWithoutStoppingWork)
 	UAM_ASSERT(raw_session->running);
 	raw_session->recovering_remote_process = false;
 	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	UAM_ASSERT(raw_session->local_stop_pending);
+	for (int attempt = 0; attempt < 300 && raw_session->local_stop_pending; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!raw_session->local_stop_pending);
+	UAM_ASSERT_EQ(app.chats.front().last_stop_reason, std::string("timeout"));
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
 	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)

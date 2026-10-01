@@ -217,7 +217,7 @@ namespace uam::acp_detail
 		}
 	}
 
-bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out)
+bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out, bool restart)
 {
 	ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 	Goal* goal = GoalService::FindGoalById(app, chat_id, goal_id);
@@ -232,7 +232,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to continue.";
 		return false;
 	}
-	if (goal->status == GoalStatus::Complete)
+	if (goal->status == GoalStatus::Complete && !restart)
 	{
 		if (error_out != nullptr) *error_out = "Completed goals cannot be resumed.";
 		return false;
@@ -246,11 +246,12 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	{
 		session = &EnsureAcpSessionForChat(app, *chat);
 	}
-	if (session == nullptr || (GoalService::IsProviderManaged(*goal) && !CanQueueGoalInternalPrompt(*session)))
+	if (session == nullptr || (GoalService::IsProviderManaged(*goal) && !AcpSessionHasActiveTurn(*session) && !CanQueueGoalInternalPrompt(*session)))
 	{
 		if (error_out != nullptr) *error_out = "The provider is not ready to resume this goal.";
 		return false;
 	}
+	if (!restart && goal->status == GoalStatus::Active && chat->active_goal_id == goal_id && session != nullptr && AcpSessionHasActiveTurn(*session)) return true;
 	std::string prompt = GoalService::IsProviderManaged(*goal)
 	                         ? uam::strings::Trim(goal->provider_command + " " + goal->objective)
 	                         : uam::strings::Trim(goal->last_next_prompt);
@@ -259,6 +260,25 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget);
 	}
 	const ChatSession previous_chat = *chat;
+	if (restart)
+	{
+		goal->status = GoalStatus::Paused;
+		goal->tokens_used = 0;
+		goal->loop_count = 0;
+		goal->blocked_turn_count = 0;
+		goal->last_blocker.clear();
+		goal->last_blocker_kind.clear();
+		goal->last_diagnostic.clear();
+		goal->last_verification.clear();
+		goal->completed_items.clear();
+		goal->remaining_items.clear();
+		goal->current_step.clear();
+		goal->last_next_prompt.clear();
+		goal->same_next_prompt_count = 0;
+		goal->last_assistant_text.clear();
+		goal->same_assistant_text_count = 0;
+		prompt = GoalService::IsProviderManaged(*goal) ? uam::strings::Trim(goal->provider_command + " " + goal->objective) : GoalService::BuildContinuationPrompt(*goal, 0, goal->token_budget);
+	}
 	if (!GoalService::IsProviderManaged(*goal))
 	{
 		const ProviderChatDefaults defaults =
@@ -281,17 +301,22 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "Failed to activate the goal.";
 		return false;
 	}
+	const bool active_turn = AcpSessionHasActiveTurn(*session);
+	chat->goal_pending_continuation_id = active_turn ? goal_id : "";
 	if (!ChatRepository::SaveChat(app.data_root, *chat))
 	{
 		*chat = previous_chat;
 		if (error_out != nullptr) *error_out = "Failed to persist the active goal.";
 		return false;
 	}
+	if (active_turn) return true;
 	if (!QueueGoalInternalPrompt(app, *session, *chat, prompt, false, model_id,
 	                             !GoalService::IsProviderManaged(*goal)))
 	{
 		chat->goals = previous_chat.goals;
 		chat->active_goal_id = previous_chat.active_goal_id;
+		chat->goal_command_revision = previous_chat.goal_command_revision;
+		chat->goal_pending_continuation_id = previous_chat.goal_pending_continuation_id;
 		if (!ChatRepository::SaveChat(app.data_root, *chat)) ScheduleChatSave(app, *chat, 0.0);
 		if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(session->last_error, "Failed to queue the goal continuation.");
 		return false;
@@ -687,7 +712,15 @@ namespace
 	                           bool completed_review_turn,
 	                           const std::string& goal_id)
 	{
+		if (session.local_stop_pending || session.remote_stop_pending) return;
 		const std::string owner_chat_id = GoalOwnerChatId(chat);
+		const ChatSession* owner = GoalOwnerChat(app, chat);
+		if (owner != nullptr && session.goal_command_revision != owner->goal_command_revision)
+		{
+			ClearGoalReviewState(session);
+			session.goal_turn_kind.clear();
+			return;
+		}
 		if (!continue_goal_loop)
 		{
 			ClearGoalReviewState(session);
@@ -843,8 +876,35 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 
 bool PollPendingGoalIterations(AppState& app)
 {
-	const bool changed = !app.pending_goal_iterations.empty();
+	bool changed = !app.pending_goal_iterations.empty();
 	app.pending_goal_iterations.clear();
+	std::vector<std::string> ready_ids;
+	for (const ChatSession& chat : app.chats)
+	{
+		if (chat.goal_pending_continuation_id.empty() || chat.active_goal_id != chat.goal_pending_continuation_id) continue;
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		if (AcpStopInProgress(app, chat.id) || (session != nullptr && (AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending))) continue;
+		const bool iteration_busy = std::ranges::any_of(app.chats, [&](const ChatSession& candidate)
+		{
+			const AcpSessionState* iteration = FindAcpSessionForChat(app, candidate.id);
+			return candidate.goal_owner_chat_id == chat.id && iteration != nullptr && AcpSessionHasActiveTurn(*iteration);
+		});
+		if (!iteration_busy) ready_ids.push_back(chat.id);
+	}
+	for (const std::string& id : ready_ids)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, id);
+		if (chat == nullptr) continue;
+		const std::string goal_id = chat->goal_pending_continuation_id;
+		std::string error;
+		if (!ResumeGoal(app, id, goal_id, &error))
+		{
+			(void)GoalService::UpdateGoalStatus(app, id, goal_id, GoalStatus::Blocked);
+			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) goal->last_diagnostic = error;
+			(void)SaveChatQuietly(app, *chat);
+		}
+		changed = true;
+	}
 	return changed;
 }
 

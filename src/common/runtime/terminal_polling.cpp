@@ -147,10 +147,7 @@ bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app, uam::CliTermina
 	uam::MarkCliTerminalTurnIdle(terminal);
 	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_synced_history", &terminal, "message_count=" + std::to_string(synced_message_count));
 
-	if (synced_chat->id != selected_chat_id)
-	{
-		uam::MarkChatUnseen(app, synced_chat->id);
-	}
+	uam::MarkChatUnseen(app, synced_chat->id);
 
 	return true;
 }

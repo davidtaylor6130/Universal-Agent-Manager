@@ -4093,7 +4093,8 @@ UAM_TEST(GoalHandlersDoNotRestoreStateAfterIrreversibleCancellation)
 	const std::string status = handler("void UamQueryHandler::HandleUpdateGoalStatus",
 	                                   "void UamQueryHandler::HandleUpdateGoalObjective");
 	const std::string remove = handler("void UamQueryHandler::HandleRemoveGoal", "");
-	UAM_ASSERT(status.find("previous_chat, cb, !work_changed") != std::string::npos);
+	UAM_ASSERT(status.find("previous_chat, cb") != std::string::npos);
+	UAM_ASSERT(status.find("CancelGoalWork") == std::string::npos);
 	UAM_ASSERT(source.find("uam::acp_detail::ScheduleChatSave(app, *chat, 0.0)") != std::string::npos);
 	UAM_ASSERT(remove.find("const bool restore_on_failure = !work_changed") != std::string::npos);
 	UAM_ASSERT(remove.find("previous_chat, cb, restore_on_failure") != std::string::npos);
@@ -7865,6 +7866,88 @@ UAM_TEST(ChatDomainServiceSetSelectedChatIndexOrNearestClampsAndRefreshes)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(ChatAttentionRequiresMatchingInteractionAndSurvivesRestart)
+{
+	TempDir temp("uam-attention");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	chat.id = "attention-chat";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	ChatDomainService domain;
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string first = app.chats.front().attention_revision;
+	UAM_ASSERT(!first.empty());
+	domain.SelectChatById(app, chat.id);
+	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, first);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::io::ReadTextFile(AppPaths::UamChatSummaryFilePath(app.data_root, chat.id)).find(first) != std::string::npos);
+	UAM_ASSERT_EQ(loaded->attention_revision, first);
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string second = app.chats.front().attention_revision;
+	UAM_ASSERT(first != second);
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, first));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, second);
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, second));
+	UAM_ASSERT(app.chats.front().attention_revision.empty());
+	UAM_ASSERT(!app.chats_with_unseen_updates.contains(chat.id));
+	loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->attention_revision.empty());
+}
+
+UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
+{
+	TempDir temp("uam-legacy-attention");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "legacy-attention";
+	chat.updated_at = "2026-10-01T11:00:00Z";
+	chat.last_opened_at = "2026-10-01T10:00:00Z";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	ChatDomainService domain;
+	const std::string legacy = domain.AttentionRevision(app, app.chats.front());
+	UAM_ASSERT(!legacy.empty());
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, legacy));
+	UAM_ASSERT(domain.AttentionRevision(app, app.chats.front()).empty());
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string fresh = app.chats.front().attention_revision;
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, legacy));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, fresh);
+}
+
+#if defined(__APPLE__)
+UAM_TEST(MacOwnedProviderGroupIsCleanedBeforeExitedLeaderIsReaped)
+{
+	TempDir temp("uam-owned-group");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields owned;
+	uam::platform::StdioProcessPlatformFields unrelated;
+	std::string error;
+	const fs::path marker = temp.root / "descendant-survived";
+	const fs::path unrelated_marker = temp.root / "unrelated-survived";
+	UAM_ASSERT(service.StartStdioProcess(unrelated, temp.root, {"/bin/sh", "-c", "sleep 0.4; touch '" + unrelated_marker.string() + "'; sleep 10"}, &error));
+	UAM_ASSERT(service.StartStdioProcess(owned, temp.root, {"/bin/sh", "-c", "(/bin/sh -c \"trap '' TERM; sleep 0.3; touch '" + marker.string() + "'; sleep 10\" &) ; exit 0"}, &error));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(owned) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT(owned.child_pid <= 0);
+	std::this_thread::sleep_for(std::chrono::milliseconds(600));
+	service.StopStdioProcess(owned, true);
+	const bool unrelated_running = !service.PollStdioProcessExited(unrelated);
+	service.StopStdioProcess(unrelated, true);
+	UAM_ASSERT(!fs::exists(marker));
+	UAM_ASSERT(fs::exists(unrelated_marker));
+	UAM_ASSERT(unrelated_running);
+}
+#endif
+
 UAM_TEST(ChatDomainServiceSelectRememberedOrFirstChatTrimsPersistedId)
 {
 	uam::AppState app;
@@ -7902,7 +7985,7 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.selected_chat_index, 1);
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string("chat-second"));
 	UAM_ASSERT(app.composer_text.empty());
-	UAM_ASSERT(app.chats_with_unseen_updates.empty());
+	UAM_ASSERT(app.chats_with_unseen_updates.contains("chat-second"));
 
 	app.composer_text = "keep draft";
 	ChatDomainService().SelectChatById(app, " chat-second ");
@@ -18542,4 +18625,138 @@ int main(int argc, char** argv)
 	}
 
 	return 0;
+}
+
+UAM_TEST(AcpTimeoutStopPreservesContentAndPersistsObservedOutcome)
+{
+	for (int scenario = 0; scenario < 4; ++scenario)
+	{
+		const bool failed = scenario == 2;
+		const bool cooperative = scenario != 1;
+		TempDir temp("uam-timeout-observed-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Response received before shutdown.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = true;
+		session->running = true;
+		session->lifecycle_state = failed ? "error" : "processing";
+		session->last_error = failed ? "Provider failed." : "";
+		session->current_assistant_message_index = 0;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", cooperative ? "more > NUL & exit /b 0" : "ping -n 11 127.0.0.1 > NUL"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", cooperative ? "cat >/dev/null; exit 0" : "trap '' TERM; sleep 10"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Timeout));
+		UAM_ASSERT(app.acp_sessions.front()->local_stop_pending);
+		UAM_ASSERT(uam::AcpStopInProgress(app, chat.id));
+		if (scenario == 3)
+		{
+			uam::FastStopAcpSessionsForExit(app);
+			UAM_ASSERT(app.acp_sessions.empty());
+			const std::optional<ChatSession> stopped_chat = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(stopped_chat.has_value());
+			UAM_ASSERT_EQ(stopped_chat->last_stop_reason, std::string("timeout"));
+			UAM_ASSERT_EQ(stopped_chat->messages.front().content, assistant.content);
+			UAM_ASSERT(!stopped_chat->messages.front().interrupted);
+			continue;
+		}
+		for (int attempt = 0; attempt < 300 && app.acp_sessions.front()->local_stop_pending; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!app.acp_sessions.front()->local_stop_pending);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->stop_outcome, cooperative ? uam::platform::ProcessStopOutcome::Graceful : uam::platform::ProcessStopOutcome::Forced);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, failed || !cooperative);
+		const std::string expected_reason = failed ? "failed" : cooperative ? "timeout" : "forced";
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected_reason);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, failed ? std::string("Provider failed.") : std::string{});
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.front().stop_reason, expected_reason);
+		UAM_ASSERT_EQ(loaded->last_stop_reason, expected_reason);
+	}
+}
+
+UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)
+{
+	uam::AppState app;
+	uam::AsyncAcpProcessStopTask task;
+	task.chat_id = "stopping-chat";
+	task.finished = std::make_shared<std::atomic<bool>>(false);
+	app.acp_process_stop_tasks.push_back(std::move(task));
+	UAM_ASSERT(uam::AcpStopInProgress(app, "stopping-chat"));
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "unrelated-chat"));
+	app.acp_process_stop_tasks.front().finished->store(true);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "stopping-chat"));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "stopping-chat";
+	session->stop_purpose = uam::AcpStopPurpose::Timeout;
+	session->remote_stop_pending = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, "stopping-chat"));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->stop_purpose, uam::AcpStopPurpose::Timeout);
+}
+
+UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown)
+{
+	for (const std::string outcome : {"graceful", "forced", "unknown", "forged"})
+	{
+		TempDir temp("uam-remote-timeout-outcome");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		chat.execution_host_id = "ssh-test";
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Remote response before shutdown.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = true;
+		session->current_assistant_message_index = 0;
+		session->remote_stop_pending = true;
+		session->remote_output_delivery_token = "owned-delivery-token";
+		session->stop_purpose = uam::AcpStopPurpose::Timeout;
+		app.acp_sessions.push_back(std::move(session));
+		auto pending = std::make_unique<uam::PendingAcpRemoteStop>();
+		pending->chat_id = chat.id;
+		pending->deadline_time_s = uam::GetAppTimeSeconds() + 3.0;
+		const std::string token = outcome == "forged" ? "wrong-delivery-token" : "owned-delivery-token";
+		const std::string reported = outcome == "forged" ? "graceful" : outcome;
+		const std::string marker = "UAM_REMOTE_STOP_OUTCOME " + token + " " + reported;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", outcome == "unknown" ? "exit /b 0" : "echo " + marker + ">&2 & exit /b 0"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", outcome == "unknown" ? "exit 0" : "printf '" + marker + "\\n' >&2; exit 0"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*pending, temp.root, argv, &error));
+		app.pending_acp_remote_stops.push_back(std::move(pending));
+		for (int attempt = 0; attempt < 300 && !app.pending_acp_remote_stops.empty(); ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		const std::string expected = outcome == "graceful" ? "timeout" : outcome == "forced" ? "forced" : "unknown";
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, outcome != "graceful");
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+	}
 }

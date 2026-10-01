@@ -795,9 +795,18 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
   )
 }
 
+export function stoppedResponseLabel(reason: string | undefined, interrupted?: boolean): string {
+  if (reason === 'forced') return 'Forced stop'
+  if (reason === 'failed') return 'Provider failed'
+  if (reason === 'unknown') return 'Provider stopped'
+  if (reason === 'timeout' && !interrupted) return 'Stopped after timeout'
+  return interrupted ? 'Response interrupted' : ''
+}
+
 export function TurnTimelineContent({
   disclosureState,
   interrupted = false,
+  stopReason,
   startedAt,
   events,
   tools,
@@ -822,6 +831,7 @@ export function TurnTimelineContent({
   disclosureState?: WorkTraceDisclosureState
   startedAt?: number
   interrupted?: boolean
+  stopReason?: string
   events: AcpTurnEvent[]
   tools: AcpToolCall[]
   planSummary?: string
@@ -1037,7 +1047,7 @@ export function TurnTimelineContent({
           onStopRuntime={onStopRuntime}
         />
       )}
-      {interrupted && <div className="conversation-interrupted">Response interrupted</div>}
+      {stoppedResponseLabel(stopReason, interrupted) && <div className="conversation-interrupted">{stoppedResponseLabel(stopReason, interrupted)}</div>}
     </div>
   )
 }

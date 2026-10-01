@@ -32,7 +32,7 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    bool preserve_queued_prompts = false);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
-bool StopAcpSession(AppState& app, const std::string& chat_id);
+bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt);
 bool SetAcpSessionMode(AppState& app,
                        const std::string& chat_id,
                        const std::string& mode_id,
@@ -59,7 +59,7 @@ bool ResolveAcpUserInput(AppState& app,
 	bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
 	void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source,
 	                                platform::StdioProcessPlatformFields& destination);
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process);
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt);
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	void FlushPendingChatSaves(AppState& app, bool force = false);

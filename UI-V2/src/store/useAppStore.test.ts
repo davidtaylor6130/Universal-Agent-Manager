@@ -1064,6 +1064,7 @@ describe('useAppStore Gemini CLI slice', () => {
           ...initial.chats[0],
           goals: [{
             ...providerGoal,
+            pendingContinuation: true,
             tokensUsed: 12,
             updatedAt: '2026-01-01T00:00:02.000Z',
           }],
@@ -1073,6 +1074,7 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(cefStore.getState().goalsByChatId['chat-1'][0]).toMatchObject({
       tokensUsed: 12,
+      pendingContinuation: true,
       executionOwner: 'provider',
       providerCommand: '/goal',
     })
@@ -6141,6 +6143,34 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
     expect(requests).toEqual([])
+  })
+
+  it('routes restart and timeout intent explicitly while ordinary stops remain interrupts', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    await useAppStore.getState().resumeGoal('chat-1', 'goal-1', true)
+    await useAppStore.getState().stopAcpSession('chat-1', 'timeout')
+    await useAppStore.getState().stopAcpSession('chat-1')
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'resumeGoal', payload: { chatId: 'chat-1', goalId: 'goal-1', restart: true } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1', purpose: 'timeout' } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1' } },
+    ])
+  })
+
+  it('acknowledges only the observed attention revision on deliberate interaction', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    const state = makeCppState(1)
+    state.chats[0].attentionRevision = 'completion-one'
+    useAppStore.getState().loadFromCef(state)
+    expect(requests).toEqual([])
+    await useAppStore.getState().acknowledgeChatAttention('chat-1', 'completion-one')
+    expect(requests).toEqual([expect.objectContaining({ action: 'acknowledgeChatAttention', payload: { chatId: 'chat-1', attentionRevision: 'completion-one' } })])
   })
 
   it('resumes a goal through the runtime orchestration action', async () => {
