@@ -286,6 +286,7 @@ export function normalizeCliLifecycleState(
   processing?: boolean
 ): CliLifecycleState {
   if (
+    value === 'starting' ||
     value === 'unknown' ||
     value === 'disabled' ||
     value === 'stopped' ||
@@ -310,7 +311,7 @@ export function normalizeCliLifecycleState(
 }
 
 export function cliLifecycleIsProcessing(lifecycleState: CliLifecycleState): boolean {
-  return lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
+  return lifecycleState === 'starting' || lifecycleState === 'busy' || lifecycleState === 'shuttingDown'
 }
 
 export function normalizeAcpLifecycleState(value: unknown, running: boolean, processing: boolean): AcpLifecycleState {

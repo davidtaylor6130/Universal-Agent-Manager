@@ -252,6 +252,14 @@ struct AgentRun
 /// <summary>
 /// Chat session metadata and message history.
 /// </summary>
+struct ProviderHandoffCliContext
+{
+	std::string execution_host_id;
+	std::string directory;
+	std::string connection_identity;
+	bool operator==(const ProviderHandoffCliContext&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
@@ -327,6 +335,8 @@ struct ChatSession
 	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
 	std::string provider_handoff_context;
 	std::string provider_handoff_session_id;
+	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
+	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.

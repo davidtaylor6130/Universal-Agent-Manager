@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_native_context.h"
 #include "remote/runner_service_posix.h"
 
 using namespace uam_test;
@@ -71,11 +72,12 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		}
 		const bool teardown_error = mode == "teardown-error" &&
 		    (type == "process.closeInput" || type == "process.stop" || type == "process.remove");
-		const nlohmann::json response = teardown_error
+		nlohmann::json response = teardown_error
 		    ? nlohmann::json{{"id", request["id"]}, {"ok", false}, {"error", {{"message", "fixture teardown rejected"}}}}
 		    : type == "hello"
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
+		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
 		if (!uam::remote::WriteFrame(std::cout, response)) return 5;
 		std::cout.flush();
 	}
@@ -2677,3 +2679,121 @@ UAM_TEST(RemoteRunnerServiceSupportsConcurrentChatsAndBridgeReconnects)
 	UAM_ASSERT_EQ(uam::remote::StopRunnerService(socket), 0);
 }
 #endif
+
+UAM_TEST(RemoteNativeContextRequiresCapabilityAndOwnedPrivateLaunch)
+{
+	TempDir temp("uam-remote-native-context");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar old_mode("UAM_TEST_CREATE_MODE", "old-context-capability");
+	uam::remote::RunnerClient old(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"});
+	std::string error;
+	UAM_ASSERT(old.Connect(&error));
+	UAM_ASSERT(!old.SupportsProviderNativeContext());
+	uam::remote::RunnerState state;
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "hello"}, {"type", "hello"}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "test"}}, "test", &state);
+	UAM_ASSERT(hello["capabilities"].value("providerNativeContext", false));
+	const fs::path directory = temp.root / ".UAM/context/0123456789abcdef";
+	const nlohmann::json prepared = state.HandleProcessRequest({{"id", "prepare"}, {"type", "context.prepare"}, {"directory", directory.string()}});
+	UAM_ASSERT(prepared.value("ok", false));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "conversation.md", "User: Favourite fruit is kumquat."));
+	std::vector<std::pair<std::string, std::string>> environment;
+	ScopedEnvVar inherited("OPENCODE_CONFIG_CONTENT", R"({"permission":{"edit":"deny"},"instructions":["existing.md"]})");
+	UAM_ASSERT(uam::provider_native_context::ConfigureEnvironment("opencode-cli", directory, environment, error, temp.root, true));
+	UAM_ASSERT_EQ(nlohmann::json::parse(environment.back().second)["permission"]["edit"], nlohmann::json("deny"));
+	const std::string direct = uam::remote::BuildProcessProxySpec("terminal", temp.root, {"/usr/bin/true"}, {}, false, {}, 0, 0, "opencode-cli", directory.string());
+	UAM_ASSERT_EQ(uam::remote::RunTerminalProcess(direct), 2);
+	UAM_ASSERT(!state.HandleProcessRequest({{"id", "remove-busy"}, {"type", "context.remove"}, {"directory", directory.string()}}).value("ok", false));
+	std::ifstream manifest_input(directory / "owner.json");
+	nlohmann::json manifest = nlohmann::json::parse(manifest_input);
+	manifest_input.close();
+	manifest["runnerPid"] = 0;
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "owner.json", manifest.dump()));
+	UAM_ASSERT(state.HandleProcessRequest({{"id", "remove"}, {"type", "context.remove"}, {"directory", directory.string()}}).value("ok", false));
+	UAM_ASSERT(!fs::exists(directory / "conversation.md"));
+	UAM_ASSERT(fs::exists(directory / "owner.json"));
+	UAM_ASSERT(state.HandleProcessRequest({{"id", "retry-remove"}, {"type", "context.remove"}, {"directory", directory.string()}}).value("ok", false));
+}
+
+UAM_TEST(RemoteTerminalPrivateContextConsumesOnceAndPreservesExecutingHostConfig)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-ctx");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	UAM_ASSERT(socket.string().size() < 104);
+	const fs::path directory = temp.root / ".UAM/context/0123456789abcdef";
+	uam::platform::StdioProcessPlatformFields server;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(server, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct Guard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~Guard()
+		{
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+		}
+	} guard{server};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	if (!fs::exists(socket))
+	{
+		std::array<char, 4096> diagnostic{};
+		const std::ptrdiff_t read = service.ReadStdioProcessStderr(server, diagnostic.data(), diagnostic.size(), nullptr);
+		throw std::runtime_error("Isolated runner socket startup failed: " +
+		    (read > 0 ? std::string(diagnostic.data(), static_cast<std::size_t>(read)) : "no startup diagnostic"));
+	}
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()});
+	UAM_ASSERT(client.Connect(&error));
+	UAM_ASSERT(client.SupportsProviderNativeContext());
+	UAM_ASSERT(client.PrepareProviderContext(directory, &error));
+	UAM_ASSERT(client.UploadFile("context-fixture", directory / "conversation.md", "User: Favourite fruit is kumquat.", &error));
+	const std::string channel = "private-native-context";
+	UAM_ASSERT(client.OpenChannel(channel, &error, false, 60000));
+	const std::string spec = uam::remote::BuildProcessProxySpec("terminal", temp.root,
+	    {"/bin/sh", "-c", "printf '%s' \"$OPENCODE_CONFIG_CONTENT\""}, {}, false, {}, 0, 0, "opencode-cli", directory.string());
+	UAM_ASSERT(client.WriteChannel(channel, "desktopToRemote", spec, &error));
+	uam::platform::StdioProcessPlatformFields terminal;
+	UAM_ASSERT(service.StartStdioProcess(terminal, temp.root, {runner.string(), "terminal", "--channel", channel, "--socket", socket.string()}, &error,
+	    {{"OPENCODE_CONFIG_CONTENT", R"({"permission":{"edit":"deny"},"instructions":["existing.md"]})"}}));
+	std::string output;
+	std::array<char, 4096> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(terminal, buffer.data(), buffer.size(), &error);
+		if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+		if (service.PollStdioProcessExited(terminal, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	service.CloseStdioProcessHandles(terminal);
+	UAM_ASSERT_EQ(exit_code, 0);
+	const nlohmann::json configuration = nlohmann::json::parse(output);
+	UAM_ASSERT_EQ(configuration["permission"]["edit"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(configuration["instructions"], nlohmann::json::array({"existing.md", (directory / "conversation.md").string()}));
+	std::string replay;
+	UAM_ASSERT(!client.TakeChannel(channel, "desktopToRemote", replay, &error));
+	UAM_ASSERT(client.RemoveProviderContext(directory, &error));
+	UAM_ASSERT(!fs::exists(directory / "conversation.md"));
+#endif
+}
+
+UAM_TEST(RemoteRunnerHandshakeCancellationBoundsCleanupShutdown)
+{
+#if !defined(_WIN32)
+	TempDir temp("uam-cleanup-cancel");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	std::stop_source stop;
+	std::jthread cancel([&](std::stop_token)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		stop.request_stop();
+	});
+	uam::remote::RunnerClient client(service, {"/bin/sh", "-c", "sleep 30"});
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	UAM_ASSERT(!client.Connect(&error, stop.get_token()));
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(2));
+	UAM_ASSERT(!client.IsConnected());
+#endif
+}

@@ -19,6 +19,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -415,6 +416,11 @@ namespace
 		if (!intent.folder_id.empty())
 		{
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
+		}
+
+		for (const ChatSession& chat : deleted_chats)
+		{
+			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
 		}
 
 		for (const std::string& id : intent.chat_ids)
@@ -985,6 +991,11 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	chat->provider_handoff_context.clear();
 	for (const Message& message : chat->messages)
 	{
+		for (const MessageBlock& block : message.blocks)
+		{
+			if (block.type == "context_compaction" && !uam::strings::IsBlank(block.text))
+				chat->provider_handoff_context += "Conversation summary: " + block.text + "\n\n";
+		}
 		if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) &&
 		    !uam::strings::IsBlank(message.content))
 		{

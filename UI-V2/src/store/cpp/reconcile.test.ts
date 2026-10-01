@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
+import { acpBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
 import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
@@ -270,5 +270,14 @@ describe('compaction reload and live event parity', () => {
     expect(live?.turnEvents).toEqual(reconciled[0].blocks)
     const reloaded = reconcileCppMessages('chat-1', reconciled, [persisted])
     expect(reloaded[0].blocks).toEqual([summary])
+  })
+})
+
+
+describe('CLI context preparation', () => {
+  it('keeps a pending native context launch processing before its PTY starts', () => {
+    const state = normalizeCliLifecycleState('starting', false)
+    expect(state).toBe('starting')
+    expect(cliLifecycleIsProcessing(state)).toBe(true)
   })
 })

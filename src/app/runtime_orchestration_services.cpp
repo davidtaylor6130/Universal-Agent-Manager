@@ -1000,6 +1000,7 @@ namespace
 		native.service_tier_explicit = local.service_tier_explicit;
 		native.provider_handoff_context = local.provider_handoff_context;
 		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.provider_handoff_cli_contexts = local.provider_handoff_cli_contexts;
 		native.small_model_mode = local.small_model_mode;
 		native.extra_flags = local.extra_flags;
 		native.memory_enabled = local.memory_enabled;

@@ -496,6 +496,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool terminal_ui_visible)
 {
+	RetryCliProviderContextCleanup(app, GetAppTimeSeconds());
+	std::erase_if(app.cli_context_preparation_tasks, [](const CliContextPreparationTask& task) { return task.state->finished.load(); });
 	constexpr double kShutdownFallbackSeconds = 2.5;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const double now = GetAppTimeSeconds();
@@ -552,6 +554,15 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 			}
 		}
 
+		if (terminal->context_preparation != nullptr && terminal->context_preparation->finished.load())
+		{
+			if (ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr)
+			{
+				(void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
+			}
+			else StopCliTerminal(*terminal);
+			changed = true;
+		}
 		if (!terminal->running)
 		{
 			continue;

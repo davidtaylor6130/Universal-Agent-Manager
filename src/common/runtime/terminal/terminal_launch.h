@@ -27,6 +27,11 @@ namespace uam
 
 	inline bool FailCliTerminalStart(CliTerminalState& terminal, CliTerminalLifecycleState failure_state, std::string error_message)
 	{
+		if (terminal.context_preparation != nullptr)
+		{
+			terminal.context_preparation->cancellation.request_stop();
+			terminal.context_preparation.reset();
+		}
 		if (failure_state == CliTerminalLifecycleState::Disabled)
 		{
 			MarkCliTerminalDisabled(terminal);
@@ -76,7 +81,7 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
-		StopCliTerminal(terminal);
+		if (terminal.context_preparation == nullptr) StopCliTerminal(terminal);
 		if (chat.imported_read_only)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
@@ -191,13 +196,21 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
 		    : runtime.BuildInteractiveEnvironment(provider);
+		std::string context_launch_channel;
+		if (!PrepareCliProviderHandoffAsync(app, terminal, chat, *execution_host, provider_argv, launch_environment, context_launch_channel, startup_error))
+		{
+			if (!startup_error.empty()) return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, startup_error);
+			terminal.should_launch = true;
+			return true;
+		}
+		launch_argv = provider_argv;
 		if (remote)
 		{
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();
 			launch_argv = uam::remote::BuildRemoteTerminalSshArgv(
 			    execution_host->ssh_alias, execution_host->platform,
 			    execution_host->runner_version, workspace_root, provider_argv,
-			    execution_host->runner_directory);
+			    execution_host->runner_directory, context_launch_channel);
 			if (launch_argv.empty()) startup_error = "The remote terminal launch request is invalid.";
 		}
 		if (!startup_error.empty() ||

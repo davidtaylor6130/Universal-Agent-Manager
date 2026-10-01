@@ -178,12 +178,13 @@ const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal)
 {
+	if (terminal.context_preparation != nullptr) return "starting";
 	return CliTerminalLifecycleStateLabel(terminal.lifecycle_state);
 }
 
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal)
 {
-	return terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state);
+	return terminal.context_preparation != nullptr || (terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state));
 }
 
 bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
@@ -359,6 +360,11 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	if (terminal.context_preparation != nullptr)
+	{
+		terminal.context_preparation->cancellation.request_stop();
+		terminal.context_preparation.reset();
+	}
 	if (terminal.native_session_setup_cancel != nullptr)
 	{
 		terminal.native_session_setup_cancel->request_stop();
@@ -411,7 +417,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		}
 	}
 	CliTerminalState* terminal = FindCliTerminalForChat(app, chat_id);
-	if (terminal != nullptr && terminal->native_session_setup_cancel != nullptr)
+	if (terminal != nullptr && (terminal->native_session_setup_cancel != nullptr || terminal->context_preparation != nullptr))
 	{
 		StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	}

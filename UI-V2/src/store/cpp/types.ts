@@ -9,7 +9,7 @@ import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
-export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
+export type CliLifecycleState = 'disabled' | 'starting' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
 export type AcpLifecycleState =
   | 'stopped'
   | 'starting'

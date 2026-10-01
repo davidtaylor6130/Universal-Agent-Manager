@@ -10100,6 +10100,10 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	chat.id = "handoff";
 	chat.provider_id = "gemini-cli";
 	chat.workspace_directory = temp.root.string();
+	Message summary;
+	summary.role = MessageRole::Assistant;
+	summary.blocks.push_back({"context_compaction", "Favourite fruit is kumquat.", "", "compact-1"});
+	chat.messages.push_back(summary);
 	chat.messages.push_back(Message{MessageRole::User, "The launch code is 4821."});
 	chat.messages.push_back(Message{MessageRole::Assistant, "I will remember 4821."});
 	chat.messages.back().tool_calls.push_back(ToolCall{});
@@ -10127,7 +10131,8 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	UAM_ASSERT(session.queued_prompt.find("Assistant: Saved.") != std::string::npos);
 	UAM_ASSERT(session.queued_prompt.find("What is the launch code?") != std::string::npos);
 	UAM_ASSERT(session.queued_prompt.find("never replay this action") == std::string::npos);
-	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT(session.queued_prompt.find("Conversation summary: Favourite fruit is kumquat.") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(6));
 #if defined(_WIN32)
 	const std::vector<std::string> sink = {"cmd", "/C", "more"};
 #else

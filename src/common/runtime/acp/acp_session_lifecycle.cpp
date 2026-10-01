@@ -418,7 +418,7 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		session.remote_stop_pending = true;
 		return false;
 	}
-	QueueAcpProcessStop(app, session);
+	QueueAcpProcessStop(app, session, session.chat_id);
 	session.running = false;
 	return true;
 }
