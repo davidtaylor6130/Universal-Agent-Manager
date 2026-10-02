@@ -16757,11 +16757,14 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
 	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
 	nlohmann::json listed = nlohmann::json::array({{{"id", "ses_fixture"}, {"directory", workspace.string()}, {"title", "Native OpenCode chat"}, {"created", 1000}, {"updated", 2000}}});
+	listed.push_back({{"id", "ses_empty"}, {"directory", workspace.string()}, {"title", "New session"}, {"created", 1000}, {"updated", 2000}});
 	for (int index = 0; index < 300; ++index) listed.insert(listed.begin(), nlohmann::json{{"id", "ses_other_" + std::to_string(index)}, {"directory", (temp.root / "other").string()}});
 	const nlohmann::json exported = {{"info", {{"id", "ses_fixture"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "user"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "native question"}}})}}})}};
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "list.json", listed.dump()));
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "export.json", exported.dump()));
-	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else cat '" + (temp.root / "export.json").string() + "'; fi\n"));
+	const nlohmann::json empty = {{"info", {{"id", "ses_empty"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array()}};
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "empty.json", empty.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; elif [ \"$2\" = ses_empty ]; then cat '" + (temp.root / "empty.json").string() + "'; else cat '" + (temp.root / "export.json").string() + "'; fi\n"));
 	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
 	profile.interactive_command = "/bin/sh '" + (temp.root / "fixture.sh").string() + "'";
 	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
@@ -16771,6 +16774,28 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(discovery.chats.front().messages.front().content, std::string("native question"));
 	UAM_ASSERT(!fs::exists(temp.root / "data"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.folders.push_back(folder);
+	ChatSession saved_empty;
+	saved_empty.id = "saved-empty";
+	saved_empty.native_session_id = "ses_empty";
+	saved_empty.provider_id = uam::provider_ids::kOpenCodeCli;
+	saved_empty.folder_id = folder.id;
+	saved_empty.workspace_directory = workspace.string();
+	app.chats.push_back(saved_empty);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, saved_empty));
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, discovery, true).imported_count, 1);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, saved_empty.id, true)->messages.empty());
+	nlohmann::json later = exported;
+	later["info"]["id"] = "ses_empty";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "empty.json", later.dump()));
+	const auto later_discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT_EQ(later_discovery.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, later_discovery, true).imported_count, 1);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(app.data_root, saved_empty.id, true)->messages.front().content, std::string("native question"));
 #endif
 }
 

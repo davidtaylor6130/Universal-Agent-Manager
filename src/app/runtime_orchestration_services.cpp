@@ -1692,6 +1692,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				discovery.result.Fail(transcript.error);
 				continue;
 			}
+			// Model discovery creates native sessions without a conversation. Import them only after a message exists.
+			if (transcript.messages.empty()) continue;
 			chat.messages = transcript.messages;
 			chat.title = session.contains("title") && session["title"].is_string() ? session["title"].get<std::string>() : uam::BuildImportedChatTitle(chat.messages, "");
 			chat.created_at = session.contains("created") && session["created"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["created"].get<std::int64_t>()) : "";
