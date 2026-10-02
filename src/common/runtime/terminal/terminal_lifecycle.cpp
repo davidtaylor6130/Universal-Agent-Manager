@@ -4,6 +4,7 @@
 #include "app/provider_resolution_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
@@ -55,6 +56,11 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 		terminal.native_identity_deferred_input.append(bytes, len);
 		terminal.last_user_input_time_s = GetAppTimeSeconds();
 		return true;
+	}
+	if (!terminal_response && bytes != nullptr && std::string_view(bytes, len).find_first_of("\r\n") != std::string_view::npos)
+	{
+		if (!terminal.native_activity_provider_id.empty())
+			ProviderRuntimeRegistry::ResolveById(terminal.native_activity_provider_id).CheckpointInteractiveSubmission(terminal);
 	}
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
 	if (wrote && !terminal_response && bytes != nullptr && len > 0)
@@ -261,6 +267,9 @@ bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_d
 
 void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt)
 {
+	terminal.codex_activity_turn_id.clear();
+	terminal.codex_activity_awaiting_turn = settle_first_prompt;
+	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = terminal.uses_prompt_activity_tracking && settle_first_prompt;
@@ -275,6 +284,8 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
+	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -305,6 +316,16 @@ void MarkCliTerminalShuttingDown(CliTerminalState& terminal)
 
 void MarkCliTerminalStopped(CliTerminalState& terminal)
 {
+	terminal.native_activity_provider_id.clear();
+	terminal.codex_activity_session_id.clear();
+	terminal.codex_activity_cwd.clear();
+	terminal.codex_activity_rollout.clear();
+	terminal.codex_activity_partial_line.clear();
+	terminal.codex_activity_turn_id.clear();
+	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_read_failed = false;
+	terminal.codex_activity_completed = false;
+	terminal.codex_activity_discard_line = false;
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;

@@ -110,6 +110,18 @@ namespace uam
 		std::string current_turn_output_bytes;
 		bool prompt_settle_required = false;
 		double prompt_settle_candidate_time_s = 0.0;
+		// Transient cursor for the verified native Codex rollout, never persisted.
+		std::string native_activity_provider_id;
+		std::string codex_activity_session_id;
+		std::filesystem::path codex_activity_cwd;
+		std::filesystem::path codex_activity_rollout;
+		std::uintmax_t codex_activity_offset = 0;
+		std::string codex_activity_partial_line;
+		std::string codex_activity_turn_id;
+		bool codex_activity_discard_line = false;
+		bool codex_activity_awaiting_turn = false;
+		bool codex_activity_read_failed = false;
+		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;

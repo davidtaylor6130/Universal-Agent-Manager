@@ -410,11 +410,18 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
 	}
 
+	terminal.native_activity_provider_id = terminal_is_controller_local ? terminal_provider.id : std::string{};
+	const ProviderTerminalActivity native_activity = terminal.running && terminal_is_controller_local
+	    ? ProviderRuntimeRegistry::Resolve(terminal_provider).PollInteractiveActivity(terminal, CliTerminalAttachedSessionId(terminal), uam::paths::ResolveWorkspaceRootPath(app, *terminal_chat), terminal.native_session_discovery_ambiguous)
+	    : ProviderTerminalActivity::Unavailable;
+	if (native_activity == ProviderTerminalActivity::Busy) terminal.prompt_settle_candidate_time_s = 0.0;
 	const bool prompt_indicates_idle = ProviderRuntimeRegistry::Resolve(terminal_provider).RecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes);
-	if (uam::CliTerminalPromptConfirmsTurnIdle(terminal, prompt_indicates_idle, !output_for_frontend.empty(), GetAppTimeSeconds()))
+	if ((native_activity == ProviderTerminalActivity::Complete && terminal.uses_prompt_activity_tracking &&
+	    terminal.lifecycle_state == CliTerminalLifecycleState::Busy) || (native_activity != ProviderTerminalActivity::Busy &&
+	    uam::CliTerminalPromptConfirmsTurnIdle(terminal, prompt_indicates_idle, !output_for_frontend.empty(), GetAppTimeSeconds())))
 	{
 		uam::MarkCliTerminalTurnIdle(terminal);
-		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_prompt", &terminal);
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity == ProviderTerminalActivity::Complete ? "turn_marked_idle_from_native_event" : "turn_marked_idle_from_prompt", &terminal);
 		changed = true;
 	}
 

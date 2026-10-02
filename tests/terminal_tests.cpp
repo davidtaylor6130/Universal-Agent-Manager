@@ -796,6 +796,187 @@ UAM_TEST(GeminiPromptClassifierStripsAnsiAndDetectsPrompt)
 	UAM_ASSERT(!ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultGeminiProfile()).RecentOutputIndicatesInputPrompt("tool output is still streaming\nno prompt yet"));
 }
 
+UAM_TEST(CodexPromptClassifierRecognizesCurrentIdleComposerAndRejectsActiveTurn)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	const std::string idle = "\x1b[2K\r› Ask Codex to do anything\nGPT-6.1-Sol low · workspace · 100% context left";
+	UAM_ASSERT(runtime.RecentOutputIndicatesInputPrompt(idle));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt(idle + "\n• Working (5s • esc to interrupt)"));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt("• Working (5s • esc to interrupt)\n› Ask Codex to do anything\nGPT-6.1-Sol low"));
+	UAM_ASSERT(runtime.RecentOutputIndicatesInputPrompt("\x1b[2K\r› Send message\n? for shortcuts"));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt("The answer mentions Ask Codex to do anything but has no composer marker."));
+#endif
+}
+
+UAM_TEST(CodexNativeActivityRequiresFreshMatchingCompleteRecord)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-activity");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n'
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"old\"}}\n";
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Unavailable);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"old\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"other\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << '\n' << "{\"type\":";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "\"response_item\"}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+	terminal.current_turn_output_bytes = "Working (5s • esc to interrupt)\n› Ask Codex to do anything";
+	uam::MarkCliTerminalTurnIdle(terminal);
+	UAM_ASSERT(uam::CliTerminalLifecycleIsIdleLive(terminal));
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Unavailable);
+}
+
+UAM_TEST(CodexNativeActivityRejectsUnverifiedIdentityAndFailedReads)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-identity");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	uam::MarkCliTerminalTurnBusy(terminal);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, true) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, "invalid", temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root / "other", false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(terminal.codex_activity_rollout.empty());
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	fs::remove(rollout);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	uam::MarkCliTerminalStopped(terminal);
+	UAM_ASSERT(terminal.codex_activity_rollout.empty());
+	UAM_ASSERT(terminal.codex_activity_session_id.empty());
+}
+
+UAM_TEST(CodexNativeActivityRejectsMalformedStartAfterCompletion)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& malformed : {
+	    std::string("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":123}}\n"),
+	    std::string("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"),
+	    std::string("invalid-json\n"), std::string(300000, 'x') + '\n'})
+	{
+		TempDir temp("codex-native-malformed");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		runtime.CheckpointInteractiveSubmission(terminal);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"first\"}}\n"
+		    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"first\"}}\n" << malformed;
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		for (int poll = 0; poll < 8; ++poll)
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	}
+}
+
+UAM_TEST(CodexNativeActivityBoundsReadsAndKeepsLaterTurnBusy)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-bounded");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	const std::uintmax_t before = terminal.codex_activity_offset;
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"turn_id\":\"first\"}}\n"
+	    << "{\"type\":\"response_item\",\"payload\":{\"text\":\"" << std::string(300000, 'x') << "\"}}\n"
+	    << "{\"type\":\"future_record\",\"payload\":false}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"turn_id\":\"first\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"turn_id\":\"second\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(terminal.codex_activity_offset - before <= 65536);
+	for (int poll = 0; poll < 8; ++poll)
+	{
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+	}
+	UAM_ASSERT_EQ(terminal.codex_activity_turn_id, std::string("second"));
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"turn_id\":\"second\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+}
+
+UAM_TEST(CodexNativeCompletionClearsBusyDespiteStaleTerminalRedraws)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("codex-native-poll");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "native-completion";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.native_session_id = id;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.attached_session_id = id;
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv{"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	terminal.running = true;
+	uam::MarkCliTerminalTurnIdle(terminal);
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	UAM_ASSERT(uam::WriteToCliTerminal(terminal, "synthetic\r", 10));
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.current_turn_output_bytes = "Working (5s • esc to interrupt)\n› Ask Codex to do anything";
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool busy_before_completion = uam::IsCliTerminalTurnBusy(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool idle_after_completion = uam::CliTerminalLifecycleIsIdleLive(terminal);
+	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(busy_before_completion);
+	UAM_ASSERT(idle_after_completion);
+#endif
+}
+
 UAM_TEST(CliInitialPromptCanSettleImmediately)
 {
 	uam::CliTerminalState terminal;

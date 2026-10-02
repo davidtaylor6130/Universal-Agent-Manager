@@ -55,6 +55,10 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id)
 	{
+		for (const uam::CliContextPreparationTask& task : app.cli_context_preparation_tasks)
+		{
+			if (task.state && task.state->chat_id == chat_id && !task.state->finished.load()) return true;
+		}
 		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||

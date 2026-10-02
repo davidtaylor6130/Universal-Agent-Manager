@@ -15791,6 +15791,35 @@ UAM_TEST(DeleteFolderTombstonesCommittedDeletionWhenMetadataCleanupIsDeferred)
 }
 #endif
 
+UAM_TEST(ChatDeletionWaitsForCancelledCliContextPreparation)
+{
+	TempDir temp("uam-chat-context-cancel");
+	uam::AppState app;
+	app.data_root = temp.root;
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Synthetic", temp.root.string(), &folder_id));
+	ChatSession chat = ChatDomainService().CreateNewChat(folder_id, "codex-cli");
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	const std::shared_ptr<uam::CliContextPreparation> state = std::make_shared<uam::CliContextPreparation>();
+	state->chat_id = chat.id;
+	uam::CliContextPreparationTask task;
+	task.state = state;
+	app.cli_context_preparation_tasks.push_back(std::move(task));
+	uam::CliTerminalState terminal;
+	terminal.context_preparation = state;
+	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(state->cancellation.stop_requested());
+	UAM_ASSERT(terminal.context_preparation == nullptr);
+	UAM_ASSERT(!RemoveChatById(app, chat.id));
+	UAM_ASSERT(!DeleteFolderById(app, folder_id));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) != nullptr);
+	state->finished.store(true);
+	UAM_ASSERT(RemoveChatById(app, chat.id));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, chat.id) == nullptr);
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+}
+
 UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
 {
 	TempDir temp("uam-folder-pending-delete");

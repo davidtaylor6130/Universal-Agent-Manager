@@ -9,6 +9,9 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json ReadLocalModelCatalog() const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const override;
+	ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState& terminal, std::string_view session_id,
+	    const std::filesystem::path& cwd, bool ambiguous) const override;
+	void CheckpointInteractiveSubmission(uam::CliTerminalState& terminal) const override;
 	std::string ResolveInteractiveResumeId(const uam::AppState& app, const ChatSession& chat) const override;
 	std::vector<std::string> SnapshotInteractiveSessionIds() const override;
 	std::string DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace, bool* ambiguous_out = nullptr) const override;
