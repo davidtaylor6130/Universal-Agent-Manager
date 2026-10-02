@@ -979,6 +979,32 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it.each([
+    { category: 'model', id: 'model', value: 'openai/discovered', discovered: true },
+    { category: 'mode', id: 'mode', value: 'plan', discovered: false },
+    { category: 'model', id: 'model', value: '   ', discovered: false },
+  ])('reports catalog availability for valid model config choices: $category/$value', ({ category, id, value, discovered }) => {
+    useAppStore.setState({
+      providers: [fallbackProviderForId('opencode-cli')],
+      providerModelCatalogs: [{
+        providerId: 'opencode-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local',
+        availableModels: [], currentModelId: '', modelsLoading: false, modelRefreshError: '',
+        configOptions: [{ id, category, name: 'Selection', description: '', currentValue: value, options: [{ value, name: 'Discovered model', description: '' }] }],
+      }],
+    })
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
+    const section = host.querySelector('#opencode-cli-defaults-panel')!
+    try {
+      expect(section.querySelector('[role="status"]')?.textContent).toBe(discovered ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')
+      if (discovered) expect(section.textContent).toContain('Discovered model')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('keeps provider chat defaults collapsed until toggled', () => {
     const { host, root } = renderModal()
 
