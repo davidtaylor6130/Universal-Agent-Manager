@@ -17220,6 +17220,96 @@ UAM_TEST(CopilotEphemeralDiscoveryPopulatesFirstChatCatalog)
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, ephemeral.id)));
 }
 
+UAM_TEST(CodexHistoryDiscoveryDefersBodiesAndBoundsChangedSources)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-bounded-discovery");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path sessions = temp.root / "codex" / "sessions";
+	fs::create_directories(workspace);
+	fs::create_directories(sessions);
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const std::string content(512 * 1024, 'x');
+	for (int index = 0; index < 32; ++index)
+	{
+		const std::string id = "11111111-1111-4111-8111-" + std::to_string(100000000000LL + index);
+		const std::string text = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}}}}.dump() + "\n" +
+		    nlohmann::json{{"type", "response_item"}, {"timestamp", "2026-01-01T00:00:01Z"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", content}}})}}}}.dump() + "\n";
+		UAM_ASSERT(uam::io::WriteTextFile(sessions / ("rollout-" + id + ".jsonl"), text));
+	}
+	const fs::path oversized = sessions / "oversized.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(oversized, "{}\n"));
+	fs::resize_file(oversized, 64ULL * 1024ULL * 1024ULL + 1);
+	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+	ChatHistorySyncService::LocalHistoryDiscovery discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	UAM_ASSERT(!discovery.result.success);
+	UAM_ASSERT(discovery.chats.empty());
+	UAM_ASSERT_EQ(discovery.codex_rollouts.size(), static_cast<std::size_t>(32));
+	for (const auto& source : discovery.codex_rollouts)
+	{
+		UAM_ASSERT(source.first.messages.empty());
+		UAM_ASSERT(!source.first.messages_loaded);
+	}
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.folders.push_back(folder);
+	const auto drain = [&](ChatHistorySyncService::LocalHistoryDiscovery& pending, bool expect_success)
+	{
+		int imported = 0;
+		bool failed = false;
+		while (pending.Pending())
+		{
+			const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(app, folder, pending);
+			failed = failed || !result.success;
+			imported += result.imported_count;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT_EQ(!failed, expect_success);
+		return imported;
+	};
+	UAM_ASSERT_EQ(drain(discovery, true), 32);
+	for (ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT(chat.messages.empty());
+		UAM_ASSERT(!chat.messages_loaded);
+		UAM_ASSERT_EQ(chat.persisted_message_count, static_cast<std::size_t>(1));
+	}
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, content);
+	const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id));
+	ChatHistorySyncService::LocalHistoryDiscovery changed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	for (const auto& source : changed.codex_rollouts) fs::resize_file(source.second, 64ULL * 1024ULL * 1024ULL + 1);
+	UAM_ASSERT_EQ(drain(changed, false), 0);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id)), saved);
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, content);
+	UAM_ASSERT_EQ(fs::file_size(oversized), 64ULL * 1024ULL * 1024ULL + 1);
+	ChatSession limit_chat;
+	limit_chat.native_session_id = "11111111-1111-4111-8111-999999999999";
+	limit_chat.provider_id = uam::provider_ids::kCodexCli;
+	limit_chat.workspace_directory = workspace.string();
+	const fs::path limit_file = sessions / ("rollout-" + limit_chat.native_session_id + ".jsonl");
+	const std::string metadata = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", limit_chat.native_session_id}, {"cwd", workspace.string()}}}}.dump() + "\n";
+	const std::string message = nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "bounded"}}})}}}}.dump() + "\n";
+	std::string transcript = metadata;
+	for (int index = 0; index < 10000; ++index) transcript += message;
+	UAM_ASSERT(uam::io::WriteTextFile(limit_file, transcript));
+	const std::optional<ChatSession> complete = ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat);
+	UAM_ASSERT(complete.has_value());
+	UAM_ASSERT_EQ(complete->messages.size(), static_cast<std::size_t>(10000));
+	UAM_ASSERT(uam::io::WriteTextFile(limit_file, transcript + message));
+	std::string limit_error;
+	UAM_ASSERT(!ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat, &limit_error));
+	UAM_ASSERT(!limit_error.empty());
+	ChatHistorySyncService::LocalHistoryDiscovery canceled;
+	canceled.codex_rollouts.emplace_back(ChatSession{}, oversized);
+	canceled.CancelPending();
+	UAM_ASSERT(!canceled.Pending());
+#endif
+}
+
 UAM_TEST(LocalHistoryImportBatchesLargeHistoriesAndRetainsRetryIdentity)
 {
 	TempDir temp("uam-history-import-batches");

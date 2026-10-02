@@ -47,6 +47,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -64,6 +65,8 @@ namespace
 	constexpr std::size_t kRemoteOpenCodeMaxMessages = 10000;
 	constexpr std::size_t kRemoteCodexMaxSessions = 200;
 	constexpr std::size_t kRemoteCodexMaxMessages = 10000;
+	// ponytail: 64 MiB rollout ceiling; larger sessions need paged history loading.
+	constexpr std::size_t kLocalCodexMaxFileBytes = 64U * 1024U * 1024U;
 
 	enum class CodexRpcReadResult
 	{
@@ -403,11 +406,23 @@ namespace
 		return import_index;
 	}
 
+	void UnloadPersistedTranscript(ChatSession& chat)
+	{
+		if (chat.messages_loaded)
+		{
+			chat.persisted_message_count = chat.messages.size();
+			chat.persisted_messages_digest = chat.updated_at + ":" + std::to_string(chat.persisted_message_count);
+		}
+		std::vector<Message>().swap(chat.messages);
+		chat.messages_loaded = false;
+	}
+
 	void TrackImportedNativeChat(NativeImportIndex& import_index, const ChatSession& chat, const std::string& native_key)
 	{
 		import_index.existing_ids.insert(chat.id);
 		import_index.existing_id_by_native_key[native_key] = chat.id;
 		import_index.existing_summary_by_native_key[native_key] = chat;
+		UnloadPersistedTranscript(import_index.existing_summary_by_native_key.at(native_key));
 	}
 
 	bool RemoveNativeSessionFileIfPresent(const fs::path& chats_dir, const std::string& native_session_id, std::error_code* error_out = nullptr);
@@ -661,10 +676,20 @@ namespace
 		return text;
 	}
 
-	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, bool include_subagents = false, std::stop_token stop_token = {})
+	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, bool include_subagents = false, std::stop_token stop_token = {}, bool metadata_only = false)
 	{
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli);
 		if (malformed_out != nullptr) *malformed_out = false;
+		// Bound reads even if a running CLI appends to the rollout during import.
+		std::error_code size_error;
+		std::string rollout_text;
+		if (fs::file_size(rollout_file, size_error) > kLocalCodexMaxFileBytes || size_error ||
+		    !uam::io::TryReadTextFile(rollout_file, rollout_text, kLocalCodexMaxFileBytes))
+		{
+			if (malformed_out != nullptr) *malformed_out = true;
+			return std::nullopt;
+		}
+		std::istringstream records(std::move(rollout_text));
 		ChatSession chat;
 		bool metadata_seen = false;
 		bool include = false;
@@ -672,11 +697,10 @@ namespace
 		bool parse_error = false;
 		std::unordered_map<std::string, std::size_t> tool_messages;
 
-		const bool read_success = uam::io::ForEachTextFileLine(
-		    rollout_file,
-		    [&](const std::string& line)
+		const auto visit = [&](const std::string& line)
 		    {
 			    if (stop_token.stop_requested()) return false;
+			    if (chat.messages.size() >= kRemoteCodexMaxMessages) { parse_error = true; return false; }
 			    if (uam::strings::TrimAsciiView(line).empty()) return true;
 			    try
 			    {
@@ -719,7 +743,8 @@ namespace
 						    chat.created_at = std::string{uam::nlohmann_json::TrimmedStringViewOrEmpty(record, "timestamp")};
 					    }
 					    chat.updated_at = chat.created_at;
-					    return true;
+					    chat.messages_loaded = !metadata_only;
+					    return !metadata_only;
 				    }
 
 				    if (!include || record_type != "response_item") return true;
@@ -831,11 +856,14 @@ namespace
 				    return false;
 			    }
 			    return true;
-			});
+			};
+		std::string line;
+		while (std::getline(records, line) && visit(line)) {}
+		const bool read_success = !records.bad();
 		if (malformed_out != nullptr) *malformed_out = !read_success || parse_error;
 
 		if (stop_token.stop_requested()) return std::nullopt;
-		if (!read_success || parse_error || !metadata_seen || !include || !has_user_message)
+		if (!read_success || parse_error || !metadata_seen || !include || (!metadata_only && !has_user_message))
 		{
 			return std::nullopt;
 		}
@@ -1645,9 +1673,9 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		{
 			if (!uam::paths::IsRegularFileEntryNoThrow(*it) || it->path().extension() != ".jsonl") continue;
 			bool malformed = false;
-			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, stop_token);
-			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + ".");
-			if (chat) discovery.chats.push_back(std::move(*chat));
+			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, stop_token, true);
+			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + " (unreadable, invalid, or over 64 MiB).");
+			if (chat) discovery.codex_rollouts.emplace_back(std::move(*chat), it->path());
 		}
 		if (error) discovery.result.Fail("Could not finish scanning Codex history: " + error.message());
 	}
@@ -1895,7 +1923,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	}
 #endif
 	if (stop_token.stop_requested()) discovery.result.Fail("History discovery was canceled.");
-	discovery.result.total_count = static_cast<int>(discovery.chats.size());
+	discovery.result.total_count = static_cast<int>(discovery.chats.size() + discovery.codex_rollouts.size());
 	return discovery;
 }
 
@@ -1916,8 +1944,17 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		result.total_count = 0;
 		return result;
 	}
-	for (ChatSession& chat : discovery.chats)
+	for (std::size_t index = 0; index < discovery.chats.size() + discovery.codex_rollouts.size(); ++index)
 	{
+		std::optional<ChatSession> rollout;
+		if (index >= discovery.chats.size())
+		{
+			bool malformed = false;
+			rollout = LoadCodexRolloutChat(discovery.codex_rollouts[index - discovery.chats.size()].second, folder, &malformed);
+			if (malformed) result.Fail("Codex history is unreadable, invalid, or exceeds import limits.");
+			if (!rollout) continue;
+		}
+		ChatSession& chat = rollout ? *rollout : discovery.chats[index];
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		// An unsaved live transcript owns its tail. A later scan can refresh it after persistence.
 		const auto existing = import_index.existing_id_by_native_key.find(key);
@@ -1952,9 +1989,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			if (ChatSession* live = ChatDomainService().FindChatById(app, chat.id))
 			{
 				OverlayLocalChatState(*live, chat);
+				if (!live->messages_loaded) UnloadPersistedTranscript(chat);
 				*live = chat;
 			}
-			else if (sidebar_is_complete) app.chats.push_back(chat);
+			else if (sidebar_is_complete)
+			{
+				UnloadPersistedTranscript(chat);
+				app.chats.push_back(std::move(chat));
+			}
 		}
 		else result.Fail("Failed to save imported chat " + chat.native_session_id + ".");
 	}
@@ -1965,6 +2007,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 void ChatHistorySyncService::LocalHistoryDiscovery::CancelPending()
 {
 	chats.clear();
+	codex_rollouts.clear();
 	if (!preparation.valid() && !publication_sync.valid()) return;
 	// std::async futures can join on destruction. Let cleanup wait away from the UI.
 	std::thread([pending = std::move(preparation), sync = std::move(publication_sync)]()
@@ -2004,6 +2047,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		if (!tombstones.available) { result.Fail("Deletion records could not be read; import stopped."); return result; }
 		const NativeImportIndex current_index = LoadNativeImportIndex(app.data_root, &app.chats);
 		if (!current_index.tombstones_available) { result.Fail("Deletion records changed while import was being published."); return result; }
+		for (const PreparedHistoryChat& candidate : prepared.chats)
+			if (!candidate.error.empty()) result.Fail(candidate.error);
 		std::erase_if(prepared.chats, [&](const PreparedHistoryChat& candidate)
 		{
 			return candidate.skipped || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
@@ -2062,16 +2107,27 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		return result;
 	}
 	NativeImportIndex index = LoadNativeImportIndex(app.data_root, &app.chats);
-	if (!index.tombstones_available) { discovery.chats.clear(); result.Fail("Deletion records could not be read; import stopped."); return result; }
+	if (!index.tombstones_available) { discovery.CancelPending(); result.Fail("Deletion records could not be read; import stopped."); return result; }
 	PreparedHistoryBatch candidates;
 	uam::AppState folder_plan;
 	folder_plan.folders = app.folders;
 	const std::string expected_folders = ChatFolderStore::Serialize(app.folders);
 
-	for (std::size_t count = 0; !discovery.chats.empty() && count < max_chats; ++count)
+	for (std::size_t count = 0; (!discovery.chats.empty() || !discovery.codex_rollouts.empty()) && count < max_chats; ++count)
 	{
-		ChatSession chat = std::move(discovery.chats.back());
-		discovery.chats.pop_back();
+		PreparedHistoryChat candidate;
+		ChatSession chat;
+		if (!discovery.chats.empty())
+		{
+			chat = std::move(discovery.chats.back());
+			discovery.chats.pop_back();
+		}
+		else
+		{
+			chat = std::move(discovery.codex_rollouts.back().first);
+			candidate.codex_rollout = std::move(discovery.codex_rollouts.back().second);
+			discovery.codex_rollouts.pop_back();
+		}
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		const auto existing = index.existing_id_by_native_key.find(key);
 		if (index.tombstoned_native_keys.contains(key)) continue;
@@ -2091,10 +2147,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			chat.folder_id = ResolvePersistedImportFolderIdForSource(folder_plan, source, false);
 			if (chat.folder_id.empty()) { result.Fail("Could not save imported workspace."); continue; }
 		}
-		PreparedHistoryChat candidate;
 		if (const ChatSession* live = ChatDomainService().FindChatById(app, chat.id))
 		{
 			candidate.expected_live = *live;
+			candidate.retain_messages = live->messages_loaded;
 			OverlayLocalChatState(*live, chat);
 		}
 		if (chat.parent_chat_id.empty()) chat.branch_root_chat_id = chat.id;
@@ -2115,6 +2171,23 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			for (PreparedHistoryChat& candidate : candidates.chats)
 			{
+				if (!candidate.codex_rollout.empty())
+				{
+					ChatFolder source;
+					source.directory = candidate.chat.workspace_directory;
+					bool malformed = false;
+					std::optional<ChatSession> loaded = LoadCodexRolloutChat(candidate.codex_rollout, source, &malformed);
+					if (!loaded || loaded->native_session_id != candidate.chat.native_session_id)
+					{
+						candidate.skipped = true;
+						if (malformed) candidate.error = "Codex history is unreadable, invalid, or exceeds import limits: " + uam::paths::Utf8PathString(candidate.codex_rollout) + ".";
+						continue;
+					}
+					loaded->id = candidate.chat.id;
+					loaded->folder_id = candidate.chat.folder_id;
+					loaded->branch_root_chat_id = candidate.chat.branch_root_chat_id;
+					candidate.chat = std::move(*loaded);
+				}
 				if (candidate.expected_live)
 				{
 					const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(root, candidate.chat.id, true);
@@ -2128,6 +2201,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 					candidate.expected_fingerprint = ChatRepository::ChatMetadataFingerprint(root, *candidate.expected_live);
 				}
 				candidate.files = ChatRepository::PrepareChatSave(root, candidate.chat);
+				if (candidate.files && !candidate.retain_messages)
+				{
+					// Keep only sidebar metadata after staging; selection hydrates the complete saved transcript.
+					UnloadPersistedTranscript(candidate.chat);
+				}
 			}
 			if (!candidates.expected_folders.empty()) candidates.folder_files = ChatFolderStore::PrepareSave(root, candidates.folders);
 			return std::make_shared<PreparedHistoryBatch>(std::move(candidates));
