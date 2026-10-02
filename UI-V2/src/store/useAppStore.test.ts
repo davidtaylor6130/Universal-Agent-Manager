@@ -1064,6 +1064,7 @@ describe('useAppStore Gemini CLI slice', () => {
           ...initial.chats[0],
           goals: [{
             ...providerGoal,
+            pendingContinuation: true,
             tokensUsed: 12,
             updatedAt: '2026-01-01T00:00:02.000Z',
           }],
@@ -1073,6 +1074,7 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(cefStore.getState().goalsByChatId['chat-1'][0]).toMatchObject({
       tokensUsed: 12,
+      pendingContinuation: true,
       executionOwner: 'provider',
       providerCommand: '/goal',
     })
@@ -1927,7 +1929,6 @@ describe('useAppStore Gemini CLI slice', () => {
       },
     })
 
-    cefStore.getState().loadSessionMessages('chat-1')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(requestedDigests).toEqual([''])
@@ -1982,6 +1983,109 @@ describe('useAppStore Gemini CLI slice', () => {
       'Missing middle',
       'End',
     ])
+  })
+
+  it.each(['appended turn', 'same-count edit'])('refreshes selected idle history after a summary-only %s', async (change) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [
+      { role: 'user', content: 'External question', createdAt: '2026-01-01T00:00:00Z' },
+      { role: 'assistant', content: 'External answer', createdAt: '2026-01-01T00:00:01Z' },
+    ]
+    initial.chats[0].messageCount = 2
+    initial.chats[0].messagesDigest = 'before'
+    const refreshed = change === 'same-count edit'
+      ? [initial.chats[0].messages[0], { ...initial.chats[0].messages[1], content: 'Corrected answer' }]
+      : [...initial.chats[0].messages,
+          { role: 'user', content: 'Next external question', createdAt: '2026-01-01T00:00:02Z' },
+          { role: 'assistant', content: 'Next external answer', createdAt: '2026-01-01T00:00:03Z' },
+        ]
+    const requests: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = JSON.parse(request).action
+      requests.push(action)
+      if (action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (action === 'getChatMessages') onSuccess(JSON.stringify({
+        chatId: 'chat-1', messagesDigest: 'after', messages: refreshed,
+      }))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{
+      ...initial.chats[0], messages: undefined, messagesDigest: 'after', messageCount: refreshed.length,
+    }] } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
+    expect(cefStore.getState().messages['chat-1'].map(message => message.content)).toEqual(refreshed.map(message => message.content))
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, statusLine: 'Scan finished.' } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
+  })
+
+  it.each(['ACP turn', 'CLI turn', 'streamed tail', 'background chat'])('preserves %s during summary-only history changes', async (live) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1, live === 'background chat' ? null : 'chat-1')
+    initial.chats[0].cliTerminal = live === 'CLI turn'
+      ? { ...initial.chats[0].cliTerminal!, processing: true, lifecycleState: 'processing' } : undefined
+    if (live === 'ACP turn') initial.chats[0].acpSession = { sessionId: 'live', running: true, processing: true, turnSerial: 1 }
+    initial.chats[0].messages = [{ role: 'assistant', content: 'Keep visible text', createdAt: '2026-01-01T00:00:01Z' }]
+    initial.chats[0].messageCount = 1
+    initial.chats[0].messagesDigest = 'before'
+    const requests: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = JSON.parse(request).action
+      requests.push(action)
+      if (action === 'getInitialState') onSuccess(JSON.stringify(initial))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    if (live === 'streamed tail') cefStore.setState(state => ({ messages: { ...state.messages,
+      'chat-1': state.messages['chat-1'].map(message => ({ ...message, isStreaming: true })),
+    } }))
+    const original = cefStore.getState().messages['chat-1']
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{
+      ...initial.chats[0], messages: undefined, messagesDigest: 'after', messageCount: 1,
+    }] } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(0)
+    expect(cefStore.getState().messages['chat-1']).toBe(original)
+  })
+
+  it.each(['new live turn', 'unloaded transcript'])('ignores an idle history refresh superseded by a %s', async (change) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'assistant', content: 'Saved answer', createdAt: '2026-01-01T00:00:01Z' }]
+    initial.chats[0].messageCount = 1
+    initial.chats[0].messagesDigest = 'before'
+    let finish: ((response: string) => void) | undefined
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (JSON.parse(request).action === 'getChatMessages') finish = onSuccess
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{
+      ...initial.chats[0], messages: undefined, messagesDigest: 'after', messageCount: 2,
+    }] } })
+    expect(finish).toBeTypeOf('function')
+    const newMessages = [{ id: 'new-answer', sessionId: 'chat-1', role: 'assistant' as const,
+      content: 'New live answer', createdAt: new Date(), isStreaming: true }]
+    if (change === 'unloaded transcript') cefStore.getState().unloadSessionMessages('chat-1')
+    else cefStore.setState({ messages: { 'chat-1': newMessages } })
+    finish!(JSON.stringify({ chatId: 'chat-1', messagesDigest: 'after', messages: [
+      ...initial.chats[0].messages,
+      { role: 'assistant', content: 'Earlier external answer', createdAt: '2026-01-01T00:00:02Z' },
+    ] }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(cefStore.getState().messages['chat-1']).toBe(change === 'unloaded transcript' ? undefined : newMessages)
   })
 
   it('allows a failed chat hydration to be retried without losing the transcript', async () => {
@@ -5143,6 +5247,20 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
   })
 
+  it('saves and rolls back the explorer path with editor preferences', async () => {
+    const previous = useAppStore.getState().fileExplorerApplication
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'Invalid application')
+    }
+    await expect(useAppStore.getState().setEditorSettings({
+      defaultEditorPresetId: 'vscode', editorFileAssociations: [], fileExplorerApplication: '/Applications/Alternative.app',
+    })).resolves.toBe(false)
+    expect(requests[0].payload.fileExplorerApplication).toBe('/Applications/Alternative.app')
+    expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
+  })
+
   it('persists MCP environment references and rolls back a rejected update', async () => {
     const cppState = makeCppState(1)
     cppState.settings.mcpServers = []
@@ -6141,6 +6259,51 @@ describe('useAppStore Gemini CLI slice', () => {
 
     await expect(useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).resolves.toBe(false)
     expect(requests).toEqual([])
+  })
+
+  it('routes restart and timeout intent explicitly while ordinary stops remain interrupts', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    await useAppStore.getState().resumeGoal('chat-1', 'goal-1', true)
+    await useAppStore.getState().stopAcpSession('chat-1', 'timeout')
+    await useAppStore.getState().stopAcpSession('chat-1')
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'resumeGoal', payload: { chatId: 'chat-1', goalId: 'goal-1', restart: true } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1', purpose: 'timeout' } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1' } },
+    ])
+  })
+
+  it('acknowledges only the observed attention revision on deliberate interaction', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    const state = makeCppState(1)
+    state.chats[0].attentionRevision = 'completion-one'
+    useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().sessions[0].attentionRevision).toBe('completion-one')
+    expect(requests).toEqual([])
+    await useAppStore.getState().acknowledgeChatAttention('chat-1', useAppStore.getState().sessions[0].attentionRevision!)
+    expect(requests).toEqual([expect.objectContaining({ action: 'acknowledgeChatAttention', payload: { chatId: 'chat-1', attentionRevision: 'completion-one' } })])
+  })
+
+  it('retains completion revisions through full and patch pushes and clears acknowledgements', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(makeCppState(1)))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const completed = makeCppState(2)
+    completed.chats[0].attentionRevision = 'completion-one'
+    testWindow.uamPush?.({ type: 'stateUpdate', data: completed })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-one')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [{ ...completed.chats[0], attentionRevision: 'completion-two' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-two')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 4, chats: [{ ...completed.chats[0], attentionRevision: '' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('')
   })
 
   it('resumes a goal through the runtime orchestration action', async () => {

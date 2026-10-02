@@ -10,6 +10,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -469,19 +470,34 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	}
 
 	const uam::VcsType requested_type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	const bool context_only = payload.value("contextOnly", false);
 	const bool include_line_stats = payload.value("includeLineStats", true);
 	const std::string request_id = payload.value("requestId", "");
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
 	const ChatSession chat_snapshot = *chat;
+	const std::filesystem::path expected_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
+	uam::AppState* live_app = &m_app;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, remote_vcs_lease]() mutable
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), requested_type, include_line_stats, request_id, comparison_ref, context_only, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
-		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref);
+		                 const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, chat, requested_type, include_line_stats, comparison_ref, context_only);
 		                 return AsyncSuccess(WithOptionalRequestId(SerializeVcsCommitStatus(status), request_id));
+	                 },
+	                 [live_app, chat_id = chat->id, expected_workspace, expected_host](AsyncCefResult& result)
+	                 {
+		                 const ChatSession* current = ChatDomainService().FindChatById(*live_app, chat_id);
+		                 const ExecutionHost* current_host = current == nullptr ? nullptr
+		                     : uam::execution_hosts::Find(live_app->settings.execution_hosts, current->execution_host_id);
+		                 if (current == nullptr || current_host == nullptr || !expected_host ||
+		                     !uam::execution_hosts::SameConnection(*current_host, *expected_host) ||
+		                     uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != expected_workspace)
+		                     result = AsyncFailure(409, "The chat workspace changed while its repository context was loading.");
 	                 });
 }
 

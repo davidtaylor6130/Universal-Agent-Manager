@@ -1,4 +1,5 @@
 #include "common/chat/chat_folder_store.h"
+#include "common/config/custom_icon.h"
 #include "common/config/line_value_codec.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
@@ -80,6 +81,10 @@ namespace
 		{
 			folder.collapsed = uam::parse::BoolOr(value, folder.collapsed);
 		}
+		else if (normalized_key == "custom_icon")
+		{
+			folder.custom_icon = uam::icons::Parse(nlohmann::json::parse(value, nullptr, false));
+		}
 		else if (normalized_key == kFolderExecutionHostIdKey)
 		{
 			folder.execution_host_id = uam::strings::Trim(value);
@@ -157,7 +162,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 	return folders;
 }
 
-bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders)
+std::string ChatFolderStore::Serialize(const std::vector<ChatFolder>& folders)
 {
 	std::ostringstream out;
 	out << kFoldersFormatVersion << "\n\n";
@@ -176,6 +181,7 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		WriteEncodedFolderField(out, kFolderTitleKey, folder.title);
 		WriteEncodedFolderField(out, kFolderDirectoryKey, folder.directory);
 		WriteBoolFolderField(out, kFolderCollapsedKey, folder.collapsed);
+		WriteEncodedFolderField(out, "custom_icon", uam::icons::Serialize(folder.custom_icon).dump());
 		WriteEncodedFolderField(out, kFolderExecutionHostIdKey,
 		                        uam::strings::NonEmptyOrFallback(
 		                            uam::strings::Trim(folder.execution_host_id), "local"));
@@ -183,5 +189,30 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 	}
 	out << kFoldersComplete << '\n';
 
-	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), out.str());
+	return out.str();
+}
+
+PreparedFolderSave::~PreparedFolderSave()
+{
+	uam::io::RemoveAtomicTempNoThrow(temporary);
+}
+
+std::shared_ptr<PreparedFolderSave> ChatFolderStore::PrepareSave(const fs::path& data_root, const std::vector<ChatFolder>& folders)
+{
+	if (!uam::paths::CreateDirectoriesNoThrow(data_root)) return nullptr;
+	std::shared_ptr<PreparedFolderSave> prepared = std::make_shared<PreparedFolderSave>();
+	prepared->destination = FolderFilePath(data_root);
+	prepared->temporary = uam::io::MakeTempWritePath(prepared->destination);
+	uam::io::AtomicWriteResult result;
+	return uam::io::WriteAndSyncAtomicTemp(prepared->temporary, Serialize(folders), {}, result) ? prepared : nullptr;
+}
+
+bool ChatFolderStore::PublishPreparedSave(const std::shared_ptr<PreparedFolderSave>& prepared)
+{
+	return prepared && uam::io::CommitSyncedAtomicTemp(prepared->destination, prepared->temporary, true, {}, false).success;
+}
+
+bool ChatFolderStore::Save(const fs::path& data_root, const std::vector<ChatFolder>& folders)
+{
+	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), Serialize(folders));
 }

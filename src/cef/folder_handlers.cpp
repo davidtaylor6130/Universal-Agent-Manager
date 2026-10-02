@@ -124,6 +124,48 @@ namespace
 		return result;
 	}
 
+	class LocalHistoryImportTask final : public CefTask
+	{
+	  public:
+		LocalHistoryImportTask(std::weak_ptr<void> lifetime, uam::AppState& app, ChatFolder folder,
+		    std::shared_ptr<ChatHistorySyncService::LocalHistoryDiscovery> discovery, CefRefPtr<CefBrowser> browser,
+		    CefRefPtr<CefMessageRouterBrowserSide::Callback> callback)
+		    : m_lifetime(std::move(lifetime)), m_app(app), m_folder(std::move(folder)), m_discovery(std::move(discovery)),
+		      m_browser(browser), m_callback(callback), m_result(m_discovery->result) {}
+
+		void Execute() override
+		{
+			if (m_lifetime.expired()) { m_discovery->CancelPending(); return; }
+			try
+			{
+				m_result.Merge(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, m_folder, *m_discovery));
+				if (m_discovery->Pending())
+				{
+					if (CefPostDelayedTask(TID_UI, this, 16)) return;
+					m_discovery->CancelPending();
+					m_result.Fail("The history import task queue is unavailable.");
+				}
+				const std::string detail = uam::strings::Join(m_result.errors, " ");
+				m_app.status_line = !m_result.success
+				    ? m_result.partial() ? "Imported " + std::to_string(m_result.imported_count) + " chats, but some history could not be read: " + detail : "Could not rescan native history: " + detail
+				    : m_result.imported_count == 0 ? "No new chats found." : "Imported " + std::to_string(m_result.imported_count) + " chats.";
+				uam::PushStateUpdateIfChanged(m_browser, m_app);
+				m_callback->Success(nlohmann::json{{"success", m_result.success}, {"partial", m_result.partial()}, {"errors", m_result.errors}, {"importedCount", m_result.imported_count}, {"scannedCount", m_result.total_count}}.dump());
+			}
+			catch (const std::exception& error) { m_discovery->CancelPending(); m_callback->Failure(500, std::string("History import failed: ") + error.what()); }
+		}
+
+	  private:
+		std::weak_ptr<void> m_lifetime;
+		uam::AppState& m_app;
+		ChatFolder m_folder;
+		std::shared_ptr<ChatHistorySyncService::LocalHistoryDiscovery> m_discovery;
+		CefRefPtr<CefBrowser> m_browser;
+		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
+		ChatHistorySyncService::ImportResult m_result;
+		IMPLEMENT_REFCOUNTING(LocalHistoryImportTask);
+	};
+
 	int FolderFailureCode(const std::string& status_line)
 	{
 		if (uam::strings::ContainsAny(status_line, {"no longer exists", "not found"}))
@@ -257,7 +299,9 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 
 	std::string selected_path;
 	std::string error;
-	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::Directory, initial_path, &selected_path, &error))
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(
+	    payload.value("application", false) ? PlatformPathBrowseTarget::File : PlatformPathBrowseTarget::Directory,
+	    initial_path, &selected_path, &error))
 	{
 		if (!error.empty())
 		{
@@ -416,33 +460,30 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-	const std::string composer_text = m_app.composer_text;
-	const ChatHistorySyncService::ImportResult result =
-	    ChatHistorySyncService().ImportProviderChatsForFolder(m_app, folder_id);
-	ChatHistorySyncService().MergeSidebarChatsPreservingCurrent(m_app);
-	if (!selected_chat_id.empty())
-	{
-		ChatDomainService().SelectChatById(m_app, selected_chat_id);
-		m_app.composer_text = composer_text;
-	}
-	const std::string error_detail = uam::strings::Join(result.errors, " ");
-	if (!result.success)
-	{
-		m_app.status_line = result.partial()
-		                        ? "Imported " + std::to_string(result.imported_count) + " chat" + (result.imported_count == 1 ? "" : "s") + ", but some history could not be read: " + error_detail
-		                        : "Could not rescan native history: " + error_detail;
-	}
-	else
-	{
-		m_app.status_line = result.imported_count == 0
-		                        ? "No new chats found."
-		                        : "Imported " + std::to_string(result.imported_count) + " chat" +
-		                              (result.imported_count == 1 ? "." : "s.");
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"success", result.success}, {"partial", result.partial()}, {"errors", result.errors}, {"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
+	const ChatFolder folder = *matched_folder;
+	const ProviderProfile* configured_profile = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+	const std::optional<ProviderProfile> profile = configured_profile != nullptr ? std::optional<ProviderProfile>(*configured_profile) : std::nullopt;
+	const std::size_t scan_offset = m_app.open_code_history_scan_offset;
+	std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+	std::erase_if(m_historyScanCancellations, [](const std::weak_ptr<std::stop_source>& pending) { return pending.expired(); });
+	m_historyScanCancellations.push_back(cancellation);
+	auto discovery = std::make_shared<ChatHistorySyncService::LocalHistoryDiscovery>();
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [folder, discovery, profile, scan_offset, cancellation]()
+	    {
+		    *discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, profile ? &*profile : nullptr, cancellation->get_token(), scan_offset);
+		    return uam::query_handler_async::AsyncSuccess({{"ok", true}});
+	    },
+	    [this, browser, folder, discovery, cb](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    if (!CefPostTask(TID_UI, new LocalHistoryImportTask(m_asyncLifetime, m_app, folder, discovery, browser, cb)))
+		    {
+			    response = uam::query_handler_async::AsyncFailure(503, "The history import task queue is unavailable.");
+			    return;
+		    }
+		    response.callback_deferred = true;
+	    });
 }
 
 void UamQueryHandler::HandlePreviewUnsortedWorkspaceFolders(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)

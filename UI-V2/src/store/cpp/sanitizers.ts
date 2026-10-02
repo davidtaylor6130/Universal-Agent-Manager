@@ -1,3 +1,4 @@
+import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -261,7 +262,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'assistant_text' || type === 'thought') {
+  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction') {
     return {
       type,
       text: stringOr(value.text),
@@ -713,6 +714,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
+    lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
       ? value.diagnostics.flatMap((entry) => {
@@ -805,6 +807,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
 		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
+    pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
     remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,
     currentStep: isString(value.currentStep) ? value.currentStep : undefined,
@@ -828,6 +831,7 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   return {
     id,
     title: stringOr(value.title, 'Untitled'),
+    customIcon: sanitizeCustomIcon(value.customIcon),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
@@ -846,6 +850,8 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    temporaryParentChatId: isString(value.temporaryParentChatId) ? value.temporaryParentChatId : undefined,
+    sideCleanupRequested: booleanOr(value.sideCleanupRequested),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
     branchRootChatId: isString(value.branchRootChatId) ? value.branchRootChatId : undefined,
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
@@ -900,6 +906,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
+    attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
     messageCount: finiteNumberOr(value.messageCount, 0),
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
@@ -1145,6 +1152,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
     message: stringOr(value.message),
     checkError: stringOr(value.checkError),
     running: booleanOr(value.running),
+    blockingChatIds: Array.isArray(value.blockingChatIds) ? value.blockingChatIds.filter((id): id is string => typeof id === 'string') : [],
     installMethod: normalizedInstallMethod,
     lastInstallStatus: normalizedLastInstallStatus,
     lastCommand: stringOr(value.lastCommand),
@@ -1334,6 +1342,8 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     modelId: normalizeAcpModelId(value.modelId),
     reviewerModelId: normalizeAcpModelId(value.reviewerModelId),
     featurePreference: value.featurePreference === 'provider' ? 'provider' : 'uam',
+    ...(Array.isArray(value.hiddenModelIds) ? { hiddenModelIds: value.hiddenModelIds.filter(isString) } : {}),
+    ...(Array.isArray(value.hiddenProviderIds) ? { hiddenProviderIds: value.hiddenProviderIds.filter(isString) } : {}),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
     commandSafetyTier: normalizeCommandSafetyTier(
       isString(value.commandSafetyTier) ? value.commandSafetyTier : booleanOr(value.autoApproveCommands) ? 'yolo' : 'off'
@@ -1400,6 +1410,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
+      automaticProviderUpdates: false,
       updateLastCheckedAt: '',
       dismissedUpdateVersions: {},
       memoryLastStatus: '',
@@ -1409,6 +1420,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
+      fileExplorerApplication: '',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       mcpServers: [],
@@ -1481,6 +1493,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
   if (Array.isArray(value.executionHosts)) {
     for (const entry of value.executionHosts) {
       if (!isRecord(entry)) continue
+      if (entry.id === 'local') {
+        executionHosts[0].customIcon = sanitizeCustomIcon(entry.customIcon)
+        continue
+      }
       const id = stringOr(entry.id).trim()
       const sshAlias = stringOr(entry.sshAlias).trim()
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
@@ -1499,6 +1515,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         platform: stringOr(entry.platform),
         architecture: stringOr(entry.architecture),
         lastSeenAt: stringOr(entry.lastSeenAt),
+        customIcon: sanitizeCustomIcon(entry.customIcon),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
       })
@@ -1521,6 +1538,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
+    automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
     updateLastCheckedAt: stringOr(value.updateLastCheckedAt),
     dismissedUpdateVersions,
     memoryLastStatus: stringOr(value.memoryLastStatus),
@@ -1530,6 +1548,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
+    fileExplorerApplication: stringOr(value.fileExplorerApplication),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     mcpServers,
@@ -1701,10 +1720,10 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
           const type = stringOr(item.type).trim() as ResourceReferenceType
           const target = stringOr(item.target).trim()
           if (!referenceId || !target || !RESOURCE_REFERENCE_TYPES.has(type)) return []
-          return [{ id: referenceId, type, target, label: stringOr(item.label).trim() }]
+          return [{ id: referenceId, type, target, label: stringOr(item.label).trim(), customIcon: sanitizeCustomIcon(item.customIcon) }]
         })
       : []
-    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references }]
+    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references, customIcon: sanitizeCustomIcon(entry.customIcon) }]
   })
 }
 

@@ -270,8 +270,8 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		if (fast_exit)
 		{
 			TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
-			(void)WaitForSingleObject(terminal.process_info.hProcess, 50);
-			CloseCliTerminalHandles(terminal);
+			if (WaitForSingleObject(terminal.process_info.hProcess, 1000) == WAIT_OBJECT_0)
+				CloseCliTerminalHandles(terminal);
 			return;
 		}
 
@@ -289,7 +289,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
 		}
 
-		CloseCliTerminalHandles(terminal);
+		if (wait_result == WAIT_OBJECT_0) CloseCliTerminalHandles(terminal);
 	}
 
 	void ResizeCliTerminal(uam::CliTerminalState& terminal) const override

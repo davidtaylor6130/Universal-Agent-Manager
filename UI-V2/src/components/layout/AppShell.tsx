@@ -516,6 +516,8 @@ export function AppShell() {
   }, [collectionToast])
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
+  const [postponedUpdates, setPostponedUpdates] = useState('')
+  const updateNoticeIdentity = JSON.stringify(updateMonitor.updates.map((update) => [update.id, update.latestVersion]))
   const connectionIssues = useMemo(() => {
     const state = useAppStore.getState()
     return remoteConnectionIssues(
@@ -731,6 +733,16 @@ export function AppShell() {
         </>
       )}
 
+      {!updatesOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
+        <div className="fixed bottom-4 right-14 z-40 max-w-sm bg-black p-3 text-white" style={{ border: '1px solid var(--border)' }} role="status">
+          <p className="text-sm">{updateMonitor.updates.length} updates available</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button size="sm" variant="primary" onClick={() => setUpdatesOpen(true)}>Review updates</Button>
+            <Button size="sm" variant="ghost" onClick={() => setPostponedUpdates(updateNoticeIdentity)}>Later</Button>
+            <Button size="sm" variant="ghost" onClick={updateMonitor.dismissAll}>Don't remind for these versions</Button>
+          </div>
+        </div>
+      )}
       {updatesOpen && <UpdatesPanel monitor={updateMonitor} onClose={() => setUpdatesOpen(false)} />}
 
       {alertsOpen && (

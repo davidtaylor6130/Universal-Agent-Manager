@@ -64,7 +64,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity = false, Cl
 CliTerminalState* FindCliTerminalForChat(AppState& app, std::string_view chat_id);
 bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std::string* error_out = nullptr);
 void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal);
-void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history = true);
+bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history = true);
 void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view chat_id);
 void StopAllCliTerminals(AppState& app, bool clear_identity = true);
 void FastStopCliTerminalsForExit(AppState& app);

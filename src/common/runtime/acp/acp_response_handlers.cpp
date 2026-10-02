@@ -339,6 +339,13 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 
 	if (const nlohmann::json* error_ptr = uam::nlohmann_json::FindField(message, "error"))
 	{
+		if ((method == uam::acp_methods::kTurnStart || method == uam::acp_methods::kSessionPrompt) &&
+		    !chat.provider_handoff_context.empty() && chat.provider_handoff_session_id == session.session_id)
+		{
+			// A rejected prompt may not have reached the provider's conversation history.
+			chat.provider_handoff_session_id.clear();
+			ScheduleChatSave(app, chat, 0.0);
+		}
 		const nlohmann::json& error = *error_ptr;
 		const nlohmann::json* code_json = uam::nlohmann_json::FindField(error, "code");
 		const std::optional<int> parsed_code = code_json == nullptr ? std::nullopt : uam::nlohmann_json::IntValueStrict(*code_json);

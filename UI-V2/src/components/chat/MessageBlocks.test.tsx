@@ -1,7 +1,7 @@
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
-import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent } from './MessageBlocks'
+import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent, stoppedResponseLabel } from './MessageBlocks'
 import { ToolCallModal } from './ToolCallViews'
 import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
@@ -30,6 +30,27 @@ describe('AttachmentList', () => {
 })
 
 describe('working transcript', () => {
+  it('distinguishes a timeout stop from an interrupted response', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const render = (interrupted: boolean) => act(() => root.render(<TurnTimelineContent events={[]} tools={[]}
+      interrupted={interrupted} stopReason="timeout" pendingPermission={null} pendingUserInput={null}
+      onSelectTool={() => undefined} onResolvePermission={() => Promise.resolve(true)}
+      onResolveUserInput={() => Promise.resolve(true)} onCancelTurn={() => undefined} onStopRuntime={() => undefined} />))
+    render(false)
+    expect(host.textContent).toContain('Stopped after timeout')
+    expect(host.textContent).not.toContain('Response interrupted')
+    render(true)
+    expect(host.textContent).toContain('Response interrupted')
+    expect(host.textContent).not.toContain('Stopped after timeout')
+    expect(stoppedResponseLabel('forced', true)).toBe('Forced stop')
+    expect(stoppedResponseLabel('failed', true)).toBe('Provider failed')
+    expect(stoppedResponseLabel('unknown', true)).toBe('Provider stopped')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows a pending permission even before the provider emits a matching event', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -844,5 +865,26 @@ describe('working transcript', () => {
     act(() => root.unmount())
     host.remove()
     vi.useRealTimers()
+  })
+})
+
+
+describe('persisted context compaction', () => {
+  it('renders a collapsed clickable separator with the provider summary', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<PersistedMessageContent message={{
+      id: 'compaction', sessionId: 'chat', role: 'assistant', content: '', createdAt: new Date(),
+      blocks: [{ type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1' }],
+    }} workingMode="compact" onSelectTool={vi.fn()} />))
+    const details = host.querySelector('details.context-compaction') as HTMLDetailsElement
+    expect(details).not.toBeNull()
+    expect(details.open).toBe(false)
+    expect(details.querySelector('summary')?.textContent).toBe('Context compacted')
+    details.open = true
+    expect(details.textContent).toContain('Keep the selected workspace.')
+    await act(async () => root.unmount())
+    host.remove()
   })
 })

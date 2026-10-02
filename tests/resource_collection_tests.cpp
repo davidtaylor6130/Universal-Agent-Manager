@@ -59,12 +59,17 @@ UAM_TEST(ResourceCollectionsPersistAllReferenceTypesAndOrdering)
 	}
 	UAM_ASSERT(uam::ResourceCollectionService::ReorderReferences(app, first.id, reversed_reference_ids, &error));
 	UAM_ASSERT(uam::ResourceCollectionService::ReorderCollections(app, {second.id, first.id}, &error));
+	app.resource_collections[1].custom_icon = {"text", "📚"};
+	app.resource_collections[1].references[0].custom_icon = {"text", "E"};
+	UAM_ASSERT(uam::ResourceCollectionService::Save(temp.root, app.resource_collections));
 
 	const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded[0].id, second.id);
 	UAM_ASSERT_EQ(loaded[1].name, std::string("Resources"));
 	UAM_ASSERT(loaded[1].collapsed);
+	UAM_ASSERT_EQ(loaded[1].custom_icon.value, std::string("📚"));
+	UAM_ASSERT_EQ(loaded[1].references[0].custom_icon.value, std::string("E"));
 	UAM_ASSERT_EQ(loaded[1].references.size(), inputs.size());
 	UAM_ASSERT_EQ(loaded[1].references[0].type, std::string("desktop-app"));
 	UAM_ASSERT_EQ(loaded[1].references[4].type, std::string("workspace-folder"));

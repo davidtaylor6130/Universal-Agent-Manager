@@ -215,7 +215,7 @@ describe('FolderTree', () => {
 
     act(() => root.render(<FolderTree searchQuery="" />))
     expect(host.querySelectorAll('[data-session-id]')).toHaveLength(5)
-    expect(historicalStatusReads).toBe(284)
+    expect(historicalStatusReads).toBe(355)
     historicalStatusReads = 0
     const currentBinding = acpBindingBySessionId['chat-1']
 
@@ -815,6 +815,29 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('keeps Claude launch, streaming, completion and resume visible in two views', () => {
+    const hosts = [document.createElement('div'), document.createElement('div')]
+    const roots = hosts.map((host) => { document.body.appendChild(host); return createRoot(host) })
+    act(() => {
+      useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli' } : session) }))
+      roots.forEach((root) => root.render(<FolderTree searchQuery="" />))
+    })
+    for (const state of [
+      { running: false, processing: false, lifecycleState: 'starting', readySinceLastSelect: false },
+      { running: true, processing: true, lifecycleState: 'processing', readySinceLastSelect: false },
+      { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true },
+      { running: false, processing: false, lifecycleState: 'stopped', readySinceLastSelect: true },
+      { running: false, processing: false, lifecycleState: 'starting', readySinceLastSelect: true },
+    ]) {
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': state } }))
+      hosts.forEach((host) => expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy())
+    }
+    act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: false, processing: false, lifecycleState: 'stopped', readySinceLastSelect: false } } }))
+    hosts.forEach((host) => expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeNull())
+    act(() => roots.forEach((root) => root.unmount()))
+    hosts.forEach((host) => host.remove())
+  })
+
   it('shows runtime-active chats with state counts above pinned chats without requiring a status filter', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, isPinned: true } : session),
@@ -1013,7 +1036,7 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Pinned chats')
     expect(host.textContent).toContain('Chat 1')
 
-    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
     const pinButton = host.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
     expect(pinButton).toBeTruthy()
     const actions = pinButton?.closest<HTMLElement>('[data-testid^="session-actions-"]')

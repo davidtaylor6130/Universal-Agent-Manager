@@ -1,3 +1,4 @@
+import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderPlus, Monitor, RefreshCw, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -184,7 +185,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     setCreatingChat(false)
   }
 
-	const providerSessions = sessions.filter((session) => session.providerId === providerId)
+	const providerSessions = sessions.filter((session) => !session.temporaryParentChatId && session.providerId === providerId)
 	const workspaceKey = (value: string | undefined) => {
 	  const normalized = (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
 	  return isRemote && selectedExecutionHost?.platform.toLowerCase() !== 'windows'
@@ -195,8 +196,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
-	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true)
+	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true, providerChatDefaults[providerId]).filter((option) => !option.disabled)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
+  useEffect(() => {
+    if (providerId === 'opencode-cli' && selectedModelId !== modelId) setModelId(selectedModelId)
+  }, [providerId, selectedModelId, modelId])
 	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
 	const capabilities = providerCapabilities(providerId, selectedProvider ?? undefined)
 	const reasoningOptions = (capabilities.hasReasoningEffort || runtimeSupportsReasoning) && !(selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length === 0)
@@ -321,7 +325,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <SelectionGrid
             label="Runs on"
             value={executionHostId}
-            options={executionHosts.map((host) => ({
+            options={executionHosts.filter((host) => SSH_ENABLED || host.transport !== 'ssh').map((host) => ({
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,

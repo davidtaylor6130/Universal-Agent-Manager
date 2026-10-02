@@ -8,6 +8,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
   const [installError, setInstallError] = useState('')
   const [checkError, setCheckError] = useState('')
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [blockedUpdate, setBlockedUpdate] = useState<(typeof monitor.updates)[number] | null>(null)
   const batchRef = useRef<AbortController | null>(null)
   useEffect(() => () => batchRef.current?.abort(), [])
 
@@ -23,7 +24,7 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
       aria-label="Updates"
       data-testid="updates-panel"
       className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] max-w-full shrink-0 flex-col overflow-hidden"
-      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
+      style={{ background: '#000', color: '#fff', borderLeft: '1px solid var(--border)' }}
     >
       <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="min-w-0">
@@ -49,18 +50,16 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                 setUpdatingAll(true)
                 setInstallError('')
                 try {
-                  for (const update of installableUpdates) {
-                    if (batch.signal.aborted) break
-                    const result = update.remoteHostId
-                      ? await monitor.applyRemoteHelperUpdate(update.remoteHostId)
-                      : { ok: await monitor.installCliProviderVersion(update.providerId!, update.latestVersion, update.executionHostId, batch.signal) }
-                    if (!result.ok) {
-                      if (!batch.signal.aborted) setInstallError(`Updates stopped at ${update.name}. ${result.error?.trim() || 'Check its update status before trying again.'}`)
-                      break
-                    }
-                  }
+                  const providers = installableUpdates.filter((update): update is typeof update & { providerId: string } => Boolean(update.providerId && !update.remoteHostId))
+                  const results = await Promise.allSettled([
+                    ...(providers.length ? [monitor.installProviderUpdates(providers)] : []),
+                    ...installableUpdates.filter((update) => update.remoteHostId).map((update) => monitor.applyRemoteHelperUpdate(update.remoteHostId!)),
+                  ])
+                  const failures = results.flatMap((result, index) => result.status === 'rejected' || !result.value.ok
+                    ? [`${providers.length && index === 0 ? 'Provider updates' : installableUpdates.filter((update) => update.remoteHostId)[index - (providers.length ? 1 : 0)]?.name}: ${result.status === 'fulfilled' && result.value.error?.trim() || 'Check its update status and retry.'}`] : [])
+                  if (failures.length && !batch.signal.aborted) setInstallError(failures.join('\n'))
                 } catch {
-                  if (!batch.signal.aborted) setInstallError('Updates stopped. Check update status before trying again.')
+                  if (!batch.signal.aborted) setInstallError('Some updates failed. Check each provider status and retry.')
                 } finally {
                   batchRef.current = null
                   if (!batch.signal.aborted) setUpdatingAll(false)
@@ -85,6 +84,21 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
       </header>
 
       <div className="min-w-0 flex-1 overflow-y-auto p-4">
+        <label className="mb-3 flex items-start gap-2 text-xs">
+          <input type="checkbox" checked={monitor.automaticProviderUpdates ?? false}
+            onChange={(event) => { void monitor.setUpdateSettings({ automaticProviderUpdates: event.target.checked }) }} />
+          <span>Install provider updates automatically. Active sessions delay installation.</span>
+        </label>
+        {blockedUpdate && (
+          <Notice tone="warning" title={`${blockedUpdate.name} sessions are running`} dismissLabel="Cancel provider update" onDismiss={() => setBlockedUpdate(null)}
+            actions={<><Button size="sm" variant="primary" onClick={async () => {
+              const result = await monitor.stopSessionsAndUpdate(blockedUpdate.providerId!, blockedUpdate.latestVersion, blockedUpdate.executionHostId)
+              if (result.ok) setBlockedUpdate(null)
+              else setInstallError(result.error || 'Could not stop the provider sessions. The update was not installed.')
+            }}>Stop session and install update</Button><Button size="sm" variant="ghost" onClick={() => setBlockedUpdate(null)}>Cancel</Button></>}>
+            Only this provider's sessions on this machine will stop. Current work will end.
+          </Notice>
+        )}
         {checkFailure && (
           <Notice key={`check:${monitor.lastCheckedAt}:${checkFailure}`} tone="error" title="Update check failed" dismissLabel="Dismiss update check error">
             {checkFailure}
@@ -116,13 +130,13 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
           </Notice>
         ))}
 
-        {monitor.providerUpdateResults.some((result) => result.status === 'failed') && (
+        {monitor.providerUpdateResults.length > 0 && (
           <div className="mb-3 grid min-w-0 max-w-full gap-2">
-            {monitor.providerUpdateResults.filter((result) => result.status === 'failed').map((result) => (
+            {monitor.providerUpdateResults.map((result) => (
               <Notice
                 key={`${JSON.stringify([result.executionHostId || '', result.providerId])}:${result.message}`}
-                tone="error"
-                title={`${result.name} update failed`}
+                tone={result.status === 'failed' ? 'error' : 'success'}
+                title={`${result.name} update ${result.status === 'failed' ? 'failed' : 'installed'}`}
                 dismissLabel={`Dismiss ${result.name} update error`}
               >
                 <div className="mt-1" style={{ color: 'var(--text-2)' }}>
@@ -205,6 +219,8 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                       onClick={() => monitor.dismiss(update.id, update.latestVersion)}
                     />
                   </div>
+                  {Boolean(providerState?.blockingChatIds?.length) && <p role="status" className="text-xs">Waiting for {providerState!.blockingChatIds!.length} provider session(s).</p>}
+                  {providerRunning && <p role="status" className="text-xs">{providerState?.message || 'Installing update.'}</p>}
                   <div className="flex flex-wrap gap-2">
                     {update.remoteHostId ? (
                       <Button
@@ -231,15 +247,16 @@ export function UpdatesPanel({ monitor, onClose }: { monitor: UpdateMonitor; onC
                         leadingIcon={<Download size={14} aria-hidden />}
                         aria-label={`Update ${update.name} to ${update.latestVersion}`}
                         loading={providerRunning}
-                        disabled={updatingAll || (monitor.providerTaskRunning && !providerRunning)}
+                        disabled={updatingAll || providerRunning}
                         onClick={async () => {
                           setInstallError('')
+                          if (providerState?.blockingChatIds?.length) { setBlockedUpdate(update); return }
                           if (!await monitor.applyCliProviderVersion(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])) {
                             setInstallError(`${update.name} update could not be started. Finish active provider work and try again.`)
                           }
                         }}
                       >
-                        {providerState?.status === 'checking' ? 'Verifying…' : providerRunning ? 'Updating…' : 'Install update'}
+                        {providerState?.status === 'checking' ? 'Verifying…' : providerRunning ? 'Updating…' : providerState?.blockingChatIds?.length ? 'Review waiting update' : 'Install update'}
                       </Button>
                     ) : (
                       <Button

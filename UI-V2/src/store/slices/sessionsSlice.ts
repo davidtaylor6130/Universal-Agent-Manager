@@ -322,6 +322,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     appVersion: `V${packageVersion}`,
     runnerProtocolVersion: 0,
     updateChecksEnabled: true,
+    automaticProviderUpdates: false,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
     memoryLastStatus: '',
@@ -332,6 +333,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     cliVersionManager: { ...emptyCliVersionManager } as CliVersionManager,
     defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
+    fileExplorerApplication: '',
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
     mcpServers: [] as McpServerConfiguration[],
@@ -343,6 +345,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     uamAgentCycleShortcut: 'shift+tab' as UamAgentCycleShortcut,
     uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
     statusLine: '',
+
+    acknowledgeChatAttention: async (id: string, revision: string) => {
+      const response = await sendToCEF({ action: 'acknowledgeChatAttention', payload: { chatId: id, attentionRevision: revision } })
+      return response.ok
+    },
 
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
@@ -808,7 +815,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data ?? null
     },
 
-    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
+    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
@@ -816,6 +823,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             chatId: id,
             vcsType,
             includeLineStats: options.includeLineStats ?? true,
+            contextOnly: options.contextOnly ?? false,
             requestId: options.requestId,
             comparisonRef: options.comparisonRef,
           },
@@ -1763,14 +1771,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setUpdateSettings: async (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
+    setUpdateSettings: async (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
       const previous = {
         updateChecksEnabled: get().updateChecksEnabled,
+        automaticProviderUpdates: get().automaticProviderUpdates,
         updateLastCheckedAt: get().updateLastCheckedAt,
         dismissedUpdateVersions: get().dismissedUpdateVersions,
       }
       const next = {
         updateChecksEnabled: settings.updateChecksEnabled ?? previous.updateChecksEnabled,
+        automaticProviderUpdates: settings.automaticProviderUpdates ?? previous.automaticProviderUpdates,
         updateLastCheckedAt: settings.updateLastCheckedAt ?? previous.updateLastCheckedAt,
         dismissedUpdateVersions: settings.dismissedUpdateVersions ?? previous.dismissedUpdateVersions,
       }
@@ -1782,6 +1792,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         action: 'setUpdateSettings',
         payload: {
           enabled: next.updateChecksEnabled,
+          automaticProviderUpdates: next.automaticProviderUpdates,
           lastCheckedAt: next.updateLastCheckedAt,
           dismissedVersions: next.dismissedUpdateVersions,
         },
@@ -1791,12 +1802,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
-    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>): Promise<boolean> => {
+    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>): Promise<boolean> => {
       const previous = {
+        ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: get().fileExplorerApplication } : {}),
         defaultEditorPresetId: get().defaultEditorPresetId,
         editorFileAssociations: get().editorFileAssociations,
       }
       const next = {
+        ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: settings.fileExplorerApplication } : {}),
         defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
         editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
       }
@@ -1809,6 +1822,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const response = await sendToCEF({
           action: 'setEditorSettings',
           payload: {
+            ...(next.fileExplorerApplication !== undefined ? { fileExplorerApplication: next.fileExplorerApplication } : {}),
             defaultEditorPresetId: next.defaultEditorPresetId,
             fileAssociations: next.editorFileAssociations,
           },
@@ -2501,11 +2515,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    stopAcpSession: async (sessionId: string): Promise<boolean> => {
+    stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
-          payload: { chatId: sessionId },
+          payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
         return response.ok
       }

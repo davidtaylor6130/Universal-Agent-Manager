@@ -1,6 +1,8 @@
 #include "remote/runner_state.h"
+#include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
+#include "common/provider/provider_native_context.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
@@ -599,6 +601,23 @@ namespace uam::remote
 			                       {"directories", std::move(entries)},
 			                       {"truncated", truncated}});
 		}
+		if (type == "context.prepare" || type == "context.remove")
+		{
+			const std::string directory_text = request.value("directory", "");
+			const std::filesystem::path directory = uam::paths::PathFromUtf8(directory_text);
+			const std::string token = uam::paths::Utf8PathString(directory.filename());
+			if (!IsBoundedText(directory_text, kMaxWorkingDirectoryBytes) || !directory.is_absolute() || token.size() != 16 ||
+			    directory.parent_path().filename() != "context" || directory.parent_path().parent_path().filename() != ".UAM" ||
+			    !std::ranges::all_of(token, [](unsigned char c) { return std::isxdigit(c) != 0; }))
+				return ProcessError(request, "invalid_request", "The provider context directory is invalid.");
+			state_lock.unlock();
+			std::string error;
+			const bool completed = type == "context.prepare"
+			    ? uam::provider_native_context::PrepareOwnedContext(directory, error)
+			    : uam::provider_native_context::RemoveOwnedContext(directory, true, error);
+			if (!completed) return ProcessError(request, "context_cleanup_pending", error.empty() ? "Provider context storage is unavailable." : error);
+			return ProcessSuccess(request, nlohmann::json::object());
+		}
 		if (type.starts_with("file."))
 		{
 			if (!request.contains("uploadId") || !request["uploadId"].is_string() ||
@@ -1155,13 +1174,46 @@ namespace uam::remote
 
 		if (type == "process.stop")
 		{
+			process.drainer.request_stop();
+			if (process.drainer.joinable()) process.drainer.join();
+			std::string outcome = "forced";
+			int exit_code = -1;
 			{
 				std::scoped_lock lock(process.mutex);
-				ProcessService().TerminateStdioProcess(process.fields, true);
+				if (request.value("graceful", false))
+				{
+					platform::ObservedProcessStopResult result;
+					if (process.exited.load(std::memory_order_acquire))
+					{
+						result.exit_confirmed = true;
+						result.exit_code = process.exit_code.load(std::memory_order_acquire);
+						result.outcome = result.exit_code == 0 ? platform::ProcessStopOutcome::Graceful : platform::ProcessStopOutcome::Failed;
+					}
+					else result = platform::StopStdioProcessObserved(ProcessService(), process.fields);
+					exit_code = result.exit_code;
+					outcome = result.outcome == platform::ProcessStopOutcome::Graceful ? "graceful" :
+					          result.outcome == platform::ProcessStopOutcome::Forced ? "forced" : "failed";
+					// Preserve bytes drained during the exclusive stop operation in the native spool.
+					std::ofstream stdout_stream(process.stdout_spool, std::ios::binary | std::ios::app);
+					std::ofstream stderr_stream(process.stderr_spool, std::ios::binary | std::ios::app);
+					std::string output_error;
+					if (!AppendSpool(process.stdout_spool, stdout_stream, result.standard_output, process.stdout_base_cursor, process.stdout_offset, process.max_spool_bytes, output_error) ||
+					    !AppendSpool(process.stderr_spool, stderr_stream, result.standard_error, process.stderr_base_cursor, process.stderr_offset, process.max_spool_bytes, output_error))
+					{
+						process.spool_error = output_error;
+						outcome = "failed";
+					}
+					if (!result.exit_confirmed)
+					{
+						StartDrainer(process);
+						return ProcessError(request, "stop_unconfirmed", "Owned process shutdown could not be confirmed.");
+					}
+				}
+				else ProcessService().TerminateStdioProcess(process.fields, true);
 			}
 			process.exited.store(true, std::memory_order_release);
-			process.exit_code.store(-1, std::memory_order_release);
-			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}});
+			process.exit_code.store(exit_code, std::memory_order_release);
+			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}, {"stopOutcome", outcome}, {"exitCode", exit_code}});
 		}
 
 		if (type == "process.poll")

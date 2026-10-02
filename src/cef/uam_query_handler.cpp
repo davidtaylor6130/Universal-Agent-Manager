@@ -1,3 +1,4 @@
+#include "common/config/build_features.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_security.h"
@@ -19,17 +20,25 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
+	for (const std::weak_ptr<std::stop_source>& pending : m_historyScanCancellations)
+	{
+		if (const std::shared_ptr<std::stop_source> source = pending.lock()) source->request_stop();
+	}
+#if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
+#endif
 }
 
 void UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 {
+#if UAM_ENABLE_MOBILE_COMPANION
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	m_companion = UamCompanionServer::StartFromEnvironment([this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
 	}, m_app.data_root);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +47,13 @@ void UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 
 bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	if ((!UAM_ENABLE_SSH && (action.find("RemoteHost") != std::string_view::npos || action == "listRemoteDirectories")) ||
+	    (!UAM_ENABLE_COMPUTER_USE && action.find("ComputerUse") != std::string_view::npos) ||
+	    (!UAM_ENABLE_MOBILE_COMPANION && action.find("Companion") != std::string_view::npos))
+	{
+		cb->Failure(400, "This feature is disabled in this build.");
+		return true;
+	}
 	const std::string chat_id = payload.value("chatId", "");
 	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession";
 	if ((!is_runtime_stop && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
@@ -56,8 +72,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	static constexpr Route kRoutes[] = {
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
+		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
+		{"createSideChat", &UamQueryHandler::HandleCreateSideChat},
+		{"dismissSideChat", &UamQueryHandler::HandleDismissSideChat},
 		{"createSession", &UamQueryHandler::HandleCreateSession},
 		{"branchFromMessage", &UamQueryHandler::HandleBranchFromMessage},
 		{"retryFailedMessage", &UamQueryHandler::HandleRetryFailedMessage},
@@ -105,6 +124,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
+		{"applyCliProviderVersions", &UamQueryHandler::HandleApplyCliProviderVersions},
 		{"applyCliProviderVersion", &UamQueryHandler::HandleApplyCliProviderVersion},
 		{"previewRemoteHost", &UamQueryHandler::HandlePreviewRemoteHost},
 		{"installRemoteHost", &UamQueryHandler::HandleInstallRemoteHost},
@@ -131,6 +151,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"rescanFolderChats", &UamQueryHandler::HandleRescanFolderChats},
 		{"previewUnsortedWorkspaceFolders", &UamQueryHandler::HandlePreviewUnsortedWorkspaceFolders},
 		{"rebuildUnsortedWorkspaceFolders", &UamQueryHandler::HandleRebuildUnsortedWorkspaceFolders},
+		{"setCustomIcon", &UamQueryHandler::HandleSetCustomIcon},
 		{"createResourceCollection", &UamQueryHandler::HandleCreateResourceCollection},
 		{"renameResourceCollection", &UamQueryHandler::HandleRenameResourceCollection},
 		{"deleteResourceCollection", &UamQueryHandler::HandleDeleteResourceCollection},

@@ -222,6 +222,46 @@ describe('ChatView', () => {
     })
   })
 
+  it('retains the observed idle timeout status after native reconciliation', () => {
+    useAppStore.setState((state) => ({
+      messages: { 'chat-1': [] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped', lastError: '', lastStopReason: 'timeout' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Stopped after timeout')
+    expect(host.textContent).not.toContain('Response interrupted')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('requires pointer or keyboard interaction to acknowledge the current completion', () => {
+    const original = useAppStore.getState().acknowledgeChatAttention
+    const acknowledge = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({ acknowledgeChatAttention: acknowledge,
+      sessions: state.sessions.map((session) => ({ ...session, attentionRevision: 'completion-one' })) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(acknowledge).not.toHaveBeenCalled()
+    act(() => host.firstElementChild?.dispatchEvent(new Event('pointerdown', { bubbles: true })))
+    expect(acknowledge).toHaveBeenLastCalledWith('chat-1', 'completion-one')
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, attentionRevision: 'completion-two' })) })))
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => host.firstElementChild?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(acknowledge).toHaveBeenLastCalledWith('chat-1', 'completion-two')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ acknowledgeChatAttention: original })
+  })
+
   it('shows scoped chat hydration errors with a retry action', () => {
     const retry = vi.fn(() => Promise.resolve(true))
     useAppStore.setState({
@@ -6947,4 +6987,36 @@ describe('ChatView', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('keeps composer VCS context current and labels SVN by workspace', async () => {
+    const session = useAppStore.getState().sessions[0]
+    let resolveOld!: (value: unknown) => void
+    const lookup = vi.fn().mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve })).mockResolvedValue({ available: true, activeVcsType: 'svn', branchOrRevision: 'r123', workspaceDirectory: '/tmp/project', changedFiles: [], vcsTypes: ['svn'], error: '', warning: '' })
+    useAppStore.setState({ getVcsCommitStatus: lookup })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<ChatView session={session} />))
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(host.textContent).toContain('SVN · project')
+    await act(async () => resolveOld({ available: true, activeVcsType: 'git', branchOrRevision: 'stale' }))
+    expect(host.textContent).not.toContain('Git · stale')
+    expect(lookup.mock.calls[0][2]).toMatchObject({ contextOnly: true, includeLineStats: false })
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('creates /side through the fresh native chat action instead of sending a provider prompt', async () => {
+    const session = useAppStore.getState().sessions[0]
+    const select = vi.fn()
+    useAppStore.setState({ activeSessionId: session.id, setActiveSession: select })
+    const requests: { action: string; payload?: Record<string, unknown> }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { const parsed = JSON.parse(request); requests.push(parsed); onSuccess(JSON.stringify(parsed.action === 'createSideChat' ? { chatId: 'side-1' } : {})) }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<ChatView session={session} />))
+    const input = host.querySelector('textarea')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '/side'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(requests.filter(request => request.action === 'createSideChat')).toEqual([expect.objectContaining({ payload: { chatId: session.id } })])
+    expect(select).toHaveBeenCalledWith('side-1')
+    expect(requests.some(request => request.action === 'sendAcpPrompt')).toBe(false)
+    act(() => root.unmount()); host.remove(); delete window.cefQuery
+  })
+
 })

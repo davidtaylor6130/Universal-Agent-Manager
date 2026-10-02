@@ -33,6 +33,7 @@ export function VcsCommitPanel() {
   const [committing, setCommitting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
+  const [commitOutput, setCommitOutput] = useState('')
   const latestStatusRequestRef = useRef('')
   const latestGenerateRequestRef = useRef(0)
   const latestCommitRequestRef = useRef(0)
@@ -46,6 +47,7 @@ export function VcsCommitPanel() {
     setTitle('')
     setDescription('')
     setNotice('')
+    setCommitOutput('')
     setLoading(false)
     setGenerating(false)
     setCommitting(false)
@@ -133,12 +135,13 @@ export function VcsCommitPanel() {
     setTitle('')
     setDescription('')
     setSelectedFiles([])
-    setNotice(result.message || 'Commit created.')
+    setNotice('Commit created.')
+    setCommitOutput(result.message || '')
     await refresh(selectedVcsType, true)
   }
 
   return (
-    <aside className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}>
+    <aside className="flex h-full flex-col overflow-hidden" style={{ background: '#000', borderLeft: '1px solid var(--border)' }}>
       <div className="flex h-12 flex-shrink-0 items-center gap-2 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Commit</div>
@@ -157,13 +160,14 @@ export function VcsCommitPanel() {
         />
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" style={{ background: '#000' }}>
         {(status.warning || status.error || notice) && (
           <div className="mb-3 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: status.error || notice ? 'var(--text)' : 'var(--text-2)' }}>
             {notice || status.error || status.warning}
           </div>
         )}
 
+        {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer">Command output</summary><pre className="mt-2 whitespace-pre-wrap break-words">{commitOutput}</pre></details>}
         <div className="mb-3 flex items-center gap-5 text-xs">
           <div className="min-w-0 flex-1">
             <div style={{ color: 'var(--text-3)' }}>VCS</div>
@@ -189,7 +193,7 @@ export function VcsCommitPanel() {
           </div>
         </div>
 
-        <div className="mb-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+        <div className="mb-3 flex min-h-0 w-full shrink-0 flex-col overflow-hidden" style={{ maxHeight: '45%' }}>
           <div className="flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
             <button
               type="button"
@@ -206,7 +210,7 @@ export function VcsCommitPanel() {
             {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" />}
             <span>{selectedFiles.length} selected</span>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 overflow-y-auto">
             {status.changedFiles.length === 0 ? (
               <div className="px-3 py-4 text-xs" style={{ color: 'var(--text-3)' }}>No changed files.</div>
             ) : status.changedFiles.map((file) => (
@@ -254,7 +258,7 @@ export function VcsCommitPanel() {
           />
         </div>
         <textarea
-          className="mb-2 h-24 w-full resize-none rounded-md p-2 text-sm"
+          className="mb-2 h-16 shrink-0 w-full resize-none rounded-md p-2 text-sm"
           style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
           placeholder="Description"
           value={description}

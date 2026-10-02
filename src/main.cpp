@@ -1,3 +1,4 @@
+#include "common/config/build_features.h"
 // UAM — CEF multiprocess entry point.
 //
 // CefExecuteProcess() must be called first so that CEF can dispatch renderer,
@@ -52,8 +53,10 @@ namespace
 int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/)
 {
 	const std::vector<std::string> arguments = LaunchArguments();
+#if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))
 		return uam::computer_use::RunMcpServer(arguments);
+#endif
 
 	CefMainArgs main_args(GetModuleHandle(nullptr));
 
@@ -84,8 +87,10 @@ int main(int argc, char* argv[])
 	}
 #endif
 	const std::vector<std::string> arguments(argv, argv + argc);
+#if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))
 		return uam::computer_use::RunMcpServer(arguments);
+#endif
 
 	CefMainArgs main_args(argc, argv);
 

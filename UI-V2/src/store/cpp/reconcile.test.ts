@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+import { acpBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
+import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
@@ -255,5 +255,39 @@ describe('historical model provenance', () => {
     expect(next[0].modelId).toBe('model-second')
     expect(first[0].modelId).toBe('model-first')
     expect(sanitizeCppMessage(message)?.modelId).toBeUndefined()
+  })
+})
+
+describe('Chat attention revision sanitization', () => {
+  it('preserves opaque revisions and explicit clearing while rejecting malformed values', () => {
+    const chat = { id: 'attention-chat', createdAt: '', updatedAt: '' }
+    expect(sanitizeCppChat({ ...chat, attentionRevision: 'completion-one' })?.attentionRevision).toBe('completion-one')
+    expect(sanitizeCppChat({ ...chat, attentionRevision: '' })?.attentionRevision).toBe('')
+    for (const attentionRevision of [undefined, null, 12, { id: 'completion' }]) {
+      expect(sanitizeCppChat({ ...chat, attentionRevision })?.attentionRevision).toBeUndefined()
+    }
+  })
+})
+
+describe('compaction reload and live event parity', () => {
+  it('keeps provider summaries as compaction blocks through save reload reconciliation', () => {
+    const summary = { type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1' }
+    const persisted = sanitizeCppMessage({ ...message, role: 'assistant', content: '', blocks: [summary] })!
+    const reconciled = reconcileCppMessages('chat-1', undefined, [persisted])
+    expect(reconciled[0].content).toBe('')
+    expect(reconciled[0].blocks).toEqual([summary])
+    const live = sanitizeCppAcpSession({ turnEvents: [summary] })
+    expect(live?.turnEvents).toEqual(reconciled[0].blocks)
+    const reloaded = reconcileCppMessages('chat-1', reconciled, [persisted])
+    expect(reloaded[0].blocks).toEqual([summary])
+  })
+})
+
+
+describe('CLI context preparation', () => {
+  it('keeps a pending native context launch processing before its PTY starts', () => {
+    const state = normalizeCliLifecycleState('starting', false)
+    expect(state).toBe('starting')
+    expect(cliLifecycleIsProcessing(state)).toBe(true)
   })
 })

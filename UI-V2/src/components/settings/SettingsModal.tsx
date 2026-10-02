@@ -1,3 +1,4 @@
+import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
@@ -159,7 +160,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
   { id: 'about', label: 'About', icon: Info },
-]
+].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED)) as SettingsSection[]
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
@@ -344,6 +345,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
+  const [explorerDraft, setExplorerDraft] = useState('')
+  const [customExplorer, setCustomExplorer] = useState(false)
+  useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
   const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
   const mcpServers = useAppStore(useShallow((s) => s.mcpServers))
@@ -372,7 +377,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [settingsSearch, setSettingsSearch] = useState('')
   const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
-    const section = SETTINGS_SECTIONS.find(item => item.id === id)!
+    const section = SETTINGS_SECTIONS.find(item => item.id === id)
+    if (!section) return false
     const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id]}`.toLocaleLowerCase()
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
@@ -500,7 +506,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }))
   }
   const changeSection = (section: SettingsSectionId) => {
-    if (section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
@@ -702,6 +708,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       modelId: saved?.modelId ?? '',
       reviewerModelId: saved?.reviewerModelId ?? '',
       featurePreference: saved?.featurePreference === 'provider' ? 'provider' : 'uam',
+      hiddenModelIds: saved?.hiddenModelIds ?? [],
+      hiddenProviderIds: saved?.hiddenProviderIds ?? [],
       approvalMode: saved?.approvalMode ?? 'default',
       commandSafetyTier: saved?.commandSafetyTier ?? 'off',
       memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
@@ -767,6 +775,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     )
   }
 
+  const saveExplorer = async (path: string) => {
+    if (editorSavePending.current) return
+    editorSavePending.current = true
+    setEditorSaving(true); setEditorError('')
+    try {
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setEditorError('File explorer could not be saved.')
+    } catch { setEditorError('File explorer could not be saved.') }
+    finally { editorSavePending.current = false; setEditorSaving(false) }
+  }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
     if (editorSavePending.current) return false
     if (nextAssociations.some(item => !item.name.trim() || !item.extensions.length)) {
@@ -1186,7 +1203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusy(false)
   }
   useEffect(() => {
-    if (selectedSection === 'defaults') void loadCompanionSettings()
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'defaults') void loadCompanionSettings()
   }, [selectedSection])
   const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
     if (computerUseSaveInFlight.current) return
@@ -1232,9 +1249,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeProvider = providers.find((provider) => provider.id === activeSession?.providerId)
     const activeUamControlSupported = Boolean(
       activeSession
-      && (activeSession.executionHostId || 'local') === 'local'
       && activeProvider?.supportsStructured !== false
-      && ['gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+      && ['codex-app-server', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )
@@ -1328,7 +1344,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderSectionContent = () => {
-    if (selectedSection === 'computer-use') return renderComputerUse()
+    if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
         ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
@@ -1483,6 +1499,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 				  const providerWorkspace = providerSession?.workspaceDirectory || localWorkspace
 				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
 				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
+                  const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
@@ -1496,6 +1513,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     ? [defaultReasoningOption, ...liveReasoningOptions]
                     : liveReasoningOptions
                   const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier)
+                  const visibilityGroups = provider.id === 'opencode-cli'
+                    ? [...new Set(modelOptions.filter((option) => option.id).map((option) => option.id.split('/')[0]))]
+                    : []
+                  const toggleVisibility = (key: 'hiddenModelIds' | 'hiddenProviderIds', id: string) => {
+                    const hidden = defaults[key] ?? []
+                    updateProviderDefaults(provider.id, { ...defaults, [key]: hidden.includes(id) ? hidden.filter((value) => value !== id) : [...hidden, id] })
+                  }
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
@@ -1513,6 +1537,29 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       actions={<IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                        {provider.id === 'opencode-cli' && (
+                          <details>
+                            <summary className="cursor-pointer py-2" style={{ color: 'var(--text)' }}>Model visibility</summary>
+                            {visibilityGroups.map((group) => (
+                              <details key={group} className="py-1">
+                                <summary className="cursor-pointer py-1" style={{ color: 'var(--text)' }}>{group}</summary>
+                                <label className="flex cursor-pointer items-center gap-2 py-2">
+                                  <input type="checkbox" checked={!defaults.hiddenProviderIds?.includes(group)} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
+                                  Show {group}
+                                </label>
+                                <div className="pl-6">
+                                  {modelOptions.filter((option) => option.id && option.id.split('/')[0] === group).map((option) => (
+                                    <label key={option.id} className="flex cursor-pointer items-center gap-2 py-2">
+                                      <input type="checkbox" checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                      {option.label}
+                                    </label>
+                                  ))}
+                                </div>
+                              </details>
+                            ))}
+                            <div className="py-2">Hidden models stay in existing chats.</div>
+                          </details>
+                        )}
                         <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
                           <div className="grid gap-1">
                             <div>Model</div>
@@ -1670,7 +1717,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           </Notice>
                         ) : (
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : providerAcp?.availableModels?.length ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
+                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
                           </span>
                         )}
                       </div>
@@ -1680,7 +1727,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             </div>
           </SectionCard>
-          {renderPhoneAccess()}
+          {MOBILE_COMPANION_ENABLED && renderPhoneAccess()}
         </div>
       )
     }
@@ -2007,7 +2054,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
-    if (selectedSection === 'remote-hosts') {
+    if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
       return (
         <div className="space-y-4">
@@ -2434,6 +2481,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Workspace Editors"
           >
             <div ref={editorMenuRef} className="grid gap-3">
+              <div className="grid gap-2 text-xs">
+                <MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />
+                {customExplorer && <div className="flex gap-2">
+                  <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="min-w-0 flex-1 rounded px-2 py-1" style={{ background: '#000', color: 'var(--text)', border: '1px solid var(--border)' }} placeholder="Application path" />
+                  <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                  <Button size="sm" disabled={!explorerDraft.trim() || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
+                </div>}
+              </div>
               <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <div>Default editor</div>
                 {renderEditorPresetMenu(

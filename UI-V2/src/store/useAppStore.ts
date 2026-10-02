@@ -106,6 +106,7 @@ function deserializeState(
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
     updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
     updateLastCheckedAt: string
     dismissedUpdateVersions: Record<string, string>
     memoryLastStatus: string
@@ -117,6 +118,7 @@ function deserializeState(
     markdownStoreDirectory: string
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
+    fileExplorerApplication: string
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     mcpServers: McpServerConfiguration[]
@@ -251,6 +253,7 @@ function deserializeState(
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
+        pendingContinuation: cppGoal.pendingContinuation,
         currentStep: cppGoal.currentStep,
         lastVerification: cppGoal.lastVerification,
         lastNextPrompt: cppGoal.lastNextPrompt,
@@ -295,6 +298,7 @@ function deserializeState(
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
+    automaticProviderUpdates: cpp.settings.automaticProviderUpdates,
     updateLastCheckedAt: cpp.settings.updateLastCheckedAt,
     dismissedUpdateVersions: cpp.settings.dismissedUpdateVersions,
     memoryLastStatus: cpp.settings.memoryLastStatus,
@@ -306,6 +310,7 @@ function deserializeState(
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
+    fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     mcpServers: cpp.settings.mcpServers ?? [],
@@ -419,6 +424,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
+        pendingContinuation: cppGoal.pendingContinuation,
         currentStep: cppGoal.currentStep,
         lastVerification: cppGoal.lastVerification,
         lastNextPrompt: cppGoal.lastNextPrompt,
@@ -480,6 +486,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
+    automaticProviderUpdates: patch.settings?.automaticProviderUpdates ?? current.automaticProviderUpdates,
     updateLastCheckedAt: patch.settings?.updateLastCheckedAt ?? current.updateLastCheckedAt,
     dismissedUpdateVersions: patch.settings?.dismissedUpdateVersions ?? current.dismissedUpdateVersions,
     memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
@@ -491,6 +498,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
+    fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
@@ -658,6 +666,7 @@ export const useAppStore = create<AppState>((set, get) => {
             showProviderIconsInSidebar: current.showProviderIconsInSidebar,
             showWorktreePathInSidebar: current.showWorktreePathInSidebar,
             updateChecksEnabled: current.updateChecksEnabled,
+            automaticProviderUpdates: current.automaticProviderUpdates,
             updateLastCheckedAt: current.updateLastCheckedAt,
             dismissedUpdateVersions: current.dismissedUpdateVersions,
             memoryLastStatus: current.memoryLastStatus,
@@ -669,7 +678,8 @@ export const useAppStore = create<AppState>((set, get) => {
             markdownStoreDirectory: current.markdownStoreDirectory,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
-            defaultEditorPresetId: current.defaultEditorPresetId,
+            fileExplorerApplication: current.fileExplorerApplication,
+        defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             mcpServers: current.mcpServers,
             executionHosts: current.executionHosts,
@@ -781,10 +791,25 @@ export const useAppStore = create<AppState>((set, get) => {
                 (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
                   (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
               )
+              const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
+              const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
+              // External history imports publish summaries. Refresh an already loaded idle
+              // transcript when its count or content digest changes, just as turn completion does.
+              const refreshedIdleHistory = Boolean(
+                activeChatId && current.messages[activeChatId] !== undefined &&
+                activeSessionBefore && activeSessionAfter &&
+                !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
+                !current.cliBindingBySessionId[activeChatId]?.processing &&
+                !get().cliBindingBySessionId[activeChatId]?.processing &&
+                !current.messages[activeChatId].some((message) => message.isStreaming) &&
+                !msg.data.messagesByChatId?.[activeChatId] &&
+                ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
+                  (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
+              )
               if (
                 activeChatId &&
                 activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages)
+                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory)
               ) {
                 get().loadSessionMessages(activeChatId, true)
               }
@@ -954,6 +979,7 @@ export const useAppStore = create<AppState>((set, get) => {
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         updateChecksEnabled: current.updateChecksEnabled,
+            automaticProviderUpdates: current.automaticProviderUpdates,
         updateLastCheckedAt: current.updateLastCheckedAt,
         dismissedUpdateVersions: current.dismissedUpdateVersions,
         memoryLastStatus: current.memoryLastStatus,
@@ -965,6 +991,7 @@ export const useAppStore = create<AppState>((set, get) => {
         markdownStoreDirectory: current.markdownStoreDirectory,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
+        fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         mcpServers: current.mcpServers,

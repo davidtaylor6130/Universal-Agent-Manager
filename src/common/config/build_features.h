@@ -1,0 +1,11 @@
+#pragma once
+
+#ifndef UAM_ENABLE_COMPUTER_USE
+#define UAM_ENABLE_COMPUTER_USE 1
+#endif
+#ifndef UAM_ENABLE_SSH
+#define UAM_ENABLE_SSH 1
+#endif
+#ifndef UAM_ENABLE_MOBILE_COMPANION
+#define UAM_ENABLE_MOBILE_COMPANION 1
+#endif

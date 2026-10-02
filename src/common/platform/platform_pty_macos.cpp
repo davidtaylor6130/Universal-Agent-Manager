@@ -212,7 +212,6 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 			StopParentDeathWatchdog(terminal.watchdog_pid);
 			return;
 		}
-		StopParentDeathWatchdog(terminal.watchdog_pid);
 
 		const pid_t child_pid = terminal.child_pid;
 		const auto wait_and_clear = [&](bool wait_for_exit, double timeout_seconds) -> bool
@@ -221,6 +220,7 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 			if (ChildWaitResultClearsPid(result))
 			{
 				terminal.child_pid = -1;
+				StopParentDeathWatchdog(terminal.watchdog_pid);
 				return true;
 			}
 			return false;

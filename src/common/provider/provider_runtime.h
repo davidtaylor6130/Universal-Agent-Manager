@@ -24,6 +24,7 @@ struct AcpSessionState;
 struct AcpPendingPermissionState;
 struct AcpToolCallState;
 struct AppState;
+struct CliTerminalState;
 namespace acp_detail
 {
 struct AcpResponseFailureDetails;
@@ -72,6 +73,14 @@ enum class ProviderCliVersionPolicy
 {
 	MinimumSemver,
 	AnySafeToken,
+};
+
+/// <summary>Provider-owned native turn activity, independent of terminal rendering.</summary>
+enum class ProviderTerminalActivity
+{
+	Unavailable,
+	Busy,
+	Complete,
 };
 
 /// <summary>Provider-owned CLI distribution and version compatibility policy.</summary>
@@ -125,6 +134,11 @@ class IProviderRuntime
 	virtual std::vector<std::pair<std::string, std::string>> BuildInteractiveEnvironment(const ProviderProfile& profile) const;
 	/// <summary>Recognizes the provider's idle prompt in recent native terminal output.</summary>
 	virtual bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const;
+	/// <summary>Reads bounded native lifecycle changes for a verified local terminal binding.</summary>
+	virtual ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState&, std::string_view,
+	    const std::filesystem::path&, bool) const { return ProviderTerminalActivity::Unavailable; }
+	/// <summary>Checkpoints native history before deliberate terminal submission.</summary>
+	virtual void CheckpointInteractiveSubmission(uam::CliTerminalState&) const {}
 	/// <summary>Whether terminal output can confirm completion after a submitted turn.</summary>
 	virtual bool SupportsInteractivePromptTracking() const { return true; }
 	/// <summary>True when a native session must be created and saved before starting the CLI.</summary>
@@ -140,7 +154,11 @@ class IProviderRuntime
 	/// <summary>Captures native IDs before an unbound local CLI starts.</summary>
 	virtual std::vector<std::string> SnapshotInteractiveSessionIds() const { return {}; }
 	/// <summary>Discovers a new native binding using the provider's index and workspace rules.</summary>
-	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&) const { return {}; }
+	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&, bool* ambiguous_out = nullptr) const
+	{
+		if (ambiguous_out != nullptr) *ambiguous_out = false;
+		return {};
+	}
 	/// <summary>Maps provider-native message types to app message roles.</summary>
 	virtual MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const = 0;
 	/// <summary>Loads history according to runtime policy.</summary>

@@ -112,12 +112,12 @@ namespace
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
-		uam::ResetAsyncCommandTask(app.runtime_cli_pin_task);
+		for (auto& [key, task] : app.runtime_cli_install_tasks) uam::ResetAsyncCommandTask(task);
+		app.runtime_cli_install_tasks.clear();
+		app.pending_cli_updates.clear();
 		app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
-		app.runtime_cli_pin_task.execution_host = ExecutionHost{};
 		app.runtime_cli_version_provider_id.clear();
 		app.runtime_cli_version_check_queue.clear();
-		app.runtime_cli_pin_provider_id.clear();
 		app.runtime_cli_versions_by_provider_id.clear();
 	}
 
@@ -174,11 +174,8 @@ namespace
 	struct RuntimeCliCompatibilitySnapshot
 	{
 		std::string runtime_cli_version_provider_id;
-		std::string runtime_cli_pin_provider_id;
 		std::string check_execution_host_id;
-		std::string install_execution_host_id;
 		bool check_running = false;
-		bool install_running = false;
 		std::string provider_state_signature;
 		std::string status_line;
 	};
@@ -187,11 +184,8 @@ namespace
 	{
 		RuntimeCliCompatibilitySnapshot snapshot;
 		snapshot.runtime_cli_version_provider_id = app.runtime_cli_version_provider_id;
-		snapshot.runtime_cli_pin_provider_id = app.runtime_cli_pin_provider_id;
 		snapshot.check_execution_host_id = app.runtime_cli_version_check_task.execution_host.id;
-		snapshot.install_execution_host_id = app.runtime_cli_pin_task.execution_host.id;
 		snapshot.check_running = app.runtime_cli_version_check_task.running;
-		snapshot.install_running = app.runtime_cli_pin_task.running;
 		snapshot.provider_state_signature = CalculateCliVersionStateSignature(app.runtime_cli_versions_by_provider_id);
 		snapshot.status_line = app.status_line;
 		return snapshot;
@@ -203,13 +197,8 @@ namespace
 		{
 			return true;
 		}
-		if (before.runtime_cli_pin_provider_id != after.runtime_cli_pin_provider_id)
-		{
-			return true;
-		}
 		if (before.check_execution_host_id != after.check_execution_host_id ||
-		    before.install_execution_host_id != after.install_execution_host_id ||
-		    before.check_running != after.check_running || before.install_running != after.install_running)
+		    before.check_running != after.check_running)
 		{
 			return true;
 		}
@@ -402,6 +391,50 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 // Periodic poll
 // ---------------------------------------------------------------------------
 
+bool Application::PollHistoryDiscovery()
+{
+	bool changed = false;
+	if (m_historyDiscovery.valid())
+	{
+		if (m_historyDiscovery.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+		try
+		{
+			m_pendingHistoryDiscovery = m_historyDiscovery.get();
+		}
+		catch (const std::exception& error)
+		{
+			uam::diagnostics::Write(std::string("History discovery failed: ") + error.what());
+		}
+		m_nextHistoryDiscovery = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+	}
+	if (!m_pendingHistoryDiscovery.empty())
+	{
+		auto& [folder, discovery] = m_pendingHistoryDiscovery.back();
+		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, folder, discovery);
+		changed = result.imported_count > 0;
+		for (const std::string& error : result.errors) uam::diagnostics::Write("History discovery: " + error);
+		if (!discovery.Pending())
+		{
+			for (const std::string& error : discovery.result.errors) uam::diagnostics::Write("History discovery: " + error);
+			m_pendingHistoryDiscovery.pop_back();
+		}
+		return changed;
+	}
+	if (std::chrono::steady_clock::now() >= m_nextHistoryDiscovery)
+	{
+		const ProviderProfile* configured = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+		const std::optional<ProviderProfile> profile = configured != nullptr ? std::optional<ProviderProfile>(*configured) : std::nullopt;
+		m_historyDiscovery = std::async(std::launch::async, [profile, scan_offset = m_app.open_code_history_scan_offset, stop_token = m_historyDiscoveryStop.get_token()]()
+		{
+			std::vector<std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>> results;
+			ChatFolder all_local_workspaces;
+			results.emplace_back(all_local_workspaces, ChatHistorySyncService().DiscoverProviderChatsForFolder(all_local_workspaces, profile ? &*profile : nullptr, stop_token, scan_offset));
+			return results;
+		});
+	}
+	return changed;
+}
+
 void Application::PollTick()
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -413,6 +446,7 @@ void Application::PollTick()
 	}
 
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
+	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
@@ -441,6 +475,7 @@ void Application::PollTick()
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
+	const bool history_discovery_changed = PollHistoryDiscovery();
 
 	// Poll the provider model catalog service for async model refresh completion.
 	bool model_catalog_changed = false;
@@ -450,7 +485,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || remote_host_health_changed;
+	const bool runtime_state_changed = side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -477,7 +512,7 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)));
+	ScheduleNextUpdate(m_pendingHistoryDiscovery.empty() ? GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)) : 16);
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -649,6 +684,9 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
+		if (!chat.temporary_parent_chat_id.empty())
+			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
 	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
 	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
@@ -777,6 +815,12 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	m_historyDiscoveryStop.request_stop();
+	for (std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>& pending : m_pendingHistoryDiscovery)
+	{
+		pending.second.CancelPending();
+	}
+	m_pendingHistoryDiscovery.clear();
 	if (m_shutdownComplete)
 	{
 		return;

@@ -1,9 +1,10 @@
+import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
 import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check } from 'lucide-react'
-import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
+import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
@@ -263,10 +264,11 @@ export function ComposerToolbar({
   dictationAvailable: boolean
   onToggleDictation: () => void
 }) {
+  const modelVisibility = useAppStore((state) => state.providerChatDefaults[providerId])
   const caps = providerCapabilities(providerId, provider)
-  const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel)
+  const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel, modelVisibility)
   const currentModel = modelOptionFor(modelOptions, modelId)
-  const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel)
+  const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel, modelVisibility)
   const currentReviewerModel = modelOptionFor(reviewerModelOptions, reviewerModelId || modelId)
   const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
   const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
@@ -356,7 +358,7 @@ export function ComposerToolbar({
     }
     if (event.key === 'Enter') {
       if (!modelOptionRefs.current.includes(document.activeElement as HTMLButtonElement)) return
-      if (modelDisabled) return
+      if (modelDisabled || modelOptions[modelFocusIndex]?.disabled) return
       event.preventDefault()
       onSelectModel(modelOptions[modelFocusIndex]?.id ?? currentModel.id)
       modelTriggerRef.current?.focus()
@@ -476,7 +478,7 @@ export function ComposerToolbar({
                 style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
               />
             </label>
-            {!isCompanionContext() && <button
+            {COMPUTER_USE_ENABLED && !isCompanionContext() && <button
               type="button"
               role="menuitem"
               title={computerUseMode ? 'Turn off computer use' : 'Turn on computer use'}
@@ -597,7 +599,7 @@ export function ComposerToolbar({
                   <MenuSelect
                     label="Worker model"
                     value={currentModel.id}
-                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
                     onChange={onSelectModel}
                     disabled={modelDisabled}
                   />
@@ -607,7 +609,7 @@ export function ComposerToolbar({
                 <MenuSelect
                   label="Reviewer model"
                   value={currentReviewerModel.id}
-                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
                   onChange={onSelectReviewerModel}
                   disabled={modelDisabled}
                 />
@@ -655,7 +657,7 @@ export function ComposerToolbar({
       ) : <>
       <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
-        {computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
+        {COMPUTER_USE_ENABLED && computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
         {featurePreference === 'provider' && providerPlanActive && <ComposerChoice label="Provider mode" chipLabel="Provider Plan" value={providerModeId ?? 'default'} icon={<ClipboardList size={12} aria-hidden />} options={providerModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description }))} onChange={onSelectProviderMode} disabled={modelDisabled} />}
         <ComposerChoice
           label="Permissions"

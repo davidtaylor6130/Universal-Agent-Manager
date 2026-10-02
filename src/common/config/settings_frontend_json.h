@@ -64,6 +64,8 @@ namespace uam::settings_frontend_json
 			    {"smallModelMode", entry.second.small_model_mode},
 			    {"reviewerModelId", uam::strings::Trim(entry.second.reviewer_model_id)},
 			    {"featurePreference", entry.second.feature_preference == "provider" ? "provider" : "uam"},
+			    {"hiddenModelIds", entry.second.hidden_model_ids},
+			    {"hiddenProviderIds", entry.second.hidden_provider_ids},
 			};
 		}
 		return defaults_json;
@@ -112,10 +114,12 @@ namespace uam::settings_frontend_json
 		settings_json["activeTurnInactivityTimeoutSeconds"] = std::clamp(settings.active_turn_inactivity_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
 		settings_json["acpSetupInactivityTimeoutSeconds"] = std::clamp(settings.acp_setup_inactivity_timeout_seconds, uam::settings::kMinAcpSetupInactivityTimeoutSeconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 		settings_json["updateChecksEnabled"] = settings.update_checks_enabled;
+		settings_json["automaticProviderUpdates"] = settings.automatic_provider_updates;
 		settings_json["updateLastCheckedAt"] = settings.update_last_checked_at;
 		settings_json["dismissedUpdateVersions"] = settings.dismissed_update_versions;
 		settings_json["defaultNewChatProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.default_new_chat_provider_id);
 		settings_json["providerChatDefaults"] = SerializeProviderChatDefaults(settings.provider_chat_defaults);
+		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);

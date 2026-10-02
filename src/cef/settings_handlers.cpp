@@ -8,6 +8,8 @@
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
 #include "common/memory/memory_levels.h"
+#include "common/paths/path_utils.h"
+#include "common/platform/file_explorer_application.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -22,9 +24,12 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include "common/config/execution_host_config.h"
+
 #include <fstream>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <string_view>
 
@@ -295,6 +300,19 @@ void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	if (const nlohmann::json* entries = uam::nlohmann_json::FindObjectField(payload, "defaults"))
+	{
+		for (const auto& entry : entries->items()) for (const char* key : {"hiddenModelIds", "hiddenProviderIds"})
+		{
+			if (!entry.value().is_object() || !entry.value().contains(key)) continue;
+			const auto& values = entry.value()[key];
+			if (!values.is_array() || values.size() > 4096 || std::ranges::any_of(values, [](const nlohmann::json& id) { return !id.is_string() || id.get_ref<const std::string&>().size() > 1024; }))
+			{
+				cb->Failure(400, std::string(key) + " must contain at most 4096 model or provider IDs.");
+				return;
+			}
+		}
+	}
 	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
 	if (!requested_default_provider_id.empty())
 	{
@@ -361,6 +379,7 @@ void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, co
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	m_app.settings.automatic_provider_updates = payload.value("automaticProviderUpdates", m_app.settings.automatic_provider_updates);
 	m_app.settings.update_checks_enabled = payload.value("enabled", m_app.settings.update_checks_enabled);
 	m_app.settings.update_last_checked_at = uam::strings::SafeLine(
 	    payload.value("lastCheckedAt", m_app.settings.update_last_checked_at), 64, true);
@@ -397,6 +416,26 @@ void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, con
 void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	if (payload.contains("fileExplorerApplication"))
+	{
+		if (!payload["fileExplorerApplication"].is_string())
+		{
+			cb->Failure(400, "File explorer application must be a path.");
+			return;
+		}
+		const std::string application = payload["fileExplorerApplication"].get<std::string>();
+#if defined(_WIN32)
+		constexpr bool windows = true;
+#else
+		constexpr bool windows = false;
+#endif
+		if (!uam::platform::IsFileExplorerApplication(application, windows))
+		{
+			cb->Failure(400, "Choose an existing file explorer application using its full path.");
+			return;
+		}
+		m_app.settings.file_explorer_application = application;
+	}
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
 	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);
 
@@ -476,7 +515,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 
 	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
-	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id))
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false)))
 	{
 		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -567,4 +606,43 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 		return;
 	}
 	cb->Success(nlohmann::json{{"token", token}, {"url", CompanionUrl(config)}}.dump());
+}
+
+void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("targets") || !payload["targets"].is_array() || payload["targets"].empty() || payload["targets"].size() > 64)
+	{
+		cb->Failure(400, "Choose between 1 and 64 provider installations to update.");
+		return;
+	}
+	std::vector<std::tuple<std::string, std::string, std::string>> targets;
+	std::unordered_set<std::string> seen;
+	for (const auto& target : payload["targets"])
+	{
+		if (!target.is_object() || !target.contains("providerId") || !target["providerId"].is_string() ||
+		    !target.contains("version") || !target["version"].is_string() ||
+		    (target.contains("executionHostId") && !target["executionHostId"].is_string()))
+		{
+			cb->Failure(400, "Each update requires a provider, version and valid machine ID.");
+			return;
+		}
+		const std::string provider = uam::provider_ids::CanonicalCliProviderLookupId(target["providerId"].get<std::string>());
+		const std::string host = target.value("executionHostId", "local");
+		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr)
+		{
+			cb->Failure(400, "The update list references a machine that no longer exists.");
+			return;
+		}
+		if (!seen.insert(CliProviderVersionStateKey(provider, host)).second ||
+		    !ProviderProfileStore::FindById(m_app.provider_profiles, provider) ||
+		    !ProviderCliCompatibilityService().IsSupportedVersionForProvider(provider, target["version"].get<std::string>()))
+		{
+			cb->Failure(400, "The update list contains duplicate or unsupported provider versions.");
+			return;
+		}
+		targets.emplace_back(provider, target["version"].get<std::string>(), host);
+	}
+	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }

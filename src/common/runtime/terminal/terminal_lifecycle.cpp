@@ -4,10 +4,12 @@
 #include "app/provider_resolution_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
 
 #include <algorithm>
 #include <string>
@@ -37,8 +39,31 @@ void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view messa
 
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len)
 {
+	const bool terminal_response = bytes != nullptr && IsNativeTerminalResponse(std::string_view(bytes, len));
+	// A correlated native status command must not share its composer with user input.
+	if ((terminal.native_identity_query_phase == 2 || terminal.native_identity_query_phase == 3) && !terminal_response && bytes != nullptr && len > 0)
+	{
+		if (len > 16384 - terminal.native_identity_deferred_input.size())
+		{
+			if (terminal.native_identity_query_phase == 2)
+				(void)PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, "\x15", 1);
+			terminal.native_identity_query_phase = 0;
+			terminal.native_identity_output.clear();
+			terminal.native_identity_deferred_input.clear();
+			terminal.last_error = "Terminal input exceeded the native startup buffer. Retry after startup completes.";
+			return false;
+		}
+		terminal.native_identity_deferred_input.append(bytes, len);
+		terminal.last_user_input_time_s = GetAppTimeSeconds();
+		return true;
+	}
+	if (!terminal_response && bytes != nullptr && std::string_view(bytes, len).find_first_of("\r\n") != std::string_view::npos)
+	{
+		if (!terminal.native_activity_provider_id.empty())
+			ProviderRuntimeRegistry::ResolveById(terminal.native_activity_provider_id).CheckpointInteractiveSubmission(terminal);
+	}
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
-	if (wrote && bytes != nullptr && len > 0)
+	if (wrote && !terminal_response && bytes != nullptr && len > 0)
 	{
 		const double now = GetAppTimeSeconds();
 		terminal.last_activity_time_s = now;
@@ -178,12 +203,13 @@ const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal)
 {
+	if (terminal.context_preparation != nullptr) return "starting";
 	return CliTerminalLifecycleStateLabel(terminal.lifecycle_state);
 }
 
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal)
 {
-	return terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state);
+	return terminal.context_preparation != nullptr || (terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state));
 }
 
 bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
@@ -241,6 +267,9 @@ bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_d
 
 void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt)
 {
+	terminal.codex_activity_turn_id.clear();
+	terminal.codex_activity_awaiting_turn = settle_first_prompt;
+	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = terminal.uses_prompt_activity_tracking && settle_first_prompt;
@@ -255,6 +284,8 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
+	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -285,6 +316,17 @@ void MarkCliTerminalShuttingDown(CliTerminalState& terminal)
 
 void MarkCliTerminalStopped(CliTerminalState& terminal)
 {
+	terminal.native_activity_provider_id.clear();
+	terminal.codex_activity_session_id.clear();
+	terminal.codex_activity_cwd.clear();
+	terminal.codex_activity_rollout.clear();
+	terminal.codex_activity_partial_line.clear();
+	terminal.codex_activity_string_cursor = {};
+	terminal.codex_activity_turn_id.clear();
+	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_read_failed = false;
+	terminal.codex_activity_completed = false;
+	terminal.codex_activity_discard_line = false;
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -359,15 +401,31 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	if (terminal.context_preparation != nullptr)
+	{
+		terminal.context_preparation->cancellation.request_stop();
+		terminal.context_preparation.reset();
+	}
 	if (terminal.native_session_setup_cancel != nullptr)
 	{
 		terminal.native_session_setup_cancel->request_stop();
 		terminal.native_session_setup_cancel.reset();
 	}
 	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
+	if (!PlatformServicesFactory::Instance().terminal_runtime.PollCliTerminalProcessExited(terminal))
+	{
+		terminal.running = true;
+		terminal.last_error = "Terminal stop is not confirmed. Cleanup will retry.";
+		MarkCliTerminalShuttingDown(terminal);
+		return;
+	}
 
 	CloseCliTerminalHandles(terminal);
 	terminal.running = false;
+	terminal.native_identity_query_phase = 0;
+	terminal.native_identity_output.clear();
+	terminal.native_identity_deferred_input.clear();
+	terminal.native_session_discovery_ambiguous = false;
 	terminal.input_ready = false;
 	terminal.startup_time_s = 0.0;
 	MarkCliTerminalStopped(terminal);
@@ -411,7 +469,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		}
 	}
 	CliTerminalState* terminal = FindCliTerminalForChat(app, chat_id);
-	if (terminal != nullptr && terminal->native_session_setup_cancel != nullptr)
+	if (terminal != nullptr && (terminal->native_session_setup_cancel != nullptr || terminal->context_preparation != nullptr))
 	{
 		StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	}
@@ -436,6 +494,13 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		return false;
 	}
 
+	// Bind the native identity before closing the CLI, including a view switch before its first poll.
+	DiscoverCliTerminalNativeSession(app, *terminal);
+	if (terminal->native_session_discovery_ambiguous)
+	{
+		if (error_out != nullptr) *error_out = "The native CLI session identity could not be verified. Keep the CLI open until its identity is available.";
+		return false;
+	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	terminal->should_launch = false;
 	terminal->last_error.clear();
@@ -453,7 +518,7 @@ void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& termi
 	}
 }
 
-void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
+bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
 {
 	auto matches_chat_terminal = [&](std::unique_ptr<CliTerminalState>& terminal)
 	{
@@ -468,10 +533,14 @@ void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 		}
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
-		return true;
+		return !terminal->running;
 	};
 
 	std::erase_if(app.cli_terminals, matches_chat_terminal);
+	return std::ranges::none_of(app.cli_terminals, [chat_id](const std::unique_ptr<CliTerminalState>& terminal)
+	{
+		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
+	});
 }
 
 void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view chat_id)

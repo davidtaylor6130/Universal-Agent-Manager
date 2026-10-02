@@ -43,6 +43,7 @@ struct MessagePlanEntry
 	std::string content;
 	std::string priority;
 	std::string status;
+	bool operator==(const MessagePlanEntry&) const = default;
 };
 
 struct MessageBlock
@@ -51,6 +52,7 @@ struct MessageBlock
 	std::string text;
 	std::string tool_call_id;
 	std::string request_id_json;
+	bool operator==(const MessageBlock&) const = default;
 };
 
 struct MessageAttachment
@@ -62,6 +64,7 @@ struct MessageAttachment
 	std::string path;
 	std::uintmax_t size_bytes = 0;
 	bool copied = false;
+	bool operator==(const MessageAttachment&) const = default;
 };
 
 namespace uam
@@ -134,6 +137,7 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	std::string stop_reason;
 	bool priority_steer = false;
 	std::string checkpoint_sha;
 	std::string checkpoint_parent_sha;
@@ -149,6 +153,7 @@ struct Message
 	std::string model_id;
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
+	bool operator==(const Message&) const = default;
 };
 
 /// <summary>
@@ -252,14 +257,22 @@ struct AgentRun
 /// <summary>
 /// Chat session metadata and message history.
 /// </summary>
+struct ProviderHandoffCliContext
+{
+	std::string execution_host_id;
+	std::string directory;
+	std::string connection_identity;
+	bool operator==(const ProviderHandoffCliContext&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
-	// Only chats created by a version that assigns remote Claude CLI IDs may
-	// create one on first launch. Older unbound chats may already have history.
+	// New Claude chats may assign an owned CLI ID on first local or remote launch.
+	// Keep the persisted legacy field name; older unbound chats may already have history.
 	bool remote_claude_session_unstarted = false;
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
@@ -296,6 +309,10 @@ struct ChatSession
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
+	std::string temporary_parent_chat_id;
+	bool side_cleanup_requested = false;
+	double side_cleanup_retry_time_s = 0.0;
+	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
 	int branch_from_message_index = -1;
@@ -307,6 +324,12 @@ struct ChatSession
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
+	/// Nonempty until an explicit interaction acknowledges this exact update.
+	std::string attention_revision;
+	std::string last_stop_reason;
+	/// Changes only for explicit goal commands, invalidating older completions.
+	std::string goal_command_revision;
+	std::string goal_pending_continuation_id;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;
@@ -324,6 +347,11 @@ struct ChatSession
 	std::string uam_agent_id = "build";
 	// Provider and definition identity last dispatched as prompt context.
 	std::string last_prompt_agent_definition_hash;
+	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
+	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
+	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
@@ -384,11 +412,21 @@ struct ProviderChatDefaults
 	bool small_model_mode = false;
 	std::string reviewer_model_id;
 	std::string feature_preference = "uam";
+	std::vector<std::string> hidden_model_ids;
+	std::vector<std::string> hidden_provider_ids;
 };
 
 /// <summary>
 /// User-defined chat folder metadata.
 /// </summary>
+/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
+struct CustomIcon
+{
+	std::string type;
+	std::string value;
+	bool operator==(const CustomIcon&) const = default;
+};
+
 struct ChatFolder
 {
 	std::string id;
@@ -396,6 +434,7 @@ struct ChatFolder
 	std::string directory;
 	bool collapsed = false;
 	std::string execution_host_id;
+	CustomIcon custom_icon;
 };
 
 struct ResourceReference
@@ -404,6 +443,7 @@ struct ResourceReference
 	std::string type;
 	std::string target;
 	std::string label;
+	CustomIcon custom_icon;
 };
 
 struct ResourceCollection
@@ -412,6 +452,7 @@ struct ResourceCollection
 	std::string name;
 	bool collapsed = false;
 	std::vector<ResourceReference> references;
+	CustomIcon custom_icon;
 };
 
 struct ShellAction
@@ -461,6 +502,7 @@ struct ExecutionHost
 	std::string last_seen_at;
 	std::string runner_directory;
 	int runner_protocol_version = 0;
+	CustomIcon custom_icon;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -501,6 +543,7 @@ struct AppSettings
 	int acp_setup_inactivity_timeout_seconds = 600;
 	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;
+	bool automatic_provider_updates = false;
 	std::string update_last_checked_at;
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
@@ -510,6 +553,7 @@ struct AppSettings
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
+	std::string file_explorer_application;
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	std::vector<McpServerConfiguration> mcp_servers;

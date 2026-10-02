@@ -69,6 +69,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
+	constexpr std::string_view kFileExplorerApplicationKey = "file_explorer_application";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
@@ -352,6 +353,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    defaults.small_model_mode ? "1" : "0",
 			    defaults.reviewer_model_id,
 			    defaults.feature_preference,
+			    nlohmann::json(defaults.hidden_model_ids).dump(),
+			    nlohmann::json(defaults.hidden_provider_ids).dump(),
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -380,6 +383,10 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
 			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");
+			const auto hidden_models = nlohmann::json::parse(uam::DecodedLineFieldOr(fields, 11, "[]"), nullptr, false);
+			const auto hidden_providers = nlohmann::json::parse(uam::DecodedLineFieldOr(fields, 12, "[]"), nullptr, false);
+			if (hidden_models.is_array()) for (const auto& id : hidden_models) if (id.is_string()) defaults.hidden_model_ids.push_back(id.get<std::string>());
+			if (hidden_providers.is_array()) for (const auto& id : hidden_providers) if (id.is_string()) defaults.hidden_provider_ids.push_back(id.get<std::string>());
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))
@@ -573,6 +580,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
 	WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
 	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
+	WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
 	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
 	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
 	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
@@ -581,6 +589,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
 	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
+	WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
@@ -751,6 +760,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			settings.update_checks_enabled = uam::parse::BoolOr(value, settings.update_checks_enabled);
 		}
+		else if (key == "automatic_provider_updates")
+		{
+			settings.automatic_provider_updates = uam::parse::BoolOr(value, false);
+		}
 		else if (key == kUpdateLastCheckedAtKey)
 		{
 			settings.update_last_checked_at = decoded_value;
@@ -782,6 +795,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kMarkdownStoreDirectoryKey)
 		{
 			settings.markdown_store_directory = decoded_value;
+		}
+		else if (key == kFileExplorerApplicationKey)
+		{
+			settings.file_explorer_application = decoded_value;
 		}
 		else if (key == kDefaultEditorPresetIdKey)
 		{

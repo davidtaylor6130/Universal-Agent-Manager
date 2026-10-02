@@ -171,6 +171,7 @@ namespace uam::remote
 			                          {"processOutputAcknowledgement", state != nullptr},
 			                          {"channelOutputAcknowledgement", state != nullptr},
 		                          {"leasedChannelTake", state != nullptr},
+		                          {"providerNativeContext", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

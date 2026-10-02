@@ -110,7 +110,7 @@ namespace uam::platform
 			NSString* file = [NSString stringWithUTF8String:path.c_str()];
 			NSString* bundle_id = [NSString stringWithUTF8String:application_bundle_id.c_str()];
 			NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
-			NSURL* application_url = bundle_id == nil ? nil : [workspace URLForApplicationWithBundleIdentifier:bundle_id];
+			NSURL* application_url = bundle_id == nil ? nil : ([bundle_id isAbsolutePath] ? [NSURL fileURLWithPath:bundle_id] : [workspace URLForApplicationWithBundleIdentifier:bundle_id]);
 			if (file == nil || application_url == nil)
 			{
 				if (error_out != nullptr) *error_out = "macOS could not find the requested application.";

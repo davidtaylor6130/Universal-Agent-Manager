@@ -952,6 +952,59 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('shows expandable OpenCode provider groups and saves individual visibility choices', () => {
+    const defaultsSetter = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({
+      providers: [fallbackProviderForId('opencode-cli')],
+      setProviderChatDefaults: defaultsSetter,
+      providerModelCatalogs: [{ providerId: 'opencode-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', availableModels: [
+        { id: 'openai/visible', name: 'Visible model', description: '' },
+        { id: 'anthropic/sonnet', name: 'Sonnet model', description: '' },
+      ], currentModelId: '', modelsLoading: false, modelRefreshError: '' }],
+    })
+    const { host, root } = renderModal()
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
+    const section = host.querySelector('#opencode-cli-defaults-panel')!
+    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent === 'Model visibility')!
+    expect(visibility).toBeTruthy()
+    const provider = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Show openai'))!
+    act(() => provider.querySelector<HTMLInputElement>('input')!.click())
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }))
+    const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
+    act(() => model.querySelector<HTMLInputElement>('input')!.click())
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }))
+    expect(useAppStore.getState().providerModelCatalogs[0].availableModels).toHaveLength(2)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    { category: 'model', id: 'model', value: 'openai/discovered', discovered: true },
+    { category: 'mode', id: 'mode', value: 'plan', discovered: false },
+    { category: 'model', id: 'model', value: '   ', discovered: false },
+  ])('reports catalog availability for valid model config choices: $category/$value', ({ category, id, value, discovered }) => {
+    useAppStore.setState({
+      providers: [fallbackProviderForId('opencode-cli')],
+      providerModelCatalogs: [{
+        providerId: 'opencode-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local',
+        availableModels: [], currentModelId: '', modelsLoading: false, modelRefreshError: '',
+        configOptions: [{ id, category, name: 'Selection', description: '', currentValue: value, options: [{ value, name: 'Discovered model', description: '' }] }],
+      }],
+    })
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
+    const section = host.querySelector('#opencode-cli-defaults-panel')!
+    try {
+      expect(section.querySelector('[role="status"]')?.textContent).toBe(discovered ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')
+      if (discovered) expect(section.textContent).toContain('Discovered model')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('keeps provider chat defaults collapsed until toggled', () => {
     const { host, root } = renderModal()
 
@@ -1965,6 +2018,20 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('TextEdit')
     act(() => Array.from(host.querySelectorAll<HTMLLabelElement>('label')).find((label) => label.textContent?.includes('TextEdit'))?.querySelector<HTMLInputElement>('input')?.click())
     expect(requests.find((request) => request.action === 'setComputerUseSettings')?.payload).toEqual({ allowlistEnabled: false, allowedApplications: [{ identityKind: 'bundleId', identity: 'com.apple.TextEdit' }] })
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('selects a custom explorer and reports rejected saves', async () => {
+    useAppStore.setState({ fileExplorerApplication: '', setEditorSettings: vi.fn().mockResolvedValue(false) })
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+    act(() => host.querySelector<HTMLButtonElement>('button[title="File explorer"]')!.click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent?.includes('Custom application'))!.click())
+    const input = host.querySelector<HTMLInputElement>('[aria-label="File explorer application path"]')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '/Applications/Files.app'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    await act(async () => Array.from(input.parentElement!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save')!.click())
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
+    expect(host.textContent).toContain('File explorer could not be saved.')
     act(() => root.unmount()); host.remove()
   })
 

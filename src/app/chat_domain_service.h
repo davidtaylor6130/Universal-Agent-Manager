@@ -21,6 +21,9 @@ class ChatDomainService
 		bool interrupted = false;
 	};
 
+	std::string AttentionRevision(const uam::AppState& app, const ChatSession& chat) const;
+	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const;
+	bool AcknowledgeChatAttention(uam::AppState& app, const std::string& chat_id, const std::string& revision) const;
 	std::string NewFolderId() const;
 	int FindFolderIndexById(const uam::AppState& app, const std::string& folder_id) const;
 	ChatFolder* FindFolderById(uam::AppState& app, const std::string& folder_id) const;

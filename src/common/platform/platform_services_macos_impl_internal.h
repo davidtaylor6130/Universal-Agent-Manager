@@ -663,6 +663,20 @@ inline bool ArmParentDeathWatchdogAndReleaseChild(pid_t child_pid, pid_t& watchd
 	return true;
 }
 
+/// Clean the owned group while its exited leader is still unreaped, reserving
+/// the group ID until cleanup completes and preventing PID reuse collateral.
+inline bool CleanupExitedOwnedProcessGroup(pid_t child_pid)
+{
+	if (child_pid <= 0) return true;
+	siginfo_t exit_info{};
+	if (waitid(P_PID, static_cast<id_t>(child_pid), &exit_info, WEXITED | WNOHANG | WNOWAIT) != 0)
+		return errno == ECHILD;
+	if (exit_info.si_pid != child_pid) return false;
+	// SpawnSuspendedProcess creates a dedicated group. The unreaped leader reserves its ID.
+	SignalTerminalProcessGroup(child_pid, SIGKILL);
+	return true;
+}
+
 inline bool TerminateCapturedCommandProcess(pid_t pid, int* raw_status_out)
 {
 	if (pid <= 0)
@@ -677,7 +691,7 @@ inline bool TerminateCapturedCommandProcess(pid_t pid, int* raw_status_out)
 
 	while (std::chrono::steady_clock::now() < graceful_deadline)
 	{
-		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+		const pid_t wait_result = CleanupExitedOwnedProcessGroup(pid) ? waitpid(pid, &raw_status, WNOHANG) : 0;
 		if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
 		{
 			reaped = true;
@@ -690,11 +704,11 @@ inline bool TerminateCapturedCommandProcess(pid_t pid, int* raw_status_out)
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
-	SignalTerminalProcessGroup(pid, SIGKILL);
+	if (!reaped) SignalTerminalProcessGroup(pid, SIGKILL);
 	const auto kill_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
 	while (!reaped && std::chrono::steady_clock::now() < kill_deadline)
 	{
-		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+		const pid_t wait_result = CleanupExitedOwnedProcessGroup(pid) ? waitpid(pid, &raw_status, WNOHANG) : 0;
 		if (wait_result == pid || (wait_result < 0 && errno == ECHILD))
 		{
 			reaped = true;
@@ -811,7 +825,7 @@ inline ProcessExecutionResult ExecuteCapturedCommandPosix(const std::string& com
 			break;
 		}
 
-		const pid_t wait_result = waitpid(pid, &raw_status, WNOHANG);
+		const pid_t wait_result = CleanupExitedOwnedProcessGroup(pid) ? waitpid(pid, &raw_status, WNOHANG) : 0;
 
 		if (wait_result == pid)
 		{
@@ -922,7 +936,7 @@ inline ChildWaitResult WaitForChildProcess(pid_t child_pid, bool wait_for_exit, 
 
 	while (true)
 	{
-		const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
+		const pid_t wait_result = CleanupExitedOwnedProcessGroup(child_pid) ? waitpid(child_pid, &status, WNOHANG) : 0;
 
 		if (wait_result == child_pid)
 		{

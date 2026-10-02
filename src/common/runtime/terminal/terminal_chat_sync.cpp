@@ -2,12 +2,23 @@
 
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
+#include "app/provider_resolution_service.h"
+#include "common/paths/workspace_root.h"
+#include "common/runtime/app_time.h"
+#include "common/runtime/terminal_polling.h"
+#include "common/utils/time_utils.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/provider_runtime.h"
+#include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/platform/platform_services.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
 #include "common/utils/string_utils.h"
@@ -16,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 
 namespace uam
 {
@@ -38,6 +50,157 @@ namespace
 			app.native_chat_refresh_error_status.clear();
 		}
 	}
+}
+
+bool HasCompetingUnboundCliSession(const AppState& app, const CliTerminalState& terminal)
+{
+	const ChatSession* chat = FindChatForCliTerminal(app, terminal);
+	if (chat == nullptr || !uam::paths::IsControllerLocalWorkspace(*chat)) return false;
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+	const std::filesystem::path workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, *chat);
+	for (const std::unique_ptr<CliTerminalState>& other : app.cli_terminals)
+	{
+		if (other == nullptr || other.get() == &terminal || !other->running || !CliTerminalAttachedSessionId(*other).empty()) continue;
+		const ChatSession* other_chat = FindChatForCliTerminal(app, *other);
+		if (other_chat == nullptr || other_chat->id == chat->id || !uam::paths::IsControllerLocalWorkspace(*other_chat)) continue;
+		const ProviderProfile& other_provider = ProviderResolutionService().ProviderForChatOrDefault(app, *other_chat);
+		if (other_provider.id != provider.id) continue;
+		const std::filesystem::path other_workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, *other_chat);
+		std::error_code path_error;
+		if (other_workspace != workspace && !std::filesystem::equivalent(workspace, other_workspace, path_error)) continue;
+		if (ProviderRuntimeRegistry::Resolve(other_provider).ResolveInteractiveResumeId(app, *other_chat).empty()) return true;
+	}
+	return false;
+}
+
+bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal)
+{
+	ChatSession* chat = FindChatForCliTerminal(app, terminal);
+	if (chat == nullptr) return false;
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+	std::string identity = CliTerminalAttachedSessionId(terminal);
+	if (identity.empty() && !terminal.native_identity_requires_owned_reply) identity = ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, *chat);
+	terminal.native_session_discovery_ambiguous = false;
+	if (identity.empty() && (terminal.native_identity_requires_owned_reply || HasCompetingUnboundCliSession(app, terminal)))
+	{
+		terminal.native_session_discovery_ambiguous = true;
+		return false;
+	}
+	if (identity.empty() && chat->execution_host_id == uam::execution_hosts::kLocalHostId)
+	{
+		if (ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *chat))
+		{
+			const std::filesystem::path directory = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *chat);
+			TryAttachNativeSessionFromHistory(app, terminal, ChatHistorySyncService().LoadNativeSessionChats(directory, provider));
+			identity = CliTerminalAttachedSessionId(terminal);
+		}
+		else identity = ProviderRuntimeRegistry::Resolve(provider).DiscoverInteractiveSessionId(
+		    terminal.session_ids_before, uam::paths::ResolveControllerWorkspaceRootPath(app, *chat), &terminal.native_session_discovery_ambiguous);
+	}
+	if (identity.empty()) return false;
+	terminal.attached_session_id = identity;
+	if (chat->native_session_id == identity) return false;
+	chat->native_session_id = identity;
+	if (provider.id == uam::provider_ids::kCodexCli && !chat->provider_handoff_context.empty())
+		chat->provider_handoff_session_id = identity;
+	chat->updated_at = uam::time::TimestampNow();
+	terminal.attached_session_id = identity;
+	app.resolved_native_sessions_by_chat_id[chat->id] = identity;
+	if (!ProviderRuntime::SaveHistory(provider, app.data_root, *chat))
+	{
+		app.pending_chat_save_at_by_chat_id[chat->id] = GetAppTimeSeconds() + 1.0;
+		LogCliDiagnosticEvent(app, "native_session_link", "save_failed", &terminal, "Could not save the native session link; retrying.");
+	}
+	return true;
+}
+
+/// <summary>Native slash commands are separated from Enter so Codex cannot classify them as a paste.</summary>
+bool PollCliNativeIdentityQuery(AppState& app, CliTerminalState& terminal, std::string_view provider_id, std::string_view output, double now_s)
+{
+	if (terminal.native_identity_query_phase == 0 && terminal.native_identity_requires_owned_reply &&
+	    terminal.native_identity_command.empty() && terminal.last_user_input_time_s == 0.0 &&
+	    now_s - terminal.startup_time_s <= 30.0)
+	{
+		const ChatSession* chat = FindChatForCliTerminal(app, terminal);
+		if (chat != nullptr)
+		{
+			const std::string key = CliProviderVersionStateKey(provider_id, chat->execution_host_id);
+			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(key);
+			if (version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked)
+			{
+				terminal.native_identity_command = NativeSessionStatusCommand(provider_id, version->second.installed_version);
+				if (!terminal.native_identity_command.empty()) terminal.native_identity_query_phase = 1;
+			}
+		}
+	}
+	if (terminal.native_identity_query_phase == 0) return false;
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	const std::function<void(bool)> finish = [&](bool clear_composer)
+	{
+		if (clear_composer) (void)runtime.WriteToCliTerminal(terminal, "\x15", 1);
+		terminal.native_identity_query_phase = 0;
+		terminal.native_identity_output.clear();
+		if (terminal.running && !terminal.native_identity_deferred_input.empty())
+		{
+			const std::string deferred = std::exchange(terminal.native_identity_deferred_input, {});
+			if (WriteToCliTerminal(terminal, deferred.data(), deferred.size()) && deferred.find_first_of("\r\n") != std::string::npos)
+				MarkCliTerminalTurnBusy(terminal);
+		}
+		terminal.native_identity_deferred_input.clear();
+	};
+	if (!terminal.running || !terminal.attached_session_id.empty()) { finish(false); return false; }
+	if (terminal.native_identity_output.size() + output.size() > 65536)
+	{
+		finish(terminal.native_identity_query_phase == 2);
+		return false;
+	}
+	terminal.native_identity_output.append(output);
+	if (terminal.native_identity_query_phase == 1)
+	{
+		if (terminal.last_user_input_time_s > 0.0 || now_s - terminal.startup_time_s > 30.0)
+		{
+			finish(false);
+			return false;
+		}
+		const std::string text = StripTerminalControlSequencesForLifecycle(terminal.native_identity_output);
+		const bool codex_ready = provider_id == provider_ids::kCodexCli &&
+		    text.find("OpenAI Codex") != std::string::npos && text.find("(v") != std::string::npos &&
+		    terminal.native_identity_output.find("\x1b]0;") != std::string::npos &&
+		    text.rfind("Ask Codex to do anything") != std::string::npos &&
+		    (text.rfind("Folder access") == std::string::npos || text.rfind("Folder access") < text.rfind("Ask Codex to do anything"));
+		const bool gemini_ready = provider_id == provider_ids::kGeminiCli &&
+		    text.rfind("Type your message or @path/to/file") != std::string::npos;
+		if ((!codex_ready && !gemini_ready) || terminal.turn_state != CliTerminalTurnState::Idle) return false;
+		if (!runtime.WriteToCliTerminal(terminal, terminal.native_identity_command.data(), terminal.native_identity_command.size()))
+		{
+			finish(false);
+			return false;
+		}
+		terminal.native_identity_query_phase = 2;
+		terminal.native_identity_query_time_s = now_s;
+		terminal.native_identity_output.clear();
+		return false;
+	}
+	if (now_s - terminal.native_identity_query_time_s > 10.0)
+	{
+		LogCliDiagnosticEvent(app, "native_session_link", "owned_status_timeout", &terminal);
+		finish(terminal.native_identity_query_phase == 2);
+		return false;
+	}
+	if (terminal.native_identity_query_phase == 2)
+	{
+		if (now_s - terminal.native_identity_query_time_s < 0.75) return false;
+		if (!runtime.WriteToCliTerminal(terminal, "\r", 1)) { finish(true); return false; }
+		terminal.native_identity_query_phase = 3;
+		terminal.native_identity_output.clear();
+		return false;
+	}
+	const std::string identity = NativeStatusSessionId(provider_id, terminal.native_identity_output);
+	if (identity.empty()) return false;
+	terminal.attached_session_id = identity;
+	const bool changed = DiscoverCliTerminalNativeSession(app, terminal);
+	finish(false);
+	return changed;
 }
 
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs)
@@ -64,7 +227,7 @@ bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id)
 bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 {
 	// Unknown activity must still block history rewrites and provider replacement.
-	return terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
+	return terminal.native_identity_query_phase == 2 || terminal.native_identity_query_phase == 3 || terminal.native_session_discovery_ambiguous || terminal.lifecycle_state == CliTerminalLifecycleState::Unknown ||
 	       uam::CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state) || terminal.turn_state == uam::CliTerminalTurnState::Busy;
 }
 
@@ -151,21 +314,7 @@ void MarkChatUnseen(AppState& app, std::string_view chat_id)
 		return;
 	}
 
-	if (ChatDomainService().SelectedChatId(app) == normalized_chat_id)
-	{
-		return;
-	}
-
-	app.chats_with_unseen_updates.emplace(normalized_chat_id);
-}
-
-void MarkSelectedChatSeen(AppState& app)
-{
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
-	if (!selected_chat_id.empty())
-	{
-		app.chats_with_unseen_updates.erase(selected_chat_id);
-	}
+	ChatDomainService().MarkChatNeedsAttention(app, normalized_chat_id);
 }
 
 bool ChatExists(const AppState& app, std::string_view chat_id)
@@ -248,7 +397,6 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 		LogCliDiagnosticEvent(app, "sync_native_history", "chat_load_failed", nullptr, app.status_line);
 		return false;
 	}
-	MarkSelectedChatSeen(app);
 	return true;
 }
 

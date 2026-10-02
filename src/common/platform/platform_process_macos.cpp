@@ -329,9 +329,11 @@ class MacProcessService final : public IPlatformProcessService
 			SignalTerminalProcessGroup(child_pid, SIGKILL);
 		}
 		int status = 0;
-		(void)TerminateCapturedCommandProcess(child_pid, &status);
-		process.child_pid = -1;
-		StopParentDeathWatchdog(process.watchdog_pid);
+		if (TerminateCapturedCommandProcess(child_pid, &status))
+		{
+			process.child_pid = -1;
+			StopParentDeathWatchdog(process.watchdog_pid);
+		}
 	}
 
 	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
@@ -362,6 +364,7 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		int status = 0;
+		if (!CleanupExitedOwnedProcessGroup(process.child_pid)) return false;
 		const pid_t wait_result = waitpid(process.child_pid, &status, WNOHANG);
 		if (wait_result == 0)
 		{
