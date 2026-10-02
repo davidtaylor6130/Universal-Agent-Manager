@@ -579,9 +579,42 @@ namespace
 		return true;
 	}
 
-	bool IsCodexSyntheticUserMessage(std::string_view content)
+	/// <summary>Remove complete native policy preambles and UAM's agent wrapper, retaining authored text.</summary>
+	std::string CodexVisibleUserMessage(std::string_view content)
 	{
-		return uam::strings::StartsWith(uam::strings::TrimAsciiView(content), "<environment_context>");
+		std::string_view visible = uam::strings::TrimAsciiView(content);
+		bool stripped = false;
+		if (uam::strings::StartsWith(visible, "# AGENTS.md instructions for "))
+		{
+			const std::size_t opening = visible.find("\n<INSTRUCTIONS>");
+			const std::size_t closing = opening == std::string_view::npos ? std::string_view::npos : visible.find("\n</INSTRUCTIONS>", opening);
+			if (closing != std::string_view::npos)
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + std::string_view("\n</INSTRUCTIONS>").size()));
+				stripped = true;
+			}
+		}
+		if (uam::strings::StartsWith(visible, "<environment_context>"))
+		{
+			const std::size_t closing = visible.find("</environment_context>");
+			if (closing != std::string_view::npos)
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + std::string_view("</environment_context>").size()));
+				stripped = true;
+			}
+		}
+		if (uam::strings::StartsWith(visible, "--- BEGIN UAM AGENT: "))
+		{
+			constexpr std::string_view ending = "\n--- END UAM AGENT ---";
+			const std::size_t closing = visible.find(ending);
+			if (closing != std::string_view::npos &&
+			    (closing + ending.size() == visible.size() || visible[closing + ending.size()] == '\r' || visible[closing + ending.size()] == '\n'))
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + ending.size()));
+				stripped = true;
+			}
+		}
+		return std::string(stripped ? visible : content);
 	}
 
 	std::string CodexMessageText(const nlohmann::json& payload)
@@ -763,7 +796,8 @@ namespace
 					    return true;
 				    }
 				    std::string content = CodexMessageText(payload);
-				    if (content.empty() || (role == "user" && IsCodexSyntheticUserMessage(content)))
+				    if (role == "user") content = CodexVisibleUserMessage(content);
+				    if (content.empty())
 				    {
 					    return true;
 				    }
@@ -2204,7 +2238,7 @@ try
 							AppendTranscriptText(text, part["text"].get<std::string>());
 					}
 				}
-				if (!IsCodexSyntheticUserMessage(text)) AppendTranscriptText(user_message.content, text);
+				AppendTranscriptText(user_message.content, CodexVisibleUserMessage(text));
 			}
 			else if (type == "agentMessage" && item.contains("text") &&
 			         item["text"].is_string())

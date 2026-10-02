@@ -16816,6 +16816,70 @@ UAM_TEST(StartupSidebarLoadLeavesProviderHistoryForExplicitRescan)
 #endif
 }
 
+UAM_TEST(CodexNativeTranscriptsHideGeneratedContextAndKeepAuthoredPrompts)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-visible-prompts");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path codex_home = temp.root / "codex-home";
+	const fs::path rollout_dir = codex_home / "sessions";
+	fs::create_directories(workspace);
+	fs::create_directories(rollout_dir);
+	ScopedEnvVar codex_home_env("CODEX_HOME", codex_home.string());
+	const std::string id = "11111111-2222-4333-8444-555555555555";
+	const std::vector<std::string> raw_prompts = {
+		"# AGENTS.md instructions for /synthetic\n\n<INSTRUCTIONS>\nSynthetic policy.\n</INSTRUCTIONS>\n<environment_context>\nSynthetic environment.\n</environment_context>",
+		"<environment_context>synthetic</environment_context>",
+		"--- BEGIN UAM AGENT: build ---\nSynthetic instructions.\n--- END UAM AGENT ---\n\nReply QA-ONLY.",
+		"Discuss AGENTS.md and <environment_context> as literal text.",
+		"--- BEGIN UAM AGENT: malformed ---\nKeep this incomplete user text.",
+		"<environment_context>Keep this incomplete user text.",
+		"# AGENTS.md instructions for /user-authored without an XML policy block.",
+	};
+	const std::vector<std::string> expected = {
+		"Reply QA-ONLY.",
+		"Discuss AGENTS.md and <environment_context> as literal text.",
+		"--- BEGIN UAM AGENT: malformed ---\nKeep this incomplete user text.",
+		"<environment_context>Keep this incomplete user text.",
+		"# AGENTS.md instructions for /user-authored without an XML policy block.",
+	};
+	nlohmann::json items = nlohmann::json::array();
+	std::string rollout = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}}}}.dump() + "\n";
+	for (const std::string& prompt : raw_prompts)
+	{
+		items.push_back({{"type", "userMessage"}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", prompt}}})}});
+		rollout += nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", prompt}}})}}}}.dump() + "\n";
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + id + ".jsonl"), rollout));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "qa-folder";
+	folder.directory = workspace.string();
+	app.folders.push_back(folder);
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	UAM_ASSERT(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).success);
+	const std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(app.data_root, id);
+	UAM_ASSERT(chat.has_value());
+	UAM_ASSERT_EQ(chat->messages.size(), expected.size());
+	for (std::size_t index = 0; index < expected.size(); ++index) UAM_ASSERT_EQ(chat->messages[index].content, expected[index]);
+
+	for (std::size_t index = 0; index < raw_prompts.size(); ++index)
+	{
+		const nlohmann::json remote = {{"thread", {{"id", id}, {"cwd", workspace.string()}, {"turns", nlohmann::json::array({{{"items", nlohmann::json::array({items[index]})}}})}}}};
+		const ChatHistorySyncService::RemoteCodexTranscript parsed = ChatHistorySyncService::ParseRemoteCodexTranscript(remote);
+		UAM_ASSERT(parsed.success);
+		if (index < 2) UAM_ASSERT(parsed.messages.empty());
+		else
+		{
+			UAM_ASSERT_EQ(parsed.messages.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(parsed.messages[0].content, expected[index - 2]);
+		}
+	}
+#endif
+}
+
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
