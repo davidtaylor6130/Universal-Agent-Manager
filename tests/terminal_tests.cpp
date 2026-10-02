@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/runtime_activity.h"
+#include "app/chat_lifecycle_service.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include "common/utils/command_line_words.h"
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_native_context.h"
 #include "remote/runner_client.h"
 #include "remote/runner_service_posix.h"
 
@@ -24,6 +26,26 @@ using namespace uam_test;
 
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[])
 {
+	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-side-codex-context")
+	{
+		std::string line;
+		while (std::getline(std::cin, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			if (!request.contains("id")) continue;
+			nlohmann::json result = nlohmann::json::object();
+			const std::string method = request.value("method", "");
+			if (method == "thread/start") result["thread"]["id"] = "11111111-2222-4333-8444-555555555555";
+			else if (method == "thread/inject_items")
+			{
+				const std::optional<std::string> captured = uam::env::GetNonEmptyString("UAM_TEST_SIDE_CONTEXT_CAPTURE");
+				if (!captured || !uam::io::WriteTextFile(*captured, request["params"].dump())) return 12;
+			}
+			else if (method != "initialize") return 11;
+			std::cout << nlohmann::json{{"id", request["id"]}, {"result", result}}.dump() << std::endl;
+		}
+		return 0;
+	}
 	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-opencode-terminal")
 	{
 		std::string line;
@@ -2150,4 +2172,186 @@ UAM_TEST(OpenCodeInteractiveFlagsPreserveSavedSessionRouting)
 	provider.id = uam::provider_ids::kCodexCli;
 	app.settings.provider_extra_flags = "--session ses_other";
 	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(provider).InteractiveConfigurationError(provider, app.settings).empty());
+}
+
+UAM_TEST(TemporarySideCliCarriesParentReferenceIntoItsFreshNativeSession)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-side-cli-context");
+	const fs::path capture = temp.root / "captured.json";
+	ScopedEnvVar captured("UAM_TEST_SIDE_CONTEXT_CAPTURE", capture.string());
+	ScopedEnvVar home("CODEX_HOME", (temp.root / "codex-home").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ProviderProfile provider = ProviderProfileStore::DefaultCodexProfile();
+	provider.output_mode = uam::provider_profile_constants::kOutputModeCli;
+	provider.interactive_command = ShellQuoteForTest(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string()) + " --uam-test-side-codex-context";
+	app.provider_profiles = {provider};
+	ChatSession parent = ChatDomainService().CreateNewChat("project", provider.id);
+	parent.workspace_directory = temp.root.string();
+	parent.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	ChatDomainService().AddMessage(parent, MessageRole::User, "Remember QA-SIDE-REFERENCE-6130.");
+	app.chats.push_back(parent);
+	std::string side_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+	ChatSession* side = ChatDomainService().FindChatById(app, side_id);
+	UAM_ASSERT(side != nullptr && side->native_session_id.empty());
+	uam::CliTerminalState terminal;
+	struct Cleanup { uam::CliTerminalState& terminal; ~Cleanup() { uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit); } } cleanup{terminal};
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!terminal.running && terminal.last_error.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::StartCliTerminalForChat(app, terminal, *side, 24, 80);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(terminal.running);
+	UAM_ASSERT(fs::exists(capture));
+	const nlohmann::json injected = nlohmann::json::parse(uam::io::ReadTextFile(capture));
+	UAM_ASSERT_EQ(injected["items"][0]["role"], nlohmann::json("assistant"));
+	UAM_ASSERT(uam::strings::Contains(injected["items"][0]["content"][0]["text"].get<std::string>(), "QA-SIDE-REFERENCE-6130"));
+	UAM_ASSERT_EQ(side->native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(terminal.attached_session_id, side->native_session_id);
+	UAM_ASSERT(side->native_session_id != parent.native_session_id);
+	UAM_ASSERT(side->messages.empty());
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, side_id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->native_session_id, side->native_session_id);
+	UAM_ASSERT_EQ(restored->provider_handoff_cli_contexts, side->provider_handoff_cli_contexts);
+	UAM_ASSERT_EQ(restored->provider_handoff_context, side->provider_handoff_context);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, parent.id)->native_session_id, parent.native_session_id);
+#endif
+}
+
+UAM_TEST(TemporarySideCleanupWaitsForCancelledContextWorker)
+{
+	TempDir temp("uam-side-context-cancel");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.workspace_directory = temp.root.string();
+	app.chats.push_back(parent);
+	std::string side_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+	const std::shared_ptr<uam::CliContextPreparation> state = std::make_shared<uam::CliContextPreparation>();
+	state->chat_id = side_id;
+	uam::CliContextPreparationTask task;
+	task.state = state;
+	app.cli_context_preparation_tasks.push_back(std::move(task));
+	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = side_id;
+	terminal->attached_chat_id = side_id;
+	terminal->context_preparation = state;
+	app.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(uam::RequestTemporarySideChatCleanup(app, side_id));
+	UAM_ASSERT(!uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(state->cancellation.stop_requested());
+	UAM_ASSERT(ChatDomainService().FindChatById(app, side_id) != nullptr);
+	state->finished.store(true);
+	ChatDomainService().FindChatById(app, side_id)->side_cleanup_retry_time_s = 0.0;
+	UAM_ASSERT(uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, side_id) == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, parent.id) != nullptr);
+}
+
+UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)
+{
+	TempDir temp("uam-provider-cli-context");
+	ScopedEnvVar captured("UAM_TEST_SIDE_CONTEXT_CAPTURE", (temp.root / "captured.json").string());
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "handoff-chat";
+	chat.provider_handoff_context = "User: My favourite fruit is kumquat.\n\nAssistant: Recorded." + std::string(200000, 'x');
+	ExecutionHost host;
+	host.id = "local";
+	ScopedEnvVar opencode("OPENCODE_CONFIG_CONTENT", R"({"permission":{"edit":"deny"},"instructions":["existing.md"]})");
+	ScopedEnvVar copilot("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "existing-context");
+	const fs::path gemini_settings = temp.root / "original-system.json";
+	UAM_ASSERT(uam::io::WriteTextFile(gemini_settings, R"({"security":{"auth":{"selectedType":"oauth-personal"}},"context":{"fileName":["CUSTOM.md"]},"tools":{"approvalMode":"default"}})"));
+	ScopedEnvVar gemini("GEMINI_CLI_SYSTEM_SETTINGS_PATH", gemini_settings.string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini-home").string());
+	for (const std::string provider : {"codex-cli", "claude-cli", "copilot-cli", "gemini-cli", "opencode-cli"})
+	{
+		chat.provider_id = provider;
+		std::vector<std::string> argv{provider};
+		if (provider == "codex-cli") argv = {PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-side-codex-context"};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(channel.empty());
+		for (const std::string& argument : argv) UAM_ASSERT(argument.size() < 4096);
+		UAM_ASSERT_EQ(chat.provider_handoff_session_id, std::string{});
+		if (provider == "codex-cli")
+		{
+			UAM_ASSERT_EQ(argv[1], std::string("resume"));
+			UAM_ASSERT_EQ(argv[2], std::string("11111111-2222-4333-8444-555555555555"));
+		}
+		else if (provider == "claude-cli") UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
+		else if (provider == "copilot-cli") UAM_ASSERT(environment.back().second.ends_with(",existing-context"));
+		else if (provider == "opencode-cli")
+		{
+			const nlohmann::json configuration = nlohmann::json::parse(environment.back().second);
+			UAM_ASSERT_EQ(configuration["permission"]["edit"], nlohmann::json("deny"));
+			UAM_ASSERT_EQ(configuration["instructions"].front(), nlohmann::json("existing.md"));
+			UAM_ASSERT_EQ(configuration["instructions"].size(), std::size_t{2});
+		}
+		else if (provider == "gemini-cli")
+		{
+			std::ifstream input(environment.back().second);
+			const nlohmann::json configuration = nlohmann::json::parse(input);
+			UAM_ASSERT_EQ(configuration["security"]["auth"]["selectedType"], nlohmann::json("oauth-personal"));
+			UAM_ASSERT_EQ(configuration["tools"]["approvalMode"], nlohmann::json("default"));
+			UAM_ASSERT_EQ(configuration["context"]["fileName"].front(), nlohmann::json("CUSTOM.md"));
+			UAM_ASSERT(configuration["context"]["loadMemoryFromIncludeDirectories"].get<bool>());
+			UAM_ASSERT(fs::exists(fs::path(environment.back().second).parent_path() / "CUSTOM.md"));
+		}
+	}
+}
+
+
+UAM_TEST(ProviderContextCleanupPreservesUnrelatedFilesAndRejectsLinks)
+{
+	TempDir temp("uam-context-owned-cleanup");
+	const fs::path directory = temp.root / "owned";
+	std::string error;
+	UAM_ASSERT(uam::provider_native_context::PrepareOwnedContext(directory, error));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "conversation.md", "private prior conversation"));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "unrelated.txt", "preserve"));
+	UAM_ASSERT(uam::provider_native_context::RemoveOwnedContext(directory, false, error));
+	UAM_ASSERT(!fs::exists(directory / "conversation.md"));
+	UAM_ASSERT(fs::exists(directory / "unrelated.txt"));
+	UAM_ASSERT(uam::provider_native_context::RemoveOwnedContext(directory, false, error));
+#if !defined(_WIN32)
+	const fs::path external = temp.root / "external";
+	fs::create_directory(external);
+	fs::create_directory_symlink(external, temp.root / "runtime-context");
+	UAM_ASSERT(!uam::provider_native_context::PrepareOwnedContext(temp.root / "runtime-context" / "context", error));
+	UAM_ASSERT(!fs::exists(external / "context"));
+#endif
+}
+
+
+UAM_TEST(CliContextPreparationFailureNeverFallsBackWithoutContext)
+{
+	TempDir temp("uam-context-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "failed-context";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_context = "User: Synthetic context.";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{(temp.root / "missing-provider").string()};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT(terminal.context_preparation == nullptr);
 }

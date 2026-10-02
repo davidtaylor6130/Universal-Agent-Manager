@@ -55,6 +55,10 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id)
 	{
+		for (const uam::CliContextPreparationTask& task : app.cli_context_preparation_tasks)
+		{
+			if (task.state && task.state->chat_id == chat_id && !task.state->finished.load()) return true;
+		}
 		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat != nullptr && chat->side_cleanup_stop_finished)
 		{
@@ -425,6 +429,10 @@ namespace
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
 		}
 
+		for (const ChatSession& chat : deleted_chats)
+		{
+			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+		}
 		for (const std::string& id : intent.chat_ids)
 		{
 			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;

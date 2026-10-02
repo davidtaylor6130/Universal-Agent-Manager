@@ -27,6 +27,11 @@ namespace uam
 
 	inline bool FailCliTerminalStart(CliTerminalState& terminal, CliTerminalLifecycleState failure_state, std::string error_message)
 	{
+		if (terminal.context_preparation != nullptr)
+		{
+			terminal.context_preparation->cancellation.request_stop();
+			terminal.context_preparation.reset();
+		}
 		if (failure_state == CliTerminalLifecycleState::Disabled)
 		{
 			MarkCliTerminalDisabled(terminal);
@@ -40,7 +45,7 @@ namespace uam
 		return false;
 	}
 
-	/// <summary>Bind a new remote Claude terminal before launch, or open the native picker for a legacy chat.</summary>
+	/// <summary>Bind a new Claude terminal before launch, or open the native picker for a legacy chat.</summary>
 	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
 	    std::vector<std::string>& argv, std::string& error)
 	{
@@ -52,7 +57,7 @@ namespace uam
 			return true;
 		}
 
-		// Claude has no empty-session creation command. Save the ID before SSH
+		// Claude has no empty-session creation command. Save the ID before launch
 		// starts so every later launch can target the same conversation.
 		const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id.empty())
@@ -76,7 +81,7 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
-		StopCliTerminal(terminal);
+		if (terminal.context_preparation == nullptr) StopCliTerminal(terminal);
 		if (terminal.running)
 		{
 			terminal.last_error = "The previous terminal is still stopping.";
@@ -151,7 +156,7 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, "Active provider does not expose an interactive CLI command.");
 		}
-		if (remote && provider.id == uam::provider_ids::kClaudeCli &&
+		if (provider.id == uam::provider_ids::kClaudeCli &&
 		    ResolveProviderInteractiveResumeId(app, chat, provider).empty())
 		{
 			std::string error;
@@ -199,13 +204,25 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
 		    : runtime.BuildInteractiveEnvironment(provider);
+		std::string context_launch_channel;
+		if (!PrepareCliProviderHandoffAsync(app, terminal, chat, *execution_host, provider_argv, launch_environment, context_launch_channel, startup_error))
+		{
+			if (!startup_error.empty()) return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, startup_error);
+			terminal.should_launch = true;
+			return true;
+		}
+		launch_argv = provider_argv;
+		if (remote && provider.id == provider_ids::kCodexCli && !context_launch_channel.empty())
+		{
+			terminal.attached_session_id.clear();
+		}
 		if (remote)
 		{
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();
 			launch_argv = uam::remote::BuildRemoteTerminalSshArgv(
 			    execution_host->ssh_alias, execution_host->platform,
 			    execution_host->runner_version, workspace_root, provider_argv,
-			    execution_host->runner_directory);
+			    execution_host->runner_directory, context_launch_channel);
 			if (launch_argv.empty()) startup_error = "The remote terminal launch request is invalid.";
 		}
 		if (!startup_error.empty() ||

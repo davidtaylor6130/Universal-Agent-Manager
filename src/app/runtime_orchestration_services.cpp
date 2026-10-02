@@ -979,6 +979,7 @@ namespace
 		native.temporary_parent_chat_id = local.temporary_parent_chat_id;
 		native.provider_handoff_context = local.provider_handoff_context;
 		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.provider_handoff_cli_contexts = local.provider_handoff_cli_contexts;
 		native.side_cleanup_requested = local.side_cleanup_requested;
 		native.side_cleanup_retry_time_s = local.side_cleanup_retry_time_s;
 		native.parent_chat_id = local.parent_chat_id;

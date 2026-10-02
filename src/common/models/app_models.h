@@ -252,6 +252,14 @@ struct AgentRun
 /// <summary>
 /// Chat session metadata and message history.
 /// </summary>
+struct ProviderHandoffCliContext
+{
+	std::string execution_host_id;
+	std::string directory;
+	std::string connection_identity;
+	bool operator==(const ProviderHandoffCliContext&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
@@ -299,6 +307,7 @@ struct ChatSession
 	std::string temporary_parent_chat_id;
 	std::string provider_handoff_context;
 	std::string provider_handoff_session_id;
+	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	bool side_cleanup_requested = false;
 	double side_cleanup_retry_time_s = 0.0;
 	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;

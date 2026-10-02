@@ -111,7 +111,7 @@ namespace
 			return true;
 		return std::ranges::any_of(app.cli_terminals, [&](const auto& terminal)
 		{
-			return terminal != nullptr && (terminal->running || terminal->native_session_setup_cancel != nullptr) &&
+			return terminal != nullptr && (terminal->running || terminal->native_session_setup_cancel != nullptr || terminal->context_preparation != nullptr) &&
 			       (chat_uses_host(terminal->attached_chat_id) ||
 			        chat_uses_host(terminal->frontend_chat_id));
 		});
