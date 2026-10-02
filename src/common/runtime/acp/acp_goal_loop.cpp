@@ -978,6 +978,8 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	session.turn_checkpoint_eligible = false;
 	session.turn_checkpoint_preflight_pending = false;
 	(void)RecordAcpTurnDuration(session, chat);
+	if (session.processing && lifecycle_state == kAcpLifecycleReady && continue_goal_loop)
+		chat.last_stop_reason.clear();
 	CompletePromptTurn(session, lifecycle_state);
 	session.crash_restart_attempts = 0;
 	session.reconnect_attempts = 0;

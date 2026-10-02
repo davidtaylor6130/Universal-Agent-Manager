@@ -18770,3 +18770,93 @@ UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown
 		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
 	}
 }
+
+UAM_TEST(AcpIdleRuntimeStopPreservesCompletedTurnOutcome)
+{
+	for (const bool active : {false, true})
+	{
+		TempDir temp("uam-idle-runtime-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Completed answer.";
+		chat.messages.push_back(assistant);
+		chat.attention_revision = "completed-revision";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = active;
+		session->running = true;
+		session->lifecycle_state = active ? "processing" : "ready";
+		session->last_turn_outcome = active ? "" : "completed";
+		session->turn_assistant_message_index = 0;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "more > NUL & exit /b 0"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat >/dev/null; exit 0"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT(!app.acp_sessions.front()->running);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, active);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, active ? std::string("interrupt") : std::string{});
+		UAM_ASSERT_EQ(app.chats.front().last_stop_reason, active ? std::string("interrupt") : std::string{});
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_turn_outcome, active ? std::string("interrupt") : std::string("completed"));
+		UAM_ASSERT_EQ(app.chats.front().attention_revision, chat.attention_revision);
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->last_stop_reason, app.chats.front().last_stop_reason);
+		UAM_ASSERT_EQ(loaded->messages.front().stop_reason, app.chats.front().messages.front().stop_reason);
+		UAM_ASSERT_EQ(loaded->messages.front().content, assistant.content);
+	}
+}
+
+UAM_TEST(AcpSuccessfulCompletionClearsPriorStopSummaryAndPreservesHistory)
+{
+	for (const std::string prior_reason : {"interrupt", "timeout", "failed"})
+	{
+		for (int outcome = 0; outcome < 4; ++outcome)
+		{
+			TempDir temp("uam-completed-stop-summary");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+			chat.last_stop_reason = prior_reason;
+			Message previous;
+			previous.role = MessageRole::Assistant;
+			previous.content = "Earlier interrupted answer.";
+			previous.interrupted = true;
+			previous.stop_reason = "interrupt";
+			chat.messages.push_back(previous);
+			Message completed;
+			completed.role = MessageRole::Assistant;
+			completed.content = "Resumed answer.";
+			chat.messages.push_back(completed);
+			app.chats.push_back(chat);
+			uam::AcpSessionState session;
+			session.chat_id = chat.id;
+			session.processing = outcome != 3;
+			session.turn_serial = 1;
+			session.current_assistant_message_index = 1;
+			session.turn_assistant_message_index = 1;
+			const bool succeeded = outcome == 0;
+			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, app.chats.front(), outcome == 1 ? "error" : "ready", nullptr, outcome != 2);
+			UAM_ASSERT_EQ(app.chats.front().last_stop_reason, succeeded ? std::string{} : prior_reason);
+			UAM_ASSERT(app.chats.front().messages.front().interrupted);
+			UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, previous.stop_reason);
+			UAM_ASSERT_EQ(app.chats.front().messages.front().content, previous.content);
+			UAM_ASSERT_EQ(app.chats.front().messages.back().content, completed.content);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(loaded.has_value());
+			UAM_ASSERT_EQ(loaded->last_stop_reason, app.chats.front().last_stop_reason);
+			UAM_ASSERT(loaded->messages.front().interrupted);
+		}
+	}
+}
