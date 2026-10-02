@@ -6168,9 +6168,26 @@ describe('useAppStore Gemini CLI slice', () => {
     const state = makeCppState(1)
     state.chats[0].attentionRevision = 'completion-one'
     useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().sessions[0].attentionRevision).toBe('completion-one')
     expect(requests).toEqual([])
-    await useAppStore.getState().acknowledgeChatAttention('chat-1', 'completion-one')
+    await useAppStore.getState().acknowledgeChatAttention('chat-1', useAppStore.getState().sessions[0].attentionRevision!)
     expect(requests).toEqual([expect.objectContaining({ action: 'acknowledgeChatAttention', payload: { chatId: 'chat-1', attentionRevision: 'completion-one' } })])
+  })
+
+  it('retains completion revisions through full and patch pushes and clears acknowledgements', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(makeCppState(1)))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const completed = makeCppState(2)
+    completed.chats[0].attentionRevision = 'completion-one'
+    testWindow.uamPush?.({ type: 'stateUpdate', data: completed })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-one')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [{ ...completed.chats[0], attentionRevision: 'completion-two' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-two')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 4, chats: [{ ...completed.chats[0], attentionRevision: '' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('')
   })
 
   it('resumes a goal through the runtime orchestration action', async () => {
