@@ -35,6 +35,8 @@ class ProviderCliCompatibilityService
 std::string BuildCliProviderVersionProbeCommandForTests(std::string_view provider_id);
 std::string BuildCliProviderInstallCommandForTests(std::string_view provider_id, std::string_view version);
 std::string BuildCliProviderInstallCommandForMethodForTests(std::string_view provider_id, std::string_view version, std::string_view install_method);
+/// <summary>Compares provider semantic versions from their reported agent string.</summary>
+bool CliProviderVersionAtLeast(std::string_view version, std::string_view minimum);
 std::string ExtractCliProviderSemverVersionForTests(std::string_view output);
 std::string ExtractCliProviderInstallMethodForTests(std::string_view output);
 bool CliProviderVersionOutputIndicatesMissingCommandForTests(std::string_view output);

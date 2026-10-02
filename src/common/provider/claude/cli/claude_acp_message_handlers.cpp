@@ -207,6 +207,11 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	const std::string type = JsonDiagnosticStringValue(message, "type");
+	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == "compact_boundary")
+	{
+		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"));
+		return;
+	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == uam::acp_claude_stream::kSubtypeInit)
 	{
 		session.initialized = true;

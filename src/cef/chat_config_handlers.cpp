@@ -854,7 +854,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 	if (*enabled && (provider == nullptr ||
 	                 !uam::UamControlService::SupportsStructuredProtocol(provider->structured_protocol)))
 	{
-		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Gemini CLI, OpenCode, and GitHub Copilot CLI.");
+		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Codex, Gemini CLI, OpenCode, and GitHub Copilot CLI.");
 		return;
 	}
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);

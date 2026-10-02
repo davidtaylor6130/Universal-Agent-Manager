@@ -56,8 +56,11 @@ namespace uam::remote
 		RunnerClient(const RunnerClient&) = delete;
 		RunnerClient& operator=(const RunnerClient&) = delete;
 
-		bool Connect(std::string* error_out = nullptr);
+		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool IsConnected() const { return m_connected; }
+		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }
+		bool PrepareProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool RemoveProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool StartProcess(const std::string& session_id,
 		                  const std::filesystem::path& working_directory,
 		                  const std::vector<std::string>& argv,
@@ -88,20 +91,20 @@ namespace uam::remote
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
 		/// <summary>Leased handoffs require a fresh, never-reused UUID and attach_if_exists=false.</summary>
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,
-		                 bool attach_if_exists = true, std::int64_t lease_ms = 0);
+		                 bool attach_if_exists = true, std::int64_t lease_ms = 0, std::stop_token stop_token = {});
 		bool TakeChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr);
 		bool WriteChannel(const std::string& channel_id, std::string_view direction,
-		                  std::string_view bytes, std::string* error_out = nullptr);
+		                  std::string_view bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool PollChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr,
 		                 std::uintmax_t* cursor_out = nullptr);
 		bool AcknowledgeChannel(const std::string& channel_id, std::string_view direction,
 		                        std::uintmax_t cursor, std::string* error_out = nullptr);
-		bool CloseChannel(const std::string& channel_id, std::string* error_out = nullptr);
+		bool CloseChannel(const std::string& channel_id, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool UploadFile(const std::string& upload_id,
 		                const std::filesystem::path& remote_path,
-		                std::string_view bytes, std::string* error_out = nullptr);
+		                std::string_view bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
@@ -136,6 +139,7 @@ namespace uam::remote
 		bool m_connected = false;
 		bool m_directoryBrowsing = false;
 		bool m_leasedChannelTake = false;
+		bool m_providerNativeContext = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

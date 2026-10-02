@@ -942,8 +942,29 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		}
 		return;
 	}
+	if (method == "thread/compacted")
+	{
+		const std::string prefix = "codex-compaction:" + JsonDiagnosticStringValue(params, "turnId") + ":";
+		if (std::ranges::none_of(session.turn_events, [&prefix](const AcpTurnEventState& event)
+		    { return event.type == "context_compaction" && event.request_id_json.starts_with(prefix); }))
+			AppendContextCompactionEvent(app, session, chat, "", prefix);
+		return;
+	}
 	if (uam::acp_methods::IsCodexItemLifecycleMethod(method))
 	{
+		const nlohmann::json item = JsonObjectValue(params, "item");
+		if (JsonDiagnosticStringValue(item, "type") == "contextCompaction")
+		{
+			if (method == "item/completed")
+			{
+				const std::string prefix = "codex-compaction:" + JsonDiagnosticStringValue(params, "turnId") + ":";
+				const std::string identity = prefix + JsonDiagnosticStringValue(item, "id");
+				for (AcpTurnEventState& event : session.turn_events)
+					if (event.type == "context_compaction" && event.request_id_json == prefix) event.request_id_json = identity;
+				AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(item, "summary"), identity);
+			}
+			return;
+		}
 		HandleCodexToolItem(session, chat, JsonObjectValue(params, "item"));
 		SaveChatQuietly(app, chat);
 		return;

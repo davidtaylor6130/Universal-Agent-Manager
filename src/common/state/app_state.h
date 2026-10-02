@@ -48,6 +48,35 @@ namespace uam
 		ShuttingDown,
 	};
 
+	struct CliContextPreparation
+	{
+		std::atomic<bool> finished{false};
+		std::stop_source cancellation;
+		std::string baseline;
+		std::string chat_id;
+		std::vector<std::string> argv;
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		bool succeeded = false;
+	};
+
+	struct CliContextPreparationTask
+	{
+		std::shared_ptr<CliContextPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
+	struct CodexActivityStringCursor
+	{
+		bool discard_checkpoint_tail = false;
+		bool inside_string = false;
+		bool escaped = false;
+		bool compacting = false;
+		std::string token;
+		int token_expected_bytes = 0;
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -56,10 +85,18 @@ namespace uam
 		std::string attached_chat_id;
 		std::string attached_session_id;
 		std::vector<std::string> session_ids_before;
+		bool native_session_discovery_ambiguous = false;
+		bool native_identity_requires_owned_reply = false;
+		std::string native_identity_command;
+		std::string native_identity_output;
+		std::string native_identity_deferred_input;
+		int native_identity_query_phase = 0;
+		double native_identity_query_time_s = 0.0;
 		std::vector<std::string> linked_files_snapshot;
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;
 		bool should_launch = false;
+		std::shared_ptr<CliContextPreparation> context_preparation;
 		bool ui_attached = false;
 		std::string ui_attachment_id;
 		std::shared_ptr<std::stop_source> native_session_setup_cancel;
@@ -83,6 +120,19 @@ namespace uam
 		std::string current_turn_output_bytes;
 		bool prompt_settle_required = false;
 		double prompt_settle_candidate_time_s = 0.0;
+		// Transient cursor for the verified native Codex rollout, never persisted.
+		std::string native_activity_provider_id;
+		std::string codex_activity_session_id;
+		std::filesystem::path codex_activity_cwd;
+		std::filesystem::path codex_activity_rollout;
+		std::uintmax_t codex_activity_offset = 0;
+		std::string codex_activity_partial_line;
+		CodexActivityStringCursor codex_activity_string_cursor;
+		std::string codex_activity_turn_id;
+		bool codex_activity_discard_line = false;
+		bool codex_activity_awaiting_turn = false;
+		bool codex_activity_read_failed = false;
+		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;
@@ -531,6 +581,9 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		std::string chat_id;
+		std::string provider_id;
+		std::string execution_host_id = "local";
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -765,6 +818,10 @@ namespace uam
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
+		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;
+		std::unique_ptr<std::jthread> provider_context_cleanup_worker;
+		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
+		double provider_context_cleanup_not_before_s = 0.0;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;

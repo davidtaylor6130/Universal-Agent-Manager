@@ -19,6 +19,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -54,6 +55,10 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id)
 	{
+		for (const uam::CliContextPreparationTask& task : app.cli_context_preparation_tasks)
+		{
+			if (task.state && task.state->chat_id == chat_id && !task.state->finished.load()) return true;
+		}
 		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
@@ -415,6 +420,11 @@ namespace
 		if (!intent.folder_id.empty())
 		{
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
+		}
+
+		for (const ChatSession& chat : deleted_chats)
+		{
+			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
 		}
 
 		for (const std::string& id : intent.chat_ids)
@@ -982,6 +992,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 			message.provider = previous_provider_id;
 		}
 	}
+	chat->provider_handoff_context = BuildProviderHandoffContext(*chat);
+	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
 	for (Goal& goal : chat->goals)

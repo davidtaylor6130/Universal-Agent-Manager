@@ -10,6 +10,13 @@
 namespace uam
 {
 
+/// <summary>Discovers and saves a local CLI session link before polling or changing views.</summary>
+bool DiscoverCliTerminalNativeSession(AppState& app, CliTerminalState& terminal);
+/// <summary>Captures the launch-owned native status reply before allowing queued user input.</summary>
+bool PollCliNativeIdentityQuery(AppState& app, CliTerminalState& terminal, std::string_view provider_id, std::string_view output, double now_s);
+/// <summary>Unbound concurrent consumers cannot own a workspace-only native history candidate.</summary>
+bool HasCompetingUnboundCliSession(const AppState& app, const CliTerminalState& terminal);
+
 bool ChatSyncIdsMatch(std::string_view lhs, std::string_view rhs);
 std::string NormalizeChatSyncTargetId(std::string_view chat_id);
 bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id);

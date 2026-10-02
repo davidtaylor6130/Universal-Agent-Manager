@@ -12,7 +12,7 @@ import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT
 import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
-import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
@@ -466,6 +466,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
+  if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
+    return <CompactionSeparator summary={message.blocks[0].text} />
+  }
   const isUserMessage = message.role === 'user'
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
     ? sessionParentChatId

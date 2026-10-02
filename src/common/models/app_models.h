@@ -252,14 +252,22 @@ struct AgentRun
 /// <summary>
 /// Chat session metadata and message history.
 /// </summary>
+struct ProviderHandoffCliContext
+{
+	std::string execution_host_id;
+	std::string directory;
+	std::string connection_identity;
+	bool operator==(const ProviderHandoffCliContext&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
-	// Only chats created by a version that assigns remote Claude CLI IDs may
-	// create one on first launch. Older unbound chats may already have history.
+	// New Claude chats may assign an owned CLI ID on first local or remote launch.
+	// Keep the persisted legacy field name; older unbound chats may already have history.
 	bool remote_claude_session_unstarted = false;
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
@@ -324,6 +332,11 @@ struct ChatSession
 	std::string uam_agent_id = "build";
 	// Provider and definition identity last dispatched as prompt context.
 	std::string last_prompt_agent_definition_hash;
+	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
+	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
+	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.

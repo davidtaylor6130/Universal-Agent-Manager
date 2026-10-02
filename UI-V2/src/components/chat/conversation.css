@@ -131,3 +131,9 @@
 .conversation-trace__text { padding-block: 4px; }
 
 .conversation-work__inline .conversation-work__reasoning .prose-msg { font-size: 12px; line-height: 1.55; color: var(--text-3); }
+
+.context-compaction { margin: 16px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.context-compaction > summary { padding: 8px; color: var(--text); text-align: center; font-size: 13px; cursor: pointer; }
+.context-compaction > summary:hover { background: var(--surface-up); }
+.context-compaction > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-compaction > div { padding: 8px 0; }

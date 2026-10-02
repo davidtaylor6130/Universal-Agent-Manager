@@ -908,6 +908,9 @@ namespace
 	{
 		if (lhs.approval_mode != rhs.approval_mode || lhs.uam_agent_id != rhs.uam_agent_id ||
 		    lhs.last_prompt_agent_definition_hash != rhs.last_prompt_agent_definition_hash ||
+	    lhs.provider_handoff_context != rhs.provider_handoff_context ||
+	    lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
+	    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts ||
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
@@ -1225,6 +1228,17 @@ namespace
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
 		chat.uam_agent_id = uam::strings::NonEmptyOrFallback(JsonStringOrEmpty(root.Find(kChatUamAgentIdField)), "build");
 		chat.last_prompt_agent_definition_hash = JsonStringOrEmpty(root.Find(kChatLastPromptAgentDefinitionHashField));
+	chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
+	chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+	if (const JsonValue* contexts = uam::json::ArrayOrNull(root.Find("provider_handoff_cli_contexts")))
+	{
+		for (const JsonValue& context : contexts->array_value)
+		{
+			const std::string host = JsonStringOrEmpty(context.Find("host"));
+			const std::string directory = JsonStringOrEmpty(context.Find("directory"));
+			if (!host.empty() && !directory.empty()) chat.provider_handoff_cli_contexts.push_back({host, directory, JsonStringOrEmpty(context.Find("connection"))});
+		}
+	}
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
 		chat.goal_owner_chat_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
@@ -1665,6 +1679,18 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
 	uam::json::SetString(root, kChatUamAgentIdField, uam::strings::NonEmptyOrFallback(chat.uam_agent_id, "build"));
 	uam::json::SetString(root, kChatLastPromptAgentDefinitionHashField, chat.last_prompt_agent_definition_hash);
+	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
+	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	JsonValue contexts = uam::json::Array();
+	for (const ProviderHandoffCliContext& location : chat.provider_handoff_cli_contexts)
+	{
+		JsonValue context = uam::json::Object();
+		uam::json::SetString(context, "host", location.execution_host_id);
+		uam::json::SetString(context, "directory", location.directory);
+		uam::json::SetString(context, "connection", location.connection_identity);
+		uam::json::PushValue(contexts, std::move(context));
+	}
+	uam::json::SetValue(root, "provider_handoff_cli_contexts", std::move(contexts));
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
@@ -2017,6 +2043,9 @@ namespace
 		hydrated.approval_mode = summary.approval_mode;
 		hydrated.uam_agent_id = summary.uam_agent_id;
 		hydrated.last_prompt_agent_definition_hash = summary.last_prompt_agent_definition_hash;
+		hydrated.provider_handoff_context = summary.provider_handoff_context;
+		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;

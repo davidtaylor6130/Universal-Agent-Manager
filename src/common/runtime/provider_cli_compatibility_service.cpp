@@ -648,6 +648,11 @@ std::string ProviderCliLaunchBlockReason(const uam::AppState& app, std::string_v
 	    ? "This provider is being updated on this machine. Retry when the update finishes." : "";
 }
 
+bool CliProviderVersionAtLeast(std::string_view version, std::string_view minimum)
+{
+	return SemverAtLeast(version, minimum);
+}
+
 std::string CliProviderVersionStateKey(std::string_view provider_id, std::string_view execution_host_id)
 {
 	const std::string normalized = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
