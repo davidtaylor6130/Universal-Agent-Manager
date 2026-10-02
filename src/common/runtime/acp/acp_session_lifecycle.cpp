@@ -470,6 +470,22 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	if (chat.side_cleanup_requested)
+	{
+		if (error_out != nullptr) *error_out = "This side chat is closing.";
+		return false;
+	}
+	if (chat.side_cleanup_stop_finished)
+	{
+		bool stopping = !chat.side_cleanup_stop_finished->load();
+		for (const AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+			if (task.finished == chat.side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) stopping = true;
+		if (stopping)
+		{
+			if (error_out != nullptr) *error_out = "The previous side-chat process is still stopping.";
+			return false;
+		}
+	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
 	{
@@ -1195,6 +1211,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	    !session.active_uam_agent_instructions.empty())
 	{
 		chat.last_prompt_agent_definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
+	if (!chat.provider_handoff_context.empty())
+	{
+		chat.provider_handoff_session_id = session.session_id;
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();

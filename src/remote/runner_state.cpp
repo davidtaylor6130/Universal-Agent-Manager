@@ -1,6 +1,7 @@
 #include "remote/runner_state.h"
 
 #include "common/paths/path_utils.h"
+#include "common/provider/provider_native_context.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
@@ -598,6 +599,23 @@ namespace uam::remote
 			                                               : uam::paths::Utf8PathString(parent)},
 			                       {"directories", std::move(entries)},
 			                       {"truncated", truncated}});
+		}
+		if (type == "context.prepare" || type == "context.remove")
+		{
+			const std::string directory_text = request.value("directory", "");
+			const std::filesystem::path directory = uam::paths::PathFromUtf8(directory_text);
+			const std::string token = uam::paths::Utf8PathString(directory.filename());
+			if (!IsBoundedText(directory_text, kMaxWorkingDirectoryBytes) || !directory.is_absolute() || token.size() != 16 ||
+			    directory.parent_path().filename() != "context" || directory.parent_path().parent_path().filename() != ".UAM" ||
+			    !std::ranges::all_of(token, [](unsigned char c) { return std::isxdigit(c) != 0; }))
+				return ProcessError(request, "invalid_request", "The provider context directory is invalid.");
+			state_lock.unlock();
+			std::string error;
+			const bool completed = type == "context.prepare"
+			    ? uam::provider_native_context::PrepareOwnedContext(directory, error)
+			    : uam::provider_native_context::RemoveOwnedContext(directory, true, error);
+			if (!completed) return ProcessError(request, "context_cleanup_pending", error.empty() ? "Provider context storage is unavailable." : error);
+			return ProcessSuccess(request, nlohmann::json::object());
 		}
 		if (type.starts_with("file."))
 		{

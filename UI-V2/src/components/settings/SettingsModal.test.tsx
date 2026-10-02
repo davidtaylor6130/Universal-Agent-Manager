@@ -1968,4 +1968,18 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('selects a custom explorer and reports rejected saves', async () => {
+    useAppStore.setState({ fileExplorerApplication: '', setEditorSettings: vi.fn().mockResolvedValue(false) })
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+    act(() => host.querySelector<HTMLButtonElement>('button[title="File explorer"]')!.click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent?.includes('Custom application'))!.click())
+    const input = host.querySelector<HTMLInputElement>('[aria-label="File explorer application path"]')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '/Applications/Files.app'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    await act(async () => Array.from(input.parentElement!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save')!.click())
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
+    expect(host.textContent).toContain('File explorer could not be saved.')
+    act(() => root.unmount()); host.remove()
+  })
+
 })

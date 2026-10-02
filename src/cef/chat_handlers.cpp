@@ -826,3 +826,37 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 	    {"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)},
 	    {"deletedChatIds", std::move(deleted_chat_ids)}}.dump());
 }
+
+void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string id;
+	if (!uam::CreateTemporarySideChat(m_app, payload.value("chatId", ""), &id))
+	{
+		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Could not create a side chat."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"chatId", id}}.dump());
+}
+
+void UamQueryHandler::HandleDismissSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string id = payload.value("chatId", "");
+	const ChatSession* side = ChatDomainService().FindChatById(m_app, id);
+	if (side == nullptr || side->temporary_parent_chat_id.empty())
+	{
+		cb->Failure(400, "Choose a temporary side chat to dismiss.");
+		return;
+	}
+	const std::string parent_id = side->temporary_parent_chat_id;
+	if (!uam::RequestTemporarySideChatCleanup(m_app, id))
+	{
+		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Could not dismiss the side chat."));
+		return;
+	}
+	if (ChatDomainService().SelectedChatId(m_app) == id)
+		ChatDomainService().SelectChatById(m_app, parent_id);
+	(void)uam::PollTemporarySideChatCleanup(m_app);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"parentChatId", parent_id}, {"cleanupPending", ChatDomainService().FindChatById(m_app, id) != nullptr}}.dump());
+}

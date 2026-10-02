@@ -5143,6 +5143,20 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().editorFileAssociations[1].editorPresetId).toBe('webstorm')
   })
 
+  it('saves and rolls back the explorer path with editor preferences', async () => {
+    const previous = useAppStore.getState().fileExplorerApplication
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'Invalid application')
+    }
+    await expect(useAppStore.getState().setEditorSettings({
+      defaultEditorPresetId: 'vscode', editorFileAssociations: [], fileExplorerApplication: '/Applications/Alternative.app',
+    })).resolves.toBe(false)
+    expect(requests[0].payload.fileExplorerApplication).toBe('/Applications/Alternative.app')
+    expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
+  })
+
   it('persists MCP environment references and rolls back a rejected update', async () => {
     const cppState = makeCppState(1)
     cppState.settings.mcpServers = []

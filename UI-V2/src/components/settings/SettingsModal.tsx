@@ -344,6 +344,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
+  const [explorerDraft, setExplorerDraft] = useState('')
+  const [customExplorer, setCustomExplorer] = useState(false)
+  useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
   const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
   const mcpServers = useAppStore(useShallow((s) => s.mcpServers))
@@ -767,6 +771,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     )
   }
 
+  const saveExplorer = async (path: string) => {
+    if (editorSavePending.current) return
+    editorSavePending.current = true
+    setEditorSaving(true); setEditorError('')
+    try {
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setEditorError('File explorer could not be saved.')
+    } catch { setEditorError('File explorer could not be saved.') }
+    finally { editorSavePending.current = false; setEditorSaving(false) }
+  }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
     if (editorSavePending.current) return false
     if (nextAssociations.some(item => !item.name.trim() || !item.extensions.length)) {
@@ -2434,6 +2447,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Workspace Editors"
           >
             <div ref={editorMenuRef} className="grid gap-3">
+              <div className="grid gap-2 text-xs">
+                <MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />
+                {customExplorer && <div className="flex gap-2">
+                  <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="min-w-0 flex-1 rounded px-2 py-1" style={{ background: '#000', color: 'var(--text)', border: '1px solid var(--border)' }} placeholder="Application path" />
+                  <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                  <Button size="sm" disabled={!explorerDraft.trim() || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
+                </div>}
+              </div>
               <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <div>Default editor</div>
                 {renderEditorPresetMenu(

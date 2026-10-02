@@ -6947,4 +6947,36 @@ describe('ChatView', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('keeps composer VCS context current and labels SVN by workspace', async () => {
+    const session = useAppStore.getState().sessions[0]
+    let resolveOld!: (value: unknown) => void
+    const lookup = vi.fn().mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve })).mockResolvedValue({ available: true, activeVcsType: 'svn', branchOrRevision: 'r123', workspaceDirectory: '/tmp/project', changedFiles: [], vcsTypes: ['svn'], error: '', warning: '' })
+    useAppStore.setState({ getVcsCommitStatus: lookup })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<ChatView session={session} />))
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(host.textContent).toContain('SVN · project')
+    await act(async () => resolveOld({ available: true, activeVcsType: 'git', branchOrRevision: 'stale' }))
+    expect(host.textContent).not.toContain('Git · stale')
+    expect(lookup.mock.calls[0][2]).toMatchObject({ contextOnly: true, includeLineStats: false })
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('creates /side through the fresh native chat action instead of sending a provider prompt', async () => {
+    const session = useAppStore.getState().sessions[0]
+    const select = vi.fn()
+    useAppStore.setState({ activeSessionId: session.id, setActiveSession: select })
+    const requests: { action: string; payload?: Record<string, unknown> }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { const parsed = JSON.parse(request); requests.push(parsed); onSuccess(JSON.stringify(parsed.action === 'createSideChat' ? { chatId: 'side-1' } : {})) }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<ChatView session={session} />))
+    const input = host.querySelector('textarea')!
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '/side'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(requests.filter(request => request.action === 'createSideChat')).toEqual([expect.objectContaining({ payload: { chatId: session.id } })])
+    expect(select).toHaveBeenCalledWith('side-1')
+    expect(requests.some(request => request.action === 'sendAcpPrompt')).toBe(false)
+    act(() => root.unmount()); host.remove(); delete window.cefQuery
+  })
+
 })

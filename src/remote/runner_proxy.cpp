@@ -5,6 +5,7 @@
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
+#include "common/provider/provider_native_context.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
@@ -84,6 +85,8 @@ namespace uam::remote
 			std::filesystem::path working_directory;
 			std::vector<std::string> argv;
 			std::vector<std::pair<std::string, std::string>> environment;
+			std::string context_provider_id;
+			std::filesystem::path context_directory;
 			bool attach_only = false;
 			std::string delivery_token;
 			std::uintmax_t delivered_stdout_cursor = 0;
@@ -153,6 +156,8 @@ namespace uam::remote
 				result.argv = spec["argv"].get<std::vector<std::string>>();
 				for (const auto& [name, value] : spec["environment"].items())
 					result.environment.emplace_back(name, value.get<std::string>());
+				result.context_provider_id = spec.value("contextProviderId", "");
+				result.context_directory = uam::paths::PathFromUtf8(spec.value("contextDirectory", ""));
 				result.attach_only = spec.value("attachOnly", false);
 				result.delivery_token = spec.value("deliveryToken", "");
 				result.delivered_stdout_cursor = spec.value(
@@ -320,7 +325,8 @@ namespace uam::remote
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    bool attach_only, const std::string& delivery_token,
 	    std::uintmax_t delivered_stdout_cursor,
-	    std::uintmax_t delivered_stderr_cursor)
+	    std::uintmax_t delivered_stderr_cursor, const std::string& context_provider_id,
+	    const std::string& context_directory)
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
@@ -330,6 +336,7 @@ namespace uam::remote
 		    {"deliveryToken", delivery_token},
 		    {"deliveredStdoutCursor", delivered_stdout_cursor},
 		    {"deliveredStderrCursor", delivered_stderr_cursor},
+		    {"contextProviderId", context_provider_id}, {"contextDirectory", context_directory},
 		}.dump());
 	}
 
@@ -427,10 +434,25 @@ namespace uam::remote
 		int RunTerminalProcessInternal(const std::string& encoded_spec, bool private_launch)
 		{
 			std::optional<DecodedProxySpec> spec = DecodeProxySpec(encoded_spec);
-			if (!spec || (!private_launch && !spec->environment.empty()) ||
+			if (!spec || (!private_launch && (!spec->environment.empty() || !spec->context_provider_id.empty())) ||
 			    !spec->working_directory.is_absolute() ||
 			    uam::paths::Utf8PathString(spec->working_directory).find('\0') != std::string::npos ||
 			    spec->argv.front().empty()) return 2;
+			if (!spec->context_provider_id.empty())
+			{
+				if (!spec->context_directory.is_absolute() ||
+				    spec->context_directory.parent_path().filename() != "context" ||
+				    spec->context_directory.parent_path().parent_path().filename() != ".UAM" ||
+				    spec->context_directory.parent_path().parent_path().parent_path().lexically_normal() != spec->working_directory.lexically_normal() ||
+				    (spec->context_provider_id != uam::provider_ids::kCodexCli && spec->context_provider_id != uam::provider_ids::kClaudeCli &&
+				     spec->context_provider_id != uam::provider_ids::kOpenCodeCli && spec->context_provider_id != uam::provider_ids::kGeminiCli && spec->context_provider_id != uam::provider_ids::kCopilotCli)) return 2;
+				std::string error;
+				if (!uam::provider_native_context::ConfigureEnvironment(spec->context_provider_id, spec->context_directory, spec->environment, error, spec->working_directory, true, &ProxyProcessService(), &spec->argv))
+				{
+					std::cerr << error << "\n";
+					return 70;
+				}
+			}
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)

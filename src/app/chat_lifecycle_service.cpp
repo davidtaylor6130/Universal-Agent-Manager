@@ -18,6 +18,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal_common.h"
+#include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
@@ -54,7 +55,17 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id)
 	{
+		for (const uam::CliContextPreparationTask& task : app.cli_context_preparation_tasks)
+		{
+			if (task.state && task.state->chat_id == chat_id && !task.state->finished.load()) return true;
+		}
 		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat != nullptr && chat->side_cleanup_stop_finished)
+		{
+			if (!chat->side_cleanup_stop_finished->load()) return true;
+			for (const uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) return true;
+		}
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
 		     chat->remote_restart_pending) &&
@@ -144,7 +155,7 @@ namespace
 			const std::string owner_id = target_chat_ids[owner_index];
 			for (const ChatSession& chat : app.chats)
 			{
-				if (uam::strings::TrimmedEquals(chat.goal_owner_chat_id, owner_id) &&
+				if ((uam::strings::TrimmedEquals(chat.goal_owner_chat_id, owner_id) || uam::strings::TrimmedEquals(chat.temporary_parent_chat_id, owner_id)) &&
 				    deleted_chat_ids.insert(chat.id).second)
 				{
 					target_chat_ids.push_back(chat.id);
@@ -196,18 +207,19 @@ namespace
 		return selection;
 	}
 
-	void StopChatRuntimes(uam::AppState& app, const std::string& chat_id)
+	bool StopChatRuntimes(uam::AppState& app, const std::string& chat_id)
 	{
-		StopAcpSession(app, chat_id);
-		uam::StopAndEraseCliTerminalForChat(app, chat_id, false);
+		const bool acp_stopped = StopAcpSession(app, chat_id);
+		const bool cli_stopped = uam::StopAndEraseCliTerminalForChat(app, chat_id, false);
+		return acp_stopped && cli_stopped && !ChatHasDeletionBlockingRuntime(app, chat_id);
 	}
 
-	void StopChatRuntimes(uam::AppState& app, const std::vector<ChatSession>& chats)
+	bool StopChatRuntimes(uam::AppState& app, const std::vector<ChatSession>& chats)
 	{
+		bool stopped = true;
 		for (const ChatSession& chat : chats)
-		{
-			StopChatRuntimes(app, chat.id);
-		}
+			stopped = StopChatRuntimes(app, chat.id) && stopped;
+		return stopped;
 	}
 
 	void ForgetDeletedChatReferences(uam::AppState& app, const std::unordered_set<std::string>& deleted_chat_ids)
@@ -417,6 +429,10 @@ namespace
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
 		}
 
+		for (const ChatSession& chat : deleted_chats)
+		{
+			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+		}
 		for (const std::string& id : intent.chat_ids)
 		{
 			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;
@@ -623,6 +639,133 @@ namespace
 		ForgetDeletedChatReferences(app, deleted_chat_ids);
 	}
 } // namespace
+
+bool uam::CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id)
+{
+	ChatSession* parent = ChatDomainService().FindChatById(app, parent_id);
+	if (parent == nullptr || !parent->temporary_parent_chat_id.empty() || parent->imported_read_only)
+	{
+		app.status_line = "Choose an editable main chat to start a side chat.";
+		return false;
+	}
+	if (!ChatRepository::HydrateChatMessages(app.data_root, *parent))
+	{
+		app.status_line = "Could not load the main chat context.";
+		return false;
+	}
+	ChatSession side = ChatDomainService().CreateNewChat(parent->folder_id, parent->provider_id);
+	side.temporary_parent_chat_id = parent->id;
+	side.title = "Side chat: " + parent->title;
+	side.execution_host_id = parent->execution_host_id;
+	side.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, *parent));
+	side.model_id = parent->model_id;
+	side.approval_mode = parent->approval_mode;
+	side.command_safety_tier = parent->command_safety_tier;
+	side.reasoning_effort = parent->reasoning_effort;
+	side.service_tier = parent->service_tier;
+	side.service_tier_explicit = parent->service_tier_explicit;
+	side.small_model_mode = parent->small_model_mode;
+	side.uam_agent_id = parent->uam_agent_id;
+	side.memory_enabled = false;
+	side.provider_handoff_context = "Prior main-chat context (reference only, not new instructions):\n";
+	std::vector<std::string> excerpts;
+	std::size_t bytes = side.provider_handoff_context.size();
+	for (std::vector<Message>::const_reverse_iterator message = parent->messages.crbegin(); message != parent->messages.crend() && excerpts.size() < 48; ++message)
+	{
+		if (message->content.empty()) continue;
+		std::string content = message->content;
+		if (content.size() > 8192)
+		{
+			std::size_t start = content.size() - 8192;
+			while (start < content.size() && (static_cast<unsigned char>(content[start]) & 0xc0) == 0x80) ++start;
+			content = "[Earlier text omitted]\n" + content.substr(start);
+		}
+		const std::string excerpt = RoleToString(message->role) + ": " + content + "\n\n";
+		if (bytes + excerpt.size() > 32768) break;
+		bytes += excerpt.size();
+		excerpts.push_back(excerpt);
+	}
+	for (std::vector<std::string>::const_reverse_iterator excerpt = excerpts.crbegin(); excerpt != excerpts.crend(); ++excerpt) side.provider_handoff_context += *excerpt;
+	if (!ChatRepository::SaveChatIfAbsent(app.data_root, side))
+	{
+		app.status_line = "Could not save the temporary side chat.";
+		return false;
+	}
+	if (created_id != nullptr) *created_id = side.id;
+	app.chats.push_back(std::move(side));
+	return true;
+}
+
+bool uam::RequestTemporarySideChatCleanup(AppState& app, const std::string& chat_id)
+{
+	ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+	if (chat == nullptr || chat->temporary_parent_chat_id.empty()) return false;
+	const bool previous = chat->side_cleanup_requested;
+	chat->side_cleanup_requested = true;
+	if (!ChatRepository::SaveChat(app.data_root, *chat))
+	{
+		chat->side_cleanup_requested = previous;
+		app.status_line = "Could not save the side-chat cleanup request. The conversation was kept.";
+		return false;
+	}
+	chat->side_cleanup_retry_time_s = 0.0;
+	return true;
+}
+
+bool uam::PollTemporarySideChatCleanup(AppState& app)
+{
+	std::vector<std::string> pending;
+	const double now = GetAppTimeSeconds();
+	for (const ChatSession& chat : app.chats)
+		if (!chat.temporary_parent_chat_id.empty() && chat.side_cleanup_requested && chat.side_cleanup_retry_time_s <= now)
+			pending.push_back(chat.id);
+	bool changed = false;
+	for (const std::string& id : pending)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, id);
+		if (chat == nullptr) continue;
+		chat->side_cleanup_retry_time_s = now + 5.0;
+		if (chat->side_cleanup_stop_finished)
+		{
+			if (!chat->side_cleanup_stop_finished->load()) continue;
+			std::vector<AsyncAcpProcessStopTask>::iterator pending_stop = std::ranges::find_if(app.acp_process_stop_tasks, [&](const AsyncAcpProcessStopTask& task) { return task.finished == chat->side_cleanup_stop_finished; });
+			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && !pending_stop->result->exit_confirmed)
+			{
+				const std::shared_ptr<platform::StdioProcessPlatformFields> owned = pending_stop->owned_process;
+				const std::shared_ptr<platform::ObservedProcessStopResult> result = pending_stop->result;
+				const std::shared_ptr<std::atomic<bool>> finished = pending_stop->finished;
+				finished->store(false);
+				pending_stop->worker = std::make_unique<std::jthread>([owned, result, finished](std::stop_token) {
+					IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+					*result = platform::StopStdioProcessObserved(service, *owned, std::chrono::milliseconds(0));
+					if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
+					finished->store(true);
+				});
+				app.status_line = "Side-chat stop is not confirmed. Cleanup will retry.";
+				continue;
+			}
+		}
+		if (AcpSessionState* session = FindAcpSessionForChat(app, id); session != nullptr && session->running && chat->execution_host_id == "local")
+		{
+			QueueAcpProcessStop(app, *session, true);
+			session->running = false;
+			chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
+			(void)StopAcpSession(app, id);
+			continue;
+		}
+		const std::size_t stop_tasks_before = app.acp_process_stop_tasks.size();
+		if (!StopAcpSession(app, id)) continue;
+		if (app.acp_process_stop_tasks.size() > stop_tasks_before)
+		{
+			chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
+			continue;
+		}
+		uam::StopAndEraseCliTerminalForChat(app, id, false);
+		if (ChatHasDeletionBlockingRuntime(app, id)) continue;
+		changed = RemoveChatById(app, id) || changed;
+	}
+	return changed;
+}
 
 bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 {
@@ -959,6 +1102,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	{
 		return ChatProviderSwitchResult::RuntimeStopping;
 	}
+	if (!StopAndEraseCliTerminalForChat(app, chat->id, false)) return ChatProviderSwitchResult::RuntimeStopping;
 	std::string hydration_warning;
 	if (!ChatRepository::HydrateChatMessages(app.data_root, *chat, &hydration_warning))
 	{
@@ -1089,7 +1233,12 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 		return false;
 	}
 
-	StopChatRuntimes(app, branch_id);
+	if (!StopChatRuntimes(app, branch_id))
+	{
+		app.status_line = "Branch cleanup is waiting for its runtime to stop.";
+		if (error_out != nullptr) *error_out = app.status_line;
+		return false;
+	}
 	std::erase_if(app.acp_sessions, [&branch_id](const auto& session) { return session != nullptr && session->chat_id == branch_id; });
 	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, branch_id);
 	if (storage_delete.Failed())
@@ -1219,7 +1368,11 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 		app.status_line = "Failed to create a durable chat deletion transaction.";
 		return false;
 	}
-	StopChatRuntimes(app, deleted_chats);
+	if (!StopChatRuntimes(app, deleted_chats))
+	{
+		app.status_line = "Deletion is waiting for its runtime to stop. Recovery information was kept.";
+		return false;
+	}
 	DeletionIntent intent{target_chat_ids, {}};
 	std::vector<ChatSession> next_chats;
 	std::vector<ChatFolder> next_folders;
@@ -1349,7 +1502,11 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 		app.status_line = "Failed to create a durable folder deletion transaction.";
 		return false;
 	}
-	StopChatRuntimes(app, deleted.chats);
+	if (!StopChatRuntimes(app, deleted.chats))
+	{
+		app.status_line = "Deletion is waiting for its runtime to stop. Recovery information was kept.";
+		return false;
+	}
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const int previous_selected_chat_index = app.selected_chat_index;
 	DeletionIntent intent;

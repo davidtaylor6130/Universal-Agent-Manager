@@ -178,12 +178,13 @@ const char* CliTerminalLifecycleStateLabel(CliTerminalLifecycleState state)
 
 const char* CliTerminalLifecycleStateLabel(const CliTerminalState& terminal)
 {
+	if (terminal.context_preparation != nullptr) return "starting";
 	return CliTerminalLifecycleStateLabel(terminal.lifecycle_state);
 }
 
 bool CliTerminalLifecycleIsProcessing(const CliTerminalState& terminal)
 {
-	return terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state);
+	return terminal.context_preparation != nullptr || (terminal.running && CliTerminalLifecycleStateIsProcessing(terminal.lifecycle_state));
 }
 
 bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
@@ -359,12 +360,24 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	if (terminal.context_preparation != nullptr)
+	{
+		terminal.context_preparation->cancellation.request_stop();
+		terminal.context_preparation.reset();
+	}
 	if (terminal.native_session_setup_cancel != nullptr)
 	{
 		terminal.native_session_setup_cancel->request_stop();
 		terminal.native_session_setup_cancel.reset();
 	}
 	PlatformServicesFactory::Instance().terminal_runtime.StopCliTerminalProcess(terminal, stop_mode == CliTerminalStopMode::FastExit);
+	if (!PlatformServicesFactory::Instance().terminal_runtime.PollCliTerminalProcessExited(terminal))
+	{
+		terminal.running = true;
+		terminal.last_error = "Terminal stop is not confirmed. Cleanup will retry.";
+		MarkCliTerminalShuttingDown(terminal);
+		return;
+	}
 
 	CloseCliTerminalHandles(terminal);
 	terminal.running = false;
@@ -411,7 +424,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 		}
 	}
 	CliTerminalState* terminal = FindCliTerminalForChat(app, chat_id);
-	if (terminal != nullptr && terminal->native_session_setup_cancel != nullptr)
+	if (terminal != nullptr && (terminal->native_session_setup_cancel != nullptr || terminal->context_preparation != nullptr))
 	{
 		StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
 	}
@@ -453,7 +466,7 @@ void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& termi
 	}
 }
 
-void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
+bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
 {
 	auto matches_chat_terminal = [&](std::unique_ptr<CliTerminalState>& terminal)
 	{
@@ -468,10 +481,14 @@ void StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 		}
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
-		return true;
+		return !terminal->running;
 	};
 
 	std::erase_if(app.cli_terminals, matches_chat_terminal);
+	return std::ranges::none_of(app.cli_terminals, [chat_id](const std::unique_ptr<CliTerminalState>& terminal)
+	{
+		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
+	});
 }
 
 void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view chat_id)

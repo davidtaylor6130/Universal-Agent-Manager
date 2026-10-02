@@ -33,7 +33,9 @@ namespace uam::remote
 	    bool attach_only = false,
 	    const std::string& delivery_token = {},
 	    std::uintmax_t delivered_stdout_cursor = 0,
-	    std::uintmax_t delivered_stderr_cursor = 0);
+	    std::uintmax_t delivered_stderr_cursor = 0,
+	    const std::string& context_provider_id = {},
+	    const std::string& context_directory = {});
 	std::filesystem::path PackagedRunnerPath();
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,

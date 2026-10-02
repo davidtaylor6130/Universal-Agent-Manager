@@ -1,3 +1,4 @@
+import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
@@ -15,7 +16,7 @@ import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
 import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ArrowDown, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -1199,6 +1200,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	  .filter((attachment) => attachment.status === 'ready')
 	  .map(({ status, error, ...attachment }) => attachment)
 
+    if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     // Handle /goal command
     if (prompt.startsWith('/goal ')) {
       const submittedSessionId = session.id
@@ -1315,6 +1317,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const pendingUserInput = acp?.pendingUserInput
   const latestAssistantMessage = latestAssistantMessageIndex >= 0 ? messages[latestAssistantMessageIndex] : undefined
   const repositoryComparisonRef = session.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() : undefined
+  const [workspaceVcs, setWorkspaceVcs] = useState<VcsCommitStatus | null>(null)
   const completedTurnKey = !acp?.processing && !cli?.processing && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
@@ -1332,6 +1335,33 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
+  useEffect(() => {
+    let cancelled = false
+    let serial = 0
+    setWorkspaceVcs(null)
+    const refresh = () => {
+      const request = ++serial
+      if (!workspaceDirectory || isCompanionContext()) return
+      void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: createRequestId(`composer:${session.id}`) }).then((status) => {
+        if (!cancelled && request === serial) setWorkspaceVcs(status)
+      })
+    }
+    refresh()
+    window.addEventListener('focus', refresh)
+    return () => { cancelled = true; window.removeEventListener('focus', refresh) }
+  }, [session.id, workspaceDirectory, completedTurnKey, getVcsCommitStatus])
+  const workspaceVcsLabel = !workspaceVcs || workspaceVcs.error ? 'Repository unavailable' : !workspaceVcs.available ? 'No repository' : workspaceVcs.activeVcsType === 'svn' ? `SVN · ${workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory}` : `Git · ${workspaceVcs.branchOrRevision || 'Detached HEAD'}`
+  const sideBusyRef = useRef(false)
+  const navigateSide = async (dismiss = false) => {
+    if (sideBusyRef.current) return
+    sideBusyRef.current = true
+    try {
+      const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
+      if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
+      const id = dismiss ? response.data?.parentChatId : response.data?.chatId
+      if (id && useAppStore.getState().activeSessionId === session.id) { assignChatToPane(id, readChatGridLayout().activeLeafId); useAppStore.getState().setActiveSession(id) }
+    } finally { sideBusyRef.current = false }
+  }
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
@@ -1935,6 +1965,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
 
       const commands: SlashCommand[] = [
+        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
         ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
         ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
@@ -1969,7 +2000,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
+    [session.id, session.temporaryParentChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -3052,6 +3083,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onOpenMarkdownStore={() => void openMarkdownStore()}
               workspaceControl={!isCompanionContext() && (
                 <>
+                {workspaceDirectory && <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceVcsLabel} aria-label={workspaceVcsLabel}><GitBranch size={12} aria-hidden /><span className="truncate">{workspaceVcsLabel}</span></span>}
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"

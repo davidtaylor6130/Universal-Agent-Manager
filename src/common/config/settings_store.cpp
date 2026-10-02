@@ -69,6 +69,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
+	constexpr std::string_view kFileExplorerApplicationKey = "file_explorer_application";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
@@ -581,6 +582,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
 	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
+	WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
@@ -782,6 +784,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kMarkdownStoreDirectoryKey)
 		{
 			settings.markdown_store_directory = decoded_value;
+		}
+		else if (key == kFileExplorerApplicationKey)
+		{
+			settings.file_explorer_application = decoded_value;
 		}
 		else if (key == kDefaultEditorPresetIdKey)
 		{

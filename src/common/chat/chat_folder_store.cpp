@@ -1,4 +1,5 @@
 #include "common/chat/chat_folder_store.h"
+#include "common/config/custom_icon.h"
 #include "common/config/line_value_codec.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
@@ -79,6 +80,10 @@ namespace
 		else if (normalized_key == kFolderCollapsedKey)
 		{
 			folder.collapsed = uam::parse::BoolOr(value, folder.collapsed);
+		}
+		else if (normalized_key == "custom_icon")
+		{
+			folder.custom_icon = uam::icons::Parse(nlohmann::json::parse(value, nullptr, false));
 		}
 		else if (normalized_key == kFolderExecutionHostIdKey)
 		{
@@ -176,6 +181,7 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 		WriteEncodedFolderField(out, kFolderTitleKey, folder.title);
 		WriteEncodedFolderField(out, kFolderDirectoryKey, folder.directory);
 		WriteBoolFolderField(out, kFolderCollapsedKey, folder.collapsed);
+		WriteEncodedFolderField(out, "custom_icon", uam::icons::Serialize(folder.custom_icon).dump());
 		WriteEncodedFolderField(out, kFolderExecutionHostIdKey,
 		                        uam::strings::NonEmptyOrFallback(
 		                            uam::strings::Trim(folder.execution_host_id), "local"));

@@ -405,7 +405,7 @@ void UamQueryHandler::HandleStopCli(CefRefPtr<CefBrowser> browser, const nlohman
 		return;
 	}
 	term->ui_attached = false;
-	if (quit && term->native_session_setup_cancel != nullptr)
+	if (quit && (term->native_session_setup_cancel != nullptr || term->context_preparation != nullptr))
 	{
 		uam::StopCliTerminal(*term);
 	}

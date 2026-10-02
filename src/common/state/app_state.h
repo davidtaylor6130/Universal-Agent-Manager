@@ -4,6 +4,7 @@
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
@@ -48,6 +49,25 @@ namespace uam
 		ShuttingDown,
 	};
 
+	struct CliContextPreparation
+	{
+		std::atomic<bool> finished{false};
+		std::stop_source cancellation;
+		std::string baseline;
+		std::string chat_id;
+		std::vector<std::string> argv;
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		bool succeeded = false;
+	};
+
+	struct CliContextPreparationTask
+	{
+		std::shared_ptr<CliContextPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -60,6 +80,7 @@ namespace uam
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;
 		bool should_launch = false;
+		std::shared_ptr<CliContextPreparation> context_preparation;
 		bool ui_attached = false;
 		std::string ui_attachment_id;
 		std::shared_ptr<std::stop_source> native_session_setup_cancel;
@@ -531,6 +552,9 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		bool observe_exit = false;
+		std::shared_ptr<platform::StdioProcessPlatformFields> owned_process;
+		std::shared_ptr<platform::ObservedProcessStopResult> result;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -765,6 +789,10 @@ namespace uam
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
+		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;
+		std::unique_ptr<std::jthread> provider_context_cleanup_worker;
+		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
+		double provider_context_cleanup_not_before_s = 0.0;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;
