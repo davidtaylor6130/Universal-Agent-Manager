@@ -101,7 +101,10 @@ build_remote_runner windows-x86_64 uam-runner.exe \
     -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
     -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++
 
+local_version=$(cmake "-DUAM_SOURCE_DIR=$PWD" -P cmake/local_build_version.cmake)
+
 cmake_args=(-S . -B Builds -DUAM_BUILD_TESTS=OFF
+    "-DUAM_LOCAL_BUILD_VERSION=$local_version"
     "-DUAM_REMOTE_RUNNER_ARTIFACT_DIR=$remote_artifacts")
 for i in 0 1 2 3 4; do
     cmake_args+=("-D${flags[$i]}=${enabled[$i]}")

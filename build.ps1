@@ -54,7 +54,10 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 & npm --prefix UI-V2 ci
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$cmakeArgs = @('-S', '.', '-B', 'Builds', '-DUAM_BUILD_TESTS=OFF')
+$localBuildVersion = & cmake "-DUAM_SOURCE_DIR=$PSScriptRoot" -P cmake/local_build_version.cmake
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$cmakeArgs = @('-S', '.', '-B', 'Builds', '-DUAM_BUILD_TESTS=OFF', "-DUAM_LOCAL_BUILD_VERSION=$localBuildVersion")
 foreach ($provider in $providers) {
     $state = if ($provider.Enabled) { 'ON' } else { 'OFF' }
     $cmakeArgs += "-D$($provider.Flag)=$state"
