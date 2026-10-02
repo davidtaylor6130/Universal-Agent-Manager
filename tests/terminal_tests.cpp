@@ -929,6 +929,131 @@ UAM_TEST(CodexNativeActivityBoundsReadsAndKeepsLaterTurnBusy)
 	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
 }
 
+UAM_TEST(CodexNativeActivityReadsOversizedCompletionAndRejectsInvalidSuffixes)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& scenario : {"valid", "stale", "bad-escape", "bad-unicode", "bad-utf8", "bad-control", "bad-suffix"})
+	{
+		TempDir temp("codex-large-completion");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		runtime.CheckpointInteractiveSubmission(terminal);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		// Reorder metadata after the text. Split the closing string and completion across polls.
+		std::string completion = "{\"payload\":{\"last_agent_message\":\"" + std::string(300000, 'x') +
+		    "\\n\\t\\\"\\\\\\uD83D\\uDE00" + std::string("\xF0\x9F\x98\x80");
+		if (scenario == "valid") completion += "\\uD83D";
+		if (scenario == "bad-control") completion += '\t';
+		if (scenario == "bad-escape") completion += "\\q";
+		if (scenario == "bad-unicode") completion += "\\uD800x";
+		if (scenario == "bad-utf8") completion += std::string("\xF0\x80\x80\x80");
+		std::ofstream(rollout, std::ios::app) << completion;
+		for (int poll = 0; poll < 8; ++poll)
+		{
+			const std::uintmax_t before = terminal.codex_activity_offset;
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			UAM_ASSERT(terminal.codex_activity_offset - before <= 65536);
+			UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+			UAM_ASSERT(terminal.codex_activity_string_cursor.token.size() <= 12);
+		}
+		if (scenario == "valid")
+		{
+			std::ofstream(rollout, std::ios::app) << "\\uDE00" << std::string("\xF0\x9F");
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			std::ofstream(rollout, std::ios::app) << std::string("\x98\x80");
+		}
+		const std::string turn_id = scenario == "stale" ? "older" : "current";
+		std::ofstream(rollout, std::ios::app) << "\",\"turn_id\":\"" << turn_id << "\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}"
+		    << (scenario == "bad-suffix" ? "garbage\n" : "\n");
+		const ProviderTerminalActivity activity = runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		if (scenario == "valid") UAM_ASSERT(activity == ProviderTerminalActivity::Complete);
+		else UAM_ASSERT(activity == ProviderTerminalActivity::Busy);
+		if (scenario == "stale")
+		{
+			std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+		}
+	}
+}
+
+UAM_TEST(CodexNativeActivityReadsBothCopiesOfLargeCompletedAgentMessage)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-large-agent-item");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	const std::string reply(300000, 'x');
+	std::ofstream(rollout, std::ios::app) << nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "item_completed"},
+	    {"item", {{"type", "AgentMessage"}, {"content", nlohmann::json::array({{{"type", "Text"}, {"text", reply}}})}}}}}}.dump() << '\n';
+	for (int poll = 0; poll < 8; ++poll)
+	{
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+	}
+	std::ofstream(rollout, std::ios::app) << nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "task_complete"},
+	    {"turn_id", "current"}, {"last_agent_message", reply}}}}.dump() << '\n';
+	ProviderTerminalActivity activity = ProviderTerminalActivity::Busy;
+	for (int poll = 0; poll < 8; ++poll) activity = runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	UAM_ASSERT(activity == ProviderTerminalActivity::Complete);
+}
+
+UAM_TEST(CodexNativeSubmissionCheckpointSkipsOnlyTheAbandonedRecordTail)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& scenario : {"empty", "newline", "partial-completion"})
+	{
+		TempDir temp("codex-checkpoint-tail");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		if (scenario == "empty") std::ofstream(rollout, std::ios::trunc);
+		if (scenario == "partial-completion")
+		{
+			std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n"
+			    << "{\"payload\":{\"last_agent_message\":\"" << std::string(300000, 'x') << "\\uD83D";
+			for (int poll = 0; poll < 8; ++poll)
+				UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			UAM_ASSERT(terminal.codex_activity_string_cursor.compacting);
+			UAM_ASSERT(!terminal.codex_activity_string_cursor.token.empty());
+		}
+		runtime.CheckpointInteractiveSubmission(terminal);
+		UAM_ASSERT(terminal.codex_activity_partial_line.empty());
+		UAM_ASSERT(terminal.codex_activity_string_cursor.token.empty());
+		UAM_ASSERT(!terminal.codex_activity_string_cursor.inside_string);
+		UAM_ASSERT(terminal.codex_activity_string_cursor.discard_checkpoint_tail == (scenario == "partial-completion"));
+		if (scenario == "partial-completion")
+		{
+			std::ofstream(rollout, std::ios::app) << "\\uDE00\",\"turn_id\":\"old\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}\n";
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		}
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"fresh\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"fresh\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+	}
+}
+
 UAM_TEST(CodexNativeCompletionClearsBusyDespiteStaleTerminalRedraws)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI

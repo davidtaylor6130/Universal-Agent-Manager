@@ -321,6 +321,7 @@ void MarkCliTerminalStopped(CliTerminalState& terminal)
 	terminal.codex_activity_cwd.clear();
 	terminal.codex_activity_rollout.clear();
 	terminal.codex_activity_partial_line.clear();
+	terminal.codex_activity_string_cursor = {};
 	terminal.codex_activity_turn_id.clear();
 	terminal.codex_activity_awaiting_turn = false;
 	terminal.codex_activity_read_failed = false;

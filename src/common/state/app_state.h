@@ -67,6 +67,16 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	struct CodexActivityStringCursor
+	{
+		bool discard_checkpoint_tail = false;
+		bool inside_string = false;
+		bool escaped = false;
+		bool compacting = false;
+		std::string token;
+		int token_expected_bytes = 0;
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -117,6 +127,7 @@ namespace uam
 		std::filesystem::path codex_activity_rollout;
 		std::uintmax_t codex_activity_offset = 0;
 		std::string codex_activity_partial_line;
+		CodexActivityStringCursor codex_activity_string_cursor;
 		std::string codex_activity_turn_id;
 		bool codex_activity_discard_line = false;
 		bool codex_activity_awaiting_turn = false;
