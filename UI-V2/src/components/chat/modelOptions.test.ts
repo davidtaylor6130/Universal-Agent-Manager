@@ -72,3 +72,17 @@ describe('reasoningEffortForModel', () => {
       .toEqual(['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
   })
 })
+
+it('filters OpenCode providers and models while retaining a disabled current model', () => {
+  const acp = { availableModels: [
+    { id: 'openai/visible', name: 'Visible', description: '' },
+    { id: 'openai/hidden', name: 'Hidden', description: '' },
+    { id: 'anthropic/sonnet', name: 'Sonnet', description: '' },
+  ] }
+  const visibility = { hiddenModelIds: ['openai/hidden'], hiddenProviderIds: ['anthropic'] }
+  const options = buildModelOptions(acp, 'openai/hidden', undefined, 'opencode-cli', true, visibility)
+  expect(options.filter((option) => !option.disabled).map((option) => option.id)).toEqual(['', 'openai/visible'])
+  expect(options.find((option) => option.id === 'openai/hidden')).toMatchObject({ label: 'Hidden (hidden)', disabled: true })
+  expect(acp.availableModels).toHaveLength(3)
+  expect(buildModelOptions(acp, '', undefined, 'opencode-cli', true, visibility).some((option) => option.id === 'openai/hidden')).toBe(false)
+})

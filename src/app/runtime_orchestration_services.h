@@ -7,6 +7,9 @@
 #include <filesystem>
 #include <cstdint>
 #include <optional>
+#include <future>
+#include "common/chat/chat_repository.h"
+#include "common/chat/chat_folder_store.h"
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -78,6 +81,36 @@ class ChatHistorySyncService
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	struct PreparedHistoryChat
+	{
+		ChatSession chat;
+		std::optional<ChatSession> expected_live;
+		std::string expected_fingerprint;
+		std::shared_ptr<PreparedChatSave> files;
+		bool skipped = false;
+	};
+	struct PreparedHistoryBatch
+	{
+		std::vector<PreparedHistoryChat> chats;
+		std::string expected_folders;
+		std::vector<ChatFolder> folders;
+		std::shared_ptr<PreparedFolderSave> folder_files;
+	};
+	struct LocalHistoryDiscovery
+	{
+		std::vector<ChatSession> chats;
+		ImportResult result;
+		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
+		std::shared_future<bool> publication_sync;
+		std::optional<std::size_t> open_code_next_offset;
+		bool Pending() const { return !chats.empty() || preparation.valid() || publication_sync.valid(); }
+		void CancelPending();
+	};
+	/// Read provider transcripts without accessing live app state or writing local history.
+	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0) const;
+	/// Revalidate and merge a completed scan on the app thread.
+	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
+	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8) const;
 	ImportResult ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	ImportResult ImportRemoteOpenCodeChatsForFolder(
 	    uam::AppState& app, const std::string& folder_id,

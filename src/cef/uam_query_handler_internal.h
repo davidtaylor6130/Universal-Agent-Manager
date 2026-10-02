@@ -103,6 +103,8 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	defaults.model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "modelId", defaults.model_id);
 	defaults.reviewer_model_id = uam::nlohmann_json::TrimmedStringValueOr(value, "reviewerModelId", defaults.reviewer_model_id);
 	defaults.feature_preference = uam::nlohmann_json::TrimmedStringValueOr(value, "featurePreference", defaults.feature_preference);
+	if (value.contains("hiddenModelIds")) defaults.hidden_model_ids = uam::nlohmann_json::TrimmedStringArrayField(value, "hiddenModelIds");
+	if (value.contains("hiddenProviderIds")) defaults.hidden_provider_ids = uam::nlohmann_json::TrimmedStringArrayField(value, "hiddenProviderIds");
 	defaults.approval_mode = uam::nlohmann_json::TrimmedStringValueOr(value, "approvalMode", defaults.approval_mode);
 	defaults.command_safety_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "commandSafetyTier", defaults.command_safety_tier);
 	if (const std::optional<bool> memory_enabled = uam::nlohmann_json::BoolFieldStrict(value, "memoryEnabled"))

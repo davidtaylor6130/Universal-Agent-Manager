@@ -157,7 +157,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 	return folders;
 }
 
-bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders)
+std::string ChatFolderStore::Serialize(const std::vector<ChatFolder>& folders)
 {
 	std::ostringstream out;
 	out << kFoldersFormatVersion << "\n\n";
@@ -183,5 +183,30 @@ bool ChatFolderStore::Save(const std::filesystem::path& data_root, const std::ve
 	}
 	out << kFoldersComplete << '\n';
 
-	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), out.str());
+	return out.str();
+}
+
+PreparedFolderSave::~PreparedFolderSave()
+{
+	uam::io::RemoveAtomicTempNoThrow(temporary);
+}
+
+std::shared_ptr<PreparedFolderSave> ChatFolderStore::PrepareSave(const fs::path& data_root, const std::vector<ChatFolder>& folders)
+{
+	if (!uam::paths::CreateDirectoriesNoThrow(data_root)) return nullptr;
+	std::shared_ptr<PreparedFolderSave> prepared = std::make_shared<PreparedFolderSave>();
+	prepared->destination = FolderFilePath(data_root);
+	prepared->temporary = uam::io::MakeTempWritePath(prepared->destination);
+	uam::io::AtomicWriteResult result;
+	return uam::io::WriteAndSyncAtomicTemp(prepared->temporary, Serialize(folders), {}, result) ? prepared : nullptr;
+}
+
+bool ChatFolderStore::PublishPreparedSave(const std::shared_ptr<PreparedFolderSave>& prepared)
+{
+	return prepared && uam::io::CommitSyncedAtomicTemp(prepared->destination, prepared->temporary, true, {}, false).success;
+}
+
+bool ChatFolderStore::Save(const fs::path& data_root, const std::vector<ChatFolder>& folders)
+{
+	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), Serialize(folders));
 }

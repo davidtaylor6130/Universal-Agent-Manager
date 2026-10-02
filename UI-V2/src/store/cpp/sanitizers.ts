@@ -1334,6 +1334,8 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     modelId: normalizeAcpModelId(value.modelId),
     reviewerModelId: normalizeAcpModelId(value.reviewerModelId),
     featurePreference: value.featurePreference === 'provider' ? 'provider' : 'uam',
+    ...(Array.isArray(value.hiddenModelIds) ? { hiddenModelIds: value.hiddenModelIds.filter(isString) } : {}),
+    ...(Array.isArray(value.hiddenProviderIds) ? { hiddenProviderIds: value.hiddenProviderIds.filter(isString) } : {}),
     approvalMode: normalizeAcpApprovalMode(value.approvalMode),
     commandSafetyTier: normalizeCommandSafetyTier(
       isString(value.commandSafetyTier) ? value.commandSafetyTier : booleanOr(value.autoApproveCommands) ? 'yolo' : 'off'
