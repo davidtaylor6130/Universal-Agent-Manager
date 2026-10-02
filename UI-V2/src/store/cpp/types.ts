@@ -9,7 +9,7 @@ import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
-export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
+export type CliLifecycleState = 'disabled' | 'stopped' | 'starting' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
 export type AcpLifecycleState =
   | 'stopped'
   | 'starting'
@@ -43,6 +43,7 @@ export interface CppMessage {
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
+  stopReason?: string
 	acpPromptNotSent?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
@@ -105,6 +106,7 @@ export interface CppChat {
   createdAt: string
   updatedAt: string
   lastOpenedAt?: string
+  attentionRevision?: string
   messageCount?: number
   messagesDigest?: string
   messages?: CppMessage[]
@@ -137,6 +139,7 @@ export interface CppGoal {
   lastBlocker?: string
 	lastBlockerKind?: string
   lastDiagnostic?: string
+  pendingContinuation?: boolean
   completedItems?: string[]
   remainingItems?: string[]
   currentStep?: string
@@ -360,6 +363,7 @@ export interface AcpProviderUsage {
 }
 
 export interface CppAcpSession {
+  lastStopReason?: string
   sessionId?: string
   providerId?: string
 	/** Exact UAM execution path: provider-native config/plugin or UAM prompt injection. */
@@ -741,6 +745,7 @@ export interface CliBinding {
 }
 
 export interface AcpBinding {
+  lastStopReason?: string
   sessionId: string
   providerId: string
   protocolKind: string

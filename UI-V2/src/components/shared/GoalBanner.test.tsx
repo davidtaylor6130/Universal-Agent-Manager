@@ -46,6 +46,23 @@ afterEach(() => {
 })
 
 describe('GoalBanner', () => {
+  it('offers restart while a turn runs and shows its pending continuation', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const restart = vi.fn()
+    act(() => root.render(<GoalBanner goal={{ ...goal, pendingContinuation: true }} onComplete={vi.fn()} onRemove={vi.fn()} onRestart={restart} turnRunning />))
+    expect(host.textContent).toContain('Queued after current turn')
+    act(() => (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click())
+    const button = Array.from(document.body.querySelectorAll('button')).find((item) => item.textContent?.includes('Restart goal'))!
+    expect(button.disabled).toBe(false)
+    act(() => button.click())
+    expect(restart).toHaveBeenCalledTimes(1)
+    act(() => root.render(<GoalBanner goal={{ ...goal, status: 'paused' }} onComplete={vi.fn()} onRemove={vi.fn()} turnRunning />))
+    expect(host.textContent).toContain('Current turn will finish')
+    act(() => root.unmount())
+  })
+
   it('expands the full objective and exact completed and remaining steps', () => {
     const { host, root } = renderGoal()
 

@@ -127,6 +127,27 @@ namespace uam
 			return true;
 		}
 
+		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
+		{
+			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
+			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
+			std::array<char, 16384> buffer{};
+			bool more = true;
+			for (int chunk = 0; chunk < 4; ++chunk)
+			{
+				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(pending, buffer.data(), buffer.size());
+				if (count <= 0) { more = false; break; }
+				if (session != nullptr && chat != nullptr && !acp_detail::AppendAcpStdoutChunk(*session, std::string_view(buffer.data(), static_cast<std::size_t>(count))))
+					session->last_error = "Remote shutdown output exceeded the limit.";
+			}
+			if (session != nullptr && chat != nullptr)
+			{
+				(void)acp_detail::ProcessBufferedAcpStdoutAfterStop(app, *session, *chat, browser, 256);
+				more = more || session->stdout_buffer.find('\n') != std::string::npos;
+			}
+			return more;
+		}
+
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
 		                               ChatSession& chat, std::string* error_out = nullptr)
 		{
@@ -1177,6 +1198,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.turn_user_message_index = static_cast<int>(chat.messages.size() + appended_message_count) - 1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
+			const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
+			session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
 			RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
 			RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
 			ResetAcpTurnStreamState(session);
@@ -2444,8 +2467,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool AcpStopInProgress(const AppState& app, std::string_view chat_id)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
-		return (session != nullptr &&
-		        (session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
+		return std::ranges::any_of(app.acp_process_stop_tasks, [chat_id](const AsyncAcpProcessStopTask& task)
+		       { return task.chat_id == chat_id && task.finished != nullptr && (!task.finished->load() || (task.purpose == AcpStopPurpose::Timeout && task.result != nullptr && !task.result->exit_confirmed)); }) ||
+		       (session != nullptr &&
+		        (session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
 		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; });
@@ -2462,17 +2487,34 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return !AcpStopInProgress(app, chat_id);
 	}
 
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process)
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id, AcpStopPurpose purpose)
 	{
-		auto owned = std::make_unique<platform::StdioProcessPlatformFields>();
+		auto owned = std::make_shared<platform::StdioProcessPlatformFields>();
 		TransferStdioProcessFields(process, *owned);
 		AsyncAcpProcessStopTask task;
+		task.chat_id = std::string(chat_id);
+		task.purpose = purpose;
+		task.result = std::make_shared<platform::ObservedProcessStopResult>();
+		task.owned_process = owned;
+		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id)) task.turn_serial = session->turn_serial;
+		if (const ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id))
+		{
+			task.provider_id = chat->provider_id;
+			task.execution_host_id = chat->execution_host_id;
+		}
+		else if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id)) task.provider_id = session->provider_id;
 		task.finished = std::make_shared<std::atomic<bool>>(false);
 		const std::shared_ptr<std::atomic<bool>> finished = task.finished;
+		const std::shared_ptr<platform::ObservedProcessStopResult> result = task.result;
 		task.worker = std::make_unique<std::jthread>(
-		    [owned = std::move(owned), finished](std::stop_token)
+		    [owned = std::move(owned), finished, result, purpose](std::stop_token)
 		    {
-			    PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
+			    if (purpose == AcpStopPurpose::Timeout)
+				{
+					*result = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned);
+					if (result->exit_confirmed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*owned);
+				}
+				else PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
 			    finished->store(true);
 		    });
 		app.acp_process_stop_tasks.push_back(std::move(task));
@@ -2523,18 +2565,37 @@ For desktop observation and input, use only the provider's built-in controller; 
 		acp_detail::CancelTurnCheckpointTasksForChat(app, chat_id);
 		acp_detail::StopPermissionReviewTasks(app, chat_id);
 		UamControlService::RevokeForSession(app, session);
+		const bool graceful_stop = session.stop_purpose != AcpStopPurpose::Interrupt &&
+		    session.lifecycle_state != kAcpLifecycleError && session.last_error.empty() &&
+		    (session.stop_purpose != AcpStopPurpose::Timeout || session.stop_outcome == platform::ProcessStopOutcome::Graceful);
 		if (chat != nullptr)
 		{
 			const bool active_response = session.processing || AcpSessionIsWaitingForInput(session) ||
 			                             session.prompt_request_id != 0 || AcpSessionHasPendingCancel(session);
-			bool changed = active_response ? FinalizeActiveAcpTurnAsInterrupted(*chat, session)
+			bool changed = active_response && !graceful_stop ? FinalizeActiveAcpTurnAsInterrupted(*chat, session)
 			                               : acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, session);
+			std::string reason = "interrupt";
+			if (session.lifecycle_state == kAcpLifecycleError || !session.last_error.empty()) reason = "failed";
+			else if (graceful_stop) reason = session.stop_purpose == AcpStopPurpose::Timeout ? "timeout" : "provider-update";
+			else if (session.stop_purpose == AcpStopPurpose::Timeout)
+				reason = session.stop_outcome == platform::ProcessStopOutcome::Forced ? "forced" :
+				         session.stop_outcome == platform::ProcessStopOutcome::Failed ? "failed" : "unknown";
+			if (active_response || session.stop_purpose != AcpStopPurpose::Interrupt)
+			{
+				chat->last_stop_reason = reason;
+				if (session.last_turn_outcome != "error") session.last_turn_outcome = reason;
+			}
+			const int assistant = session.current_assistant_message_index >= 0 ? session.current_assistant_message_index : session.turn_assistant_message_index;
+			if (active_response && assistant >= 0 && assistant < static_cast<int>(chat->messages.size()) && chat->messages[static_cast<std::size_t>(assistant)].role == MessageRole::Assistant)
+				chat->messages[static_cast<std::size_t>(assistant)].stop_reason = reason;
+			changed = true;
 			changed = PersistQueuedAcpUserPromptsAsInterrupted(session, *chat) || changed;
 			if (changed && !acp_detail::SaveChatQuietly(app, *chat))
 				acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		}
 
 		session.running = false;
+		session.local_stop_pending = false;
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = false;
 		session.restart_after_remote_stop_cleanup = false;
@@ -2636,7 +2697,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return cleanup_marker_saved;
 	}
 
-	bool StopAcpSession(AppState& app, const std::string& chat_id)
+	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr)
@@ -2644,8 +2705,33 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool stop_pending = std::ranges::any_of(
 			    app.pending_acp_remote_stops,
 			    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; });
-			return !stop_pending;
+			return !stop_pending && !AcpStopInProgress(app, chat_id);
 		}
+		if (session->local_stop_pending)
+		{
+			for (AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+			{
+				if (task.chat_id != chat_id || task.finished == nullptr || !task.finished->load() || task.result == nullptr || task.result->exit_confirmed || task.owned_process == nullptr) continue;
+				task.worker.reset();
+				const auto owned = task.owned_process;
+				const auto result = task.result;
+				const auto finished = task.finished;
+				finished->store(false);
+				task.worker = std::make_unique<std::jthread>([owned, result, finished](std::stop_token)
+				{
+					const auto retry = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned, std::chrono::milliseconds(0));
+					result->outcome = retry.outcome;
+					result->exit_code = retry.exit_code;
+					result->exit_confirmed = retry.exit_confirmed;
+					result->standard_output += retry.standard_output;
+					result->standard_error += retry.standard_error;
+					if (result->exit_confirmed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*owned);
+					finished->store(true);
+				});
+			}
+			return false;
+		}
+		if (!session->remote_stop_pending && !session->remote_stop_unconfirmed) { session->stop_purpose = purpose; session->stop_outcome = platform::ProcessStopOutcome::Unknown; }
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (session->restart_marker_save_pending)
 		{
@@ -2704,7 +2790,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			        *session, uam::remote::kRemoteStopControlLine.data(),
 			        uam::remote::kRemoteStopControlLine.size(), &write_error))
 			{
-				QueueAcpProcessStop(app, *session);
+				QueueAcpProcessStop(app, *session, session->chat_id);
 				session->running = false;
 				PreserveFailedRemoteStop(app, *session, recoverable_remote_turn,
 				                         session->restart_after_remote_stop_cleanup);
@@ -2712,7 +2798,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			auto pending = std::make_unique<PendingAcpRemoteStop>();
 			pending->chat_id = chat_id;
-			pending->deadline_time_s = GetAppTimeSeconds() + 1.0;
+			pending->deadline_time_s = GetAppTimeSeconds() + (session->stop_purpose == AcpStopPurpose::Timeout ? 3.0 : 1.0);
 			pending->recoverable_turn = recoverable_remote_turn;
 			pending->restart_after_stop = session->restart_after_remote_stop_cleanup;
 			TransferStdioProcessFields(*session, *pending);
@@ -2723,7 +2809,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (session->running)
-			QueueAcpProcessStop(app, *session);
+		{
+			QueueAcpProcessStop(app, *session, session->chat_id, session->stop_purpose);
+			if (session->stop_purpose == AcpStopPurpose::Timeout)
+			{
+				session->running = false;
+				session->local_stop_pending = true;
+				app.status_line = "The provider is stopping.";
+				return false;
+			}
+		}
 		return FinalizeStoppedAcpSession(app, *session, chat);
 	}
 
@@ -3039,13 +3134,64 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
+	void ApplyConfirmedRemoteStopOutcome(AcpSessionState& session, std::string_view stderr_tail)
+	{
+		if (session.remote_output_delivery_token.empty()) return;
+		const std::string prefix = std::string(uam::remote::kRemoteStopOutcomePrefix) + session.remote_output_delivery_token + " ";
+		for (std::size_t newline = stderr_tail.find('\n'); newline != std::string_view::npos; newline = stderr_tail.find('\n'))
+		{
+			std::string_view line = stderr_tail.substr(0, newline);
+			stderr_tail.remove_prefix(newline + 1);
+			if (line.ends_with('\r')) line.remove_suffix(1);
+			if (!line.starts_with(prefix)) continue;
+			line.remove_prefix(prefix.size());
+			if (line == "graceful") session.stop_outcome = platform::ProcessStopOutcome::Graceful;
+			else if (line == "forced") session.stop_outcome = platform::ProcessStopOutcome::Forced;
+			else if (line == "failed") session.stop_outcome = platform::ProcessStopOutcome::Failed;
+		}
+	}
+
+	bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser)
+	{
+		bool changed = false;
+		std::erase_if(app.acp_process_stop_tasks, [&](AsyncAcpProcessStopTask& task)
+		{
+			if (task.finished == nullptr || !task.finished->load()) return false;
+			if (task.purpose == AcpStopPurpose::Timeout && task.result != nullptr && !task.result->exit_confirmed && task.owned_process != nullptr)
+			{
+				if (!PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(*task.owned_process, &task.result->exit_code)) return false;
+				task.result->exit_confirmed = true;
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*task.owned_process);
+			}
+			AcpSessionState* stopped = FindAcpSessionForChat(app, task.chat_id);
+			if (task.purpose == AcpStopPurpose::Timeout && stopped != nullptr && stopped->local_stop_pending && stopped->turn_serial == task.turn_serial)
+			{
+				changed = true;
+				stopped->stop_outcome = task.result != nullptr ? task.result->outcome : platform::ProcessStopOutcome::Unknown;
+				ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
+				if (chat != nullptr && task.result != nullptr && !task.result_consumed)
+				{
+					acp_detail::AppendRecentStderr(*stopped, task.result->standard_error);
+					if (!acp_detail::AppendAcpStdoutChunk(*stopped, task.result->standard_output)) stopped->last_error = "Provider shutdown output exceeded the limit.";
+					task.result_consumed = true;
+				}
+				if (chat != nullptr)
+				{
+					(void)acp_detail::ProcessBufferedAcpStdoutAfterStop(app, *stopped, *chat, browser, 256);
+					if (stopped->stdout_buffer.find('\n') != std::string::npos) return false;
+				}
+				(void)FinalizeStoppedAcpSession(app, *stopped, chat);
+				changed = true;
+			}
+			return true;
+		});
+		return changed;
+	}
+
 	bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser)
 	{
 		bool changed = RetryPendingRemoteAcpSessionHydration(app) > 0;
-		std::erase_if(app.acp_process_stop_tasks, [](const AsyncAcpProcessStopTask& task)
-		{
-			return task.finished != nullptr && task.finished->load();
-		});
+		changed = PollCompletedAcpProcessStops(app, browser) || changed;
 		const double stop_now = GetAppTimeSeconds();
 		for (auto stop = app.pending_acp_remote_stops.begin();
 		     stop != app.pending_acp_remote_stops.end();)
@@ -3060,7 +3206,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(
 			    pending, &exit_code);
 			const bool stderr_pending = DrainPendingRemoteStopStderr(pending);
-			if (exited && stderr_pending)
+			const bool stdout_pending = DrainPendingRemoteStopStdout(app, pending, browser);
+			if (exited && (stderr_pending || stdout_pending))
 			{
 				++stop;
 				continue;
@@ -3072,13 +3219,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 				++stop;
 				continue;
 			}
-			if (!exited) QueueAcpProcessStop(app, pending);
+			if (!exited) QueueAcpProcessStop(app, pending, pending.chat_id);
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(pending);
 
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
 			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
 			if (session != nullptr && session->remote_stop_pending && !pending.stderr_tail.empty())
 				acp_detail::AppendRecentStderr(*session, pending.stderr_tail);
+			if (confirmed_stop && session != nullptr) ApplyConfirmedRemoteStopOutcome(*session, pending.stderr_tail);
 			if (pending.restart_after_stop && session != nullptr && session->remote_stop_pending)
 			{
 				if (confirmed_stop)
@@ -3122,6 +3270,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 
 			AcpSessionState& session = *session_ptr;
+			if (session.local_stop_pending) continue;
 			if (!session.running)
 			{
 				ChatSession* reconnect_chat = FindAcpRuntimeChatById(app, session.chat_id);
@@ -3157,7 +3306,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			ChatSession* chat_ptr = FindAcpRuntimeChatById(app, session.chat_id);
 			if (chat_ptr == nullptr)
 			{
-				QueueAcpProcessStop(app, session);
+				QueueAcpProcessStop(app, session, session.chat_id);
 				MarkAcpProcessExited(session, nullptr, false, 0);
 				changed = true;
 				continue;
@@ -3484,7 +3633,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				AppendAcpDiagnostic(session, "session", "idle_shutdown", "", "", false, 0,
 				                    "Stopped the inactive structured runtime.");
-				(void)StopAcpSession(app, session.chat_id);
+				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Timeout);
 				changed = true;
 			}
 		}
@@ -3513,6 +3662,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			int exit_code = -1;
 			const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(
 			    *stop, &exit_code);
+			(void)DrainPendingRemoteStopStderr(*stop);
+			while (DrainPendingRemoteStopStdout(app, *stop, nullptr)) {}
 			if (!exited)
 				PlatformServicesFactory::Instance().process_service.StopStdioProcess(*stop, true);
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*stop);
@@ -3521,6 +3672,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			ChatSession* chat = ChatDomainService().FindChatById(app, stop->chat_id);
 			if (exited && exit_code == 0)
 			{
+				ApplyConfirmedRemoteStopOutcome(*session, stop->stderr_tail);
 				bool interrupted = false;
 				if (stop->restart_after_stop && chat != nullptr)
 					interrupted = FinalizeActiveAcpTurnAsInterrupted(*chat, *session);
@@ -3538,7 +3690,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 	void FastStopAcpSessionsForExit(AppState& app)
 	{
 		acp_detail::StopTurnCheckpointTasks(app);
-		app.acp_process_stop_tasks.clear();
+		for (AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+		{
+			task.worker.reset();
+			if (task.finished == nullptr) task.finished = std::make_shared<std::atomic<bool>>(true);
+			else task.finished->store(true);
+		}
+		const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (!app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < stop_deadline)
+		{
+			(void)PollCompletedAcpProcessStops(app, nullptr);
+			if (!app.acp_process_stop_tasks.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
 		struct IdleRemoteStop
 		{
 			AcpSessionState* session = nullptr;

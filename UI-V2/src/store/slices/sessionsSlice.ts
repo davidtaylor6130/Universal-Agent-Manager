@@ -344,6 +344,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
     statusLine: '',
 
+    acknowledgeChatAttention: async (id: string, revision: string) => {
+      const response = await sendToCEF({ action: 'acknowledgeChatAttention', payload: { chatId: id, attentionRevision: revision } })
+      return response.ok
+    },
+
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
       if (get().activeSessionId === id) return
@@ -2501,11 +2506,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    stopAcpSession: async (sessionId: string): Promise<boolean> => {
+    stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
-          payload: { chatId: sessionId },
+          payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
         return response.ok
       }

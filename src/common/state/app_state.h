@@ -4,6 +4,7 @@
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
@@ -344,8 +345,14 @@ namespace uam
 		std::string provider_turn_id;
 	};
 
+	enum class AcpStopPurpose { Interrupt, ProviderUpdate, Timeout };
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
+		AcpStopPurpose stop_purpose = AcpStopPurpose::Interrupt;
+		platform::ProcessStopOutcome stop_outcome = platform::ProcessStopOutcome::Unknown;
+		bool local_stop_pending = false;
+		std::string goal_command_revision;
 		std::string chat_id;
 		std::string provider_id;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
@@ -531,6 +538,14 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		std::string chat_id;
+		std::string provider_id;
+		std::string execution_host_id = "local";
+		AcpStopPurpose purpose = AcpStopPurpose::Interrupt;
+		int turn_serial = 0;
+		std::shared_ptr<platform::ObservedProcessStopResult> result;
+		std::shared_ptr<platform::StdioProcessPlatformFields> owned_process;
+		bool result_consumed = false;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};

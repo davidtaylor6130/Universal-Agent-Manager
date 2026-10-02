@@ -459,7 +459,7 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 		envelope["payload"]["summaryOnly"] = true;
 	if (action == "openNativeSessionChat" || action == "createSession")
 		envelope["payload"]["selectChat"] = false;
-	if (action != "getInitialState" && action != "getChatMessages" && action != "getToolCallContent" &&
+	if (action != "getInitialState" && action != "getChatMessages" && action != "getToolCallContent" && action != "acknowledgeChatAttention" &&
 	    action != "openNativeSessionChat" && action != "createSession" && action != "listRemoteDirectories" &&
 	    action != "setChatPinned" && action != "setChatModel" && action != "setChatProvider" && action != "discoverProviderModels" &&
 	    action != "setChatCommandSafetyTier" && action != "setChatUamControlEnabled" && action != "listUamAgents" && action != "setChatUamAgent" && action != "setChatMemoryEnabled" &&
