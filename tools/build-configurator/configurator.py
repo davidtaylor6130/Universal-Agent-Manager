@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROVIDERS = ('GEMINI', 'CODEX', 'CLAUDE', 'OPENCODE', 'COPILOT')
 FEATURES = ('COMPUTER_USE', 'SSH', 'MOBILE_COMPANION')
 TOKEN = secrets.token_urlsafe(32)
-STATE = {'running': False, 'message': 'Choose providers, features and a build folder.', 'output': '', 'artifact': '', 'dataRoot': ''}
+STATE = {'running': False, 'message': 'Choose providers, features and a build folder.', 'output': '', 'artifact': '', 'dataRoot': '', 'version': ''}
 LOCK = threading.Lock()
 
 
@@ -87,10 +87,20 @@ def prerequisites():
     return missing
 
 
-def commands(source, destination, providers, features):
+def reserve_local_build_version(source):
+    result = subprocess.run(['cmake', f'-DUAM_SOURCE_DIR={source}', '-P', str(ROOT / 'cmake/local_build_version.cmake')], capture_output=True, text=True)
+    version = result.stdout.strip()
+    if result.returncode or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-alpha-[1-9][0-9]*', version):
+        raise RuntimeError('Could not reserve a local build version. ' + (result.stderr.strip() or 'Check the shared Builds/local-versions counter.'))
+    return version
+
+
+def commands(source, destination, providers, features, local_version=''):
     npm = shutil.which('npm') or ('npm.cmd' if os.name == 'nt' else 'npm')
     flags = [f'-DUAM_ENABLE_RUNTIME_{item}_CLI={"ON" if item in providers else "OFF"}' for item in PROVIDERS]
     flags += [f'-DUAM_ENABLE_{item}={"ON" if item in features else "OFF"}' for item in FEATURES]
+    if local_version:
+        flags.append(f'-DUAM_LOCAL_BUILD_VERSION={local_version}')
     return [([npm, '--prefix', str(source / 'UI-V2'), 'ci'], 'Installing frontend dependencies'),
             (['cmake', '-S', str(source), '-B', str(destination), '-DCMAKE_BUILD_TYPE=Release', '-DUAM_PACKAGE_REMOTE_RUNNERS=OFF', *flags], 'Preparing the build'),
             (['cmake', '--build', str(destination), '--config', 'Release', '--parallel', '2', '--target', 'universal_agent_manager'], 'Building UAM')]
@@ -105,11 +115,15 @@ def build(config):
     try:
         destination.mkdir(parents=True, exist_ok=True)
         (destination / '.uam-configurator').write_text('UAM build configurator output\n')
+        local_version = reserve_local_build_version(source)
+        with LOCK:
+            STATE['version'] = local_version
         log_path = destination / 'configurator-build.log'
         with log_path.open('w', encoding='utf-8') as log:
-            for argv, message in commands(*config):
+            log.write(f'Local build version: {local_version}\n')
+            for argv, message in commands(*config, local_version=local_version):
                 with LOCK:
-                    STATE['message'] = message
+                    STATE['message'] = f'{message} ({local_version})'
                 # Windows .cmd invocation is explicit; options are fixed and validated.
                 if os.name == 'nt':
                     setup = msvc_setup()
@@ -129,7 +143,7 @@ def build(config):
         if not artifact.exists():
             raise RuntimeError(f'The build finished but {artifact} is missing. Check the build log.')
         with LOCK:
-            STATE.update(message='Build ready. Launch UAM or open its folder.', artifact=str(artifact), dataRoot=str(destination / 'data'))
+            STATE.update(message=f'Build {local_version} ready. Launch UAM or open its folder.', artifact=str(artifact), dataRoot=str(destination / 'data'))
     except Exception as error:
         with LOCK:
             STATE['message'] = str(error)
@@ -193,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     if STATE['running']:
                         return self.reply(409, {'error': 'A build is already running.'})
-                    STATE.update(running=True, output='', artifact='', dataRoot='', message='Starting build')
+                    STATE.update(running=True, output='', artifact='', dataRoot='', version='', message='Starting build')
                 threading.Thread(target=build, args=(config,), daemon=True).start()
                 return self.reply(200, {'message': 'Build started.'})
             if self.path in ('/launch', '/folder'):

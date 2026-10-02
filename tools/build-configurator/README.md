@@ -30,3 +30,11 @@ cmake --build Builds/minimal --config Release --target universal_agent_manager
 ```
 
 The included CI workflow builds all eight feature combinations on macOS and Windows, checks compiled sources and packaged artifacts, then disables all features in the same output directory to catch stale artifacts. Configurator regressions run with `python3 tools/build-configurator/test_configurator.py`.
+
+Local configurator builds reserve one `X.Y.Z-alpha-Q` version per requested build. Linked worktrees share a locked counter in the main checkout’s ignored `Builds/local-versions/` folder. The release version and remote runner protocol version stay unchanged. To reserve a version for separately packaged local artifacts without starting a build:
+
+```sh
+cmake -DUAM_SOURCE_DIR="/absolute/path/to/source" -P cmake/local_build_version.cmake
+```
+
+Pass the returned version as `-DUAM_LOCAL_BUILD_VERSION=X.Y.Z-alpha-Q` when configuring to label the macOS bundle and frontend build identifier. A corrupt counter stops allocation instead of recycling a number. Allocator regressions run with `python3 tools/build-configurator/test_local_build_version.py`.
