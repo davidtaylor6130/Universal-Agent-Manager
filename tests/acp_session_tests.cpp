@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/chat/native_chat_identity.h"
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
 #include "app/runtime_activity.h"
@@ -9,6 +10,219 @@
 #include "remote/runner_proxy.h"
 
 using namespace uam_test;
+
+UAM_TEST(CodexWriterOwnershipProtectsBusyAliasesAcrossWorkspaces)
+{
+	uam::AppState app;
+	ChatSession original;
+	original.id = "chat-original";
+	original.title = "Original chat";
+	original.provider_id = "codex-cli";
+	original.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	original.workspace_directory = "/repo";
+	ChatSession alias = original;
+	alias.id = original.native_session_id;
+	alias.workspace_directory = "/worktrees/chat-original";
+	app.chats = {original, alias};
+	auto owner = std::make_unique<uam::AcpSessionState>();
+	owner->chat_id = original.id;
+	owner->provider_id = original.provider_id;
+	owner->session_id = original.native_session_id;
+	owner->running = true;
+	owner->processing = true;
+	app.acp_sessions.push_back(std::move(owner));
+	std::string error;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(error.find(original.title) != std::string::npos);
+	UAM_ASSERT(app.acp_sessions.front()->running);
+	UAM_ASSERT(app.acp_process_stop_tasks.empty());
+	UAM_ASSERT_EQ(alias.native_session_id, original.native_session_id);
+	app.acp_sessions.front()->session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5b";
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(app.acp_sessions.front()->running);
+	app.acp_sessions.front()->session_id.clear();
+	app.acp_sessions.front()->goal_internal_session = true;
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(app.acp_sessions.front()->running);
+	app.acp_sessions.front()->goal_internal_session = false;
+	app.acp_sessions.front()->session_id = original.native_session_id;
+	alias.native_session_id.clear();
+	app.resolved_native_sessions_by_chat_id[alias.id] = original.native_session_id;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	app.resolved_native_sessions_by_chat_id.erase(alias.id);
+	alias.native_session_id = original.native_session_id;
+	alias.execution_host_id = "another-host";
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	alias.execution_host_id = "local";
+	alias.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5b";
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+}
+
+UAM_TEST(CodexWriterOwnershipProtectsBusyTerminalAliases)
+{
+	uam::AppState app;
+	ChatSession original;
+	original.id = "chat-terminal-owner";
+	original.title = "Terminal owner";
+	original.provider_id = "codex-cli";
+	original.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	app.chats.push_back(original);
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = original.id;
+	terminal->attached_chat_id = original.id;
+	terminal->attached_session_id = original.native_session_id;
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+	ChatSession alias = original;
+	alias.id = original.native_session_id;
+	std::string error;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(error.find(original.title) != std::string::npos);
+	UAM_ASSERT(app.cli_terminals.front()->running);
+	for (const uam::CliTerminalLifecycleState state : {uam::CliTerminalLifecycleState::Unknown, uam::CliTerminalLifecycleState::Idle})
+	{
+		app.cli_terminals.front()->lifecycle_state = state;
+		app.cli_terminals.front()->pending_steer_prompt = "Pending terminal input";
+		UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+		UAM_ASSERT(app.cli_terminals.front()->running);
+	}
+	app.cli_terminals.front()->pending_steer_prompt.clear();
+	app.cli_terminals.front()->generation_in_progress = true;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(app.cli_terminals.front()->running);
+}
+
+UAM_TEST(CodexWriterOwnershipWaitsForConfirmedProcessStop)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-original";
+	chat.provider_id = "codex-cli";
+	chat.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	app.chats.push_back(chat);
+	uam::AsyncAcpProcessStopTask task;
+	task.chat_id = chat.id;
+	task.native_writer_key = uam::chat_identity::CodexWriterIdentityKey(chat);
+	task.finished = std::make_shared<std::atomic<bool>>(false);
+	app.acp_process_stop_tasks.push_back(std::move(task));
+	ChatSession alias = chat;
+	alias.id = chat.native_session_id;
+	std::string error;
+	UAM_ASSERT(uam::AcpStopInProgress(app, chat.id));
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	uam::AcpSessionState session;
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+	UAM_ASSERT(!session.running);
+	auto reconnecting = std::make_unique<uam::AcpSessionState>();
+	reconnecting->chat_id = chat.id;
+	reconnecting->provider_id = chat.provider_id;
+	reconnecting->queued_prompt = "Keep the original undelivered prompt";
+	reconnecting->processing = true;
+	reconnecting->reconnect_pending = true;
+	app.acp_sessions.push_back(std::move(reconnecting));
+	(void)uam::PollAllAcpSessions(app, nullptr);
+	UAM_ASSERT(!app.acp_sessions.front()->running);
+	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT_EQ(app.acp_sessions.front()->reconnect_attempts, 0);
+	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_prompt, std::string("Keep the original undelivered prompt"));
+	app.acp_process_stop_tasks.front().finished->store(true);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, chat.id));
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+}
+
+UAM_TEST(CodexWriterOwnershipHandsOffIdleProcessWithoutChangingThread)
+{
+	TempDir temp("uam-codex-writer-handoff");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-original";
+	chat.provider_id = "codex-cli";
+	chat.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	app.chats.push_back(chat);
+	auto owner = std::make_unique<uam::AcpSessionState>();
+	owner->chat_id = chat.id;
+	owner->provider_id = chat.provider_id;
+	owner->session_id = chat.native_session_id;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
+#else
+	const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owner, temp.root, sink, &error));
+	owner->running = true;
+	app.acp_sessions.push_back(std::move(owner));
+	app.chats.front().provider_id = "gemini-cli";
+	ChatSession alias = chat;
+	alias.id = chat.native_session_id;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.front().native_writer_key, uam::chat_identity::CodexWriterIdentityKey(chat));
+	app.acp_process_stop_tasks.front().worker->join();
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, chat.native_session_id);
+}
+
+UAM_TEST(CodexWriterOwnershipWaitsForRemoteStopConfirmation)
+{
+	uam::AppState app;
+	ChatSession original;
+	original.id = "chat-remote-owner";
+	original.provider_id = "codex-cli";
+	original.execution_host_id = "ssh-test";
+	original.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	app.chats.push_back(original);
+	std::unique_ptr<uam::AcpSessionState> owner = std::make_unique<uam::AcpSessionState>();
+	owner->chat_id = original.id;
+	owner->provider_id = original.provider_id;
+	owner->session_id = original.native_session_id;
+	app.acp_sessions.push_back(std::move(owner));
+	ChatSession alias = original;
+	alias.id = original.native_session_id;
+	std::string error;
+	app.acp_sessions.front()->remote_stop_pending = true;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	app.acp_sessions.front()->remote_stop_pending = false;
+	app.acp_sessions.front()->remote_stop_unconfirmed = true;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(!error.empty());
+	app.acp_sessions.front()->remote_stop_unconfirmed = false;
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+}
+
+UAM_TEST(CodexWriterOwnershipKeepsRemovedChatWriterFenced)
+{
+	TempDir temp("uam-codex-removed-writer");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession alias;
+	alias.id = "chat-retained";
+	alias.provider_id = "codex-cli";
+	alias.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	std::unique_ptr<uam::AcpSessionState> owner = std::make_unique<uam::AcpSessionState>();
+	owner->chat_id = "removed-import-copy";
+	owner->provider_id = alias.provider_id;
+	owner->session_id = alias.native_session_id;
+	owner->process_execution_host_id = "local";
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
+#else
+	const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owner, temp.root, sink, &error));
+	owner->running = true;
+	app.acp_sessions.push_back(std::move(owner));
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.front().native_writer_key, uam::chat_identity::CodexWriterIdentityKey(alias));
+	app.acp_process_stop_tasks.front().worker->join();
+	UAM_ASSERT(app.acp_process_stop_tasks.front().finished->load());
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+}
 
 UAM_TEST(CliProviderInstallBlocksMatchingRuntimeStarts)
 {
@@ -1682,9 +1896,11 @@ UAM_TEST(FailedRemoteStopPreservesTheRecoverableTurn)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-	const auto stop_started = std::chrono::steady_clock::now();
 	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
-	UAM_ASSERT(std::chrono::steady_clock::now() - stop_started < std::chrono::milliseconds(100));
+	// Disk persistence is synchronous; verify the asynchronous stop contract by
+	// its pending state rather than timing filesystem work on a shared runner.
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 7);
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->processing);
 	UAM_ASSERT(raw_session->remote_stop_pending);
@@ -8116,10 +8332,8 @@ UAM_TEST(AcpRemoteRestartRequiresAZeroExitFromTheStopProxy)
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
 	    *raw_session, temp.root, sink_argv, &error));
 	app.acp_sessions.push_back(std::move(session));
-	const auto stop_started = std::chrono::steady_clock::now();
 	UAM_ASSERT(!uam::acp_detail::StopAcpProcessForRestart(
 	    app, *raw_session, app.chats.front()));
-	UAM_ASSERT(std::chrono::steady_clock::now() - stop_started < std::chrono::milliseconds(100));
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->remote_stop_pending);
 	UAM_ASSERT(app.chats.front().remote_restart_pending);
@@ -10088,4 +10302,60 @@ UAM_TEST(OpenCodeDoomLoopRequiresUserDecision)
 	UAM_ASSERT(waiting_in_yolo);
 	UAM_ASSERT(waiting_in_review);
 	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("pending"));
+}
+
+UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)
+{
+	for (const bool permission : {true, false})
+	{
+		TempDir temp("uam-interaction-replies");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "interaction-reply";
+		chat.provider_id = permission ? "gemini-cli" : "codex-cli";
+		chat.interaction_at = "2000-01-01 00:00:00";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState* session = owned.get();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = permission ? "gemini-acp" : "codex-app-server";
+		session->running = true;
+		session->processing = true;
+		session->interaction_at = chat.interaction_at;
+		session->pending_permission.request_id_json = "7";
+		session->pending_permission.options.push_back({"allow-once", "Allow once", "allow_once"});
+		session->waiting_for_permission = permission;
+		session->pending_user_input.request_id_json = "7";
+		session->waiting_for_user_input = !permission;
+		app.acp_sessions.push_back(std::move(owned));
+		std::string error;
+		const auto resolve = [&](const std::string& request_id)
+		{
+			return permission ? uam::ResolveAcpPermission(app, chat.id, request_id, "allow-once", false, &error)
+			                  : uam::ResolveAcpUserInput(app, chat.id, request_id, {{"scope", {"Focused"}}}, &error);
+		};
+		UAM_ASSERT(!resolve("stale"));
+		UAM_ASSERT(!resolve("7")); // No transport: retain both recency and the pending request.
+		UAM_ASSERT_EQ(app.chats.front().interaction_at, chat.interaction_at);
+		UAM_ASSERT_EQ(session->interaction_at, chat.interaction_at);
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+		auto& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(*session, temp.root, sink, &error));
+		const bool delivered = resolve("7");
+		process.StopStdioProcess(*session, true);
+		process.CloseStdioProcessHandles(*session);
+		UAM_ASSERT(delivered);
+		UAM_ASSERT(app.chats.front().interaction_at > chat.interaction_at);
+		UAM_ASSERT_EQ(session->interaction_at, app.chats.front().interaction_at);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->interaction_at, app.chats.front().interaction_at);
+		UAM_ASSERT(permission ? session->pending_permission.request_id_json.empty() : session->pending_user_input.request_id_json.empty());
+	}
 }

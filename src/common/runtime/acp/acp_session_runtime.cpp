@@ -16,6 +16,7 @@
 #include "app/native_session_link_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/native_chat_identity.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include <cstring>
 #include <iterator>
@@ -41,6 +42,7 @@
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "remote/runner_proxy.h"
 
 #include "common/runtime/terminal/terminal_lifecycle.h"
@@ -328,9 +330,10 @@ namespace uam
 			}
 
 			std::string error;
-			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error))
+			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error) ||
+			    (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, &error)))
 			{
-				// Wait for terminal work or a provider update without consuming the bounded
+				// Wait for writer ownership, terminal work or a provider update without consuming the bounded
 				// reconnect budget or discarding its undelivered prompt.
 				session.reconnect_not_before_time_s = now_seconds + kAcpReconnectBaseDelaySeconds;
 				return true;
@@ -2446,9 +2449,72 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const AcpSessionState* session = FindAcpSessionForChat(app, std::string(chat_id));
 		return (session != nullptr &&
 		        (session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
+		       std::ranges::any_of(app.acp_process_stop_tasks, [&](const AsyncAcpProcessStopTask& task)
+		       { return !task.native_writer_key.empty() && task.chat_id == chat_id && task.finished != nullptr && !task.finished->load(); }) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
 		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; });
+	}
+
+	/// <summary>Transfers an idle Codex writer between chat aliases only after its process has exited.</summary>
+	bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out)
+	{
+		ChatSession target_identity;
+		target_identity.provider_id = chat.provider_id;
+		target_identity.execution_host_id = chat.execution_host_id;
+		target_identity.native_session_id = uam::strings::NonEmptyOrFallback(chat.native_session_id, ResolvedNativeSessionIdForChat(app, chat));
+		const std::string writer_key = chat_identity::CodexWriterIdentityKey(target_identity);
+		if (writer_key.empty()) return true;
+		for (const AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
+		{
+			if (task.native_writer_key == writer_key && task.finished != nullptr && !task.finished->load())
+			{
+				if (error_out != nullptr) *error_out = "The previous Codex writer is still stopping. Retry when it has exited.";
+				return false;
+			}
+		}
+		for (const auto& terminal : app.cli_terminals)
+		{
+			if (terminal == nullptr || !terminal->running) continue;
+			const ChatSession* owner_chat = FindChatForCliTerminal(app, *terminal);
+			if (owner_chat == nullptr || owner_chat->id == chat.id) continue;
+			ChatSession identity;
+			identity.provider_id = owner_chat->provider_id;
+			identity.execution_host_id = owner_chat->execution_host_id;
+			identity.native_session_id = uam::strings::NonEmptyOrFallback(terminal->attached_session_id, owner_chat->native_session_id);
+			if (chat_identity::CodexWriterIdentityKey(identity) != writer_key) continue;
+			if (CliTerminalHasActiveTurn(*terminal) || terminal->generation_in_progress || !terminal->pending_steer_prompt.empty())
+			{
+				if (error_out != nullptr) *error_out = "This Codex thread is active in the terminal for chat '" + owner_chat->title + "'. Exit that turn before continuing here.";
+				return false;
+			}
+			StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);
+		}
+		for (const auto& owner : app.acp_sessions)
+		{
+			if (owner == nullptr || owner->chat_id == chat.id ||
+			    (!owner->running && !AcpStopInProgress(app, owner->chat_id))) continue;
+			const ChatSession* owner_chat = ChatDomainService().FindChatById(app, owner->chat_id);
+			ChatSession actual_owner;
+			actual_owner.provider_id = owner->provider_id;
+			actual_owner.execution_host_id = uam::strings::NonEmptyOrFallback(owner->process_execution_host_id, owner_chat != nullptr ? owner_chat->execution_host_id : "local");
+			actual_owner.native_session_id = uam::strings::NonEmptyOrFallback(owner->session_id, owner_chat != nullptr && !owner->goal_internal_session ? owner_chat->native_session_id : "");
+			if (chat_identity::CodexWriterIdentityKey(actual_owner) != writer_key) continue;
+			if (AcpStopInProgress(app, owner->chat_id))
+			{
+				if (error_out != nullptr) *error_out = "The previous Codex writer is still stopping. Retry when its stop is confirmed.";
+				return false;
+			}
+			if (AcpSessionHasBlockingRuntimeWork(*owner))
+			{
+				if (error_out != nullptr) *error_out = "This Codex thread is already running in chat '" + (owner_chat != nullptr ? owner_chat->title : owner->chat_id) + "'. Stop that turn before continuing here.";
+				return false;
+			}
+			(void)StopAcpSession(app, owner->chat_id);
+			if (error_out != nullptr) *error_out = "The previous Codex writer is stopping. Retry when it has exited.";
+			return false;
+		}
+		return true;
 	}
 
 	bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id)
@@ -2462,18 +2528,48 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return !AcpStopInProgress(app, chat_id);
 	}
 
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process)
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id)
 	{
 		auto owned = std::make_unique<platform::StdioProcessPlatformFields>();
 		TransferStdioProcessFields(process, *owned);
 		AsyncAcpProcessStopTask task;
+		task.chat_id = chat_id;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
+		const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
+		ChatSession identity;
+		identity.provider_id = session != nullptr ? session->provider_id : chat != nullptr ? chat->provider_id : "";
+		identity.execution_host_id = session != nullptr && !session->process_execution_host_id.empty()
+		    ? session->process_execution_host_id : chat != nullptr ? chat->execution_host_id : "local";
+		identity.native_session_id = session != nullptr ? session->session_id : "";
+		if (identity.native_session_id.empty() && chat != nullptr && (session == nullptr || !session->goal_internal_session))
+		{
+			identity.native_session_id = chat->native_session_id;
+		}
+		task.native_writer_key = chat_identity::CodexWriterIdentityKey(identity);
 		task.finished = std::make_shared<std::atomic<bool>>(false);
 		const std::shared_ptr<std::atomic<bool>> finished = task.finished;
+		const bool confirm_writer_exit = !task.native_writer_key.empty();
 		task.worker = std::make_unique<std::jthread>(
-		    [owned = std::move(owned), finished](std::stop_token)
+		    [owned = std::move(owned), finished, confirm_writer_exit](std::stop_token stop_token)
 		    {
-			    PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
-			    finished->store(true);
+			    IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+			    bool exited = true;
+			    if (confirm_writer_exit)
+			    {
+				    // Fast termination can return before the process releases its thread writer.
+				    process_service.TerminateStdioProcess(*owned, true);
+				    while (!(exited = process_service.PollStdioProcessExited(*owned)))
+				    {
+					    if (stop_token.stop_requested()) break;
+					    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				    }
+				    process_service.CloseStdioProcessHandles(*owned);
+			    }
+			    else
+			    {
+				    process_service.StopStdioProcess(*owned, true);
+			    }
+			    finished->store(exited);
 		    });
 		app.acp_process_stop_tasks.push_back(std::move(task));
 	}
@@ -2704,7 +2800,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			        *session, uam::remote::kRemoteStopControlLine.data(),
 			        uam::remote::kRemoteStopControlLine.size(), &write_error))
 			{
-				QueueAcpProcessStop(app, *session);
+				QueueAcpProcessStop(app, *session, session->chat_id);
 				session->running = false;
 				PreserveFailedRemoteStop(app, *session, recoverable_remote_turn,
 				                         session->restart_after_remote_stop_cleanup);
@@ -2723,7 +2819,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (session->running)
-			QueueAcpProcessStop(app, *session);
+			QueueAcpProcessStop(app, *session, session->chat_id);
 		return FinalizeStoppedAcpSession(app, *session, chat);
 	}
 
@@ -2989,6 +3085,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		session->interaction_at = uam::time::InteractionTimestampNow();
+		chat->interaction_at = session->interaction_at;
+		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		acp_detail::StopPermissionReviewTasks(app, chat_id, request_id_json);
 		AdvanceAcpPermissionQueue(app, *session, *chat, error_out);
 		session->cancel_requested = false;
@@ -3031,6 +3130,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		session->interaction_at = uam::time::InteractionTimestampNow();
+		chat->interaction_at = session->interaction_at;
+		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		session->pending_user_input = AcpPendingUserInputState{};
 		session->waiting_for_user_input = false;
 		ClearAcpPendingWait(*session);
@@ -3157,7 +3259,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			ChatSession* chat_ptr = FindAcpRuntimeChatById(app, session.chat_id);
 			if (chat_ptr == nullptr)
 			{
-				QueueAcpProcessStop(app, session);
+				QueueAcpProcessStop(app, session, session.chat_id);
 				MarkAcpProcessExited(session, nullptr, false, 0);
 				changed = true;
 				continue;

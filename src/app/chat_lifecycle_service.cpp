@@ -453,12 +453,6 @@ namespace
 		}
 
 		native_cleanup_failed = false;
-		for (const ChatSession& chat : deleted_chats)
-		{
-			std::error_code error;
-			DeleteNativeHistoryForChatIfNeeded(app, chat, &error);
-			native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
-		}
 		if (!intent.folder_ids.empty())
 		{
 			const std::vector<ChatFolder> staged_folders = ChatFolderStore::Load(DeletionStagingRoot(app.data_root));
@@ -472,6 +466,13 @@ namespace
 			}
 		}
 
+		if (native_cleanup_failed) return false;
+		for (const ChatSession& chat : deleted_chats)
+		{
+			std::error_code error;
+			DeleteNativeHistoryForChatIfNeeded(app, chat, &error);
+			native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
+		}
 		return RemoveDeletionTransactionFiles(app.data_root);
 	}
 

@@ -85,6 +85,7 @@ namespace
 
 		chat.messages.push_back(std::move(message));
 		chat.updated_at = timestamp;
+		if (role == MessageRole::User) chat.interaction_at = uam::time::InteractionTimestampNow();
 
 		if (should_auto_replace_title)
 		{
@@ -440,6 +441,16 @@ void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
 {
+	// An imported provider copy must not replace the UAM chat that owns it,
+	// even when the imported transcript is newer or contains injected messages.
+	if (!uam::strings::IsBlank(candidate.native_session_id) &&
+	    chat_identity::NativeIdentityKeyForHistoryImport(candidate) == chat_identity::NativeIdentityKeyForHistoryImport(existing))
+	{
+		const bool candidate_owned = uam::strings::StartsWith(candidate.id, "chat-");
+		const bool existing_owned = uam::strings::StartsWith(existing.id, "chat-");
+		if (candidate_owned != existing_owned) return candidate_owned;
+	}
+
 	const std::size_t candidate_message_count = EffectiveMessageCount(candidate);
 	const std::size_t existing_message_count = EffectiveMessageCount(existing);
 	if (candidate_message_count != existing_message_count)
@@ -621,6 +632,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	chat.folder_id = uam::strings::Trim(folder_id);
 	chat.created_at = uam::time::TimestampNow();
 	chat.updated_at = chat.created_at;
+	chat.interaction_at = uam::time::InteractionTimestampNow();
 	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
 	return chat;
@@ -775,6 +787,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		branch.messages.back().content = *replacement_content;
 	}
 	branch.updated_at = uam::time::TimestampNow();
+	branch.interaction_at = uam::time::InteractionTimestampNow();
 	branch.last_opened_at = branch.updated_at;
 	branch.title = BranchTitleFromMessage(branch.messages.back().content);
 	if (branch_from_git_worktree)
