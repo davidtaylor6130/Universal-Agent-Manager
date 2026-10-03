@@ -1,6 +1,7 @@
 #include "native_session_link_service.h"
 
 #include "common/paths/app_paths.h"
+#include "common/chat/native_chat_identity.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
@@ -288,8 +289,8 @@ namespace
 
 	bool IsWorkspaceCompatibleForNativeLinking(const ChatSession& local_chat, const ChatSession& native_chat)
 	{
-		const std::string local_workspace = uam::strings::Trim(local_chat.workspace_directory);
-		const std::string native_workspace = uam::strings::Trim(native_chat.workspace_directory);
+		const std::string local_workspace = uam::chat_identity::NativeWorkspaceForHistoryImport(local_chat);
+		const std::string native_workspace = uam::chat_identity::NativeWorkspaceForHistoryImport(native_chat);
 		if (local_workspace.empty() || native_workspace.empty())
 		{
 			return true;

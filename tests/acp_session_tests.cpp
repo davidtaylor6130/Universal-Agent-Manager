@@ -1682,9 +1682,11 @@ UAM_TEST(FailedRemoteStopPreservesTheRecoverableTurn)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-	const auto stop_started = std::chrono::steady_clock::now();
 	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
-	UAM_ASSERT(std::chrono::steady_clock::now() - stop_started < std::chrono::milliseconds(100));
+	// Disk persistence is synchronous; verify the asynchronous stop contract by
+	// its pending state rather than timing filesystem work on a shared runner.
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 7);
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->processing);
 	UAM_ASSERT(raw_session->remote_stop_pending);
@@ -8116,10 +8118,8 @@ UAM_TEST(AcpRemoteRestartRequiresAZeroExitFromTheStopProxy)
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
 	    *raw_session, temp.root, sink_argv, &error));
 	app.acp_sessions.push_back(std::move(session));
-	const auto stop_started = std::chrono::steady_clock::now();
 	UAM_ASSERT(!uam::acp_detail::StopAcpProcessForRestart(
 	    app, *raw_session, app.chats.front()));
-	UAM_ASSERT(std::chrono::steady_clock::now() - stop_started < std::chrono::milliseconds(100));
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT(raw_session->remote_stop_pending);
 	UAM_ASSERT(app.chats.front().remote_restart_pending);

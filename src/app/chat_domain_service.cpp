@@ -440,6 +440,16 @@ void ChatDomainService::SortChatsByRecent(std::vector<ChatSession>& chats) const
 
 bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candidate, const ChatSession& existing) const
 {
+	// An imported provider copy must not replace the UAM chat that owns it,
+	// even when the imported transcript is newer or contains injected messages.
+	if (!uam::strings::IsBlank(candidate.native_session_id) &&
+	    chat_identity::NativeIdentityKeyForHistoryImport(candidate) == chat_identity::NativeIdentityKeyForHistoryImport(existing))
+	{
+		const bool candidate_owned = uam::strings::StartsWith(candidate.id, "chat-");
+		const bool existing_owned = uam::strings::StartsWith(existing.id, "chat-");
+		if (candidate_owned != existing_owned) return candidate_owned;
+	}
+
 	const std::size_t candidate_message_count = EffectiveMessageCount(candidate);
 	const std::size_t existing_message_count = EffectiveMessageCount(existing);
 	if (candidate_message_count != existing_message_count)

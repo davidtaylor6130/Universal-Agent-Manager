@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,28 @@ namespace uam::codex
 			    return true;
 		    });
 		return ids;
+	}
+
+	/// Codex appends renames to the index; the last nonblank name wins.
+	inline std::unordered_map<std::string, std::string> ReadSessionIndexNames(const std::filesystem::path& codex_home = CodexHomePath())
+	{
+		std::unordered_map<std::string, std::string> names;
+		uam::io::ForEachTextFileLine(codex_home / kSessionIndexFilename, [&names](const std::string& line)
+		{
+			try
+			{
+				const nlohmann::json parsed = nlohmann::json::parse(line);
+				const std::string id = ValidThreadIdOrEmpty(uam::nlohmann_json::StringViewOrEmpty(parsed, "id"));
+				const std::string name{uam::nlohmann_json::TrimmedStringViewOrEmpty(parsed, "thread_name")};
+				if (!id.empty() && !name.empty()) names[id] = name;
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				// Keep later valid renames when an index line is incomplete.
+			}
+			return true;
+		});
+		return names;
 	}
 
 	inline bool PathsMatch(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
