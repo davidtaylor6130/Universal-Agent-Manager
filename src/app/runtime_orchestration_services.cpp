@@ -2616,6 +2616,9 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 
 	const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder_directory);
 	const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+	nlohmann::json workspace_records = nlohmann::json::object();
+	bool legacy_record = false;
+	const std::string workspace_key = folder.id.empty() ? uam::paths::Utf8PathString(workspace_root) : folder.id;
 	fs::path source;
 	fs::path staged;
 	bool already_staged = false;
@@ -2623,6 +2626,23 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 	if (uam::paths::PathExistsNoThrow(journal))
 	{
 		const nlohmann::json recorded = nlohmann::json::parse(uam::io::ReadTextFile(journal), nullptr, false);
+		if (!recorded.is_object() || (recorded.contains("workspaces") && !recorded["workspaces"].is_object()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+		// Legacy transactions contained exactly one workspace. Retain that record
+		// under its owner when the batch journal is first updated.
+		if (recorded.contains("workspaces")) workspace_records = recorded["workspaces"];
+		else
+		{
+			workspace_records[workspace_key] = recorded;
+			legacy_record = true;
+		}
+	}
+	if (workspace_records.contains(workspace_key))
+	{
+		const nlohmann::json& recorded = workspace_records[workspace_key];
 		if (!recorded.is_object() || !recorded.contains("source") || !recorded["source"].is_string() ||
 		    (recorded.contains("staged") && !recorded["staged"].is_boolean()))
 		{
@@ -2634,6 +2654,11 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 		if (source.parent_path() != AppPaths::GeminiHomePath() / "tmp" || source.filename().empty() || source.filename() == "." || source.filename() == "..")
 		{
 			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+		if (legacy_record && !uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::io_error);
 			return false;
 		}
 	}
@@ -2650,7 +2675,8 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::file_exists);
 			return false;
 		}
-		if (!uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"source", uam::paths::Utf8PathString(source)}}.dump()))
+		workspace_records[workspace_key] = nlohmann::json{{"source", uam::paths::Utf8PathString(source)}};
+		if (!uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
 		{
 			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::io_error);
 			return false;
@@ -2675,8 +2701,12 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 		    !uam::io::SyncAtomicWriteDirectory(staged.parent_path(), sync_result)) error = std::make_error_code(std::errc::io_error);
 	}
 #endif
-	if (!error && !already_staged && !uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"source", uam::paths::Utf8PathString(source)}, {"staged", true}}.dump()))
-		error = std::make_error_code(std::errc::io_error);
+	if (!error && !already_staged)
+	{
+		workspace_records[workspace_key] = nlohmann::json{{"source", uam::paths::Utf8PathString(source)}, {"staged", true}};
+		if (!uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
+			error = std::make_error_code(std::errc::io_error);
+	}
 	if (!error && uam::paths::PathExistsNoThrow(staged))
 	{
 		if (uam::paths::IsLinkOrReparsePointNoThrow(staged)) error = std::make_error_code(std::errc::invalid_argument);
