@@ -232,3 +232,18 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 
 	Normalize(chats);
 }
+
+void ChatBranching::ReparentChildrenAfterDeletes(std::vector<ChatSession>& chats, const std::unordered_set<std::string>& deleted_ids)
+{
+	Normalize(chats);
+	const std::unordered_map<std::string, std::size_t> index_by_id = BuildIndexById(chats);
+	for (ChatSession& chat : chats)
+	{
+		if (deleted_ids.contains(chat.id)) continue;
+		while (deleted_ids.contains(chat.parent_chat_id))
+		{
+			chat.parent_chat_id = chats[index_by_id.at(chat.parent_chat_id)].parent_chat_id;
+		}
+		if (chat.parent_chat_id.empty()) chat.branch_from_message_index = kRootBranchMessageIndex;
+	}
+}

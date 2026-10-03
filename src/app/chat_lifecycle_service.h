@@ -9,6 +9,21 @@
 
 namespace uam
 {
+	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
+	struct WorkspaceDeletionTask
+	{
+		AppState snapshot;
+		std::vector<std::string> folder_ids;
+		std::unordered_set<std::string> deleted_ids;
+		bool metadata_saved = false;
+		bool settings_saved = false;
+	};
+
+	bool PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task);
+	bool StageWorkspaceDeletion(WorkspaceDeletionTask& task);
+	void CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task);
+	bool CleanupWorkspaceDeletion(WorkspaceDeletionTask& task);
+
 	struct WorkspaceFolderRecoveryChat
 	{
 		std::string id;
@@ -64,6 +79,8 @@ namespace uam
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id);
 bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_ids);
 bool DeleteFolderById(uam::AppState& app, const std::string& folder_id);
+/// <summary>Preflights all selected workspaces and deletes them in one recoverable transaction.</summary>
+bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& folder_ids);
 bool CreateFolder(uam::AppState& app, const std::string& title, const std::string& directory,
                   std::string* created_folder_id = nullptr,
                   const std::string& execution_host_id = "local");
