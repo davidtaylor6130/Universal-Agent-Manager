@@ -17,6 +17,7 @@
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -124,6 +125,48 @@ namespace
 		return result;
 	}
 
+	class LocalHistoryImportTask final : public CefTask
+	{
+	  public:
+		LocalHistoryImportTask(std::weak_ptr<void> lifetime, uam::AppState& app, ChatFolder folder,
+		    std::shared_ptr<ChatHistorySyncService::LocalHistoryDiscovery> discovery, CefRefPtr<CefBrowser> browser,
+		    CefRefPtr<CefMessageRouterBrowserSide::Callback> callback)
+		    : m_lifetime(std::move(lifetime)), m_app(app), m_folder(std::move(folder)), m_discovery(std::move(discovery)),
+		      m_browser(browser), m_callback(callback), m_result(m_discovery->result) {}
+
+		void Execute() override
+		{
+			if (m_lifetime.expired()) { m_discovery->CancelPending(); return; }
+			try
+			{
+				m_result.Merge(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, m_folder, *m_discovery));
+				if (m_discovery->Pending())
+				{
+					if (CefPostDelayedTask(TID_UI, this, 16)) return;
+					m_discovery->CancelPending();
+					m_result.Fail("The history import task queue is unavailable.");
+				}
+				const std::string detail = uam::strings::Join(m_result.errors, " ");
+				m_app.status_line = !m_result.success
+				    ? m_result.partial() ? "Imported " + std::to_string(m_result.imported_count) + " chats, but some history could not be read: " + detail : "Could not rescan native history: " + detail
+				    : m_result.imported_count == 0 ? "No new chats found." : "Imported " + std::to_string(m_result.imported_count) + " chats.";
+				uam::PushStateUpdateIfChanged(m_browser, m_app);
+				m_callback->Success(nlohmann::json{{"success", m_result.success}, {"partial", m_result.partial()}, {"errors", m_result.errors}, {"importedCount", m_result.imported_count}, {"scannedCount", m_result.total_count}}.dump());
+			}
+			catch (const std::exception& error) { m_discovery->CancelPending(); m_callback->Failure(500, std::string("History import failed: ") + error.what()); }
+		}
+
+	  private:
+		std::weak_ptr<void> m_lifetime;
+		uam::AppState& m_app;
+		ChatFolder m_folder;
+		std::shared_ptr<ChatHistorySyncService::LocalHistoryDiscovery> m_discovery;
+		CefRefPtr<CefBrowser> m_browser;
+		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
+		ChatHistorySyncService::ImportResult m_result;
+		IMPLEMENT_REFCOUNTING(LocalHistoryImportTask);
+	};
+
 	int FolderFailureCode(const std::string& status_line)
 	{
 		if (uam::strings::ContainsAny(status_line, {"no longer exists", "not found"}))
@@ -215,16 +258,82 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 
 void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string folder_id = payload.value("folderId", "");
+	StartWorkspaceDeletion(browser, {payload.value("folderId", "")}, cb);
+}
 
-	if (!DeleteFolderById(m_app, folder_id))
+void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto ids = payload.find("folderIds");
+	if (ids == payload.end() || !ids->is_array() || ids->empty() ||
+	    !std::ranges::all_of(*ids, [](const nlohmann::json& id) { return id.is_string(); }))
+	{
+		cb->Failure(400, "Workspace ids are required.");
+		return;
+	}
+	StartWorkspaceDeletion(browser, ids->get<std::vector<std::string>>(), cb);
+}
+
+void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& folder_ids, CefRefPtr<Callback> cb)
+{
+	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
+	if (!uam::PrepareWorkspaceDeletion(m_app, folder_ids, *task))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
 		return;
 	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	for (const std::string& id : task->deleted_ids)
+	{
+		if (m_nativeHistoryRequests.contains(id))
+		{
+			cb->Failure(409, "Wait for workspace history to finish loading.");
+			return;
+		}
+	}
+	m_workspaceDeletionPending = true;
+	m_app.worktree_operation_chat_ids.insert(task->deleted_ids.begin(), task->deleted_ids.end());
+	const auto unlock = [this, task]()
+	{
+		for (const std::string& id : task->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
+		m_workspaceDeletionPending = false;
+	};
+	if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [task]()
+	    {
+		    return uam::StageWorkspaceDeletion(*task)
+		        ? uam::query_handler_async::AsyncSuccess({})
+		        : uam::query_handler_async::AsyncFailure(500, task->snapshot.status_line);
+	    },
+	    [this, browser, cb, task, unlock](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) { unlock(); return; }
+		    uam::CommitWorkspaceDeletion(m_app, *task);
+		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
+		    response = uam::query_handler_async::AsyncSuccess({
+		        {"deletedChatIds", task->deleted_ids},
+		        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
+		    // Acknowledge the committed deletion before serializing the sidebar or cleaning files.
+		    // The renderer can close confirmation and paint immediately while native work continues.
+		    cb->Success(response.body);
+		    response.callback_deferred = true;
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+		    if (!CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, nullptr,
+		        [task]()
+		        {
+			        (void)uam::CleanupWorkspaceDeletion(*task);
+			        return uam::query_handler_async::AsyncSuccess({});
+		        },
+		        [this, browser, task, unlock](uam::query_handler_async::AsyncCefResult& result)
+		        {
+			        unlock();
+			        m_app.status_line = result.ok ? task->snapshot.status_line
+			            : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			        uam::PushStateUpdateIfChanged(browser, m_app);
+		        })))
+		    {
+			    unlock();
+			    m_app.status_line = "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+		    }
+	    })) unlock();
 }
 
 void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -416,33 +525,30 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-	const std::string composer_text = m_app.composer_text;
-	const ChatHistorySyncService::ImportResult result =
-	    ChatHistorySyncService().ImportProviderChatsForFolder(m_app, folder_id);
-	ChatHistorySyncService().MergeSidebarChatsPreservingCurrent(m_app);
-	if (!selected_chat_id.empty())
-	{
-		ChatDomainService().SelectChatById(m_app, selected_chat_id);
-		m_app.composer_text = composer_text;
-	}
-	const std::string error_detail = uam::strings::Join(result.errors, " ");
-	if (!result.success)
-	{
-		m_app.status_line = result.partial()
-		                        ? "Imported " + std::to_string(result.imported_count) + " chat" + (result.imported_count == 1 ? "" : "s") + ", but some history could not be read: " + error_detail
-		                        : "Could not rescan native history: " + error_detail;
-	}
-	else
-	{
-		m_app.status_line = result.imported_count == 0
-		                        ? "No new chats found."
-		                        : "Imported " + std::to_string(result.imported_count) + " chat" +
-		                              (result.imported_count == 1 ? "." : "s.");
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"success", result.success}, {"partial", result.partial()}, {"errors", result.errors}, {"importedCount", result.imported_count}, {"scannedCount", result.total_count}}.dump());
+	const ChatFolder folder = *matched_folder;
+	const ProviderProfile* configured_profile = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+	const std::optional<ProviderProfile> profile = configured_profile != nullptr ? std::optional<ProviderProfile>(*configured_profile) : std::nullopt;
+	const std::size_t scan_offset = m_app.open_code_history_scan_offset;
+	std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+	std::erase_if(m_historyScanCancellations, [](const std::weak_ptr<std::stop_source>& pending) { return pending.expired(); });
+	m_historyScanCancellations.push_back(cancellation);
+	auto discovery = std::make_shared<ChatHistorySyncService::LocalHistoryDiscovery>();
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [folder, discovery, profile, scan_offset, cancellation]()
+	    {
+		    *discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, profile ? &*profile : nullptr, cancellation->get_token(), scan_offset);
+		    return uam::query_handler_async::AsyncSuccess({{"ok", true}});
+	    },
+	    [this, browser, folder, discovery, cb](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    if (!CefPostTask(TID_UI, new LocalHistoryImportTask(m_asyncLifetime, m_app, folder, discovery, browser, cb)))
+		    {
+			    response = uam::query_handler_async::AsyncFailure(503, "The history import task queue is unavailable.");
+			    return;
+		    }
+		    response.callback_deferred = true;
+	    });
 }
 
 void UamQueryHandler::HandlePreviewUnsortedWorkspaceFolders(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& /*payload*/, CefRefPtr<Callback> cb)

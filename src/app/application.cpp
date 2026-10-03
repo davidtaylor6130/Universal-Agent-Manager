@@ -402,6 +402,50 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 // Periodic poll
 // ---------------------------------------------------------------------------
 
+bool Application::PollHistoryDiscovery()
+{
+	bool changed = false;
+	if (m_historyDiscovery.valid())
+	{
+		if (m_historyDiscovery.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+		try
+		{
+			m_pendingHistoryDiscovery = m_historyDiscovery.get();
+		}
+		catch (const std::exception& error)
+		{
+			uam::diagnostics::Write(std::string("History discovery failed: ") + error.what());
+		}
+		m_nextHistoryDiscovery = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+	}
+	if (!m_pendingHistoryDiscovery.empty())
+	{
+		auto& [folder, discovery] = m_pendingHistoryDiscovery.back();
+		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, folder, discovery);
+		changed = result.imported_count > 0;
+		for (const std::string& error : result.errors) uam::diagnostics::Write("History discovery: " + error);
+		if (!discovery.Pending())
+		{
+			for (const std::string& error : discovery.result.errors) uam::diagnostics::Write("History discovery: " + error);
+			m_pendingHistoryDiscovery.pop_back();
+		}
+		return changed;
+	}
+	if (std::chrono::steady_clock::now() >= m_nextHistoryDiscovery)
+	{
+		const ProviderProfile* configured = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+		const std::optional<ProviderProfile> profile = configured != nullptr ? std::optional<ProviderProfile>(*configured) : std::nullopt;
+		m_historyDiscovery = std::async(std::launch::async, [profile, scan_offset = m_app.open_code_history_scan_offset, stop_token = m_historyDiscoveryStop.get_token()]()
+		{
+			std::vector<std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>> results;
+			ChatFolder all_local_workspaces;
+			results.emplace_back(all_local_workspaces, ChatHistorySyncService().DiscoverProviderChatsForFolder(all_local_workspaces, profile ? &*profile : nullptr, stop_token, scan_offset));
+			return results;
+		});
+	}
+	return changed;
+}
+
 void Application::PollTick()
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -441,6 +485,7 @@ void Application::PollTick()
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
+	const bool history_discovery_changed = PollHistoryDiscovery();
 
 	// Poll the provider model catalog service for async model refresh completion.
 	bool model_catalog_changed = false;
@@ -450,7 +495,7 @@ void Application::PollTick()
 		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || remote_host_health_changed;
+	const bool runtime_state_changed = acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -477,7 +522,7 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	ScheduleNextUpdate(GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)));
+	ScheduleNextUpdate(m_pendingHistoryDiscovery.empty() ? GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)) : 16);
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -777,6 +822,12 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	m_historyDiscoveryStop.request_stop();
+	for (std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>& pending : m_pendingHistoryDiscovery)
+	{
+		pending.second.CancelPending();
+	}
+	m_pendingHistoryDiscovery.clear();
 	if (m_shutdownComplete)
 	{
 		return;

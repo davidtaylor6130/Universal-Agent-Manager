@@ -702,6 +702,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       modelId: saved?.modelId ?? '',
       reviewerModelId: saved?.reviewerModelId ?? '',
       featurePreference: saved?.featurePreference === 'provider' ? 'provider' : 'uam',
+      hiddenModelIds: saved?.hiddenModelIds ?? [],
+      hiddenProviderIds: saved?.hiddenProviderIds ?? [],
       approvalMode: saved?.approvalMode ?? 'default',
       commandSafetyTier: saved?.commandSafetyTier ?? 'off',
       memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
@@ -1482,6 +1484,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 				  const providerWorkspace = providerSession?.workspaceDirectory || localWorkspace
 				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
 				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
+                  const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
@@ -1495,6 +1498,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     ? [defaultReasoningOption, ...liveReasoningOptions]
                     : liveReasoningOptions
                   const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier)
+                  const visibilityGroups = provider.id === 'opencode-cli'
+                    ? [...new Set(modelOptions.filter((option) => option.id).map((option) => option.id.split('/')[0]))]
+                    : []
+                  const toggleVisibility = (key: 'hiddenModelIds' | 'hiddenProviderIds', id: string) => {
+                    const hidden = defaults[key] ?? []
+                    updateProviderDefaults(provider.id, { ...defaults, [key]: hidden.includes(id) ? hidden.filter((value) => value !== id) : [...hidden, id] })
+                  }
                   const expanded = expandedDefaultProviders[provider.id] ?? false
                   const modeOptions = [
                     { id: 'default', label: 'Default', detail: 'Use the provider default mode' },
@@ -1512,6 +1522,29 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       actions={<IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                        {provider.id === 'opencode-cli' && (
+                          <details>
+                            <summary className="cursor-pointer py-2" style={{ color: 'var(--text)' }}>Model visibility</summary>
+                            {visibilityGroups.map((group) => (
+                              <details key={group} className="py-1">
+                                <summary className="cursor-pointer py-1" style={{ color: 'var(--text)' }}>{group}</summary>
+                                <label className="flex cursor-pointer items-center gap-2 py-2">
+                                  <input type="checkbox" checked={!defaults.hiddenProviderIds?.includes(group)} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
+                                  Show {group}
+                                </label>
+                                <div className="pl-6">
+                                  {modelOptions.filter((option) => option.id && option.id.split('/')[0] === group).map((option) => (
+                                    <label key={option.id} className="flex cursor-pointer items-center gap-2 py-2">
+                                      <input type="checkbox" checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                      {option.label}
+                                    </label>
+                                  ))}
+                                </div>
+                              </details>
+                            ))}
+                            <div className="py-2">Hidden models stay in existing chats.</div>
+                          </details>
+                        )}
                         <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
                           <div className="grid gap-1">
                             <div>Model</div>
@@ -1669,7 +1702,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           </Notice>
                         ) : (
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : providerAcp?.availableModels?.length ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
+                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
                           </span>
                         )}
                       </div>

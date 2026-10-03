@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stop_token>
+
 #include "common/provider/provider_runtime.h"
 
 class CopilotCliProviderRuntime final : public IProviderRuntime
@@ -34,4 +36,4 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,
     const std::filesystem::path& workspace_filter = {},
     const ProviderRuntimeHistoryLoadOptions& options = {},
-    std::string* error_out = nullptr);
+    std::string* error_out = nullptr, std::stop_token stop_token = {});

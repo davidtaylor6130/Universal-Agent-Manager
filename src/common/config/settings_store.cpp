@@ -352,6 +352,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			    defaults.small_model_mode ? "1" : "0",
 			    defaults.reviewer_model_id,
 			    defaults.feature_preference,
+			    nlohmann::json(defaults.hidden_model_ids).dump(),
+			    nlohmann::json(defaults.hidden_provider_ids).dump(),
 			}, kSettingsFieldDelimiterText));
 		}
 		return uam::strings::JoinNonEmpty(encoded_entries, kSettingsEntryDelimiterText);
@@ -380,6 +382,10 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
 			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");
+			const auto hidden_models = nlohmann::json::parse(uam::DecodedLineFieldOr(fields, 11, "[]"), nullptr, false);
+			const auto hidden_providers = nlohmann::json::parse(uam::DecodedLineFieldOr(fields, 12, "[]"), nullptr, false);
+			if (hidden_models.is_array()) for (const auto& id : hidden_models) if (id.is_string()) defaults.hidden_model_ids.push_back(id.get<std::string>());
+			if (hidden_providers.is_array()) for (const auto& id : hidden_providers) if (id.is_string()) defaults.hidden_provider_ids.push_back(id.get<std::string>());
 
 			std::string provider_id;
 			if (!TryNormalizeProviderChatDefaults(uam::DecodedLineFieldOr(fields, 0, ""), defaults, provider_id, defaults))

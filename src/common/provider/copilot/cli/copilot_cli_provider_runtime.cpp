@@ -96,7 +96,7 @@ namespace
 	std::optional<ChatSession> LoadCopilotSessionStateChat(
 	    const std::filesystem::path& session_directory,
 	    const std::filesystem::path& workspace_filter,
-	    const ProviderRuntimeHistoryLoadOptions& options)
+	    const ProviderRuntimeHistoryLoadOptions& options, std::string* error_out = nullptr, std::stop_token stop_token = {})
 	{
 		const std::string session_id = session_directory.filename().string();
 		if (!uam::chat_ids::IsSafeStorageChatId(session_id))
@@ -112,6 +112,14 @@ namespace
 		}
 
 		const std::filesystem::path events_file = session_directory / "events.jsonl";
+		std::error_code file_error;
+		const std::uintmax_t file_bytes = std::filesystem::file_size(events_file, file_error);
+		if (file_error || file_bytes > 64U * 1024U * 1024U)
+		{
+			if (error_out != nullptr && file_error != std::errc::no_such_file_or_directory)
+				*error_out = "Copilot transcript could not be read or exceeds the history size limit.";
+			return std::nullopt;
+		}
 
 		ChatSession chat;
 		chat.id = session_id;
@@ -121,11 +129,13 @@ namespace
 		chat.workspace_directory = workspace_directory;
 		bool has_user_message = false;
 		bool is_subagent = false;
+		bool malformed = false;
 
-		uam::io::ForEachTextFileLine(
+		const bool read = uam::io::ForEachTextFileLine(
 		    events_file,
 		    [&](const std::string& line)
 		    {
+			    if (stop_token.stop_requested()) return false;
 			    try
 			    {
 				    const nlohmann::json record = nlohmann::json::parse(line);
@@ -187,10 +197,12 @@ namespace
 			    catch (const nlohmann::json::exception&)
 			    {
 				    // Active Copilot sessions can end with one incomplete append-only JSONL record.
+				    malformed = true;
 			    }
 			    return true;
 		    });
 
+		if ((!read || (malformed && !has_user_message)) && error_out != nullptr) *error_out = "Copilot history contains no readable conversation records.";
 		if (is_subagent || !has_user_message)
 		{
 			return std::nullopt;
@@ -402,7 +414,7 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,
     const std::filesystem::path& workspace_filter,
     const ProviderRuntimeHistoryLoadOptions& options,
-    std::string* error_out)
+    std::string* error_out, std::stop_token stop_token)
 {
 	std::vector<ChatSession> chats;
 	if (error_out != nullptr) error_out->clear();
@@ -423,16 +435,16 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 		return chats;
 	}
 
-	constexpr auto directory_options = std::filesystem::directory_options::skip_permission_denied;
+	constexpr auto directory_options = std::filesystem::directory_options::none;
 	for (std::filesystem::directory_iterator it(session_state_root, directory_options, error), end;
-	     !error && it != end;
+	     !error && !stop_token.stop_requested() && it != end;
 	     it.increment(error))
 	{
 		if (!uam::paths::IsDirectoryEntryNoThrow(*it))
 		{
 			continue;
 		}
-		if (std::optional<ChatSession> chat = LoadCopilotSessionStateChat(it->path(), workspace_filter, options))
+		if (std::optional<ChatSession> chat = LoadCopilotSessionStateChat(it->path(), workspace_filter, options, error_out, stop_token))
 		{
 			chats.push_back(std::move(*chat));
 		}

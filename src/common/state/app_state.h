@@ -852,6 +852,7 @@ namespace uam
 		std::string memory_last_status;
 		MemoryActivityState memory_activity;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;
+		std::size_t open_code_history_scan_offset = 0;
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
