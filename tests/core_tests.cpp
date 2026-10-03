@@ -1034,6 +1034,7 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	};
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id, request, now)
 	               .value("pendingApproval", false));
+	UAM_ASSERT(!app.chats.front().interaction_at.empty());
 	const auto pending = uam::UamControlService::PendingApprovalForChat(app, root_id);
 	UAM_ASSERT(pending.has_value());
 	UAM_ASSERT_EQ(pending->questions.front().id, std::string("userQuestion"));
@@ -4350,6 +4351,73 @@ UAM_TEST(ChatImportUtilsBuildReadableTitlesFromPromptWrappers)
 	UAM_ASSERT_EQ(uam::BuildImportedChatTitle(messages, "2026-01-01T00:00:00Z", 8), std::string("First..."));
 	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({}, "2026-01-01T00:00:00Z", 80), std::string("Session 2026-01-01T00:00:00Z"));
 	UAM_ASSERT_EQ(uam::BuildFolderTitleFromProjectRoot(fs::path(" /tmp/workspace ")), std::string("workspace"));
+}
+
+UAM_TEST(ChatImportTitlesSkipCodexEventsAndExtractTheActualMemoryRequest)
+{
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = user;
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Remember this\n\nCurrent user request:\nFix hidden chats\nMore details";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user, request}, ""), std::string("Fix hidden chats"));
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Untitled Chat"));
+	UAM_ASSERT(uam::IsCodexSyntheticUserMessage("  <environment_context>test</environment_context>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("Explain <external_codex_apps_open_page>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request"));
+	user.content = "<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Actual request"));
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\nNo request label";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({request}, ""), std::string("Untitled Chat"));
+}
+
+UAM_TEST(LocalCodexListsRepairOnlyGeneratedWrapperTitlesAndKeepSourceHistory)
+{
+	TempDir temp("uam-codex-wrapper-titles");
+	ScopedEnvVar codex_home_env("CODEX_HOME", (temp.root / "codex-home").string());
+	ChatSession chat;
+	chat.id = "page-with-request";
+	chat.provider_id = "codex-cli";
+	chat.created_at = "2026-01-01T00:00:00Z";
+	chat.updated_at = chat.created_at;
+	Message page;
+	page.role = MessageRole::User;
+	page.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = page;
+	request.content = "Fix the import";
+	chat.messages = {page, request};
+	chat.title = uam::strings::TrimAndElide(page.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "page-helper-only";
+	chat.messages = {page};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-title";
+	chat.title = "My supplied name";
+	chat.messages = {page, request};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-wrapper-name";
+	chat.title = "<external_codex_apps_open_page>My notes";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "memory-title";
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nActual request";
+	chat.messages = {request};
+	chat.title = uam::strings::TrimAndElide(request.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	for (bool summaries : {false, true})
+	{
+		const std::vector<ChatSession> loaded = summaries ? ChatRepository::LoadLocalChatSummaries(temp.root) : ChatRepository::LoadLocalChats(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(4));
+		for (const ChatSession& item : loaded)
+		{
+			if (item.id == "page-with-request") UAM_ASSERT_EQ(item.title, std::string("Fix the import"));
+			if (item.id == "custom-title") UAM_ASSERT_EQ(item.title, std::string("My supplied name"));
+			if (item.id == "custom-wrapper-name") UAM_ASSERT_EQ(item.title, std::string("<external_codex_apps_open_page>My notes"));
+			if (item.id == "memory-title") UAM_ASSERT_EQ(item.title, std::string("Actual request"));
+		}
+	}
+	const auto source = ChatRepository::LoadLocalChat(temp.root, "page-helper-only");
+	UAM_ASSERT(source.has_value());
+	UAM_ASSERT_EQ(source->messages.front().content, page.content);
 }
 
 UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
@@ -12681,6 +12749,54 @@ UAM_TEST(DeletingRemoteChatsTombstonesOnlyTheirMachineScopedIdentity)
 	    temp.root / "native-import-tombstones.json"));
 }
 
+UAM_TEST(RemoteOpenCodeScansSkipOwnedPersistedAndLiveAttachments)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-remote-opencode");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ExecutionHost host;
+		host.id = "remote-host";
+		host.platform = "linux";
+		app.settings.execution_hosts.push_back(host);
+		ChatFolder folder;
+		folder.id = "remote-folder";
+		folder.directory = "/srv/workspace";
+		folder.execution_host_id = host.id;
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.title = "Keep my OpenCode title";
+		owner.provider_id = "opencode-cli";
+		owner.native_session_id = "ses_owned";
+		owner.workspace_directory = folder.directory;
+		owner.execution_host_id = host.id;
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = "ses_owned";
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+		    app, folder.id, {{"ses_owned", "Provider title", folder.directory, 1, 2}});
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "ses_owned").has_value());
+	}
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -13449,6 +13565,15 @@ UAM_TEST(RemoteCodexMetadataParsesExactThreadsAndRejectsInvalidOrOversizedLists)
 	UAM_ASSERT_EQ(sessions.front().directory, std::string(R"(C:\Users\david\project)"));
 	UAM_ASSERT_EQ(sessions.front().created_epoch_seconds, std::int64_t{1787951665});
 	UAM_ASSERT_EQ(sessions.front().updated_epoch_seconds, std::int64_t{1787952543});
+	nlohmann::json wrapped = result;
+	wrapped["data"] = nlohmann::json::array({result["data"][0]});
+	wrapped["data"][0].erase("name");
+	wrapped["data"][0]["preview"] = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nRemote request";
+	std::vector<ChatHistorySyncService::RemoteCodexSession> wrapped_sessions;
+	UAM_ASSERT(ChatHistorySyncService::AppendRemoteCodexSessions(wrapped, wrapped_sessions, &error));
+	UAM_ASSERT_EQ(wrapped_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(wrapped_sessions.front().title, std::string("Remote request"));
+
 
 	const nlohmann::json invalid = {
 	    {"data", nlohmann::json::array({
@@ -16835,6 +16960,7 @@ UAM_TEST(CodexNativeTranscriptsHideGeneratedContextAndKeepAuthoredPrompts)
 		"--- BEGIN UAM AGENT: malformed ---\nKeep this incomplete user text.",
 		"<environment_context>Keep this incomplete user text.",
 		"# AGENTS.md instructions for /user-authored without an XML policy block.",
+		"# AGENTS.md instructions for /synthetic\n<INSTRUCTIONS>\nPolicy.\n</INSTRUCTIONS>\nReply after policy.",
 	};
 	const std::vector<std::string> expected = {
 		"Reply QA-ONLY.",
@@ -16842,6 +16968,7 @@ UAM_TEST(CodexNativeTranscriptsHideGeneratedContextAndKeepAuthoredPrompts)
 		"--- BEGIN UAM AGENT: malformed ---\nKeep this incomplete user text.",
 		"<environment_context>Keep this incomplete user text.",
 		"# AGENTS.md instructions for /user-authored without an XML policy block.",
+		"Reply after policy.",
 	};
 	nlohmann::json items = nlohmann::json::array();
 	std::string rollout = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}}}}.dump() + "\n";
@@ -16880,6 +17007,225 @@ UAM_TEST(CodexNativeTranscriptsHideGeneratedContextAndKeepAuthoredPrompts)
 #endif
 }
 
+UAM_TEST(CodexScanSkipsOwnedWorktreeSessionsIncludingUnsavedAttachments)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-codex-worktree");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path codex_home = temp.root / "codex";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		fs::create_directories(codex_home / "sessions");
+		ScopedEnvVar home("CODEX_HOME", codex_home.string());
+		const std::string native_id = "11111111-1111-4111-8111-111111111111";
+		const nlohmann::json meta = {{"type", "session_meta"}, {"payload", {{"id", native_id}, {"cwd", worktree.string()}}}};
+		const nlohmann::json user = {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+		    {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Imported provider prompt"}}})}}}};
+		UAM_ASSERT(uam::io::WriteTextFile(codex_home / "sessions" / ("rollout-" + native_id + ".jsonl"), meta.dump() + "\n" + user.dump() + "\n"));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree-folder";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = "codex-cli";
+		owner.title = "My supplied title";
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = native_id;
+		owner.messages = {Message{MessageRole::User, "Original local prompt"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = native_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const auto result = ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, native_id).has_value());
+		if (link_mode == 0)
+		{
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->title, owner.title);
+			UAM_ASSERT_EQ(saved->messages.front().content, std::string("Original local prompt"));
+		}
+		if (link_mode == 3)
+		{
+			app.acp_sessions.clear();
+			UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
+		}
+	}
+#endif
+}
+
+UAM_TEST(AllProviderSidebarsPreferOwnedWorktreeChatsWithoutDeletingHistory)
+{
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-worktree-sidebar-duplicates");
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.provider_id = provider_id;
+		owner.workspace_directory = (temp.root / "project").string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep this name";
+		owner.pinned = true;
+		owner.messages = {Message{MessageRole::User, "Local request"}};
+		ChatSession imported = owner;
+		imported.id = owner.native_session_id;
+		imported.workspace_directory = worktree.string();
+		imported.workspace_worktree_directory.clear();
+		imported.title = "Provider generated title";
+		imported.messages.push_back(Message{MessageRole::Assistant, "Newer provider output"});
+		UAM_ASSERT_EQ(uam::chat_identity::NativeIdentityKeyForHistoryImport(owner), uam::chat_identity::NativeIdentityKeyForHistoryImport(imported));
+		for (const std::vector<ChatSession>& order : {std::vector<ChatSession>{owner, imported}, std::vector<ChatSession>{imported, owner}})
+		{
+			const auto deduped = ChatDomainService().DeduplicateChatsById(order);
+			UAM_ASSERT_EQ(deduped.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(deduped.front().id, owner.id);
+			UAM_ASSERT_EQ(deduped.front().title, owner.title);
+			UAM_ASSERT(deduped.front().pinned);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, imported));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.chats.front().id, owner.id);
+		UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, imported.id).has_value());
+		ChatSession separate = imported;
+		separate.workspace_directory = (temp.root / "another-workspace").string();
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+		separate = imported;
+		separate.execution_host_id = "remote";
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+	}
+}
+
+UAM_TEST(AllProviderDraftLinksMatchTheActualWorktree)
+{
+	TempDir temp("uam-all-provider-worktree-links");
+	const fs::path project = temp.root / "project";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(project);
+	fs::create_directories(worktree);
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		ChatSession local;
+		local.id = "chat-123-owner";
+		local.provider_id = provider_id;
+		local.workspace_directory = project.string();
+		local.workspace_worktree_directory = worktree.string();
+		local.messages = {Message{MessageRole::User, "Match this request"}};
+		ChatSession native = local;
+		native.id = "11111111-1111-4111-8111-111111111111";
+		native.native_session_id = native.id;
+		native.workspace_directory = worktree.string();
+		native.workspace_worktree_directory.clear();
+		const std::optional<std::string> matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native});
+		UAM_ASSERT(matched.has_value());
+		UAM_ASSERT_EQ(*matched, native.id);
+		native.workspace_directory = project.string();
+		UAM_ASSERT(!NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native}).has_value());
+	}
+}
+
+UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const std::string& provider_id : {std::string("gemini-cli"), std::string("copilot-cli")})
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-other-provider-owned-history");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path gemini_home = temp.root / "gemini";
+		const fs::path copilot_home = temp.root / "copilot";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ScopedEnvVar gemini_env("GEMINI_CLI_HOME", gemini_home.string());
+		ScopedEnvVar copilot_env("COPILOT_HOME", copilot_home.string());
+		ScopedEnvVar codex_env("CODEX_HOME", (temp.root / "codex").string());
+		const std::string session_id = "11111111-1111-4111-8111-111111111111";
+		if (provider_id == "gemini-cli")
+		{
+			const fs::path source = gemini_home / "tmp" / "owned-source";
+			fs::create_directories(source / "chats");
+			UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", worktree.string()));
+			const nlohmann::json history = {{"sessionId", session_id}, {"startTime", "2026-01-01T00:00:00Z"},
+			    {"lastUpdated", "2026-01-01T00:00:01Z"}, {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Provider request"}}})}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "session.json", history.dump()));
+		}
+		else
+		{
+			const fs::path source = copilot_home / "session-state" / session_id;
+			fs::create_directories(source);
+			UAM_ASSERT(uam::io::WriteTextFile(source / "workspace.yaml", "id: " + session_id + "\ncwd: " + nlohmann::json(worktree.string()).dump() + "\n"));
+			const nlohmann::json start = {{"type", "session.start"}, {"data", {{"sessionId", session_id}}}};
+			const nlohmann::json user = {{"type", "user.message"}, {"data", {{"content", "Provider request"}}}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "events.jsonl", start.dump() + "\n" + user.dump() + "\n"));
+		}
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = provider_id;
+		owner.native_session_id = session_id;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep my name";
+		owner.messages = {Message{MessageRole::User, "Original request"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = session_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService service;
+		const ChatHistorySyncService::ImportResult result = provider_id == "gemini-cli" ?
+		    service.ImportAllNativeChatsByDiscovery(app, false) : service.ImportProviderChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, session_id).has_value());
+	}
+#endif
+}
+
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -16912,10 +17258,20 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	const std::string other_id = "22222222-2222-4222-8222-222222222222";
 	const std::string subagent_id = "33333333-3333-4333-8333-333333333333";
 	const fs::path matching_rollout = rollout_dir / ("rollout-" + matching_id + ".jsonl");
-	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout, rollout(matching_id, workspace_root, "import me")));
+	const std::string requested_rollout = rollout(matching_id, workspace_root, "import me");
+	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout,
+	    rollout(matching_id, workspace_root, "<external_codex_apps_open_page>{}</external_codex_apps_open_page>") +
+	    requested_rollout.substr(requested_rollout.find('\n') + 1)));
+
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + other_id + ".jsonl"), rollout(other_id, other_workspace, "ignore me")));
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + subagent_id + ".jsonl"), rollout(subagent_id, workspace_root, "ignore subagent", true)));
 
+	const std::string helper_id = "44444444-4444-4444-8444-444444444444";
+	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + helper_id + ".jsonl"), rollout(helper_id, workspace_root,
+	    "<external_codex_apps_open_page>{}</external_codex_apps_open_page>")));
+	UAM_ASSERT(uam::io::WriteTextFile(codex_home / "session_index.jsonl",
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Earlier name"}}.dump() + "\nmalformed\n" +
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Supplied Codex name"}}.dump() + "\n"));
 	ScopedEnvVar codex_home_env("CODEX_HOME", codex_home.string());
 	uam::AppState app;
 	app.data_root = data_root;
@@ -16937,6 +17293,7 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	UAM_ASSERT_EQ(second.imported_count, 0);
 	std::optional<ChatSession> customized = ChatRepository::LoadLocalChat(data_root, matching_id);
 	UAM_ASSERT(customized.has_value());
+	UAM_ASSERT_EQ(customized->title, std::string("Supplied Codex name"));
 	customized->title = "My Codex title";
 	customized->pinned = true;
 	customized->linked_files = {"keep.md"};
@@ -18742,4 +19099,145 @@ UAM_TEST(OpenCodeCompactionImportUsesMetadataAndKeepsOrdinaryReplies)
 	UAM_ASSERT_EQ(parsed.messages.front().blocks.front().text, std::string("Remember the workspace."));
 	UAM_ASSERT_EQ(parsed.messages.back().content, std::string("Remember the workspace."));
 #endif
+}
+
+UAM_TEST(ChatBranchingReattachesNativeParentsToOwnedWorktreeFamilies)
+{
+	for (const std::string& provider : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-native-parent-branch-family");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-owner";
+		owner.provider_id = provider;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.branch_root_chat_id = owner.id;
+		owner.messages.push_back({MessageRole::User, "Keep root transcript"});
+		ChatSession branch = owner;
+		branch.id = "chat-branch";
+		branch.native_session_id = "22222222-2222-4222-8222-222222222222";
+		branch.workspace_directory = worktree.string();
+		branch.workspace_worktree_directory.clear();
+		branch.parent_chat_id = owner.native_session_id;
+		branch.branch_root_chat_id = owner.native_session_id;
+		branch.branch_from_message_index = 2;
+		branch.messages.push_back({MessageRole::User, "Keep branch transcript"});
+		ChatSession sibling = branch;
+		sibling.id = "chat-sibling";
+		sibling.native_session_id = "33333333-3333-4333-8333-333333333333";
+		std::vector<ChatSession> chats{branch, owner, sibling};
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.size(), static_cast<std::size_t>(3));
+		for (const int index : {0, 2})
+		{
+			UAM_ASSERT_EQ(chats[index].parent_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_root_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_from_message_index, 2);
+			UAM_ASSERT_EQ(chats[index].messages.size(), branch.messages.size());
+			UAM_ASSERT_EQ(chats[index].messages.front().content, branch.messages.front().content);
+			UAM_ASSERT_EQ(chats[index].messages.back().content, branch.messages.back().content);
+		}
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.front().parent_chat_id, owner.id);
+		for (int isolation = 0; isolation < 4; ++isolation)
+		{
+			chats = {owner, branch};
+			if (isolation == 0) chats.back().workspace_directory = project.string();
+			if (isolation == 1) chats.back().execution_host_id = "other-host";
+			if (isolation == 2) chats.back().provider_id = "other-provider";
+			if (isolation == 3)
+			{
+				ChatSession ambiguous = owner;
+				ambiguous.id = "chat-other-owner";
+				chats.insert(chats.begin(), ambiguous);
+			}
+			ChatBranching::Normalize(chats);
+			UAM_ASSERT(chats.back().parent_chat_id.empty());
+			UAM_ASSERT_EQ(chats.back().branch_root_chat_id, branch.id);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, branch));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, sibling));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
+		for (const ChatSession& chat : app.chats)
+		{
+			UAM_ASSERT_EQ(chat.branch_root_chat_id, owner.id);
+			if (chat.id != owner.id) UAM_ASSERT_EQ(chat.parent_chat_id, owner.id);
+		}
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, branch.id)->messages.size(), branch.messages.size());
+	}
+}
+
+UAM_TEST(InteractionRecencyIgnoresStreamTrafficAndPersistsStateEvents)
+{
+	using namespace uam::acp_detail;
+	TempDir temp("uam-interaction-state-events");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "interaction-recency-test";
+	chat.interaction_at = "2026-01-01 00:00:00";
+	app.chats.push_back(chat);
+	uam::AcpSessionState& session = EnsureAcpSessionForChat(app, app.chats.front());
+	session.processing = true;
+	session.turn_serial = 1;
+	AppendAssistantChunk(app.chats.front(), session, "Streaming");
+	AppendThoughtChunk(app.chats.front(), session, "Thinking");
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, chat.interaction_at);
+	session.pending_permission.request_id_json = "123";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT(!session.interaction_at.empty());
+	session.interaction_at = "2026-02-01 00:00:00";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT_EQ(session.interaction_at, std::string("2026-02-01 00:00:00"));
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, session.interaction_at);
+	const std::string utc_event = uam::time::InteractionTimestampNow();
+	UAM_ASSERT_EQ(utc_event.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(utc_event.back(), 'Z');
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01 00:00:00", utc_event), utc_event);
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01T00:00:00.000Z", utc_event), std::string("2099-01-01T00:00:00.000Z"));
+	CompletePromptTurn(session, "ready");
+	UAM_ASSERT(session.interaction_at != "2026-02-01 00:00:00");
+	ChatDomainService().AddMessage(app.chats.front(), MessageRole::User, "Next turn");
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.back(), 'Z');
+	const std::string input_recency = app.chats.front().interaction_at;
+	session.interaction_at = "2000-01-01T00:00:00.000Z";
+	UAM_ASSERT(SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, input_recency);
+}
+
+
+UAM_TEST(InteractionRecencySurvivesSummaryReloadAndHydration)
+{
+	TempDir temp("uam-interaction-recency");
+	ChatSession chat;
+	chat.id = "chat-interaction-persistence";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-03 00:00:00";
+	chat.interaction_at = "2026-01-02 00:00:00";
+	chat.messages.push_back(Message{MessageRole::Assistant, "Streaming data"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->interaction_at, chat.interaction_at);
+	std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, summaries.front()));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	chat.interaction_at = "2026-01-04 00:00:00";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
 }

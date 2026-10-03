@@ -9,10 +9,29 @@ namespace
 {
 	std::string StripPromptWrappers(std::string_view raw_value)
 	{
-		std::string_view value = uam::strings::TrimAsciiView(raw_value);
+		const std::string normalized = uam::CodexVisibleUserMessage(raw_value);
+		std::string_view value = uam::strings::TrimAsciiView(normalized);
 		if (value.empty())
 		{
 			return {};
+		}
+
+		if (uam::IsCodexSyntheticUserMessage(value)) return {};
+		constexpr std::string_view kPageClose = "</external_codex_apps_open_page>";
+		if (uam::strings::StartsWith(value, "<external_codex_apps_open_page>"))
+		{
+			const std::size_t page_end = value.find(kPageClose);
+			if (page_end != std::string_view::npos)
+				value = uam::strings::TrimAsciiView(value.substr(page_end + kPageClose.size()));
+		}
+
+		constexpr std::string_view kMemoryPreface = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:";
+		if (uam::strings::StartsWith(value, kMemoryPreface))
+		{
+			constexpr std::string_view kRequestLabel = "\nCurrent user request:\n";
+			const std::size_t request_pos = value.find(kRequestLabel);
+			if (request_pos == std::string_view::npos) return {};
+			value = uam::strings::TrimAsciiView(value.substr(request_pos + kRequestLabel.size()));
 		}
 
 		static constexpr const char* kUserPromptLabel = "User prompt:";
@@ -64,6 +83,67 @@ namespace
 
 namespace uam
 {
+
+	/// <summary>Remove complete native policy preambles and UAM's agent wrapper, retaining authored text.</summary>
+	std::string CodexVisibleUserMessage(std::string_view content)
+	{
+		std::string_view visible = uam::strings::TrimAsciiView(content);
+		bool stripped = false;
+		if (uam::strings::StartsWith(visible, "# AGENTS.md instructions for "))
+		{
+			const std::size_t opening = visible.find("\n<INSTRUCTIONS>");
+			const std::size_t closing = opening == std::string_view::npos ? std::string_view::npos : visible.find("\n</INSTRUCTIONS>", opening);
+			if (closing != std::string_view::npos)
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + std::string_view("\n</INSTRUCTIONS>").size()));
+				stripped = true;
+			}
+		}
+		if (uam::strings::StartsWith(visible, "<environment_context>"))
+		{
+			const std::size_t closing = visible.find("</environment_context>");
+			if (closing != std::string_view::npos)
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + std::string_view("</environment_context>").size()));
+				stripped = true;
+			}
+		}
+		if (uam::strings::StartsWith(visible, "--- BEGIN UAM AGENT: "))
+		{
+			constexpr std::string_view ending = "\n--- END UAM AGENT ---";
+			const std::size_t closing = visible.find(ending);
+			if (closing != std::string_view::npos &&
+			    (closing + ending.size() == visible.size() || visible[closing + ending.size()] == '\r' || visible[closing + ending.size()] == '\n'))
+			{
+				visible = uam::strings::TrimAsciiView(visible.substr(closing + ending.size()));
+				stripped = true;
+			}
+		}
+		constexpr std::string_view page_open = "<external_codex_apps_open_page>";
+		constexpr std::string_view page_close = "</external_codex_apps_open_page>";
+		if (uam::strings::StartsWith(visible, page_open))
+		{
+			const std::size_t closing = visible.find(page_close);
+			if (closing != std::string_view::npos && uam::strings::TrimAsciiView(visible.substr(closing + page_close.size())).empty()) return {};
+		}
+		return std::string(stripped ? visible : content);
+	}
+
+	bool IsCodexSyntheticUserMessage(std::string_view content)
+	{
+		const std::string_view value = uam::strings::TrimAsciiView(content);
+		return !value.empty() && CodexVisibleUserMessage(value).empty();
+	}
+
+	bool IsInjectedChatTitle(std::string_view title)
+	{
+		const std::string_view value = uam::strings::TrimAsciiView(title);
+		return IsCodexSyntheticUserMessage(value) ||
+		       uam::strings::StartsWith(value, "# AGENTS.md instructions for ") ||
+		       uam::strings::StartsWith(value, "<environment_context>") ||
+		       uam::strings::StartsWith(value, "<external_codex_apps_open_page>") ||
+		       uam::strings::StartsWith(value, "Relevant UAM memories. Treat these as durable");
+	}
 
 	std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length)
 	{

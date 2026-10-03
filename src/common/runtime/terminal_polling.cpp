@@ -145,6 +145,11 @@ bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app, uam::CliTermina
 	}
 
 	uam::MarkCliTerminalTurnIdle(terminal);
+	if (ChatSession* chat = ChatDomainService().FindChatById(app, synced_chat->id))
+	{
+		chat->interaction_at = uam::time::InteractionTimestampNow();
+		if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat)) app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
+	}
 	uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_marked_idle_from_synced_history", &terminal, "message_count=" + std::to_string(synced_message_count));
 
 	if (synced_chat->id != selected_chat_id)
@@ -421,6 +426,11 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	    uam::CliTerminalPromptConfirmsTurnIdle(terminal, prompt_indicates_idle, !output_for_frontend.empty(), GetAppTimeSeconds())))
 	{
 		uam::MarkCliTerminalTurnIdle(terminal);
+		if (ChatSession* chat = ChatDomainService().FindChatById(app, terminal_chat->id))
+		{
+			chat->interaction_at = uam::time::InteractionTimestampNow();
+			if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat)) app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
+		}
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity == ProviderTerminalActivity::Complete ? "turn_marked_idle_from_native_event" : "turn_marked_idle_from_prompt", &terminal);
 		changed = true;
 	}

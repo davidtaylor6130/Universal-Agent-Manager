@@ -95,6 +95,24 @@ namespace uam::time
 		return std::to_string(SteadyEpochNanosecondsNow());
 	}
 
+	/// UTC event timestamp with milliseconds, shared by all interaction sources.
+	inline std::string InteractionTimestampNow()
+	{
+		const std::int64_t epoch_ms = SystemEpochMillisecondsNow();
+		std::ostringstream out;
+		out << detail::FormatTimestamp(detail::UtcTimeSnapshot(static_cast<std::time_t>(epoch_ms / 1000)), "%Y-%m-%dT%H:%M:%S")
+		    << '.' << std::setfill('0') << std::setw(3) << epoch_ms % 1000 << 'Z';
+		return out.str();
+	}
+
+	/// Adopt the first runtime event over legacy local timestamps; preserve newer UTC user input.
+	inline std::string LatestInteractionTimestamp(const std::string& stored, const std::string& event)
+	{
+		if (event.empty()) return stored;
+		if (stored.size() != 24 || stored[10] != 'T' || stored.back() != 'Z') return event;
+		return stored > event ? stored : event;
+	}
+
 	inline std::string TimestampNow()
 	{
 		return LocalTimestampNow(kLocalDisplayTimestampFormat);

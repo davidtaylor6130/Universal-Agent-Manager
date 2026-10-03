@@ -503,6 +503,12 @@ namespace uam
 			    }))
 				return {.error = "Another UAM request is already waiting for approval in this chat."};
 			capability.pending_approval = std::move(pending);
+			if (ChatSession* chat = ChatDomainService().FindChatById(app, std::string(target_chat_id)))
+			{
+				chat->interaction_at = uam::time::InteractionTimestampNow();
+				if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+					app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
+			}
 			return {.deferred = true};
 		}
 
@@ -1045,6 +1051,7 @@ namespace uam
 				return fail("This request cannot be approved in Plan mode.");
 			const ChatSession before = *chat;
 			const ChatSession root_before = *root_chat;
+			chat->interaction_at = uam::time::InteractionTimestampNow();
 			ToolResult result;
 			if (user_question)
 			{

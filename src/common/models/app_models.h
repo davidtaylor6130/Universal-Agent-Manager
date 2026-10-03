@@ -315,6 +315,8 @@ struct ChatSession
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
+	/// Persisted recency of user input and runtime state events, excluding stream traffic.
+	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;

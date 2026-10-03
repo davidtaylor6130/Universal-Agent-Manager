@@ -234,6 +234,11 @@ std::string CodexCliProviderRuntime::ResolveInteractiveResumeId(const uam::AppSt
 	return uam::codex::ValidThreadIdOrEmpty(resolved_session_id.empty() ? chat.native_session_id : resolved_session_id);
 }
 
+std::unordered_map<std::string, std::string> CodexCliProviderRuntime::ReadNativeSessionNames() const
+{
+	return uam::codex::ReadSessionIndexNames();
+}
+
 std::vector<std::string> CodexCliProviderRuntime::SnapshotInteractiveSessionIds() const
 {
 	return uam::codex::ReadSessionIndexIds();
