@@ -2591,11 +2591,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {isClaudeProvider(currentProvider, currentProviderId) && (
-              <Notice key={`claude-structured:${currentProviderId}`} tone="warning" title="Limited structured support" dismissLabel="Dismiss Claude structured mode warning">
-                Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use the CLI fallback when a turn needs interaction.
-              </Notice>
-            )}
             {acp && !acp.running && !currentAcpError && acp.lastStopReason &&
               !messages.some((message) => message.stopReason === acp.lastStopReason) && (
                 <div role="status" className="conversation-interrupted">

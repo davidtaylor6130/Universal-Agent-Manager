@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -360,6 +361,9 @@ class IProviderRuntime
 	/// <summary>Build permission response.</summary>
 	virtual nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
 	    const std::string& option_id, bool cancelled) const;
+
+	/// <summary>Builds the provider's response to an active question, including cancellation.</summary>
+	virtual nlohmann::json OnAcpBuildUserInputResponse(const uam::AcpSessionState& session, const std::map<std::string, std::vector<std::string>>& answers) const;
 
 	/// <summary>Preserves provider recovery decisions that must not be automatically approved.</summary>
 	virtual bool AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState&) const { return false; }

@@ -315,6 +315,7 @@ namespace uam
 		std::string provider_request_method;
 		std::string provider_request_kind;
 		std::string codex_approval_payload_json;
+		std::string provider_input_json;
 		std::string tool_call_id;
 		std::string title;
 		std::string kind;
@@ -346,6 +347,7 @@ namespace uam
 	struct AcpPendingUserInputState
 	{
 		std::string request_id_json;
+		std::string provider_input_json;
 		std::string item_id;
 		std::string status;
 		std::string attention_kind;

@@ -27,9 +27,7 @@ import {
 
 function cleanToolOutput(value: string) {
   return value
-    .replace(/\\u001b\[[0-?]*[ -/]*[@-~]/gi, '')
     .replace(new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g'), '')
-    .replace(/\\n/g, '\n')
 }
 
 function managedTranscriptChatId(value: string) {

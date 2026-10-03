@@ -2396,7 +2396,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::string pending_user_input_request_id = session->pending_user_input.request_id_json;
 		if (session->running && !pending_user_input_request_id.empty())
 		{
-			(void)acp_detail::SendCodexUserInputResponse(*session, pending_user_input_request_id, {}, error_out);
+			(void)acp_detail::WriteAcpMessage(*session, ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpBuildUserInputResponse(*session, {}), error_out);
 		}
 
 		session->queued_prompt.clear();
@@ -3254,8 +3254,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
-		const nlohmann::json response =
-		    acp_detail::BuildCodexUserInputResponse(request_id_json, answers);
+		const nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpBuildUserInputResponse(*session, answers);
 		if (!PersistRemoteInteractionResponse(
 		        app, *chat, request_id_json, response, error_out) ||
 		    !acp_detail::WriteAcpMessage(*session, response, error_out))

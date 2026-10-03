@@ -391,6 +391,10 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		if (uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at) != chat.interaction_at && !SaveChatQuietly(app, chat))
 			ScheduleChatSave(app, chat, 0.0);
 	}
+	else if (session.waiting_for_user_input)
+	{
+		BeginAcpPendingWait(session, kAcpLifecycleWaitingUserInput);
+	}
 	else
 	{
 		ClearAcpPendingWait(session);

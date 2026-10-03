@@ -394,12 +394,12 @@ describe('working transcript', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     const onClose = vi.fn()
-    act(() => root.render(<ToolCallModal tool={{ ...tools[0], content: 'ok\\n\\u001b[31merror\\u001b[0m' }} onClose={onClose} />))
+    act(() => root.render(<ToolCallModal tool={{ ...tools[0], content: 'ok\n\u001b[31merror\u001b[0m' }} onClose={onClose} />))
 
     expect(document.body.querySelector('.uam-tool-modal')).toBeTruthy()
     const output = document.body.querySelector('.uam-tool-modal__output')
     expect(output?.textContent).toContain('error')
-    expect(output?.textContent).not.toContain('\\u001b')
+    expect(output?.textContent).not.toContain(String.fromCharCode(27))
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(onClose).toHaveBeenCalledOnce()
 

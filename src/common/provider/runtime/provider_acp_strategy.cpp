@@ -116,6 +116,11 @@ bool IProviderRuntime::OnAcpTryAutoApprove(uam::AcpSessionState& session, const 
 	return false;
 }
 
+nlohmann::json IProviderRuntime::OnAcpBuildUserInputResponse(const uam::AcpSessionState& session, const std::map<std::string, std::vector<std::string>>& answers) const
+{
+	return BuildCodexUserInputResponse(session.pending_user_input.request_id_json, answers);
+}
+
 std::string IProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
 {
 	if (mode_id == uam::approval_modes::kAcceptEditsApprovalMode)

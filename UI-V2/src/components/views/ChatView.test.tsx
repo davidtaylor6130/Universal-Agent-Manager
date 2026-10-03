@@ -3845,10 +3845,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
-    expect(host.textContent).toContain('model discovery is limited to the active model')
-    act(() => (host.querySelector('button[aria-label="Dismiss Claude structured mode warning"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Claude structured mode cannot surface interactive permission')
+    expect(host.textContent).not.toContain('Limited structured support')
 
     const planButton = host.querySelector('[data-mode-chip="Provider Plan"] button') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
@@ -3868,7 +3865,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('labels Claude structured permissions as provider managed', () => {
+  it('allows UAM to control Claude structured permissions', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
@@ -3915,10 +3912,13 @@ describe('ChatView', () => {
     act(() => agentButton.click())
 
     const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permissionButton.textContent).toContain('Provider managed')
-    expect(permissionButton.disabled).toBe(true)
+    expect(permissionButton.textContent).toContain('Default')
+    expect(permissionButton.disabled).toBe(false)
+    act(() => permissionButton.click())
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    act(() => reviewOption.click())
     expect(document.body.textContent).not.toContain('Accept Edits')
-    expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
     act(() => {

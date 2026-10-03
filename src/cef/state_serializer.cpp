@@ -16,6 +16,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/provider_ids.h"
@@ -682,22 +683,14 @@ namespace uam
 			nlohmann::json tool_calls_json = JsonArrayWithCapacity(tool_calls.size());
 			for (const AcpToolCallState& tool_call : tool_calls)
 			{
+				const std::string content = StateSerializer::ToolCallContentForFrontend(tool_call);
 				nlohmann::json tool_call_json = {
-				    {"id", tool_call.id},
-				    {"title", tool_call.title},
-				    {"kind", tool_call.kind},
-				    {"status", tool_call.status},
-				    {"contentDeferred", tool_call.content.size() > kInlineToolContentMaxBytes},
-				    {"isSubAgent", tool_call.is_sub_agent},
-				    {"subAgentId", tool_call.sub_agent_id},
-				    {"subAgentTitle", tool_call.sub_agent_title},
+				    {"id", tool_call.id}, {"title", tool_call.title}, {"kind", tool_call.kind}, {"status", tool_call.status}, {"contentDeferred", content.size() > kInlineToolContentMaxBytes}, {"isSubAgent", tool_call.is_sub_agent}, {"subAgentId", tool_call.sub_agent_id}, {"subAgentTitle", tool_call.sub_agent_title},
 				};
-				if (tool_call.content.size() <= kInlineToolContentMaxBytes)
-					tool_call_json["content"] = tool_call.content;
+				if (content.size() <= kInlineToolContentMaxBytes)
+					tool_call_json["content"] = content;
 				else
-					tool_call_json["contentDigest"] = std::to_string(std::hash<std::string>{}(tool_call.content)) + ":" +
-					                                  std::to_string(std::hash<std::string>{}(tool_call.permission_review_decision)) + ":" +
-					                                  std::to_string(std::hash<std::string>{}(tool_call.permission_review_reason));
+					tool_call_json["contentDigest"] = std::to_string(std::hash<std::string>{}(content)) + ":" + std::to_string(std::hash<std::string>{}(tool_call.permission_review_decision)) + ":" + std::to_string(std::hash<std::string>{}(tool_call.permission_review_reason));
 				tool_calls_json.push_back(std::move(tool_call_json));
 			}
 			return tool_calls_json;
@@ -1647,6 +1640,11 @@ namespace uam
 		return tool_call.args_json;
 	}
 
+	std::string StateSerializer::ToolCallContentForFrontend(const AcpToolCallState& tool_call)
+	{
+		return ToolCallContentForFrontend(acp_detail::PersistedToolCallFromAcpToolCall(tool_call));
+	}
+
 	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(
 	    std::string_view content, std::size_t requested_offset)
 	{
@@ -1749,7 +1747,7 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
-		j["structuredPermissionControl"] = profile.supports_structured && profile.structured_protocol != uam::provider_profile_constants::kProtocolClaudeCodeStreamJson ? "uam" : "provider";
+		j["structuredPermissionControl"] = profile.supports_structured ? "uam" : "provider";
 		j["terminalPermissionControl"] = "provider";
 		j["nativeGoalCommand"] = profile.native_goal_command;
 		

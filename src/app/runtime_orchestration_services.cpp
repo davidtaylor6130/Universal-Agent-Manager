@@ -21,6 +21,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_session_index.h"
+#include "common/provider/codex/cli/codex_tool_item.h"
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/base/gemini_history_loader.h"
@@ -2770,20 +2771,25 @@ try
 					assistant_message.blocks.push_back({"assistant_text", text, "", ""});
 				}
 			}
-			else if ((type == "commandExecution" || type == "fileChange") &&
-			         item.contains("id") && item["id"].is_string())
+			else if (uam::acp_tool_items::IsCodexToolItemType(type) && item.contains("id") && item["id"].is_string())
 			{
+				for (const char* field : {"command", "status"})
+				{
+					const nlohmann::json* value = uam::nlohmann_json::FindField(item, field);
+					if (value != nullptr && !value->is_null() && !value->is_string())
+					{
+						transcript.error = "Codex returned malformed tool history.";
+						transcript.messages.clear();
+						return transcript;
+					}
+				}
 				ToolCall tool;
 				tool.id = item["id"].get<std::string>();
-				tool.name = type == "commandExecution"
-				    ? item.value("command", "Command output")
-				    : "File changes";
-				tool.status = item.value("status", "completed");
-				if (item.contains("aggregatedOutput"))
-				{
-					const nlohmann::json& output = item["aggregatedOutput"];
-					tool.result_text = output.is_string() ? output.get<std::string>() : output.dump();
-				}
+				tool.name = uam::codex::ToolItemTitle(item);
+				tool.args_json = uam::codex::ToolItemArguments(item);
+				tool.status = uam::nlohmann_json::TrimmedStringValueOr(item, "status", "completed");
+				tool.result_text = uam::codex::ToolItemContent(item);
+				ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).ApplyNativeToolMetadata(tool, item);
 				assistant_message.tool_calls.push_back(std::move(tool));
 				assistant_message.blocks.push_back({"tool_call", "", assistant_message.tool_calls.back().id, ""});
 			}

@@ -5332,7 +5332,7 @@ UAM_TEST(AcpToolItemHelpersClassifyCodexItemTypes)
 {
 	using namespace uam::acp_tool_items;
 
-	UAM_ASSERT_EQ(kCodexToolItemTypes.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(kCodexToolItemTypes.size(), static_cast<std::size_t>(11));
 	UAM_ASSERT_EQ(kWholeItemContentTypes.size(), static_cast<std::size_t>(4));
 	UAM_ASSERT(IsCodexToolItemType(kCommandExecution));
 	UAM_ASSERT(IsCodexToolItemType(kFileChange));
@@ -11602,14 +11602,14 @@ UAM_TEST(ClaudeStructuredArgvIgnoresUamCommandSafetyTier)
 	chat.command_safety_tier = "acceptEdits";
 
 	const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(9));
+	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(11));
 	UAM_ASSERT_EQ(argv[0], std::string("claude"));
-	UAM_ASSERT_EQ(argv[7], std::string("--permission-mode"));
-	UAM_ASSERT_EQ(argv[8], std::string("default"));
+	UAM_ASSERT_EQ(argv[9], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(argv[10], std::string("default"));
 
 	chat.approval_mode = "plan";
 	const std::vector<std::string> plan_argv = uam::BuildAcpLaunchArgvForTests(chat);
-	UAM_ASSERT_EQ(plan_argv[8], std::string("plan"));
+	UAM_ASSERT_EQ(plan_argv[10], std::string("plan"));
 #endif
 }
 
@@ -13920,6 +13920,66 @@ UAM_TEST(RemoteCodexTranscriptMapsMessagesAndRejectsMalformedOrOversizedHistory)
 #endif
 }
 
+UAM_TEST(CodexCurrentToolItemsRetainArgumentsAndResultsAcrossLiveSaveAndRemoteReload)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-tools");
+	const std::string thread_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	const std::string large_result = "  first\n" + std::string(80000, 'x') + "\nC:\\new\\notes";
+	const nlohmann::json items = nlohmann::json::array({
+	    {{"id", "cmd"}, {"type", "commandExecution"}, {"status", "completed"}, {"command", "cat large.txt"}, {"cwd", "/workspace"}, {"aggregatedOutput", large_result}, {"exitCode", 0}},
+	    {{"id", "patch"}, {"type", "fileChange"}, {"status", "completed"}, {"changes", nlohmann::json::array({{{"path", "main.cpp"}, {"diff", "- old\n+ new\n"}, {"kind", {{"type", "update"}}}}})}},
+	    {{"id", "mcp"}, {"type", "mcpToolCall"}, {"status", "completed"}, {"tool", "inspect"}, {"server", "local"}, {"arguments", {{"path", R"(C:\new\notes)"}}}, {"result", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", large_result}}})}, {"structuredContent", {{"count", 42}}}}}},
+	    {{"id", "dynamic"}, {"type", "dynamicToolCall"}, {"status", "completed"}, {"tool", "custom"}, {"arguments", {{"value", 42}}}, {"contentItems", nlohmann::json::array({{{"type", "inputText"}, {"text", "Detailed result"}}})}, {"success", true}},
+	    {{"id", "output"}, {"type", "functionCallOutput"}, {"name", "exec"}, {"output", "full tool output"}},
+	    {{"id", "search"}, {"type", "webSearch"}, {"query", "docs"}, {"results", nlohmann::json::array({{{"url", "https://example.com"}, {"title", "Source"}}})}},
+	    {{"id", "image"}, {"type", "imageView"}, {"path", "image.png"}},
+	});
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "codex-tools";
+	chat.provider_id = "codex-cli";
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.chat_id = chat.id;
+	session.codex_thread_id = thread_id;
+	session.session_id = thread_id;
+	session.processing = true;
+	session.running = true;
+	for (const nlohmann::json& item : items)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json{{"method", "item/completed"}, {"params", {{"threadId", thread_id}, {"item", item}}}}.dump()));
+	}
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", thread_id}, {"turn", {{"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls.size(), items.size());
+	const ChatHistorySyncService::RemoteCodexTranscript parsed = ChatHistorySyncService::ParseRemoteCodexTranscript({{"thread", {{"id", thread_id}, {"cwd", "/workspace"}, {"turns", nlohmann::json::array({{{"items", items}}})}}}});
+	UAM_ASSERT(parsed.success);
+	UAM_ASSERT_EQ(parsed.messages[0].tool_calls.size(), items.size());
+	for (std::size_t index = 0; index < items.size(); ++index)
+	{
+		const ToolCall& live = app.chats.front().messages[0].tool_calls[index];
+		const ToolCall& restored = parsed.messages[0].tool_calls[index];
+		UAM_ASSERT_EQ(live.args_json, restored.args_json);
+		UAM_ASSERT_EQ(live.result_text, restored.result_text);
+		UAM_ASSERT_EQ(live.status, restored.status);
+		UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentForFrontend(session.tool_calls[index]), uam::StateSerializer::ToolCallContentForFrontend(restored));
+	}
+	UAM_ASSERT_EQ(parsed.messages[0].tool_calls[0].result_text, large_result);
+	UAM_ASSERT_EQ(nlohmann::json::parse(parsed.messages[0].tool_calls[1].result_text)["changes"][0]["diff"], nlohmann::json("- old\n+ new\n"));
+	UAM_ASSERT_EQ(nlohmann::json::parse(parsed.messages[0].tool_calls[2].result_text)["result"]["structuredContent"]["count"], nlohmann::json(42));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, app.chats.front()));
+	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(reloaded.size(), std::size_t{1});
+	for (std::size_t index = 0; index < items.size(); ++index)
+	{
+		UAM_ASSERT_EQ(reloaded[0].messages[0].tool_calls[index].result_text, parsed.messages[0].tool_calls[index].result_text);
+		UAM_ASSERT_EQ(reloaded[0].messages[0].tool_calls[index].args_json, parsed.messages[0].tool_calls[index].args_json);
+	}
+#endif
+}
+
 UAM_TEST(ForgetResolvedNativeSessionForChatClearsProviderSwitchResidualMapping)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -14784,7 +14844,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	claude_chat.model_id = "sonnet";
 	claude_chat.approval_mode = "plan";
 	const std::vector<std::string> claude_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
-	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(17));
+	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(19));
 	UAM_ASSERT_EQ(claude_argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(claude_argv[1], std::string("-p"));
 	UAM_ASSERT_EQ(claude_argv[2], std::string("--output-format"));
@@ -14792,18 +14852,20 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(claude_argv[4], std::string("--input-format"));
 	UAM_ASSERT_EQ(claude_argv[5], std::string("stream-json"));
 	UAM_ASSERT_EQ(claude_argv[6], std::string("--verbose"));
-	UAM_ASSERT_EQ(claude_argv[7], std::string("--permission-mode"));
-	UAM_ASSERT_EQ(claude_argv[8], std::string("plan"));
-	UAM_ASSERT_EQ(claude_argv[9], std::string("--model"));
-	UAM_ASSERT_EQ(claude_argv[10], std::string("sonnet"));
-	UAM_ASSERT_EQ(claude_argv[11], std::string("--resume"));
-	UAM_ASSERT_EQ(claude_argv[12], std::string("claude-session-2"));
-	UAM_ASSERT_EQ(claude_argv[13], std::string("--mcp-config"));
-	UAM_ASSERT(nlohmann::json::parse(claude_argv[14])["mcpServers"].contains("uam-computer"));
-	UAM_ASSERT_EQ(claude_argv[15], std::string("--allowedTools"));
-	UAM_ASSERT_EQ(claude_argv[16], std::string("mcp__uam-computer__computer_observe,mcp__uam-computer__computer_action"));
+	UAM_ASSERT_EQ(claude_argv[7], std::string("--permission-prompt-tool"));
+	UAM_ASSERT_EQ(claude_argv[8], std::string("stdio"));
+	UAM_ASSERT_EQ(claude_argv[9], std::string("--permission-mode"));
+	UAM_ASSERT_EQ(claude_argv[10], std::string("plan"));
+	UAM_ASSERT_EQ(claude_argv[11], std::string("--model"));
+	UAM_ASSERT_EQ(claude_argv[12], std::string("sonnet"));
+	UAM_ASSERT_EQ(claude_argv[13], std::string("--resume"));
+	UAM_ASSERT_EQ(claude_argv[14], std::string("claude-session-2"));
+	UAM_ASSERT_EQ(claude_argv[15], std::string("--mcp-config"));
+	UAM_ASSERT(nlohmann::json::parse(claude_argv[16])["mcpServers"].contains("uam-computer"));
+	UAM_ASSERT_EQ(claude_argv[17], std::string("--allowedTools"));
+	UAM_ASSERT_EQ(claude_argv[18], std::string("mcp__uam-computer__computer_observe,mcp__uam-computer__computer_action"));
 	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
-	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
+	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
 
 	ChatSession opencode_chat;
 	opencode_chat.id = "opencode-chat";
@@ -14852,8 +14914,8 @@ UAM_TEST(ProviderCancelStrategyUsesWireMessageOrStopFallback)
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	const nlohmann::json claude_cancel = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kClaudeCli).OnAcpBuildCancel(session, 1, method);
-	UAM_ASSERT(claude_cancel.is_null());
-	UAM_ASSERT(method.empty());
+	UAM_ASSERT_EQ(claude_cancel["request"]["subtype"], nlohmann::json("interrupt"));
+	UAM_ASSERT_EQ(method, std::string("claude/interrupt"));
 #endif
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -14945,10 +15007,173 @@ UAM_TEST(ClaudeStreamJsonMessagesUpdateChatAndSession)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"user","session_id":"claude-session-3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"done"}]}]}})"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].status, std::string("completed"));
-	UAM_ASSERT(app.chats.front().messages[0].tool_calls[0].result_text.find("Result:\ndone") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].result_text, std::string("done"));
+	UAM_ASSERT_EQ(nlohmann::json::parse(app.chats.front().messages[0].tool_calls[0].args_json)["file_path"], nlohmann::json("README.md"));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-3","result":"Finished.","total_cost_usd":0.1})"));
 	UAM_ASSERT(!session.processing);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("ready"));
+#endif
+}
+
+UAM_TEST(ClaudeControlHandshakeDiscoversModelsAndRoutesPermissionsAndQuestions)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-control");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(temp.root);
+	ChatSession chat;
+	chat.id = "claude-control";
+	chat.provider_id = "claude-cli";
+	chat.command_safety_tier = "off";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.chat_id = chat.id;
+	session.running = true;
+	session.processing = true;
+	session.protocol_kind = "claude-code-stream-json";
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	const nlohmann::json initialize = runtime.OnAcpBuildInitialize(session, 7);
+	UAM_ASSERT_EQ(initialize["request"]["subtype"], nlohmann::json("initialize"));
+	UAM_ASSERT(!session.initialized);
+	session.initialize_request_id = 7;
+	session.pending_request_methods[7] = "initialize";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_response","response":{"subtype":"success","request_id":"999","response":{}}})"));
+	UAM_ASSERT(!session.initialized);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_response","response":{"subtype":"success","request_id":"7","response":{"models":[{"value":"opus","displayName":"Opus","description":"Provider model"},{"value":"sonnet","displayName":"Sonnet"}]}}})"));
+	UAM_ASSERT(session.initialized);
+	UAM_ASSERT_EQ(session.initialize_request_id, 0);
+	UAM_ASSERT_EQ(session.available_models.size(), std::size_t{2});
+	UAM_ASSERT_EQ(session.available_models[0].id, std::string("opus"));
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetCachedProviderModels(chat.provider_id, chat.workspace_directory).size(), std::size_t{2});
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeProvider(ProviderProfileStore::DefaultClaudeProfile())["structuredPermissionControl"], nlohmann::json("uam"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"bash-1","input":{"command":"printf '%s' 'C:\\new\\notes'","timeout":1000}}})"));
+	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT_EQ(session.pending_permission.kind, std::string("execute"));
+	const nlohmann::json allow = runtime.OnAcpBuildPermissionResponse(session, "allow", false);
+	UAM_ASSERT_EQ(allow["response"]["request_id"], nlohmann::json("permission-1"));
+	UAM_ASSERT_EQ(allow["response"]["response"]["updatedInput"], nlohmann::json::parse(session.pending_permission.provider_input_json));
+	UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "deny", false)["response"]["response"]["behavior"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "allow", true)["response"]["response"]["behavior"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "unknown", false)["response"]["response"]["behavior"], nlohmann::json("deny"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"permission-2","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1","input":{"file_path":"README.md","content":"text"}}})"));
+	UAM_ASSERT_EQ(session.queued_permissions.size(), std::size_t{1});
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_cancel_request","request_id":"permission-2"})"));
+	UAM_ASSERT(session.queued_permissions.empty());
+	UAM_ASSERT_EQ(session.pending_permission.tool_call_id, std::string("bash-1"));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"question-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"ask-1","input":{"questions":[{"header":"Scope","question":"Which scope?","multiSelect":false,"options":[{"label":"Focused","description":"One change"}]}]}}})"));
+	UAM_ASSERT(session.waiting_for_user_input);
+	UAM_ASSERT_EQ(session.pending_user_input.questions.size(), std::size_t{1});
+	const nlohmann::json answer = runtime.OnAcpBuildUserInputResponse(session, {{"0", {"Focused"}}});
+	UAM_ASSERT_EQ(answer["response"]["request_id"], nlohmann::json("question-1"));
+	UAM_ASSERT_EQ(answer["response"]["response"]["updatedInput"]["answers"]["Which scope?"], nlohmann::json("Focused"));
+	UAM_ASSERT(answer["response"]["response"]["updatedInput"].contains("questions"));
+	UAM_ASSERT_EQ(runtime.OnAcpBuildUserInputResponse(session, {})["response"]["response"]["behavior"], nlohmann::json("deny"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_cancel_request","request_id":"question-1"})"));
+	UAM_ASSERT(!session.waiting_for_user_input);
+	UAM_ASSERT(session.waiting_for_permission);
+#endif
+}
+
+UAM_TEST(ClaudeInstalledCliHandshakeSmoke)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	// Opt-in protocol check; starts only the selected CLI, with no inference or saved session.
+	const char* executable = std::getenv("UAM_TEST_CLAUDE_CLI");
+	if (executable == nullptr || *executable == '\0')
+		return;
+	TempDir temp("uam-claude-installed-cli");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(temp.root);
+	ChatSession chat;
+	chat.id = "claude-smoke";
+	chat.provider_id = "claude-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+	argv.front() = executable;
+	argv.insert(argv.end(), {"--no-session-persistence", "--strict-mcp-config", "--mcp-config", R"({"mcpServers":{}})", "--setting-sources", ""});
+	std::string error;
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &error));
+	session.running = true;
+	const bool sent = uam::acp_detail::SendInitialize(session, &error);
+	for (int attempt = 0; sent && !session.initialized && attempt < 1000; ++attempt)
+	{
+		(void)uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+		(void)uam::acp_detail::DrainStderr(app, session, app.chats.front());
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	const bool ready = session.initialized && uam::acp_detail::SendSessionSetupIfReady(app, session, app.chats.front());
+	process.StopStdioProcess(session, true);
+	process.CloseStdioProcessHandles(session);
+	UAM_ASSERT(sent);
+	UAM_ASSERT(ready);
+	UAM_ASSERT(session.session_ready);
+	UAM_ASSERT(!session.available_models.empty());
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetCachedProviderModels(chat.provider_id, chat.workspace_directory).size(), session.available_models.size());
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
+
+UAM_TEST(ClaudeThinkingErrorsAndInterruptKeepTranscriptAndSessionConsistent)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-result");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-result";
+	chat.provider_id = "claude-cli";
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.chat_id = chat.id;
+	session.running = true;
+	session.processing = true;
+	session.session_ready = true;
+	session.protocol_kind = "claude-code-stream-json";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Check the file."},{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"large.txt","offset":42}}]}})"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].thoughts, std::string("Check the file."));
+	const std::string output = "  indented\n" + std::string(20000, 'x') + "\nC:\\new\\notes\n";
+	const nlohmann::json tool_result = {{"type", "user"}, {"message", {{"content", nlohmann::json::array({{{"type", "tool_result"}, {"tool_use_id", "read-1"}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", output}}})}}})}}}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), tool_result.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].tool_calls[0].result_text, output);
+	UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentForFrontend(session.tool_calls[0]), uam::StateSerializer::ToolCallContentForFrontend(app.chats.front().messages[0].tool_calls[0]));
+	const nlohmann::json structured = nlohmann::json::array({{{"type", "text"}, {"text", "Screenshot"}}, {{"type", "image"}, {"source", {{"type", "base64"}, {"data", "image-data"}}}}});
+	nlohmann::json structured_result = tool_result;
+	structured_result["message"]["content"][0]["content"] = structured;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), structured_result.dump()));
+	UAM_ASSERT_EQ(nlohmann::json::parse(session.tool_calls[0].content), structured);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[{"type":"text","text":"Child response"}]}})"));
+	UAM_ASSERT(app.chats.front().messages[0].content.empty());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Budget exceeded"]})"));
+	UAM_ASSERT(session.last_error.find("Budget exceeded") != std::string::npos);
+
+	session.processing = false;
+	session.cancel_requested = true;
+	session.cancel_request_id = 8;
+	session.pending_request_methods[8] = "claude/interrupt";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_response","response":{"subtype":"success","request_id":"8","response":{}}})"));
+	UAM_ASSERT(session.cancel_requested);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","message":{"content":[{"type":"text","text":"Late response"}]}})"));
+	UAM_ASSERT(app.chats.front().messages[0].content.empty());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"success","is_error":false,"result":"Interrupted"})"));
+	UAM_ASSERT(!session.cancel_requested);
+	UAM_ASSERT_EQ(session.cancel_request_id, 0);
 	UAM_ASSERT_EQ(session.lifecycle_state, std::string("ready"));
 #endif
 }

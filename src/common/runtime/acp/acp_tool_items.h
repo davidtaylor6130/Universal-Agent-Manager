@@ -25,6 +25,12 @@ namespace uam::acp_tool_items
 	    kMcpToolCall,
 	    kDynamicToolCall,
 	    kCollabAgentToolCall,
+	    "functionCallOutput",
+	    "webSearch",
+	    "imageView",
+	    "imageGeneration",
+	    "sleep",
+	    "subAgentActivity",
 	});
 
 	inline constexpr auto kWholeItemContentTypes = std::to_array<std::string_view>({

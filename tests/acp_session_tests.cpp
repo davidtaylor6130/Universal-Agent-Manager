@@ -3677,8 +3677,9 @@ UAM_TEST(CodexAppServerItemsTolerateNullAndStructuredFields)
 
 	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "cmd-object"}, {"type", "commandExecution"}, {"command", "node"}, {"status", "completed"}, {"aggregatedOutput", {{"output", "done"}, {"exitCode", 0}}}}}}}});
 	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT(raw_session->tool_calls[1].content.find(R"("output":"done")") != std::string::npos);
-	UAM_ASSERT(raw_session->tool_calls[1].content.find(R"("exitCode":0)") != std::string::npos);
+	const nlohmann::json structured_output = nlohmann::json::parse(raw_session->tool_calls[1].content);
+	UAM_ASSERT_EQ(structured_output.at("output").get<std::string>(), std::string("done"));
+	UAM_ASSERT_EQ(structured_output.at("exitCode").get<int>(), 0);
 
 	process({{"jsonrpc", "2.0"}, {"method", "item/completed"}, {"params", {{"item", {{"id", "cmd-array"}, {"type", "commandExecution"}, {"command", "printf"}, {"status", "completed"}, {"aggregatedOutput", nlohmann::json::array({"line1", "line2"})}}}}}});
 	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(3));

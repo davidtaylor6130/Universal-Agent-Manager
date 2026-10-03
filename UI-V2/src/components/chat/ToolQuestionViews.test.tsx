@@ -46,6 +46,20 @@ const request: AcpPendingUserInput = {
 }
 
 describe('production tool details', () => {
+    it('preserves literal escapes and Windows paths in displayed and copied output', async () => {
+        const content = String.raw`{"path":"C:\\new\\notes","text":"line\nnext","escape":"\u001b[31m"}`
+        const copied: string[] = []
+        window.cefQuery = ({ request, onSuccess }) => {
+            const call = JSON.parse(request)
+            if (call.action === 'writeClipboardText') copied.push(call.payload.text)
+            onSuccess('{}')
+        }
+        await render(<ToolCallModal tool={{ ...tool, content, contentDeferred: false }} chatId="chat-1" onClose={vi.fn()} />)
+        expect(document.querySelector('pre')?.textContent).toBe(content)
+        await click('Copy loaded output')
+        expect(copied).toEqual([content])
+    })
+
     it('pages real output, keeps metadata in Details, and copies only loaded text including from Details', async () => {
         const offsets: number[] = []
         const copied: string[] = []
