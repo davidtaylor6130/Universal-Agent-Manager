@@ -1034,6 +1034,7 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	};
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id, request, now)
 	               .value("pendingApproval", false));
+	UAM_ASSERT(!app.chats.front().interaction_at.empty());
 	const auto pending = uam::UamControlService::PendingApprovalForChat(app, root_id);
 	UAM_ASSERT(pending.has_value());
 	UAM_ASSERT_EQ(pending->questions.front().id, std::string("userQuestion"));
@@ -18971,4 +18972,70 @@ UAM_TEST(ChatBranchingReattachesNativeParentsToOwnedWorktreeFamilies)
 		}
 		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, branch.id)->messages.size(), branch.messages.size());
 	}
+}
+
+UAM_TEST(InteractionRecencyIgnoresStreamTrafficAndPersistsStateEvents)
+{
+	using namespace uam::acp_detail;
+	TempDir temp("uam-interaction-state-events");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "interaction-recency-test";
+	chat.interaction_at = "2026-01-01 00:00:00";
+	app.chats.push_back(chat);
+	uam::AcpSessionState& session = EnsureAcpSessionForChat(app, app.chats.front());
+	session.processing = true;
+	session.turn_serial = 1;
+	AppendAssistantChunk(app.chats.front(), session, "Streaming");
+	AppendThoughtChunk(app.chats.front(), session, "Thinking");
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, chat.interaction_at);
+	session.pending_permission.request_id_json = "123";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT(!session.interaction_at.empty());
+	session.interaction_at = "2026-02-01 00:00:00";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT_EQ(session.interaction_at, std::string("2026-02-01 00:00:00"));
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, session.interaction_at);
+	const std::string utc_event = uam::time::InteractionTimestampNow();
+	UAM_ASSERT_EQ(utc_event.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(utc_event.back(), 'Z');
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01 00:00:00", utc_event), utc_event);
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01T00:00:00.000Z", utc_event), std::string("2099-01-01T00:00:00.000Z"));
+	CompletePromptTurn(session, "ready");
+	UAM_ASSERT(session.interaction_at != "2026-02-01 00:00:00");
+	ChatDomainService().AddMessage(app.chats.front(), MessageRole::User, "Next turn");
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.back(), 'Z');
+	const std::string input_recency = app.chats.front().interaction_at;
+	session.interaction_at = "2000-01-01T00:00:00.000Z";
+	UAM_ASSERT(SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, input_recency);
+}
+
+
+UAM_TEST(InteractionRecencySurvivesSummaryReloadAndHydration)
+{
+	TempDir temp("uam-interaction-recency");
+	ChatSession chat;
+	chat.id = "chat-interaction-persistence";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-03 00:00:00";
+	chat.interaction_at = "2026-01-02 00:00:00";
+	chat.messages.push_back(Message{MessageRole::Assistant, "Streaming data"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->interaction_at, chat.interaction_at);
+	std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, summaries.front()));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	chat.interaction_at = "2026-01-04 00:00:00";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
 }

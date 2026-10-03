@@ -85,6 +85,7 @@ namespace
 
 		chat.messages.push_back(std::move(message));
 		chat.updated_at = timestamp;
+		if (role == MessageRole::User) chat.interaction_at = uam::time::InteractionTimestampNow();
 
 		if (should_auto_replace_title)
 		{
@@ -631,6 +632,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	chat.folder_id = uam::strings::Trim(folder_id);
 	chat.created_at = uam::time::TimestampNow();
 	chat.updated_at = chat.created_at;
+	chat.interaction_at = uam::time::InteractionTimestampNow();
 	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
 	return chat;
@@ -785,6 +787,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		branch.messages.back().content = *replacement_content;
 	}
 	branch.updated_at = uam::time::TimestampNow();
+	branch.interaction_at = uam::time::InteractionTimestampNow();
 	branch.last_opened_at = branch.updated_at;
 	branch.title = BranchTitleFromMessage(branch.messages.back().content);
 	if (branch_from_git_worktree)
