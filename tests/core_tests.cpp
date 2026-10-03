@@ -4349,6 +4349,73 @@ UAM_TEST(ChatImportUtilsBuildReadableTitlesFromPromptWrappers)
 	UAM_ASSERT_EQ(uam::BuildFolderTitleFromProjectRoot(fs::path(" /tmp/workspace ")), std::string("workspace"));
 }
 
+UAM_TEST(ChatImportTitlesSkipCodexEventsAndExtractTheActualMemoryRequest)
+{
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = user;
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Remember this\n\nCurrent user request:\nFix hidden chats\nMore details";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user, request}, ""), std::string("Fix hidden chats"));
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Untitled Chat"));
+	UAM_ASSERT(uam::IsCodexSyntheticUserMessage("  <environment_context>test</environment_context>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("Explain <external_codex_apps_open_page>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request"));
+	user.content = "<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Actual request"));
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\nNo request label";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({request}, ""), std::string("Untitled Chat"));
+}
+
+UAM_TEST(LocalCodexListsRepairOnlyGeneratedWrapperTitlesAndKeepSourceHistory)
+{
+	TempDir temp("uam-codex-wrapper-titles");
+	ScopedEnvVar codex_home_env("CODEX_HOME", (temp.root / "codex-home").string());
+	ChatSession chat;
+	chat.id = "page-with-request";
+	chat.provider_id = "codex-cli";
+	chat.created_at = "2026-01-01T00:00:00Z";
+	chat.updated_at = chat.created_at;
+	Message page;
+	page.role = MessageRole::User;
+	page.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = page;
+	request.content = "Fix the import";
+	chat.messages = {page, request};
+	chat.title = uam::strings::TrimAndElide(page.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "page-helper-only";
+	chat.messages = {page};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-title";
+	chat.title = "My supplied name";
+	chat.messages = {page, request};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-wrapper-name";
+	chat.title = "<external_codex_apps_open_page>My notes";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "memory-title";
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nActual request";
+	chat.messages = {request};
+	chat.title = uam::strings::TrimAndElide(request.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	for (bool summaries : {false, true})
+	{
+		const std::vector<ChatSession> loaded = summaries ? ChatRepository::LoadLocalChatSummaries(temp.root) : ChatRepository::LoadLocalChats(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(4));
+		for (const ChatSession& item : loaded)
+		{
+			if (item.id == "page-with-request") UAM_ASSERT_EQ(item.title, std::string("Fix the import"));
+			if (item.id == "custom-title") UAM_ASSERT_EQ(item.title, std::string("My supplied name"));
+			if (item.id == "custom-wrapper-name") UAM_ASSERT_EQ(item.title, std::string("<external_codex_apps_open_page>My notes"));
+			if (item.id == "memory-title") UAM_ASSERT_EQ(item.title, std::string("Actual request"));
+		}
+	}
+	const auto source = ChatRepository::LoadLocalChat(temp.root, "page-helper-only");
+	UAM_ASSERT(source.has_value());
+	UAM_ASSERT_EQ(source->messages.front().content, page.content);
+}
+
 UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
 {
 #if defined(_WIN32)
@@ -13440,6 +13507,15 @@ UAM_TEST(RemoteCodexMetadataParsesExactThreadsAndRejectsInvalidOrOversizedLists)
 	UAM_ASSERT_EQ(sessions.front().directory, std::string(R"(C:\Users\david\project)"));
 	UAM_ASSERT_EQ(sessions.front().created_epoch_seconds, std::int64_t{1787951665});
 	UAM_ASSERT_EQ(sessions.front().updated_epoch_seconds, std::int64_t{1787952543});
+	nlohmann::json wrapped = result;
+	wrapped["data"] = nlohmann::json::array({result["data"][0]});
+	wrapped["data"][0].erase("name");
+	wrapped["data"][0]["preview"] = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nRemote request";
+	std::vector<ChatHistorySyncService::RemoteCodexSession> wrapped_sessions;
+	UAM_ASSERT(ChatHistorySyncService::AppendRemoteCodexSessions(wrapped, wrapped_sessions, &error));
+	UAM_ASSERT_EQ(wrapped_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(wrapped_sessions.front().title, std::string("Remote request"));
+
 
 	const nlohmann::json invalid = {
 	    {"data", nlohmann::json::array({
@@ -16783,10 +16859,20 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	const std::string other_id = "22222222-2222-4222-8222-222222222222";
 	const std::string subagent_id = "33333333-3333-4333-8333-333333333333";
 	const fs::path matching_rollout = rollout_dir / ("rollout-" + matching_id + ".jsonl");
-	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout, rollout(matching_id, workspace_root, "import me")));
+	const std::string requested_rollout = rollout(matching_id, workspace_root, "import me");
+	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout,
+	    rollout(matching_id, workspace_root, "<external_codex_apps_open_page>{}</external_codex_apps_open_page>") +
+	    requested_rollout.substr(requested_rollout.find('\n') + 1)));
+
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + other_id + ".jsonl"), rollout(other_id, other_workspace, "ignore me")));
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + subagent_id + ".jsonl"), rollout(subagent_id, workspace_root, "ignore subagent", true)));
 
+	const std::string helper_id = "44444444-4444-4444-8444-444444444444";
+	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + helper_id + ".jsonl"), rollout(helper_id, workspace_root,
+	    "<external_codex_apps_open_page>{}</external_codex_apps_open_page>")));
+	UAM_ASSERT(uam::io::WriteTextFile(codex_home / "session_index.jsonl",
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Earlier name"}}.dump() + "\nmalformed\n" +
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Supplied Codex name"}}.dump() + "\n"));
 	ScopedEnvVar codex_home_env("CODEX_HOME", codex_home.string());
 	uam::AppState app;
 	app.data_root = data_root;
@@ -16808,6 +16894,7 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	UAM_ASSERT_EQ(second.imported_count, 0);
 	std::optional<ChatSession> customized = ChatRepository::LoadLocalChat(data_root, matching_id);
 	UAM_ASSERT(customized.has_value());
+	UAM_ASSERT_EQ(customized->title, std::string("Supplied Codex name"));
 	customized->title = "My Codex title";
 	customized->pinned = true;
 	customized->linked_files = {"keep.md"};

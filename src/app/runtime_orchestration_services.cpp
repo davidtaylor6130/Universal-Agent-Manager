@@ -579,11 +579,6 @@ namespace
 		return true;
 	}
 
-	bool IsCodexSyntheticUserMessage(std::string_view content)
-	{
-		return uam::strings::StartsWith(uam::strings::TrimAsciiView(content), "<environment_context>");
-	}
-
 	std::string CodexMessageText(const nlohmann::json& payload)
 	{
 		const auto content_it = payload.find("content");
@@ -763,7 +758,7 @@ namespace
 					    return true;
 				    }
 				    std::string content = CodexMessageText(payload);
-				    if (content.empty() || (role == "user" && IsCodexSyntheticUserMessage(content)))
+				    if (content.empty() || (role == "user" && uam::IsCodexSyntheticUserMessage(content)))
 				    {
 					    return true;
 				    }
@@ -1522,6 +1517,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 		return result;
 	}
 
+	const std::unordered_map<std::string, std::string> session_names = uam::codex::ReadSessionIndexNames();
 	for (const fs::path& root : {uam::codex::CodexHomePath() / "sessions", uam::codex::CodexHomePath() / "archived_sessions"})
 	{
 		if (!uam::paths::IsDirectoryNoThrow(root))
@@ -1543,6 +1539,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 			{
 				continue;
 			}
+			const std::unordered_map<std::string, std::string>::const_iterator name = session_names.find(chat->native_session_id);
+			if (name != session_names.end() && !uam::IsInjectedChatTitle(name->second)) chat->title = name->second;
 			++result.total_count;
 			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, *chat, "");
 			if (native_key && SaveImportedNativeChat(app, import_index, *chat, *native_key, it->path().parent_path(), false))
@@ -2013,7 +2011,13 @@ bool ChatHistorySyncService::AppendRemoteCodexSessions(
 		if (value.contains("name") && value["name"].is_string())
 			session.title = value["name"].get<std::string>();
 		if (uam::strings::IsBlank(session.title))
-			session.title = value["preview"].get<std::string>();
+		{
+			Message prompt;
+			prompt.role = MessageRole::User;
+			prompt.content = value["preview"].get<std::string>();
+			session.title = uam::IsCodexSyntheticUserMessage(prompt.content) ? "Codex session " + id :
+			    uam::BuildImportedChatTitle({prompt}, "");
+		}
 		try
 		{
 			session.created_epoch_seconds = value["createdAt"].get<std::int64_t>();
@@ -2190,7 +2194,7 @@ try
 							AppendTranscriptText(text, part["text"].get<std::string>());
 					}
 				}
-				if (!IsCodexSyntheticUserMessage(text)) AppendTranscriptText(user_message.content, text);
+				if (!uam::IsCodexSyntheticUserMessage(text)) AppendTranscriptText(user_message.content, text);
 			}
 			else if (type == "agentMessage" && item.contains("text") &&
 			         item["text"].is_string())
