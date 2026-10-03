@@ -12739,6 +12739,54 @@ UAM_TEST(DeletingRemoteChatsTombstonesOnlyTheirMachineScopedIdentity)
 	    temp.root / "native-import-tombstones.json"));
 }
 
+UAM_TEST(RemoteOpenCodeScansSkipOwnedPersistedAndLiveAttachments)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-remote-opencode");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ExecutionHost host;
+		host.id = "remote-host";
+		host.platform = "linux";
+		app.settings.execution_hosts.push_back(host);
+		ChatFolder folder;
+		folder.id = "remote-folder";
+		folder.directory = "/srv/workspace";
+		folder.execution_host_id = host.id;
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.title = "Keep my OpenCode title";
+		owner.provider_id = "opencode-cli";
+		owner.native_session_id = "ses_owned";
+		owner.workspace_directory = folder.directory;
+		owner.execution_host_id = host.id;
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = "ses_owned";
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+		    app, folder.id, {{"ses_owned", "Provider title", folder.directory, 1, 2}});
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "ses_owned").has_value());
+	}
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -16824,6 +16872,225 @@ UAM_TEST(StartupSidebarLoadLeavesProviderHistoryForExplicitRescan)
 	ChatHistorySyncService().LoadSidebarChats(app);
 	UAM_ASSERT(app.chats.empty());
 	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root).empty());
+#endif
+}
+
+UAM_TEST(CodexScanSkipsOwnedWorktreeSessionsIncludingUnsavedAttachments)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-codex-worktree");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path codex_home = temp.root / "codex";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		fs::create_directories(codex_home / "sessions");
+		ScopedEnvVar home("CODEX_HOME", codex_home.string());
+		const std::string native_id = "11111111-1111-4111-8111-111111111111";
+		const nlohmann::json meta = {{"type", "session_meta"}, {"payload", {{"id", native_id}, {"cwd", worktree.string()}}}};
+		const nlohmann::json user = {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+		    {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Imported provider prompt"}}})}}}};
+		UAM_ASSERT(uam::io::WriteTextFile(codex_home / "sessions" / ("rollout-" + native_id + ".jsonl"), meta.dump() + "\n" + user.dump() + "\n"));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree-folder";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = "codex-cli";
+		owner.title = "My supplied title";
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = native_id;
+		owner.messages = {Message{MessageRole::User, "Original local prompt"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = native_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const auto result = ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, native_id).has_value());
+		if (link_mode == 0)
+		{
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->title, owner.title);
+			UAM_ASSERT_EQ(saved->messages.front().content, std::string("Original local prompt"));
+		}
+		if (link_mode == 3)
+		{
+			app.acp_sessions.clear();
+			UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
+		}
+	}
+#endif
+}
+
+UAM_TEST(AllProviderSidebarsPreferOwnedWorktreeChatsWithoutDeletingHistory)
+{
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-worktree-sidebar-duplicates");
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.provider_id = provider_id;
+		owner.workspace_directory = (temp.root / "project").string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep this name";
+		owner.pinned = true;
+		owner.messages = {Message{MessageRole::User, "Local request"}};
+		ChatSession imported = owner;
+		imported.id = owner.native_session_id;
+		imported.workspace_directory = worktree.string();
+		imported.workspace_worktree_directory.clear();
+		imported.title = "Provider generated title";
+		imported.messages.push_back(Message{MessageRole::Assistant, "Newer provider output"});
+		UAM_ASSERT_EQ(uam::chat_identity::NativeIdentityKeyForHistoryImport(owner), uam::chat_identity::NativeIdentityKeyForHistoryImport(imported));
+		for (const std::vector<ChatSession>& order : {std::vector<ChatSession>{owner, imported}, std::vector<ChatSession>{imported, owner}})
+		{
+			const auto deduped = ChatDomainService().DeduplicateChatsById(order);
+			UAM_ASSERT_EQ(deduped.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(deduped.front().id, owner.id);
+			UAM_ASSERT_EQ(deduped.front().title, owner.title);
+			UAM_ASSERT(deduped.front().pinned);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, imported));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.chats.front().id, owner.id);
+		UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, imported.id).has_value());
+		ChatSession separate = imported;
+		separate.workspace_directory = (temp.root / "another-workspace").string();
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+		separate = imported;
+		separate.execution_host_id = "remote";
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+	}
+}
+
+UAM_TEST(AllProviderDraftLinksMatchTheActualWorktree)
+{
+	TempDir temp("uam-all-provider-worktree-links");
+	const fs::path project = temp.root / "project";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(project);
+	fs::create_directories(worktree);
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		ChatSession local;
+		local.id = "chat-123-owner";
+		local.provider_id = provider_id;
+		local.workspace_directory = project.string();
+		local.workspace_worktree_directory = worktree.string();
+		local.messages = {Message{MessageRole::User, "Match this request"}};
+		ChatSession native = local;
+		native.id = "11111111-1111-4111-8111-111111111111";
+		native.native_session_id = native.id;
+		native.workspace_directory = worktree.string();
+		native.workspace_worktree_directory.clear();
+		const std::optional<std::string> matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native});
+		UAM_ASSERT(matched.has_value());
+		UAM_ASSERT_EQ(*matched, native.id);
+		native.workspace_directory = project.string();
+		UAM_ASSERT(!NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native}).has_value());
+	}
+}
+
+UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const std::string& provider_id : {std::string("gemini-cli"), std::string("copilot-cli")})
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-other-provider-owned-history");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path gemini_home = temp.root / "gemini";
+		const fs::path copilot_home = temp.root / "copilot";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ScopedEnvVar gemini_env("GEMINI_CLI_HOME", gemini_home.string());
+		ScopedEnvVar copilot_env("COPILOT_HOME", copilot_home.string());
+		ScopedEnvVar codex_env("CODEX_HOME", (temp.root / "codex").string());
+		const std::string session_id = "11111111-1111-4111-8111-111111111111";
+		if (provider_id == "gemini-cli")
+		{
+			const fs::path source = gemini_home / "tmp" / "owned-source";
+			fs::create_directories(source / "chats");
+			UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", worktree.string()));
+			const nlohmann::json history = {{"sessionId", session_id}, {"startTime", "2026-01-01T00:00:00Z"},
+			    {"lastUpdated", "2026-01-01T00:00:01Z"}, {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Provider request"}}})}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "session.json", history.dump()));
+		}
+		else
+		{
+			const fs::path source = copilot_home / "session-state" / session_id;
+			fs::create_directories(source);
+			UAM_ASSERT(uam::io::WriteTextFile(source / "workspace.yaml", "id: " + session_id + "\ncwd: " + nlohmann::json(worktree.string()).dump() + "\n"));
+			const nlohmann::json start = {{"type", "session.start"}, {"data", {{"sessionId", session_id}}}};
+			const nlohmann::json user = {{"type", "user.message"}, {"data", {{"content", "Provider request"}}}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "events.jsonl", start.dump() + "\n" + user.dump() + "\n"));
+		}
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = provider_id;
+		owner.native_session_id = session_id;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep my name";
+		owner.messages = {Message{MessageRole::User, "Original request"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = session_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService service;
+		const ChatHistorySyncService::ImportResult result = provider_id == "gemini-cli" ?
+		    service.ImportAllNativeChatsByDiscovery(app, false) : service.ImportProviderChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, session_id).has_value());
+	}
 #endif
 }
 

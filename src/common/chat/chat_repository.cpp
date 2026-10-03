@@ -8,6 +8,7 @@
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
@@ -2239,6 +2240,7 @@ namespace
 			RecoverChatFromBackup(data_root, entry.path(), primary_path, include_messages, migrated_chat_ids, chats, warning_out);
 		}
 
+		std::optional<std::unordered_map<std::string, std::string>> codex_names;
 		// Older imports used the first raw user event as their title. Read only
 		// affected transcripts, and leave explicit names and source files intact.
 		std::erase_if(chats, [&](ChatSession& chat)
@@ -2261,7 +2263,12 @@ namespace
 			});
 			if (helper_only) return true;
 			chat.title = uam::BuildImportedChatTitle(full->messages, chat.created_at);
-
+			if (uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				if (!codex_names) codex_names = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).ReadNativeSessionNames();
+				const std::unordered_map<std::string, std::string>::const_iterator name = codex_names->find(chat.native_session_id);
+				if (name != codex_names->end() && !uam::IsInjectedChatTitle(name->second)) chat.title = name->second;
+			}
 			return false;
 		});
 		std::ranges::sort(chats, ChatUpdatedNewestFirst);
