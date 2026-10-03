@@ -17741,6 +17741,118 @@ UAM_TEST(DeleteFolderRemovesNativeWorkspaceHistoryAndPreventsReimport)
 	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root).empty());
 }
 
+UAM_TEST(NativeWorkspaceDeletionKeepsBothTreesWhenStagingDestinationExists)
+{
+	TempDir temp("uam-native-workspace-collision");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path source = gemini_home / "tmp" / "project";
+	const fs::path staged = gemini_home / ".uam-deleted-project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	fs::create_directories(staged);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep"));
+	UAM_ASSERT(uam::io::WriteTextFile(staged / "history.json", "also keep"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder{"deleted", "Deleted", workspace.string(), false};
+	std::error_code error;
+	UAM_ASSERT(!ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+	UAM_ASSERT(error == std::errc::file_exists);
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	UAM_ASSERT(fs::exists(staged / "history.json"));
+}
+
+UAM_TEST(FolderDeletionRetainsJournalUntilNativeWorkspaceCanBeStaged)
+{
+	TempDir temp("uam-folder-native-staging-retry");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path source = gemini_home / "tmp" / "project";
+	const fs::path staged = gemini_home / ".uam-deleted-project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	fs::create_directories(staged);
+	fs::create_directories(workspace);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep until staged"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace.string(), &folder_id));
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	UAM_ASSERT(fs::exists(app.data_root / "deletion-transaction.json"));
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	UAM_ASSERT(!uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	fs::remove(staged);
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(!fs::exists(source));
+	UAM_ASSERT(!fs::exists(staged));
+	UAM_ASSERT(!fs::exists(app.data_root / "deletion-transaction.json"));
+}
+
+UAM_TEST(NativeWorkspaceDeletionRejectsMalformedRecoveryJournal)
+{
+	TempDir temp("uam-native-workspace-invalid-journal");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path source = gemini_home / "tmp" / "project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder{"deleted", "Deleted", temp.root.string(), false};
+	const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+	for (const std::string& invalid : {std::string("{"), nlohmann::json{{"source", source.string()}, {"staged", "yes"}}.dump(), nlohmann::json{{"source", temp.root.string()}}.dump()})
+	{
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(journal, invalid));
+		std::error_code error;
+		UAM_ASSERT(!ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(error == std::errc::invalid_argument);
+		UAM_ASSERT(fs::exists(source / "history.json"));
+		UAM_ASSERT(fs::exists(journal));
+	}
+}
+
+UAM_TEST(NativeWorkspaceDeletionResumesStagedCleanupWithoutDeletingNewHistory)
+{
+	for (const bool already_staged : {false, true})
+	{
+		TempDir temp("uam-native-workspace-staging-" + std::to_string(already_staged));
+		const fs::path gemini_home = temp.root / "gemini-home";
+		const fs::path workspace = temp.root / "workspace";
+		const fs::path source = gemini_home / "tmp" / "project";
+		const fs::path staged = gemini_home / ".uam-deleted-project";
+		ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder{"deleted", "Deleted", workspace.string(), false};
+		const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+		// Crash after rename, and again after partial recursive cleanup removed the marker.
+		fs::create_directories(staged / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(staged / "chats" / "remaining.json", "old"));
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"source", source.string()}, {"staged", already_staged}}.dump()));
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "new.json", "new"));
+		std::error_code error;
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(!error);
+		UAM_ASSERT(!fs::exists(staged));
+		UAM_ASSERT(fs::exists(source / "chats" / "new.json"));
+		// Crash after cleanup, before the enclosing transaction journal is removed.
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(fs::exists(source / "chats" / "new.json"));
+	}
+}
+
 UAM_TEST(DeleteFolderDoesNotRemoveUnrelatedNativeWorkspaceHistory)
 {
 	TempDir temp("uam-delete-folder-native-safety");
