@@ -10089,3 +10089,59 @@ UAM_TEST(OpenCodeDoomLoopRequiresUserDecision)
 	UAM_ASSERT(waiting_in_review);
 	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("pending"));
 }
+
+UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)
+{
+	for (const bool permission : {true, false})
+	{
+		TempDir temp("uam-interaction-replies");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "interaction-reply";
+		chat.provider_id = permission ? "gemini-cli" : "codex-cli";
+		chat.interaction_at = "2000-01-01 00:00:00";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState* session = owned.get();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = permission ? "gemini-acp" : "codex-app-server";
+		session->running = true;
+		session->processing = true;
+		session->interaction_at = chat.interaction_at;
+		session->pending_permission.request_id_json = "7";
+		session->pending_permission.options.push_back({"allow-once", "Allow once", "allow_once"});
+		session->waiting_for_permission = permission;
+		session->pending_user_input.request_id_json = "7";
+		session->waiting_for_user_input = !permission;
+		app.acp_sessions.push_back(std::move(owned));
+		std::string error;
+		const auto resolve = [&](const std::string& request_id)
+		{
+			return permission ? uam::ResolveAcpPermission(app, chat.id, request_id, "allow-once", false, &error)
+			                  : uam::ResolveAcpUserInput(app, chat.id, request_id, {{"scope", {"Focused"}}}, &error);
+		};
+		UAM_ASSERT(!resolve("stale"));
+		UAM_ASSERT(!resolve("7")); // No transport: retain both recency and the pending request.
+		UAM_ASSERT_EQ(app.chats.front().interaction_at, chat.interaction_at);
+		UAM_ASSERT_EQ(session->interaction_at, chat.interaction_at);
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+		auto& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(*session, temp.root, sink, &error));
+		const bool delivered = resolve("7");
+		process.StopStdioProcess(*session, true);
+		process.CloseStdioProcessHandles(*session);
+		UAM_ASSERT(delivered);
+		UAM_ASSERT(app.chats.front().interaction_at > chat.interaction_at);
+		UAM_ASSERT_EQ(session->interaction_at, app.chats.front().interaction_at);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->interaction_at, app.chats.front().interaction_at);
+		UAM_ASSERT(permission ? session->pending_permission.request_id_json.empty() : session->pending_user_input.request_id_json.empty());
+	}
+}

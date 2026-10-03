@@ -1047,6 +1047,7 @@ namespace
 		native.memory_last_processed_at = local.memory_last_processed_at;
 		native.goals = local.goals;
 		native.active_goal_id = local.active_goal_id;
+		native.interaction_at = local.interaction_at;
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{
 			native.last_opened_at = local.last_opened_at;

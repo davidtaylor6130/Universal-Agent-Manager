@@ -353,3 +353,37 @@ describe('chatSearch', () => {
   })
 
 })
+
+
+describe('interaction recency', () => {
+  it('orders events within a second and keeps equal event times stable', () => {
+    const a = { ...makeSession('a', 'A', null), interactionAt: new Date('2026-01-01T00:01:00.001Z') }
+    const b = { ...makeSession('b', 'B', null), interactionAt: new Date('2026-01-01T00:01:00.002Z') }
+    const context = { acpBindingBySessionId: { a: { processing: true }, b: { processing: true } } }
+    expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['b', 'a'])
+    a.interactionAt = b.interactionAt
+    expect(searchModel('', [], [b, a], undefined, context).activeSessionIds).toEqual(['a', 'b'])
+    expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['a', 'b'])
+  })
+
+  it('keeps streamed tools and assistant text from moving active chats', () => {
+    const a = { ...makeSession('a', 'A', null), interactionAt: new Date('2026-01-01T00:01:00Z') }
+    const b = { ...makeSession('b', 'B', null), interactionAt: new Date('2026-01-01T00:02:00Z') }
+    const context = { acpBindingBySessionId: { a: { processing: true }, b: { processing: true } } }
+    expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['b', 'a'])
+    a.updatedAt = new Date('2026-01-01T00:05:00Z')
+    expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['b', 'a'])
+    a.interactionAt = new Date('2026-01-01T00:06:00Z')
+    expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['a', 'b'])
+  })
+
+  it('uses state event recency for branch families', () => {
+    const a = { ...makeSession('a', 'A', null), interactionAt: new Date('2026-01-01T00:01:00Z') }
+    const b = { ...makeSession('b', 'B', null), interactionAt: new Date('2026-01-01T00:02:00Z') }
+    const branch = { ...makeSession('branch', 'Branch', null), branchRootChatId: 'a', interactionAt: new Date('2026-01-01T00:03:00Z') }
+    const context = { acpBindingBySessionId: { branch: { processing: true }, b: { processing: true } } }
+    expect(searchModel('', [], [b, branch, a], undefined, context).activeSessionIds).toEqual(['a', 'b'])
+    b.updatedAt = new Date('2026-01-01T00:09:00Z')
+    expect(searchModel('', [], [a, branch, b], undefined, context).activeSessionIds).toEqual(['a', 'b'])
+  })
+})

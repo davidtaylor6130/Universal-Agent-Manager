@@ -160,10 +160,9 @@ export function sessionMatchesChatSearchFilters(
 }
 
 function sessionRecentTime(session: Session): number {
-  // Sort by last interaction (updatedAt, bumped by C++ on every message append),
-  // NOT by selection time. lastOpenedAt is deliberately ignored: selecting a chat
-  // must not reorder the sidebar — chats move only on real activity. See issue #49.
-  const updatedAt = session.updatedAt.getTime()
+  // Streaming and selection do not change interaction recency. Older chats retain
+  // their saved recency until their first user input or runtime state event.
+  const updatedAt = (session.interactionAt ?? session.updatedAt).getTime()
   if (Number.isFinite(updatedAt)) {
     return updatedAt
   }

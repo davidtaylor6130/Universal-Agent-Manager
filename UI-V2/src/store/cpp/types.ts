@@ -104,6 +104,7 @@ export interface CppChat {
   importedReadOnly?: boolean
   createdAt: string
   updatedAt: string
+  interactionAt?: string
   lastOpenedAt?: string
   messageCount?: number
   messagesDigest?: string

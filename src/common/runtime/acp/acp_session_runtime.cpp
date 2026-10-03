@@ -2989,6 +2989,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		session->interaction_at = uam::time::InteractionTimestampNow();
+		chat->interaction_at = session->interaction_at;
+		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		acp_detail::StopPermissionReviewTasks(app, chat_id, request_id_json);
 		AdvanceAcpPermissionQueue(app, *session, *chat, error_out);
 		session->cancel_requested = false;
@@ -3031,6 +3034,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		session->interaction_at = uam::time::InteractionTimestampNow();
+		chat->interaction_at = session->interaction_at;
+		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		session->pending_user_input = AcpPendingUserInputState{};
 		session->waiting_for_user_input = false;
 		ClearAcpPendingWait(*session);

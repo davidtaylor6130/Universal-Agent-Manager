@@ -1230,6 +1230,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
 	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr)
+	{
+		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
+			persisted->interaction_at = uam::time::LatestInteractionTimestamp(persisted->interaction_at, active->interaction_at);
+	}
 	if (persisted != nullptr && persisted->execution_host_id != uam::execution_hosts::kLocalHostId)
 	{
 		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
@@ -1348,6 +1353,7 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
 	session.pending_request_methods.erase(session.prompt_request_id);
 	if (session.processing && session.turn_serial > 0)

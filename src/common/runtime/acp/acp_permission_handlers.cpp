@@ -17,6 +17,7 @@
 #include "common/utils/sensitive_text.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -387,6 +388,8 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	if (session.waiting_for_permission)
 	{
 		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
+		if (uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at) != chat.interaction_at && !SaveChatQuietly(app, chat))
+			ScheduleChatSave(app, chat, 0.0);
 	}
 	else
 	{

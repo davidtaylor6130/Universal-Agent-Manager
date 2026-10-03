@@ -346,6 +346,8 @@ namespace uam
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
+		std::string interaction_at;
+		std::string interaction_wait_request_id;
 		std::string chat_id;
 		std::string provider_id;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;

@@ -1,12 +1,14 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
+#include "common/utils/time_utils.h"
 
 namespace uam::acp_detail
 {
 
 void ResetAcpWaitState(AcpSessionState& session)
 {
+	session.interaction_wait_request_id.clear();
 	session.wait_started_time_s = 0.0;
 	session.wait_is_stale = false;
 	session.wait_stale_reason.clear();
@@ -102,6 +104,10 @@ void ClearAcpModelChangeRequest(AcpSessionState& session)
 void BeginAcpPendingWait(AcpSessionState& session, std::string_view lifecycle_state)
 {
 	const double now = GetAppTimeSeconds();
+	const std::string request_id = ActiveAcpWaitRequestId(session);
+	if (session.lifecycle_state != lifecycle_state || session.interaction_wait_request_id != request_id)
+		session.interaction_at = uam::time::InteractionTimestampNow();
+	session.interaction_wait_request_id = request_id;
 	session.wait_started_time_s = now;
 	session.last_runtime_activity_time_s = now;
 	session.wait_is_stale = false;

@@ -962,7 +962,7 @@ namespace
 
 	bool ChatScalarFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
+		return lhs.interaction_at == rhs.interaction_at && ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatBranchFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatDisplayFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatWorkspaceFieldsEquivalentForRecovery(lhs, rhs) &&
@@ -1190,6 +1190,7 @@ namespace
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
+		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.pinned = JsonBoolOrDefault(root.Find(kChatPinnedField), false);
 		chat.linked_files = JsonStringArrayOrEmpty(root.Find(kChatLinkedFilesField));
 		chat.workspace_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceDirectoryField));
@@ -1517,6 +1518,7 @@ namespace
 		{
 			chat.updated_at = chat.created_at;
 		}
+		if (chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
 		if (chat.last_opened_at.empty())
 		{
 			chat.last_opened_at = chat.updated_at;
@@ -1655,6 +1657,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetBool(root, kChatPinnedField, chat.pinned);
 	uam::json::SetValue(root, kChatLinkedFilesField, StringArrayToJson(chat.linked_files));
 	uam::json::SetString(root, kChatWorkspaceDirectoryField, chat.workspace_directory);
@@ -1846,6 +1849,7 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	}
 	uam::json::SetString(*summary, kChatLastOpenedAtField,
 	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
 
@@ -2003,6 +2007,7 @@ namespace
 
 	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
 	{
+		hydrated.interaction_at = summary.interaction_at;
 		if (summary.last_opened_at > hydrated.last_opened_at)
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.execution_host_id = summary.execution_host_id;
@@ -2076,8 +2081,11 @@ namespace
 		const std::uintmax_t source_size = fs::file_size(chat_path, error);
 		if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return;
 		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size);
-		if (summary.chat && summary.chat->id == chat.id && summary.chat->last_opened_at > chat.last_opened_at)
-			chat.last_opened_at = summary.chat->last_opened_at;
+		if (summary.chat && summary.chat->id == chat.id)
+		{
+			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
+			chat.interaction_at = summary.chat->interaction_at;
+		}
 	}
 
 	ChatSession BuildRecoveredChatFromBackup(const fs::path& backup_path, const LoadChatResult& backup_chat, bool include_messages, const std::string& recovered_id)
