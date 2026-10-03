@@ -8,6 +8,7 @@
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
@@ -16,6 +17,7 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "computer_use/computer_use_mcp_config.h"
+#include "core/chat_import_utils.h"
 
 #include <algorithm>
 #include <limits>
@@ -2238,6 +2240,37 @@ namespace
 			RecoverChatFromBackup(data_root, entry.path(), primary_path, include_messages, migrated_chat_ids, chats, warning_out);
 		}
 
+		std::optional<std::unordered_map<std::string, std::string>> codex_names;
+		// Older imports used the first raw user event as their title. Read only
+		// affected transcripts, and leave explicit names and source files intact.
+		std::erase_if(chats, [&](ChatSession& chat)
+		{
+			if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) ||
+			    !uam::IsInjectedChatTitle(chat.title)) return false;
+			LoadChatResult loaded;
+			if (!chat.messages_loaded) loaded = ParseLocalChatFile(AppPaths::UamChatFilePath(data_root, chat.id), true);
+			const ChatSession* full = chat.messages_loaded ? &chat : (loaded.chat ? &*loaded.chat : nullptr);
+			if (full == nullptr) return false;
+			const std::vector<Message>::const_iterator first_user = std::ranges::find_if(full->messages, [](const Message& message)
+			{
+				return message.role == MessageRole::User;
+			});
+			if (first_user == full->messages.end() ||
+			    chat.title != uam::strings::TrimAndElide(first_user->content, 48)) return false;
+			const bool helper_only = std::ranges::none_of(full->messages, [](const Message& message)
+			{
+				return message.role == MessageRole::User && !uam::IsCodexSyntheticUserMessage(message.content);
+			});
+			if (helper_only) return true;
+			chat.title = uam::BuildImportedChatTitle(full->messages, chat.created_at);
+			if (uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				if (!codex_names) codex_names = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).ReadNativeSessionNames();
+				const std::unordered_map<std::string, std::string>::const_iterator name = codex_names->find(chat.native_session_id);
+				if (name != codex_names->end() && !uam::IsInjectedChatTitle(name->second)) chat.title = name->second;
+			}
+			return false;
+		});
 		std::ranges::sort(chats, ChatUpdatedNewestFirst);
 		return chats;
 	}
