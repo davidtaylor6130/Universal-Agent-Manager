@@ -12,6 +12,44 @@ function Assert-Failure([scriptblock]$Action, [string]$Detail) {
     if (-not $failed) { throw "Expected failure: $Detail" }
 }
 try {
+    $fixture = Join-Path $root 'source'
+    $contents = @{
+        'CMakeLists.txt' = "# Synthetic source contract`n"
+        'src/remote/runner_protocol.h' = "constexpr int kRunnerProtocolVersion = 3;`n"
+        'src/common/a/Foo.cpp' = "// Synthetic nested source`n"
+        'src/common/aZ.cpp' = "// Synthetic sibling source`n"
+    }
+    foreach ($relative in $contents.Keys) {
+        $path = Join-Path $fixture $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        [IO.File]::WriteAllText($path, $contents[$relative])
+    }
+    $probe = Join-Path $root 'contract.cmake'
+    $result = Join-Path $root 'fingerprint.txt'
+    $canonicalRoot = $fixture.Replace('\','/')
+    $canonicalContract = (Join-Path $PSScriptRoot '../cmake/runner_source_contract.cmake').Replace('\','/')
+    $canonicalResult = $result.Replace('\','/')
+    [IO.File]::WriteAllText($probe, @"
+set(UAM_SOURCE_ROOT "$canonicalRoot")
+include("$canonicalContract")
+file(WRITE "$canonicalResult" "`${UAM_RUNNER_SOURCE_FINGERPRINT}")
+"@)
+    function Assert-SourceContract {
+        & cmake -P $probe
+        if ($LASTEXITCODE -ne 0) { throw 'CMake source contract probe failed.' }
+        $contract = Get-UamRunnerSourceContract $fixture
+        if ($contract.sourceFingerprint -cne [IO.File]::ReadAllText($result)) { throw 'CMake and PowerShell source contracts disagree.' }
+        return $contract.sourceFingerprint
+    }
+    $lfFingerprint = Assert-SourceContract
+    $count++
+    foreach ($relative in $contents.Keys) { [IO.File]::WriteAllText((Join-Path $fixture $relative), $contents[$relative].Replace("`n","`r`n")) }
+    if ((Assert-SourceContract) -cne $lfFingerprint) { throw 'Source fingerprint changed between LF and CRLF checkouts.' }
+    $count++
+    [IO.File]::AppendAllText((Join-Path $fixture 'src/common/aZ.cpp'), '// Actual code change')
+    if ((Assert-SourceContract) -ceq $lfFingerprint) { throw 'Source fingerprint ignored changed source content.' }
+    $count++
+
     $archives = Join-Path $root 'archives'
     New-Item -ItemType Directory -Path $archives | Out-Null
     foreach ($target in @('linux-arm64','linux-x86_64','windows-x86_64')) {

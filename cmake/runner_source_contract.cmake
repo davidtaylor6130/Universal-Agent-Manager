@@ -1,4 +1,4 @@
-# Match helpers to the runner source snapshot, including shared platform/provider headers.
+# Match source content across platforms; checkout line endings do not change the contract.
 if(NOT DEFINED UAM_SOURCE_ROOT)
   get_filename_component(UAM_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
@@ -17,7 +17,9 @@ endif()
 set(UAM_RUNNER_SOURCE_RECORDS "")
 foreach(source IN LISTS UAM_RUNNER_CONTRACT_SOURCES)
   file(RELATIVE_PATH relative "${UAM_SOURCE_ROOT}" "${source}")
-  file(SHA256 "${source}" checksum)
+  file(READ "${source}" source_content)
+  string(REPLACE "\r\n" "\n" source_content "${source_content}")
+  string(SHA256 checksum "${source_content}")
   string(APPEND UAM_RUNNER_SOURCE_RECORDS "${relative}:${checksum}\n")
 endforeach()
 string(SHA256 UAM_RUNNER_SOURCE_FINGERPRINT "${UAM_RUNNER_SOURCE_RECORDS}")
