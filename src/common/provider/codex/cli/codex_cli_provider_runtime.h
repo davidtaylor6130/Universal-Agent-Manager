@@ -11,6 +11,7 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const override;
 	std::string ResolveInteractiveResumeId(const uam::AppState& app, const ChatSession& chat) const override;
 	std::vector<std::string> SnapshotInteractiveSessionIds() const override;
+	std::unordered_map<std::string, std::string> ReadNativeSessionNames() const override;
 	std::string DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace) const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;

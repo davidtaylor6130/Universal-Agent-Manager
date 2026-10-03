@@ -100,7 +100,9 @@ export interface Session {
   messagesDigest?: string
   createdAt: Date
   updatedAt: Date
+  interactionAt?: Date
   lastOpenedAt?: Date
+  attentionRevision?: string
 }
 
 export interface Folder {

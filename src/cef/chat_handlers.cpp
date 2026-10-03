@@ -826,3 +826,16 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 	    {"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)},
 	    {"deletedChatIds", std::move(deleted_chat_ids)}}.dump());
 }
+
+void UamQueryHandler::HandleAcknowledgeChatAttention(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string revision = payload.value("attentionRevision", "");
+	if (!ChatDomainService().AcknowledgeChatAttention(m_app, chat_id, revision))
+	{
+		cb->Failure(500, "Could not save chat acknowledgement.");
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}

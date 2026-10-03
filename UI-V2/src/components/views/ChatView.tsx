@@ -13,7 +13,7 @@ import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT
 import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
-import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
@@ -541,7 +541,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           workingMode={workingMode}
         />
       )}
-      {!isUserMessage && message.interrupted && <div className="conversation-interrupted">Response interrupted</div>}
+      {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
+        <div className="conversation-interrupted">{stoppedResponseLabel(message.stopReason, message.interrupted)}</div>}
 		</MessageFrame>
 		</>
   )
@@ -2209,7 +2210,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }
 
   return (
-    <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="relative h-full flex overflow-hidden"
+      onPointerDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      onKeyDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      style={{ background: 'var(--bg)' }}>
       {providerHandoffTarget && (
         <ProviderHandoffDialog
           sourceName={currentProviderName}
@@ -2349,6 +2359,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           key={`turn-${turnSerial}-assistant`}
                           startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2410,6 +2421,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           key={`turn-${turnSerial}-after-user-content`}
                           startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2465,6 +2477,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     key={`turn-${turnSerial}-fallback-content`}
                     startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                       tools={acp?.toolCalls ?? []}
                       planSummary={acp?.planSummary ?? ''}
@@ -2565,6 +2578,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
 			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
+            onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
+              () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
+            )}
+            turnRunning={Boolean(acp?.processing || cli?.processing)}
             resumePending={goalSubmitting}
             onRemove={handleRemoveGoal}
             onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
@@ -2646,6 +2663,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use the CLI fallback when a turn needs interaction.
               </Notice>
             )}
+            {acp && !acp.running && !currentAcpError && acp.lastStopReason &&
+              !messages.some((message) => message.stopReason === acp.lastStopReason) && (
+                <div role="status" className="conversation-interrupted">
+                  {stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')}
+                </div>
+              )}
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 role="alert"

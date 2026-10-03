@@ -264,6 +264,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (!session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.initialized = false;
@@ -380,7 +381,7 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		session.remote_stop_pending = true;
 		return false;
 	}
-	QueueAcpProcessStop(app, session);
+	QueueAcpProcessStop(app, session, session.chat_id);
 	session.running = false;
 	return true;
 }
@@ -480,6 +481,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.running)
 	{
 		return true;
+	}
+	if (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
+	{
+		return false;
 	}
 	const bool remote_stop_pending = session.remote_stop_pending || std::ranges::any_of(
 	    app.pending_acp_remote_stops,
@@ -602,6 +607,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	session.chat_id = chat.id;
 	session.provider_id = provider.id;
+	session.process_execution_host_id = chat.execution_host_id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? runtime.OnAcpValidateResumeId(chat) : std::string{};
@@ -1023,6 +1029,21 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	// A command made while startup was pending may invalidate an unsent goal turn.
+	if (!session.goal_turn_kind.empty() && session.prompt_request_id == 0 && !session.queued_prompt.empty())
+	{
+		const ChatSession* owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
+		if (owner == nullptr || owner->goal_command_revision != session.goal_command_revision)
+		{
+			session.queued_prompt.clear();
+			session.goal_turn_kind.clear();
+			session.goal_review_turn = false;
+			session.processing = false;
+			session.lifecycle_state = session.running ? kAcpLifecycleReady : kAcpLifecycleStopped;
+			return true;
+		}
+	}
+
 	if (session.turn_checkpoint_preflight_pending)
 	{
 		return false;
@@ -1231,6 +1252,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
 	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr)
+	{
+		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
+			persisted->interaction_at = uam::time::LatestInteractionTimestamp(persisted->interaction_at, active->interaction_at);
+	}
 	if (persisted != nullptr && persisted->execution_host_id != uam::execution_hosts::kLocalHostId)
 	{
 		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
@@ -1349,6 +1375,7 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
 	session.pending_request_methods.erase(session.prompt_request_id);
 	if (session.processing && session.turn_serial > 0)
@@ -1421,6 +1448,8 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial += 1;
+	const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
+	session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
 	ResetAcpTurnStreamState(session);
 	ResetAcpPendingInteractionState(session);
 	session.turn_started_time_s = GetAppTimeSeconds();
@@ -1485,12 +1514,7 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat)
 {
-	if (ChatDomainService().SelectedChatId(app) == chat.id)
-	{
-		return;
-	}
-
-	app.chats_with_unseen_updates.insert(chat.id);
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
 }
 
 } // namespace uam::acp_detail

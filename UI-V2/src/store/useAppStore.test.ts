@@ -1064,6 +1064,7 @@ describe('useAppStore Gemini CLI slice', () => {
           ...initial.chats[0],
           goals: [{
             ...providerGoal,
+            pendingContinuation: true,
             tokensUsed: 12,
             updatedAt: '2026-01-01T00:00:02.000Z',
           }],
@@ -1073,6 +1074,7 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(cefStore.getState().goalsByChatId['chat-1'][0]).toMatchObject({
       tokensUsed: 12,
+      pendingContinuation: true,
       executionOwner: 'provider',
       providerCommand: '/goal',
     })
@@ -6143,6 +6145,51 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toEqual([])
   })
 
+  it('routes restart and timeout intent explicitly while ordinary stops remain interrupts', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    await useAppStore.getState().resumeGoal('chat-1', 'goal-1', true)
+    await useAppStore.getState().stopAcpSession('chat-1', 'timeout')
+    await useAppStore.getState().stopAcpSession('chat-1')
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'resumeGoal', payload: { chatId: 'chat-1', goalId: 'goal-1', restart: true } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1', purpose: 'timeout' } },
+      { action: 'stopAcpSession', payload: { chatId: 'chat-1' } },
+    ])
+  })
+
+  it('acknowledges only the observed attention revision on deliberate interaction', async () => {
+    const requests: { action: string; payload?: any }[] = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request)); params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    const state = makeCppState(1)
+    state.chats[0].attentionRevision = 'completion-one'
+    useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().sessions[0].attentionRevision).toBe('completion-one')
+    expect(requests).toEqual([])
+    await useAppStore.getState().acknowledgeChatAttention('chat-1', useAppStore.getState().sessions[0].attentionRevision!)
+    expect(requests).toEqual([expect.objectContaining({ action: 'acknowledgeChatAttention', payload: { chatId: 'chat-1', attentionRevision: 'completion-one' } })])
+  })
+
+  it('retains completion revisions through full and patch pushes and clears acknowledgements', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(makeCppState(1)))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const completed = makeCppState(2)
+    completed.chats[0].attentionRevision = 'completion-one'
+    testWindow.uamPush?.({ type: 'stateUpdate', data: completed })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-one')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [{ ...completed.chats[0], attentionRevision: 'completion-two' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('completion-two')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 4, chats: [{ ...completed.chats[0], attentionRevision: '' }] } })
+    expect(cefStore.getState().sessions[0].attentionRevision).toBe('')
+  })
+
   it('resumes a goal through the runtime orchestration action', async () => {
     const requests: { action: string; payload?: any }[] = []
     ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
@@ -6292,6 +6339,44 @@ describe('useAppStore Gemini CLI slice', () => {
       if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
       else delete (window as Window & { localStorage?: Storage }).localStorage
       window.history.replaceState(null, '', '/')
+    }
+  })
+})
+
+
+describe('bulk workspace deletion', () => {
+  it('sends one batch, keeps state on failure, and removes native-reported dependent chats on success', async () => {
+    const now = new Date()
+    const testWindow = ensureTestWindow()
+    const originalQuery = testWindow.cefQuery
+    const requests: { action: string; payload: unknown }[] = []
+    let succeed = false
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (succeed) onSuccess(JSON.stringify({ deletedChatIds: ['hidden'], selectedChatId: 'keep' }))
+      else onFailure(409, 'A runtime is running.')
+    }
+    useAppStore.setState({
+      folders: ['a', 'b', 'keep'].map((id) => ({ id, name: id, parentId: null, directory: `/tmp/${id}`, isExpanded: true, createdAt: now })),
+      sessions: ['a', 'b', 'hidden', 'keep'].map((id) => ({ id, name: id, folderId: id === 'hidden' ? null : id, viewMode: 'chat', createdAt: now, updatedAt: now })),
+      activeSessionId: 'a', messages: {},
+    })
+    try {
+      await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(false)
+      expect(useAppStore.getState().folders).toHaveLength(3)
+      expect(useAppStore.getState().sessions).toHaveLength(4)
+      succeed = true
+      await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(true)
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toMatchObject({ action: 'deleteFolders', payload: { folderIds: ['a', 'b'] } })
+      expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['keep'])
+      expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['keep'])
+      expect(useAppStore.getState().activeSessionId).toBe('keep')
+      await expect(useAppStore.getState().deleteFolders([])).resolves.toBe(false)
+      await expect(useAppStore.getState().deleteFolders(['missing'])).resolves.toBe(false)
+      expect(requests).toHaveLength(2)
+    } finally {
+      testWindow.cefQuery = originalQuery
     }
   })
 })

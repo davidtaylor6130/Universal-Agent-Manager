@@ -215,7 +215,7 @@ describe('FolderTree', () => {
 
     act(() => root.render(<FolderTree searchQuery="" />))
     expect(host.querySelectorAll('[data-session-id]')).toHaveLength(5)
-    expect(historicalStatusReads).toBe(284)
+    expect(historicalStatusReads).toBe(355)
     historicalStatusReads = 0
     const currentBinding = acpBindingBySessionId['chat-1']
 
@@ -813,6 +813,29 @@ describe('FolderTree', () => {
       root.unmount()
     })
     host.remove()
+  })
+
+  it('keeps Claude launch, streaming, completion and resume visible in two views', () => {
+    const hosts = [document.createElement('div'), document.createElement('div')]
+    const roots = hosts.map((host) => { document.body.appendChild(host); return createRoot(host) })
+    act(() => {
+      useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli' } : session) }))
+      roots.forEach((root) => root.render(<FolderTree searchQuery="" />))
+    })
+    for (const state of [
+      { running: false, processing: false, lifecycleState: 'starting', readySinceLastSelect: false },
+      { running: true, processing: true, lifecycleState: 'processing', readySinceLastSelect: false },
+      { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true },
+      { running: false, processing: false, lifecycleState: 'stopped', readySinceLastSelect: true },
+      { running: false, processing: false, lifecycleState: 'starting', readySinceLastSelect: true },
+    ]) {
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': state } }))
+      hosts.forEach((host) => expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy())
+    }
+    act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: false, processing: false, lifecycleState: 'stopped', readySinceLastSelect: false } } }))
+    hosts.forEach((host) => expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeNull())
+    act(() => roots.forEach((root) => root.unmount()))
+    hosts.forEach((host) => host.remove())
   })
 
   it('shows runtime-active chats with state counts above pinned chats without requiring a status filter', () => {
@@ -1472,6 +1495,89 @@ describe('FolderTree', () => {
     await act(async () => confirm?.click())
     expect(deleteSessions).toHaveBeenCalledWith(['chat-1', 'chat-2'])
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('selects workspace ranges, cancels, reports failures, and submits one batch', async () => {
+    const deleteFolders = vi.fn(async () => false)
+    useAppStore.setState({
+      folders: ['a', 'b', 'c'].map((id) => ({ ...makeFolder(), id, name: id })),
+      sessions: ['a', 'b', 'c'].map((id, index) => ({ ...makeSession(index), folderId: id })),
+      deleteFolders,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    const openDelete = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click()
+    const dialogButton = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
+    act(openDelete)
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('3 workspaces and 3 chats')
+    act(() => dialogButton('Cancel').click())
+    expect(deleteFolders).not.toHaveBeenCalled()
+    act(openDelete)
+    await act(async () => dialogButton('Delete workspaces').click())
+    expect(deleteFolders).toHaveBeenCalledWith(['a', 'b', 'c'])
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be deleted')
+    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    deleteFolders.mockResolvedValue(true)
+    await act(async () => dialogButton('Delete workspaces').click())
+    expect(deleteFolders).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(0)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('prunes workspace selection when a collection hides its rows and supports keyboard selection', async () => {
+    useAppStore.setState({
+      folders: ['a', 'b', 'c'].map((id) => ({ ...makeFolder(), id, name: id })),
+      resourceCollections: [{ id: 'group', title: 'Group', collapsed: false, references: [{ id: 'ref', type: 'workspace-folder', target: 'b', label: 'b' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-b"]')!.click())
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', shiftKey: true })))
+    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click())
+    await act(async () => {
+      useAppStore.setState({ resourceCollections: [{ ...useAppStore.getState().resourceCollections[0], collapsed: true }] })
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-workspace-id="b"]')?.getAttribute('aria-pressed')).toBe('false')
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('2 workspaces')
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(0)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('prevents duplicate workspace delete requests and dismissal while a batch is pending', async () => {
+    let finish!: (deleted: boolean) => void
+    const deleteFolders = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    useAppStore.setState({ deleteFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
+    const confirm = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    await act(async () => { confirm.click(); await Promise.resolve() })
+    expect(confirm.disabled).toBe(true)
+    act(() => { confirm.click(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    expect(deleteFolders).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('[role="alertdialog"]')).toBeTruthy()
+    await act(async () => finish(true))
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
     act(() => root.unmount())
     host.remove()
   })

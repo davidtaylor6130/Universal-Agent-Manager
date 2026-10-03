@@ -137,6 +137,7 @@ export interface AppState {
   repositoryReviewBySessionId: Record<string, VcsCommitStatus>
 
   // Session actions
+  acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
@@ -213,7 +214,7 @@ export interface AppState {
   updateGoalStatus: (chatId: string, goalId: string, status: GoalStatus) => Promise<MutationResult>
   updateGoalObjective: (chatId: string, goalId: string, objective: string) => Promise<MutationResult>
   removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
-  resumeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
+  resumeGoal: (chatId: string, goalId: string, restart?: boolean) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
   setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
@@ -227,6 +228,7 @@ export interface AppState {
   rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
   deleteFolder: (id: string) => Promise<boolean>
+  deleteFolders: (ids: string[]) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
   listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
   createResourceCollection: (name: string) => Promise<ResourceCollection | null>
@@ -267,7 +269,7 @@ export interface AppState {
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
-  stopAcpSession: (sessionId: string) => Promise<boolean>
+  stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
 
   // UI actions
   setTheme: (theme: StoredTheme) => void

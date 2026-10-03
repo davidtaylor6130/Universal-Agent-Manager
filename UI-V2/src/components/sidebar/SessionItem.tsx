@@ -104,6 +104,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     if (session) {
       return {
         name: session.name,
+        attentionRevision: session.attentionRevision,
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
         providerId: session.providerId,
@@ -114,6 +115,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const storeSession = s.sessions.find((x) => x.id === sessionId)
     return {
       name: storeSession?.name ?? '',
+      attentionRevision: storeSession?.attentionRevision,
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
       providerId: storeSession?.providerId,
@@ -137,6 +139,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   }))
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const selectChat = () => {
+    if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
     const state = useAppStore.getState()
     const sessions = state.sessions
     const clickedSession = session ?? sessions.find((candidate) => candidate.id === sessionId)

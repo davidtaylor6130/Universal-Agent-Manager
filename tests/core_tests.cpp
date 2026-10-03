@@ -1034,6 +1034,7 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	};
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id, request, now)
 	               .value("pendingApproval", false));
+	UAM_ASSERT(!app.chats.front().interaction_at.empty());
 	const auto pending = uam::UamControlService::PendingApprovalForChat(app, root_id);
 	UAM_ASSERT(pending.has_value());
 	UAM_ASSERT_EQ(pending->questions.front().id, std::string("userQuestion"));
@@ -4011,12 +4012,14 @@ UAM_TEST(FolderDeleteStopsIdleRuntimesBeforeNativeCleanup)
 	const std::string source = ReadFile(source_root / "src/app/chat_lifecycle_service.cpp");
 	const std::size_t folder_delete = source.find("bool DeleteFolderById");
 	const std::size_t stop = source.find("StopChatRuntimes(app, deleted.chats)", folder_delete);
-	const std::size_t cleanup = source.find("CompleteDeletionTransaction(app", stop);
+	const std::size_t snapshot = source.find("task.snapshot.chats = std::move(deleted.chats)", stop);
+	const std::size_t cleanup = source.find("bool uam::CleanupWorkspaceDeletion", snapshot);
 
 	UAM_ASSERT(folder_delete != std::string::npos);
 	UAM_ASSERT(stop != std::string::npos);
+	UAM_ASSERT(snapshot != std::string::npos);
 	UAM_ASSERT(cleanup != std::string::npos);
-	UAM_ASSERT(stop < cleanup);
+	UAM_ASSERT(stop < snapshot && snapshot < cleanup);
 }
 
 UAM_TEST(ThoughtHandlersDoNotUseAssistantTokenFastPath)
@@ -4093,7 +4096,8 @@ UAM_TEST(GoalHandlersDoNotRestoreStateAfterIrreversibleCancellation)
 	const std::string status = handler("void UamQueryHandler::HandleUpdateGoalStatus",
 	                                   "void UamQueryHandler::HandleUpdateGoalObjective");
 	const std::string remove = handler("void UamQueryHandler::HandleRemoveGoal", "");
-	UAM_ASSERT(status.find("previous_chat, cb, !work_changed") != std::string::npos);
+	UAM_ASSERT(status.find("previous_chat, cb") != std::string::npos);
+	UAM_ASSERT(status.find("CancelGoalWork") == std::string::npos);
 	UAM_ASSERT(source.find("uam::acp_detail::ScheduleChatSave(app, *chat, 0.0)") != std::string::npos);
 	UAM_ASSERT(remove.find("const bool restore_on_failure = !work_changed") != std::string::npos);
 	UAM_ASSERT(remove.find("previous_chat, cb, restore_on_failure") != std::string::npos);
@@ -4347,6 +4351,73 @@ UAM_TEST(ChatImportUtilsBuildReadableTitlesFromPromptWrappers)
 	UAM_ASSERT_EQ(uam::BuildImportedChatTitle(messages, "2026-01-01T00:00:00Z", 8), std::string("First..."));
 	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({}, "2026-01-01T00:00:00Z", 80), std::string("Session 2026-01-01T00:00:00Z"));
 	UAM_ASSERT_EQ(uam::BuildFolderTitleFromProjectRoot(fs::path(" /tmp/workspace ")), std::string("workspace"));
+}
+
+UAM_TEST(ChatImportTitlesSkipCodexEventsAndExtractTheActualMemoryRequest)
+{
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = user;
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Remember this\n\nCurrent user request:\nFix hidden chats\nMore details";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user, request}, ""), std::string("Fix hidden chats"));
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Untitled Chat"));
+	UAM_ASSERT(uam::IsCodexSyntheticUserMessage("  <environment_context>test</environment_context>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("Explain <external_codex_apps_open_page>"));
+	UAM_ASSERT(!uam::IsCodexSyntheticUserMessage("<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request"));
+	user.content = "<external_codex_apps_open_page>{}</external_codex_apps_open_page>\nActual request";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({user}, ""), std::string("Actual request"));
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\nNo request label";
+	UAM_ASSERT_EQ(uam::BuildImportedChatTitle({request}, ""), std::string("Untitled Chat"));
+}
+
+UAM_TEST(LocalCodexListsRepairOnlyGeneratedWrapperTitlesAndKeepSourceHistory)
+{
+	TempDir temp("uam-codex-wrapper-titles");
+	ScopedEnvVar codex_home_env("CODEX_HOME", (temp.root / "codex-home").string());
+	ChatSession chat;
+	chat.id = "page-with-request";
+	chat.provider_id = "codex-cli";
+	chat.created_at = "2026-01-01T00:00:00Z";
+	chat.updated_at = chat.created_at;
+	Message page;
+	page.role = MessageRole::User;
+	page.content = "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>";
+	Message request = page;
+	request.content = "Fix the import";
+	chat.messages = {page, request};
+	chat.title = uam::strings::TrimAndElide(page.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "page-helper-only";
+	chat.messages = {page};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-title";
+	chat.title = "My supplied name";
+	chat.messages = {page, request};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "custom-wrapper-name";
+	chat.title = "<external_codex_apps_open_page>My notes";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.id = "memory-title";
+	request.content = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nActual request";
+	chat.messages = {request};
+	chat.title = uam::strings::TrimAndElide(request.content, 48);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	for (bool summaries : {false, true})
+	{
+		const std::vector<ChatSession> loaded = summaries ? ChatRepository::LoadLocalChatSummaries(temp.root) : ChatRepository::LoadLocalChats(temp.root);
+		UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(4));
+		for (const ChatSession& item : loaded)
+		{
+			if (item.id == "page-with-request") UAM_ASSERT_EQ(item.title, std::string("Fix the import"));
+			if (item.id == "custom-title") UAM_ASSERT_EQ(item.title, std::string("My supplied name"));
+			if (item.id == "custom-wrapper-name") UAM_ASSERT_EQ(item.title, std::string("<external_codex_apps_open_page>My notes"));
+			if (item.id == "memory-title") UAM_ASSERT_EQ(item.title, std::string("Actual request"));
+		}
+	}
+	const auto source = ChatRepository::LoadLocalChat(temp.root, "page-helper-only");
+	UAM_ASSERT(source.has_value());
+	UAM_ASSERT_EQ(source->messages.front().content, page.content);
 }
 
 UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
@@ -7868,6 +7939,88 @@ UAM_TEST(ChatDomainServiceSetSelectedChatIndexOrNearestClampsAndRefreshes)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(ChatAttentionRequiresMatchingInteractionAndSurvivesRestart)
+{
+	TempDir temp("uam-attention");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+	chat.id = "attention-chat";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	ChatDomainService domain;
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string first = app.chats.front().attention_revision;
+	UAM_ASSERT(!first.empty());
+	domain.SelectChatById(app, chat.id);
+	UAM_ASSERT(app.chats_with_unseen_updates.contains(chat.id));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, first);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::io::ReadTextFile(AppPaths::UamChatSummaryFilePath(app.data_root, chat.id)).find(first) != std::string::npos);
+	UAM_ASSERT_EQ(loaded->attention_revision, first);
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string second = app.chats.front().attention_revision;
+	UAM_ASSERT(first != second);
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, first));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, second);
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, second));
+	UAM_ASSERT(app.chats.front().attention_revision.empty());
+	UAM_ASSERT(!app.chats_with_unseen_updates.contains(chat.id));
+	loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->attention_revision.empty());
+}
+
+UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
+{
+	TempDir temp("uam-legacy-attention");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "legacy-attention";
+	chat.updated_at = "2026-10-01T11:00:00Z";
+	chat.last_opened_at = "2026-10-01T10:00:00Z";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	ChatDomainService domain;
+	const std::string legacy = domain.AttentionRevision(app, app.chats.front());
+	UAM_ASSERT(!legacy.empty());
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, legacy));
+	UAM_ASSERT(domain.AttentionRevision(app, app.chats.front()).empty());
+	domain.MarkChatNeedsAttention(app, chat.id);
+	const std::string fresh = app.chats.front().attention_revision;
+	UAM_ASSERT(domain.AcknowledgeChatAttention(app, chat.id, legacy));
+	UAM_ASSERT_EQ(app.chats.front().attention_revision, fresh);
+}
+
+#if defined(__APPLE__)
+UAM_TEST(MacOwnedProviderGroupIsCleanedBeforeExitedLeaderIsReaped)
+{
+	TempDir temp("uam-owned-group");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields owned;
+	uam::platform::StdioProcessPlatformFields unrelated;
+	std::string error;
+	const fs::path marker = temp.root / "descendant-survived";
+	const fs::path unrelated_marker = temp.root / "unrelated-survived";
+	UAM_ASSERT(service.StartStdioProcess(unrelated, temp.root, {"/bin/sh", "-c", "sleep 0.4; touch '" + unrelated_marker.string() + "'; sleep 10"}, &error));
+	UAM_ASSERT(service.StartStdioProcess(owned, temp.root, {"/bin/sh", "-c", "(/bin/sh -c \"trap '' TERM; sleep 0.3; touch '" + marker.string() + "'; sleep 10\" &) ; exit 0"}, &error));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!service.PollStdioProcessExited(owned) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT(owned.child_pid <= 0);
+	std::this_thread::sleep_for(std::chrono::milliseconds(600));
+	service.StopStdioProcess(owned, true);
+	const bool unrelated_running = !service.PollStdioProcessExited(unrelated);
+	service.StopStdioProcess(unrelated, true);
+	UAM_ASSERT(!fs::exists(marker));
+	UAM_ASSERT(fs::exists(unrelated_marker));
+	UAM_ASSERT(unrelated_running);
+}
+#endif
+
 UAM_TEST(ChatDomainServiceSelectRememberedOrFirstChatTrimsPersistedId)
 {
 	uam::AppState app;
@@ -7905,7 +8058,7 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.selected_chat_index, 1);
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string("chat-second"));
 	UAM_ASSERT(app.composer_text.empty());
-	UAM_ASSERT(app.chats_with_unseen_updates.empty());
+	UAM_ASSERT(app.chats_with_unseen_updates.contains("chat-second"));
 
 	app.composer_text = "keep draft";
 	ChatDomainService().SelectChatById(app, " chat-second ");
@@ -12675,6 +12828,54 @@ UAM_TEST(DeletingRemoteChatsTombstonesOnlyTheirMachineScopedIdentity)
 	    temp.root / "native-import-tombstones.json"));
 }
 
+UAM_TEST(RemoteOpenCodeScansSkipOwnedPersistedAndLiveAttachments)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-remote-opencode");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ExecutionHost host;
+		host.id = "remote-host";
+		host.platform = "linux";
+		app.settings.execution_hosts.push_back(host);
+		ChatFolder folder;
+		folder.id = "remote-folder";
+		folder.directory = "/srv/workspace";
+		folder.execution_host_id = host.id;
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.title = "Keep my OpenCode title";
+		owner.provider_id = "opencode-cli";
+		owner.native_session_id = "ses_owned";
+		owner.workspace_directory = folder.directory;
+		owner.execution_host_id = host.id;
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = "ses_owned";
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(
+		    app, folder.id, {{"ses_owned", "Provider title", folder.directory, 1, 2}});
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "ses_owned").has_value());
+	}
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -13443,6 +13644,15 @@ UAM_TEST(RemoteCodexMetadataParsesExactThreadsAndRejectsInvalidOrOversizedLists)
 	UAM_ASSERT_EQ(sessions.front().directory, std::string(R"(C:\Users\david\project)"));
 	UAM_ASSERT_EQ(sessions.front().created_epoch_seconds, std::int64_t{1787951665});
 	UAM_ASSERT_EQ(sessions.front().updated_epoch_seconds, std::int64_t{1787952543});
+	nlohmann::json wrapped = result;
+	wrapped["data"] = nlohmann::json::array({result["data"][0]});
+	wrapped["data"][0].erase("name");
+	wrapped["data"][0]["preview"] = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n- Lesson\n\nCurrent user request:\nRemote request";
+	std::vector<ChatHistorySyncService::RemoteCodexSession> wrapped_sessions;
+	UAM_ASSERT(ChatHistorySyncService::AppendRemoteCodexSessions(wrapped, wrapped_sessions, &error));
+	UAM_ASSERT_EQ(wrapped_sessions.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(wrapped_sessions.front().title, std::string("Remote request"));
+
 
 	const nlohmann::json invalid = {
 	    {"data", nlohmann::json::array({
@@ -15758,6 +15968,244 @@ UAM_TEST(DeleteFolderTombstonesCommittedDeletionWhenMetadataCleanupIsDeferred)
 }
 #endif
 
+UAM_TEST(DeleteFoldersBatchPreservesUnrelatedHistoryAndReparentsSurvivors)
+{
+	TempDir temp("uam-workspace-batch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"a", "A", (temp.root / "workspace-a").string(), false},
+	              {"b", "B", (temp.root / "workspace-b").string(), false},
+	              {"keep", "Keep", (temp.root / "workspace-keep").string(), false}};
+	for (const ChatFolder& folder : app.folders) fs::create_directories(folder.directory);
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	ChatSession keep;
+	keep.id = "keep";
+	keep.folder_id = "keep";
+	keep.provider_id = uam::provider_ids::kCodexCli;
+	ChatSession a = keep;
+	a.id = "a";
+	a.folder_id = "a";
+	a.parent_chat_id = keep.id;
+	ChatSession b = a;
+	b.id = "b";
+	b.folder_id = "b";
+	b.parent_chat_id = a.id;
+	ChatSession child = keep;
+	child.id = "child";
+	child.parent_chat_id = b.id;
+	child.branch_from_message_index = 2;
+	ChatSession hidden = a;
+	hidden.id = "hidden";
+	hidden.folder_id.clear();
+	hidden.goal_owner_chat_id = a.id;
+	app.chats = {keep, a, b, child, hidden};
+	ChatBranching::Normalize(app.chats);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path keep_path = AppPaths::UamChatFilePath(temp.root, keep.id);
+	const fs::file_time_type sentinel = fs::file_time_type::clock::now() - std::chrono::hours(24);
+	fs::last_write_time(keep_path, sentinel);
+	const std::string keep_contents = ReadFile(keep_path);
+	app.selected_chat_index = 1;
+	app.new_chat_folder_id = "b";
+	UAM_ASSERT(DeleteFoldersByIds(app, {" a ", "b", "a"}));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(app.new_chat_folder_id.empty());
+	UAM_ASSERT(fs::last_write_time(keep_path) == sentinel);
+	UAM_ASSERT_EQ(ReadFile(keep_path), keep_contents);
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	const ChatSession* saved_child = nullptr;
+	for (const ChatSession& chat : saved) if (chat.id == child.id) saved_child = &chat;
+	UAM_ASSERT(saved_child != nullptr);
+	UAM_ASSERT_EQ(saved_child->parent_chat_id, keep.id);
+	UAM_ASSERT_EQ(saved_child->branch_root_chat_id, keep.id);
+	UAM_ASSERT_EQ(saved_child->branch_from_message_index, 2);
+	for (const std::string& id : {a.id, b.id, hidden.id}) UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, id)));
+	UAM_ASSERT(fs::exists(temp.root / "workspace-a"));
+	UAM_ASSERT(fs::exists(temp.root / "workspace-b"));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	UAM_ASSERT(!fs::exists(temp.root / ".deletion-transaction"));
+}
+
+UAM_TEST(WorkspaceDeletionBackgroundPhasesPreserveLiveChangesAndRecoverBeforeCommit)
+{
+	TempDir temp("uam-workspace-background");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"delete", "Delete", temp.root.string(), false}, {"keep", "Keep", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	ChatSession doomed;
+	doomed.id = "doomed";
+	doomed.folder_id = "delete";
+	doomed.provider_id = uam::provider_ids::kCodexCli;
+	ChatSession survivor = doomed;
+	survivor.id = "survivor";
+	survivor.folder_id = "keep";
+	survivor.parent_chat_id = doomed.id;
+	app.chats = {doomed, survivor};
+	ChatBranching::Normalize(app.chats);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	bool staged = false;
+	std::thread stage([&]() { staged = uam::StageWorkspaceDeletion(task); });
+	stage.join();
+	UAM_ASSERT(staged);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	// A pending unrelated runtime or history completion can update live state during staging.
+	app.chats[1].title = "Updated while staging";
+	app.chats[1].messages.push_back({MessageRole::User, "Live message", "2026-10-03T00:00:00Z"});
+	app.folders.push_back({"new", "New", temp.root.string(), false});
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().title, "Updated while staging");
+	UAM_ASSERT(app.chats.front().parent_chat_id.empty());
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, doomed.id)));
+	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
+	bool cleaned = false;
+	std::thread cleanup([&]() { cleaned = uam::CleanupWorkspaceDeletion(task); });
+	cleanup.join();
+	UAM_ASSERT(cleaned);
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, doomed.id)));
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(saved.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().messages.front().content, "Live message");
+
+	// Closing the app after background staging still leaves a complete recovery transaction.
+	uam::WorkspaceDeletionTask interrupted;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"keep"}, interrupted));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(interrupted));
+	uam::AppState recovery;
+	recovery.data_root = temp.root;
+	recovery.provider_profiles = app.provider_profiles;
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(recovery));
+	UAM_ASSERT(ChatRepository::LoadLocalChats(temp.root).empty());
+	UAM_ASSERT_EQ(ChatFolderStore::Load(temp.root).size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(WorkspaceDeletionLargeBatchStagesAndCleansOutsideTheUiPhases)
+{
+	TempDir temp("uam-workspace-background-large");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"delete", "Delete", temp.root.string(), false}, {"keep", "Keep", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	for (int index = 0; index < 1000; ++index)
+	{
+		ChatSession chat;
+		chat.id = "large-" + std::to_string(index);
+		chat.folder_id = index < 500 ? "delete" : "keep";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.messages.push_back({MessageRole::User, std::string(2048, 'x')});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+	ChatBranching::Normalize(app.chats);
+	uam::WorkspaceDeletionTask task;
+	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+	const std::chrono::steady_clock::time_point prepared = std::chrono::steady_clock::now();
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	bool staged = false;
+	std::thread stage([&]() { staged = uam::StageWorkspaceDeletion(task); });
+	stage.join();
+	UAM_ASSERT(staged);
+	const std::chrono::steady_clock::time_point staged_at = std::chrono::steady_clock::now();
+	uam::CommitWorkspaceDeletion(app, task);
+	const std::chrono::steady_clock::time_point committed = std::chrono::steady_clock::now();
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(500));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, "large-0")));
+	bool cleaned = false;
+	std::thread cleanup([&]() { cleaned = uam::CleanupWorkspaceDeletion(task); });
+	cleanup.join();
+	UAM_ASSERT(cleaned);
+	const std::chrono::steady_clock::time_point finished = std::chrono::steady_clock::now();
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, "large-0")));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(500));
+	const double ui_ms = std::chrono::duration<double, std::milli>(prepared - start + committed - staged_at).count();
+	const double disk_ms = std::chrono::duration<double, std::milli>(staged_at - prepared + finished - committed).count();
+	std::cout << "[PERF] Workspace deletion 500 chats: UI phases=" << ui_ms << "ms, background disk phases=" << disk_ms << "ms\n";
+}
+
+UAM_TEST(DeleteFoldersBatchPreflightsEveryWorkspaceBeforeDeletion)
+{
+	TempDir temp("uam-workspace-batch-blocked");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"a", "A", temp.root.string(), false}, {"b", "B", temp.root.string(), false}};
+	ChatSession a;
+	a.id = "a";
+	a.folder_id = "a";
+	ChatSession hidden;
+	hidden.id = "hidden";
+	hidden.goal_owner_chat_id = a.id;
+	app.chats = {a, hidden};
+	UAM_ASSERT(!DeleteFoldersByIds(app, {}));
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"a", "missing"}));
+	app.worktree_operation_chat_ids.insert(hidden.id);
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"a", "b"}));
+	app.worktree_operation_chat_ids.clear();
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = hidden.id;
+	session->running = true;
+	session->processing = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"b", "a"}));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+}
+
+UAM_TEST(DeleteFoldersBatchRecoversInterruptedCleanupAtEveryStage)
+{
+	for (int stage = 0; stage < 4; ++stage)
+	{
+		TempDir temp("uam-workspace-batch-recovery-" + std::to_string(stage));
+		const std::vector<ChatFolder> folders = {{"a", "A", temp.root.string(), false}, {"b", "B", temp.root.string(), false}};
+		UAM_ASSERT(ChatFolderStore::Save(temp.root, folders));
+		ChatSession a;
+		a.id = "a";
+		a.folder_id = "a";
+		a.provider_id = uam::provider_ids::kCodexCli;
+		ChatSession b = a;
+		b.id = "b";
+		b.folder_id = "b";
+		ChatSession child = a;
+		child.id = "child";
+		child.folder_id.clear();
+		child.parent_chat_id = a.id;
+		child.branch_root_chat_id = a.id;
+		child.branch_from_message_index = 1;
+		const fs::path staging = temp.root / ".deletion-transaction";
+		for (const ChatSession& chat : {a, b, child}) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		for (const ChatSession& chat : {a, b}) UAM_ASSERT(ChatRepository::SaveChat(staging, chat));
+		UAM_ASSERT(ChatFolderStore::Save(staging, folders));
+		const nlohmann::json intent = {{"version", 2}, {"complete", true}, {"folderIds", {"a", "b"}}, {"chatIds", {"a", "b"}}};
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(temp.root / "deletion-transaction.json", intent.dump()));
+		if (stage >= 1) UAM_ASSERT(ChatFolderStore::Save(temp.root, {}));
+		if (stage >= 2) UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, a.id).Failed());
+		if (stage >= 3) UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, b.id).Failed());
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		UAM_ASSERT(ChatFolderStore::Load(temp.root).empty());
+		const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+		UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(saved.front().parent_chat_id.empty());
+		UAM_ASSERT_EQ(saved.front().branch_root_chat_id, child.id);
+		UAM_ASSERT_EQ(saved.front().branch_from_message_index, -1);
+		UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	}
+}
+
 UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
 {
 	TempDir temp("uam-folder-pending-delete");
@@ -16754,6 +17202,225 @@ UAM_TEST(StartupSidebarLoadLeavesProviderHistoryForExplicitRescan)
 #endif
 }
 
+UAM_TEST(CodexScanSkipsOwnedWorktreeSessionsIncludingUnsavedAttachments)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-owned-codex-worktree");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path codex_home = temp.root / "codex";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		fs::create_directories(codex_home / "sessions");
+		ScopedEnvVar home("CODEX_HOME", codex_home.string());
+		const std::string native_id = "11111111-1111-4111-8111-111111111111";
+		const nlohmann::json meta = {{"type", "session_meta"}, {"payload", {{"id", native_id}, {"cwd", worktree.string()}}}};
+		const nlohmann::json user = {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+		    {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Imported provider prompt"}}})}}}};
+		UAM_ASSERT(uam::io::WriteTextFile(codex_home / "sessions" / ("rollout-" + native_id + ".jsonl"), meta.dump() + "\n" + user.dump() + "\n"));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree-folder";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = "codex-cli";
+		owner.title = "My supplied title";
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = native_id;
+		owner.messages = {Message{MessageRole::User, "Original local prompt"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = native_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const auto result = ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, native_id).has_value());
+		if (link_mode == 0)
+		{
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->title, owner.title);
+			UAM_ASSERT_EQ(saved->messages.front().content, std::string("Original local prompt"));
+		}
+		if (link_mode == 3)
+		{
+			app.acp_sessions.clear();
+			UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
+		}
+	}
+#endif
+}
+
+UAM_TEST(AllProviderSidebarsPreferOwnedWorktreeChatsWithoutDeletingHistory)
+{
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-worktree-sidebar-duplicates");
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.provider_id = provider_id;
+		owner.workspace_directory = (temp.root / "project").string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep this name";
+		owner.pinned = true;
+		owner.messages = {Message{MessageRole::User, "Local request"}};
+		ChatSession imported = owner;
+		imported.id = owner.native_session_id;
+		imported.workspace_directory = worktree.string();
+		imported.workspace_worktree_directory.clear();
+		imported.title = "Provider generated title";
+		imported.messages.push_back(Message{MessageRole::Assistant, "Newer provider output"});
+		UAM_ASSERT_EQ(uam::chat_identity::NativeIdentityKeyForHistoryImport(owner), uam::chat_identity::NativeIdentityKeyForHistoryImport(imported));
+		for (const std::vector<ChatSession>& order : {std::vector<ChatSession>{owner, imported}, std::vector<ChatSession>{imported, owner}})
+		{
+			const auto deduped = ChatDomainService().DeduplicateChatsById(order);
+			UAM_ASSERT_EQ(deduped.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(deduped.front().id, owner.id);
+			UAM_ASSERT_EQ(deduped.front().title, owner.title);
+			UAM_ASSERT(deduped.front().pinned);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, imported));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.chats.front().id, owner.id);
+		UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, imported.id).has_value());
+		ChatSession separate = imported;
+		separate.workspace_directory = (temp.root / "another-workspace").string();
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+		separate = imported;
+		separate.execution_host_id = "remote";
+		UAM_ASSERT_EQ(ChatDomainService().DeduplicateChatsById({owner, separate}).size(), static_cast<std::size_t>(2));
+	}
+}
+
+UAM_TEST(AllProviderDraftLinksMatchTheActualWorktree)
+{
+	TempDir temp("uam-all-provider-worktree-links");
+	const fs::path project = temp.root / "project";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(project);
+	fs::create_directories(worktree);
+	for (const std::string& provider_id : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		ChatSession local;
+		local.id = "chat-123-owner";
+		local.provider_id = provider_id;
+		local.workspace_directory = project.string();
+		local.workspace_worktree_directory = worktree.string();
+		local.messages = {Message{MessageRole::User, "Match this request"}};
+		ChatSession native = local;
+		native.id = "11111111-1111-4111-8111-111111111111";
+		native.native_session_id = native.id;
+		native.workspace_directory = worktree.string();
+		native.workspace_worktree_directory.clear();
+		const std::optional<std::string> matched = NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native});
+		UAM_ASSERT(matched.has_value());
+		UAM_ASSERT_EQ(*matched, native.id);
+		native.workspace_directory = project.string();
+		UAM_ASSERT(!NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(local, {native}).has_value());
+	}
+}
+
+UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const std::string& provider_id : {std::string("gemini-cli"), std::string("copilot-cli")})
+	for (int link_mode : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-other-provider-owned-history");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		const fs::path gemini_home = temp.root / "gemini";
+		const fs::path copilot_home = temp.root / "copilot";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ScopedEnvVar gemini_env("GEMINI_CLI_HOME", gemini_home.string());
+		ScopedEnvVar copilot_env("COPILOT_HOME", copilot_home.string());
+		ScopedEnvVar codex_env("CODEX_HOME", (temp.root / "codex").string());
+		const std::string session_id = "11111111-1111-4111-8111-111111111111";
+		if (provider_id == "gemini-cli")
+		{
+			const fs::path source = gemini_home / "tmp" / "owned-source";
+			fs::create_directories(source / "chats");
+			UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", worktree.string()));
+			const nlohmann::json history = {{"sessionId", session_id}, {"startTime", "2026-01-01T00:00:00Z"},
+			    {"lastUpdated", "2026-01-01T00:00:01Z"}, {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Provider request"}}})}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "session.json", history.dump()));
+		}
+		else
+		{
+			const fs::path source = copilot_home / "session-state" / session_id;
+			fs::create_directories(source);
+			UAM_ASSERT(uam::io::WriteTextFile(source / "workspace.yaml", "id: " + session_id + "\ncwd: " + nlohmann::json(worktree.string()).dump() + "\n"));
+			const nlohmann::json start = {{"type", "session.start"}, {"data", {{"sessionId", session_id}}}};
+			const nlohmann::json user = {{"type", "user.message"}, {"data", {{"content", "Provider request"}}}};
+			UAM_ASSERT(uam::io::WriteTextFile(source / "events.jsonl", start.dump() + "\n" + user.dump() + "\n"));
+		}
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder;
+		folder.id = "worktree";
+		folder.directory = worktree.string();
+		app.folders.push_back(folder);
+		ChatSession owner;
+		owner.id = "chat-123-owner";
+		owner.provider_id = provider_id;
+		owner.native_session_id = session_id;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.title = "Keep my name";
+		owner.messages = {Message{MessageRole::User, "Original request"}};
+		if (link_mode == 0) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		else
+		{
+			if (link_mode >= 2) owner.native_session_id.clear();
+			if (link_mode == 2) app.resolved_native_sessions_by_chat_id[owner.id] = session_id;
+			if (link_mode == 3)
+			{
+				std::unique_ptr<uam::AcpSessionState> pending = std::make_unique<uam::AcpSessionState>();
+				pending->chat_id = owner.id;
+				pending->running = true;
+				app.acp_sessions.push_back(std::move(pending));
+			}
+			app.chats.push_back(owner);
+		}
+		const ChatHistorySyncService service;
+		const ChatHistorySyncService::ImportResult result = provider_id == "gemini-cli" ?
+		    service.ImportAllNativeChatsByDiscovery(app, false) : service.ImportProviderChatsForFolder(app, folder.id);
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.total_count, 1);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, session_id).has_value());
+	}
+#endif
+}
+
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -16786,10 +17453,20 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	const std::string other_id = "22222222-2222-4222-8222-222222222222";
 	const std::string subagent_id = "33333333-3333-4333-8333-333333333333";
 	const fs::path matching_rollout = rollout_dir / ("rollout-" + matching_id + ".jsonl");
-	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout, rollout(matching_id, workspace_root, "import me")));
+	const std::string requested_rollout = rollout(matching_id, workspace_root, "import me");
+	UAM_ASSERT(uam::io::WriteTextFile(matching_rollout,
+	    rollout(matching_id, workspace_root, "<external_codex_apps_open_page>{}</external_codex_apps_open_page>") +
+	    requested_rollout.substr(requested_rollout.find('\n') + 1)));
+
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + other_id + ".jsonl"), rollout(other_id, other_workspace, "ignore me")));
 	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + subagent_id + ".jsonl"), rollout(subagent_id, workspace_root, "ignore subagent", true)));
 
+	const std::string helper_id = "44444444-4444-4444-8444-444444444444";
+	UAM_ASSERT(uam::io::WriteTextFile(rollout_dir / ("rollout-" + helper_id + ".jsonl"), rollout(helper_id, workspace_root,
+	    "<external_codex_apps_open_page>{}</external_codex_apps_open_page>")));
+	UAM_ASSERT(uam::io::WriteTextFile(codex_home / "session_index.jsonl",
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Earlier name"}}.dump() + "\nmalformed\n" +
+	    nlohmann::json{{"id", matching_id}, {"thread_name", "Supplied Codex name"}}.dump() + "\n"));
 	ScopedEnvVar codex_home_env("CODEX_HOME", codex_home.string());
 	uam::AppState app;
 	app.data_root = data_root;
@@ -16811,6 +17488,7 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	UAM_ASSERT_EQ(second.imported_count, 0);
 	std::optional<ChatSession> customized = ChatRepository::LoadLocalChat(data_root, matching_id);
 	UAM_ASSERT(customized.has_value());
+	UAM_ASSERT_EQ(customized->title, std::string("Supplied Codex name"));
 	customized->title = "My Codex title";
 	customized->pinned = true;
 	customized->linked_files = {"keep.md"};
@@ -17256,6 +17934,187 @@ UAM_TEST(DeleteFolderRemovesNativeWorkspaceHistoryAndPreventsReimport)
 	UAM_ASSERT_EQ(result.total_count, 0);
 	UAM_ASSERT_EQ(result.imported_count, 0);
 	UAM_ASSERT(ChatRepository::LoadLocalChats(data_root).empty());
+}
+
+UAM_TEST(NativeWorkspaceDeletionKeepsBothTreesWhenStagingDestinationExists)
+{
+	TempDir temp("uam-native-workspace-collision");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path source = gemini_home / "tmp" / "project";
+	const fs::path staged = gemini_home / ".uam-deleted-project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	fs::create_directories(staged);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep"));
+	UAM_ASSERT(uam::io::WriteTextFile(staged / "history.json", "also keep"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder{"deleted", "Deleted", workspace.string(), false};
+	std::error_code error;
+	UAM_ASSERT(!ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+	UAM_ASSERT(error == std::errc::file_exists);
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	UAM_ASSERT(fs::exists(staged / "history.json"));
+}
+
+UAM_TEST(FolderDeletionRetainsJournalUntilNativeWorkspaceCanBeStaged)
+{
+	TempDir temp("uam-folder-native-staging-retry");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path source = gemini_home / "tmp" / "project";
+	const fs::path staged = gemini_home / ".uam-deleted-project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	fs::create_directories(staged);
+	fs::create_directories(workspace);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep until staged"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace.string(), &folder_id));
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	UAM_ASSERT(fs::exists(app.data_root / "deletion-transaction.json"));
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	UAM_ASSERT(!uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(fs::exists(source / "history.json"));
+	fs::remove(staged);
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(!fs::exists(source));
+	UAM_ASSERT(!fs::exists(staged));
+	UAM_ASSERT(!fs::exists(app.data_root / "deletion-transaction.json"));
+}
+
+UAM_TEST(NativeWorkspaceDeletionRejectsMalformedRecoveryJournal)
+{
+	TempDir temp("uam-native-workspace-invalid-journal");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	const fs::path source = gemini_home / "tmp" / "project";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "history.json", "keep"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder{"deleted", "Deleted", temp.root.string(), false};
+	const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+	for (const std::string& invalid : {std::string("{"), nlohmann::json{{"source", source.string()}, {"staged", "yes"}}.dump(), nlohmann::json{{"source", temp.root.string()}}.dump()})
+	{
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(journal, invalid));
+		std::error_code error;
+		UAM_ASSERT(!ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(error == std::errc::invalid_argument);
+		UAM_ASSERT(fs::exists(source / "history.json"));
+		UAM_ASSERT(fs::exists(journal));
+	}
+}
+
+UAM_TEST(NativeWorkspaceDeletionResumesStagedCleanupWithoutDeletingNewHistory)
+{
+	for (const bool already_staged : {false, true})
+	{
+		TempDir temp("uam-native-workspace-staging-" + std::to_string(already_staged));
+		const fs::path gemini_home = temp.root / "gemini-home";
+		const fs::path workspace = temp.root / "workspace";
+		const fs::path source = gemini_home / "tmp" / "project";
+		const fs::path staged = gemini_home / ".uam-deleted-project";
+		ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatFolder folder{"deleted", "Deleted", workspace.string(), false};
+		const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+		// Crash after rename, and again after partial recursive cleanup removed the marker.
+		fs::create_directories(staged / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(staged / "chats" / "remaining.json", "old"));
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"source", source.string()}, {"staged", already_staged}}.dump()));
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "new.json", "new"));
+		std::error_code error;
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(!error);
+		UAM_ASSERT(!fs::exists(staged));
+		UAM_ASSERT(fs::exists(source / "chats" / "new.json"));
+		// Crash after cleanup, before the enclosing transaction journal is removed.
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(fs::exists(source / "chats" / "new.json"));
+	}
+}
+
+UAM_TEST(NativeWorkspaceBatchRecoveryKeepsIndependentCompletedRecords)
+{
+	TempDir temp("uam-native-workspace-batch-recovery");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::vector<ChatFolder> folders;
+	for (const std::string id : {"first", "second"})
+	{
+		const fs::path workspace = temp.root / id;
+		const fs::path source = gemini_home / "tmp" / id;
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "old.json", "old"));
+		folders.push_back({id, id, workspace.string(), false});
+	}
+	// Migrate an interrupted legacy single-workspace journal before processing
+	// another workspace in the same batch.
+	const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"source", (gemini_home / "tmp" / "first").string()}}.dump()));
+	for (const ChatFolder& folder : folders)
+	{
+		std::error_code error;
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(!error);
+		const fs::path source = gemini_home / "tmp" / folder.id;
+		UAM_ASSERT(!fs::exists(source));
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", folder.directory));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "new.json", "new"));
+	}
+	const nlohmann::json recorded = nlohmann::json::parse(uam::io::ReadTextFile(journal));
+	UAM_ASSERT_EQ(recorded["workspaces"].size(), static_cast<std::size_t>(2));
+	for (const ChatFolder& folder : folders)
+	{
+		std::error_code error;
+		UAM_ASSERT(ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error));
+		UAM_ASSERT(fs::exists(gemini_home / "tmp" / folder.id / "chats" / "new.json"));
+	}
+}
+
+UAM_TEST(DeleteFoldersBatchCleansEveryNativeWorkspace)
+{
+	TempDir temp("uam-native-workspace-batch-delete");
+	const fs::path gemini_home = temp.root / "gemini-home";
+	ScopedEnvVar gemini_home_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	std::vector<std::string> ids;
+	for (const std::string name : {"first", "second"})
+	{
+		const fs::path workspace = temp.root / name;
+		const fs::path source = gemini_home / "tmp" / name;
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "chats" / "old.json", "old"));
+		std::string id;
+		UAM_ASSERT(CreateFolder(app, name, workspace.string(), &id));
+		ids.push_back(id);
+	}
+	UAM_ASSERT(DeleteFoldersByIds(app, ids));
+	UAM_ASSERT(!fs::exists(gemini_home / "tmp" / "first"));
+	UAM_ASSERT(!fs::exists(gemini_home / "tmp" / "second"));
+	UAM_ASSERT(!fs::exists(app.data_root / ".deletion-transaction"));
 }
 
 UAM_TEST(DeleteFolderDoesNotRemoveUnrelatedNativeWorkspaceHistory)
@@ -18679,4 +19538,378 @@ UAM_TEST(BulkCliPartialFailureReconcilesPinnedVersionsButNeverAssumesLatestSucce
 		UAM_ASSERT_EQ(state.installed_version, versions.second);
 		UAM_ASSERT_EQ(state.last_install_status, std::string(versions.first == versions.second ? "succeeded" : "failed"));
 	}
+}
+UAM_TEST(AcpTimeoutStopPreservesContentAndPersistsObservedOutcome)
+{
+	for (int scenario = 0; scenario < 4; ++scenario)
+	{
+		const bool failed = scenario == 2;
+		const bool cooperative = scenario != 1;
+		TempDir temp("uam-timeout-observed-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Response received before shutdown.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = true;
+		session->running = true;
+		session->lifecycle_state = failed ? "error" : "processing";
+		session->last_error = failed ? "Provider failed." : "";
+		session->last_turn_outcome = failed ? "error" : "";
+		session->current_assistant_message_index = 0;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", cooperative ? "more > NUL & exit /b 0" : "ping -n 11 127.0.0.1 > NUL"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", cooperative ? "cat >/dev/null; exit 0" : "trap '' TERM; sleep 10"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Timeout));
+		UAM_ASSERT(app.acp_sessions.front()->local_stop_pending);
+		UAM_ASSERT(uam::AcpStopInProgress(app, chat.id));
+		if (scenario == 3)
+		{
+			uam::FastStopAcpSessionsForExit(app);
+			UAM_ASSERT(app.acp_sessions.empty());
+			const std::optional<ChatSession> stopped_chat = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(stopped_chat.has_value());
+			UAM_ASSERT_EQ(stopped_chat->last_stop_reason, std::string("timeout"));
+			UAM_ASSERT_EQ(stopped_chat->messages.front().content, assistant.content);
+			UAM_ASSERT(!stopped_chat->messages.front().interrupted);
+			continue;
+		}
+		for (int attempt = 0; attempt < 300 && app.acp_sessions.front()->local_stop_pending; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!app.acp_sessions.front()->local_stop_pending);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->stop_outcome, cooperative ? uam::platform::ProcessStopOutcome::Graceful : uam::platform::ProcessStopOutcome::Forced);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, failed || !cooperative);
+		const std::string expected_reason = failed ? "failed" : cooperative ? "timeout" : "forced";
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_turn_outcome, failed ? std::string("error") : expected_reason);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected_reason);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, failed ? std::string("Provider failed.") : std::string{});
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.front().stop_reason, expected_reason);
+		UAM_ASSERT_EQ(loaded->last_stop_reason, expected_reason);
+	}
+}
+
+UAM_TEST(AcpOwnedStopGuardWaitsForActualExitAndRetainsTimeoutPurposeOnRetry)
+{
+	uam::AppState app;
+	uam::AsyncAcpProcessStopTask task;
+	task.chat_id = "stopping-chat";
+	task.finished = std::make_shared<std::atomic<bool>>(false);
+	app.acp_process_stop_tasks.push_back(std::move(task));
+	UAM_ASSERT(uam::AcpStopInProgress(app, "stopping-chat"));
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "unrelated-chat"));
+	app.acp_process_stop_tasks.front().finished->store(true);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "stopping-chat"));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "stopping-chat";
+	session->stop_purpose = uam::AcpStopPurpose::Timeout;
+	session->remote_stop_pending = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, "stopping-chat"));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->stop_purpose, uam::AcpStopPurpose::Timeout);
+}
+
+UAM_TEST(RemoteTimeoutStopRequiresConfirmedOutcomeAndTreatsOlderHelpersAsUnknown)
+{
+	for (const std::string outcome : {"graceful", "forced", "unknown", "forged", "lf", "crlf", "embedded", "incomplete", "suffix"})
+	{
+		TempDir temp("uam-remote-timeout-outcome");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		chat.execution_host_id = "ssh-test";
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Remote response before shutdown.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = true;
+		session->current_assistant_message_index = 0;
+		session->remote_stop_pending = true;
+		session->remote_output_delivery_token = "owned-delivery-token";
+		session->stop_purpose = uam::AcpStopPurpose::Timeout;
+		app.acp_sessions.push_back(std::move(session));
+		auto pending = std::make_unique<uam::PendingAcpRemoteStop>();
+		pending->chat_id = chat.id;
+		pending->deadline_time_s = uam::GetAppTimeSeconds() + 3.0;
+		const std::string token = outcome == "forged" ? "wrong-delivery-token" : "owned-delivery-token";
+		const std::string reported = outcome == "forged" ? "graceful" : outcome;
+		const std::string marker = "UAM_REMOTE_STOP_OUTCOME " + token + " " + reported;
+		const bool synthetic = outcome == "lf" || outcome == "crlf" || outcome == "embedded" || outcome == "incomplete" || outcome == "suffix";
+		if (synthetic)
+		{
+			const std::string valid = "UAM_REMOTE_STOP_OUTCOME owned-delivery-token graceful";
+			pending->stderr_tail = outcome == "lf" ? valid + "\n" : outcome == "crlf" ? valid + "\r\n" :
+			                       outcome == "embedded" ? "diagnostic " + valid + "\n" : outcome == "suffix" ? valid + " extra\n" : valid;
+		}
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", outcome == "unknown" || synthetic ? "exit /b 0" : "(echo " + marker + ") >&2 & exit /b 0"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", outcome == "unknown" || synthetic ? "exit 0" : "printf '" + marker + "\\n' >&2; exit 0"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*pending, temp.root, argv, &error));
+		app.pending_acp_remote_stops.push_back(std::move(pending));
+		for (int attempt = 0; attempt < 300 && !app.pending_acp_remote_stops.empty(); ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		const bool graceful = outcome == "graceful" || outcome == "lf" || outcome == "crlf";
+		const std::string expected = graceful ? "timeout" : outcome == "forced" ? "forced" : "unknown";
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, expected);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, !graceful);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+	}
+}
+
+UAM_TEST(AcpIdleRuntimeStopPreservesCompletedTurnOutcome)
+{
+	for (const bool active : {false, true})
+	{
+		TempDir temp("uam-idle-runtime-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Completed answer.";
+		chat.messages.push_back(assistant);
+		chat.attention_revision = "completed-revision";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->processing = active;
+		session->running = true;
+		session->lifecycle_state = active ? "processing" : "ready";
+		session->last_turn_outcome = active ? "" : "completed";
+		session->turn_assistant_message_index = 0;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "more > NUL & exit /b 0"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat >/dev/null; exit 0"};
+#endif
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT(!app.acp_sessions.front()->running);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, active);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, active ? std::string("interrupt") : std::string{});
+		UAM_ASSERT_EQ(app.chats.front().last_stop_reason, active ? std::string("interrupt") : std::string{});
+		UAM_ASSERT_EQ(app.acp_sessions.front()->last_turn_outcome, active ? std::string("interrupt") : std::string("completed"));
+		UAM_ASSERT_EQ(app.chats.front().attention_revision, chat.attention_revision);
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->last_stop_reason, app.chats.front().last_stop_reason);
+		UAM_ASSERT_EQ(loaded->messages.front().stop_reason, app.chats.front().messages.front().stop_reason);
+		UAM_ASSERT_EQ(loaded->messages.front().content, assistant.content);
+	}
+}
+
+UAM_TEST(AcpSuccessfulCompletionClearsPriorStopSummaryAndPreservesHistory)
+{
+	for (const std::string prior_reason : {"interrupt", "timeout", "failed"})
+	{
+		for (int outcome = 0; outcome < 4; ++outcome)
+		{
+			TempDir temp("uam-completed-stop-summary");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
+			chat.last_stop_reason = prior_reason;
+			Message previous;
+			previous.role = MessageRole::Assistant;
+			previous.content = "Earlier interrupted answer.";
+			previous.interrupted = true;
+			previous.stop_reason = "interrupt";
+			chat.messages.push_back(previous);
+			Message completed;
+			completed.role = MessageRole::Assistant;
+			completed.content = "Resumed answer.";
+			chat.messages.push_back(completed);
+			app.chats.push_back(chat);
+			uam::AcpSessionState session;
+			session.chat_id = chat.id;
+			session.processing = outcome != 3;
+			session.turn_serial = 1;
+			session.current_assistant_message_index = 1;
+			session.turn_assistant_message_index = 1;
+			const bool succeeded = outcome == 0;
+			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, app.chats.front(), outcome == 1 ? "error" : "ready", nullptr, outcome != 2);
+			UAM_ASSERT_EQ(app.chats.front().last_stop_reason, succeeded ? std::string{} : prior_reason);
+			UAM_ASSERT(app.chats.front().messages.front().interrupted);
+			UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, previous.stop_reason);
+			UAM_ASSERT_EQ(app.chats.front().messages.front().content, previous.content);
+			UAM_ASSERT_EQ(app.chats.front().messages.back().content, completed.content);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(loaded.has_value());
+			UAM_ASSERT_EQ(loaded->last_stop_reason, app.chats.front().last_stop_reason);
+			UAM_ASSERT(loaded->messages.front().interrupted);
+		}
+	}
+}
+
+UAM_TEST(ChatBranchingReattachesNativeParentsToOwnedWorktreeFamilies)
+{
+	for (const std::string& provider : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-native-parent-branch-family");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-owner";
+		owner.provider_id = provider;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.branch_root_chat_id = owner.id;
+		owner.messages.push_back({MessageRole::User, "Keep root transcript"});
+		ChatSession branch = owner;
+		branch.id = "chat-branch";
+		branch.native_session_id = "22222222-2222-4222-8222-222222222222";
+		branch.workspace_directory = worktree.string();
+		branch.workspace_worktree_directory.clear();
+		branch.parent_chat_id = owner.native_session_id;
+		branch.branch_root_chat_id = owner.native_session_id;
+		branch.branch_from_message_index = 2;
+		branch.messages.push_back({MessageRole::User, "Keep branch transcript"});
+		ChatSession sibling = branch;
+		sibling.id = "chat-sibling";
+		sibling.native_session_id = "33333333-3333-4333-8333-333333333333";
+		std::vector<ChatSession> chats{branch, owner, sibling};
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.size(), static_cast<std::size_t>(3));
+		for (const int index : {0, 2})
+		{
+			UAM_ASSERT_EQ(chats[index].parent_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_root_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_from_message_index, 2);
+			UAM_ASSERT_EQ(chats[index].messages.size(), branch.messages.size());
+			UAM_ASSERT_EQ(chats[index].messages.front().content, branch.messages.front().content);
+			UAM_ASSERT_EQ(chats[index].messages.back().content, branch.messages.back().content);
+		}
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.front().parent_chat_id, owner.id);
+		for (int isolation = 0; isolation < 4; ++isolation)
+		{
+			chats = {owner, branch};
+			if (isolation == 0) chats.back().workspace_directory = project.string();
+			if (isolation == 1) chats.back().execution_host_id = "other-host";
+			if (isolation == 2) chats.back().provider_id = "other-provider";
+			if (isolation == 3)
+			{
+				ChatSession ambiguous = owner;
+				ambiguous.id = "chat-other-owner";
+				chats.insert(chats.begin(), ambiguous);
+			}
+			ChatBranching::Normalize(chats);
+			UAM_ASSERT(chats.back().parent_chat_id.empty());
+			UAM_ASSERT_EQ(chats.back().branch_root_chat_id, branch.id);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, branch));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, sibling));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
+		for (const ChatSession& chat : app.chats)
+		{
+			UAM_ASSERT_EQ(chat.branch_root_chat_id, owner.id);
+			if (chat.id != owner.id) UAM_ASSERT_EQ(chat.parent_chat_id, owner.id);
+		}
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, branch.id)->messages.size(), branch.messages.size());
+	}
+}
+
+UAM_TEST(InteractionRecencyIgnoresStreamTrafficAndPersistsStateEvents)
+{
+	using namespace uam::acp_detail;
+	TempDir temp("uam-interaction-state-events");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "interaction-recency-test";
+	chat.interaction_at = "2026-01-01 00:00:00";
+	app.chats.push_back(chat);
+	uam::AcpSessionState& session = EnsureAcpSessionForChat(app, app.chats.front());
+	session.processing = true;
+	session.turn_serial = 1;
+	AppendAssistantChunk(app.chats.front(), session, "Streaming");
+	AppendThoughtChunk(app.chats.front(), session, "Thinking");
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, chat.interaction_at);
+	session.pending_permission.request_id_json = "123";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT(!session.interaction_at.empty());
+	session.interaction_at = "2026-02-01 00:00:00";
+	BeginAcpPendingWait(session, "waitingPermission");
+	UAM_ASSERT_EQ(session.interaction_at, std::string("2026-02-01 00:00:00"));
+	(void)SaveChatQuietly(app, app.chats.front());
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, session.interaction_at);
+	const std::string utc_event = uam::time::InteractionTimestampNow();
+	UAM_ASSERT_EQ(utc_event.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(utc_event.back(), 'Z');
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01 00:00:00", utc_event), utc_event);
+	UAM_ASSERT_EQ(uam::time::LatestInteractionTimestamp("2099-01-01T00:00:00.000Z", utc_event), std::string("2099-01-01T00:00:00.000Z"));
+	CompletePromptTurn(session, "ready");
+	UAM_ASSERT(session.interaction_at != "2026-02-01 00:00:00");
+	ChatDomainService().AddMessage(app.chats.front(), MessageRole::User, "Next turn");
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.size(), static_cast<std::size_t>(24));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at.back(), 'Z');
+	const std::string input_recency = app.chats.front().interaction_at;
+	session.interaction_at = "2000-01-01T00:00:00.000Z";
+	UAM_ASSERT(SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().interaction_at, input_recency);
+}
+
+
+UAM_TEST(InteractionRecencySurvivesSummaryReloadAndHydration)
+{
+	TempDir temp("uam-interaction-recency");
+	ChatSession chat;
+	chat.id = "chat-interaction-persistence";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-03 00:00:00";
+	chat.interaction_at = "2026-01-02 00:00:00";
+	chat.messages.push_back(Message{MessageRole::Assistant, "Streaming data"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->interaction_at, chat.interaction_at);
+	std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, summaries.front()));
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+	chat.interaction_at = "2026-01-04 00:00:00";
+	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
+	summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
 }

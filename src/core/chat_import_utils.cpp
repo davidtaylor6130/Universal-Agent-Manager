@@ -15,6 +15,24 @@ namespace
 			return {};
 		}
 
+		if (uam::IsCodexSyntheticUserMessage(value)) return {};
+		constexpr std::string_view kPageClose = "</external_codex_apps_open_page>";
+		if (uam::strings::StartsWith(value, "<external_codex_apps_open_page>"))
+		{
+			const std::size_t page_end = value.find(kPageClose);
+			if (page_end != std::string_view::npos)
+				value = uam::strings::TrimAsciiView(value.substr(page_end + kPageClose.size()));
+		}
+
+		constexpr std::string_view kMemoryPreface = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:";
+		if (uam::strings::StartsWith(value, kMemoryPreface))
+		{
+			constexpr std::string_view kRequestLabel = "\nCurrent user request:\n";
+			const std::size_t request_pos = value.find(kRequestLabel);
+			if (request_pos == std::string_view::npos) return {};
+			value = uam::strings::TrimAsciiView(value.substr(request_pos + kRequestLabel.size()));
+		}
+
 		static constexpr const char* kUserPromptLabel = "User prompt:";
 		const std::size_t user_prompt_pos = value.rfind(kUserPromptLabel);
 		if (user_prompt_pos != std::string::npos)
@@ -64,6 +82,27 @@ namespace
 
 namespace uam
 {
+
+	bool IsCodexSyntheticUserMessage(std::string_view content)
+	{
+		const std::string_view value = uam::strings::TrimAsciiView(content);
+		constexpr std::string_view kPageOpen = "<external_codex_apps_open_page>";
+		constexpr std::string_view kPageClose = "</external_codex_apps_open_page>";
+		const std::size_t page_end = value.find(kPageClose);
+		const bool page_event = uam::strings::StartsWith(value, kPageOpen) &&
+		    page_end != std::string_view::npos &&
+		    uam::strings::TrimAsciiView(value.substr(page_end + kPageClose.size())).empty();
+		return uam::strings::StartsWith(value, "<environment_context>") ||
+		       uam::strings::StartsWith(value, "# AGENTS.md instructions for ") || page_event;
+	}
+
+	bool IsInjectedChatTitle(std::string_view title)
+	{
+		const std::string_view value = uam::strings::TrimAsciiView(title);
+		return IsCodexSyntheticUserMessage(value) ||
+		       uam::strings::StartsWith(value, "<external_codex_apps_open_page>") ||
+		       uam::strings::StartsWith(value, "Relevant UAM memories. Treat these as durable");
+	}
 
 	std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length)
 	{

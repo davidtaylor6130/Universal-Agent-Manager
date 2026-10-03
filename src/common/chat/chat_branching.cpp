@@ -1,8 +1,11 @@
 #include "common/chat/chat_branching.h"
 
+#include "common/chat/native_chat_identity.h"
+
 #include "common/utils/string_utils.h"
 
 #include <unordered_map>
+#include <utility>
 #include <unordered_set>
 #include <vector>
 
@@ -100,6 +103,15 @@ namespace
 void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 {
 	std::unordered_map<std::string, std::size_t> index_by_id = BuildIndexById(chats);
+	std::unordered_map<std::string, std::string> owner_by_native_identity;
+	for (const ChatSession& chat : chats)
+	{
+		if (!uam::strings::StartsWith(chat.id, "chat-") || uam::strings::IsBlank(chat.native_session_id)) continue;
+		const std::string key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		const std::pair<std::unordered_map<std::string, std::string>::iterator, bool> inserted = owner_by_native_identity.emplace(key, chat.id);
+		// Two deliberately separate UAM chats can share a native session. Never guess.
+		if (!inserted.second && inserted.first->second != chat.id) inserted.first->second.clear();
+	}
 
 	for (ChatSession& chat : chats)
 	{
@@ -118,7 +130,17 @@ void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 
 		if (!chat.parent_chat_id.empty() && !index_by_id.contains(chat.parent_chat_id))
 		{
-			chat.parent_chat_id.clear();
+			// Branches created from an imported chat may reference its native ID.
+			// Reattach to the retained UAM owner in the same provider/host/workspace
+			// before missing-parent repair turns them into independent roots.
+			ChatSession parent_identity;
+			parent_identity.provider_id = chat.provider_id;
+			parent_identity.execution_host_id = chat.execution_host_id;
+			parent_identity.workspace_directory = chat.workspace_directory;
+			parent_identity.workspace_worktree_directory = chat.workspace_worktree_directory;
+			parent_identity.native_session_id = chat.parent_chat_id;
+			const std::unordered_map<std::string, std::string>::const_iterator owner = owner_by_native_identity.find(uam::chat_identity::NativeIdentityKeyForHistoryImport(parent_identity));
+			chat.parent_chat_id = owner != owner_by_native_identity.end() && owner->second != chat.id ? owner->second : "";
 		}
 	}
 
@@ -231,4 +253,19 @@ void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats,
 	}
 
 	Normalize(chats);
+}
+
+void ChatBranching::ReparentChildrenAfterDeletes(std::vector<ChatSession>& chats, const std::unordered_set<std::string>& deleted_ids)
+{
+	Normalize(chats);
+	const std::unordered_map<std::string, std::size_t> index_by_id = BuildIndexById(chats);
+	for (ChatSession& chat : chats)
+	{
+		if (deleted_ids.contains(chat.id)) continue;
+		while (deleted_ids.contains(chat.parent_chat_id))
+		{
+			chat.parent_chat_id = chats[index_by_id.at(chat.parent_chat_id)].parent_chat_id;
+		}
+		if (chat.parent_chat_id.empty()) chat.branch_from_message_index = kRootBranchMessageIndex;
+	}
 }

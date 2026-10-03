@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
-import { sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+import { sessionFromCppChat, acpBindingFromCppChat, reconcileCppMessages } from './reconcile'
+import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
@@ -256,4 +256,30 @@ describe('historical model provenance', () => {
     expect(first[0].modelId).toBe('model-first')
     expect(sanitizeCppMessage(message)?.modelId).toBeUndefined()
   })
+})
+
+describe('Chat attention revision sanitization', () => {
+  it('preserves opaque revisions and explicit clearing while rejecting malformed values', () => {
+    const chat = { id: 'attention-chat', createdAt: '', updatedAt: '' }
+    expect(sanitizeCppChat({ ...chat, attentionRevision: 'completion-one' })?.attentionRevision).toBe('completion-one')
+    expect(sanitizeCppChat({ ...chat, attentionRevision: '' })?.attentionRevision).toBe('')
+    for (const attentionRevision of [undefined, null, 12, { id: 'completion' }]) {
+      expect(sanitizeCppChat({ ...chat, attentionRevision })?.attentionRevision).toBeUndefined()
+    }
+  })
+})
+
+it('preserves state event recency through bridge sanitization and streaming snapshots', () => {
+  const chat = sanitizeCppChat({
+    id: 'recency', title: 'Recency', createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:05:00Z', interactionAt: '2026-01-01T00:01:00Z',
+  })!
+  const first = sessionFromCppChat(chat, undefined, [])
+  expect(first.interactionAt?.toISOString()).toBe('2026-01-01T00:01:00.000Z')
+  const streamed = sessionFromCppChat({ ...chat, updatedAt: '2026-01-01T00:06:00Z' }, first, [])
+  expect(streamed.interactionAt?.getTime()).toBe(first.interactionAt?.getTime())
+  const completed = sessionFromCppChat({ ...chat, interactionAt: '2026-01-01T00:07:00Z' }, streamed, [])
+  expect(completed.interactionAt?.getTime()).toBeGreaterThan(streamed.interactionAt!.getTime())
+  const legacy = sessionFromCppChat({ ...chat, interactionAt: undefined }, streamed, [])
+  expect(legacy.interactionAt?.getTime()).toBe(streamed.interactionAt?.getTime())
 })

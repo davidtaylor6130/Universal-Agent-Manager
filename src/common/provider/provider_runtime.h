@@ -13,6 +13,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -139,6 +140,9 @@ class IProviderRuntime
 	    const std::string& resume_id, const ExecutionHost& host, std::string* error_out) const;
 	/// <summary>Captures native IDs before an unbound local CLI starts.</summary>
 	virtual std::vector<std::string> SnapshotInteractiveSessionIds() const { return {}; }
+
+	/// Reads saved native names keyed by session identity for local history imports.
+	virtual std::unordered_map<std::string, std::string> ReadNativeSessionNames() const { return {}; }
 	/// <summary>Discovers a new native binding using the provider's index and workspace rules.</summary>
 	virtual std::string DiscoverInteractiveSessionId(const std::vector<std::string>&, const std::filesystem::path&) const { return {}; }
 	/// <summary>Maps provider-native message types to app message roles.</summary>

@@ -8,6 +8,7 @@
 #include "common/security/command_safety.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
@@ -16,6 +17,7 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "computer_use/computer_use_mcp_config.h"
+#include "core/chat_import_utils.h"
 
 #include <algorithm>
 #include <limits>
@@ -429,6 +431,7 @@ namespace
 		SetPositiveNumber(obj, kMessageEstimatedCostUsdField, msg.estimated_cost_usd);
 		SetPositiveNumber(obj, kMessageTimeToFirstTokenMsField, static_cast<double>(msg.time_to_first_token_ms));
 		SetPositiveNumber(obj, kMessageProcessingTimeMsField, static_cast<double>(msg.processing_time_ms));
+		uam::json::SetString(obj, "stop_reason", msg.stop_reason);
 		if (msg.interrupted)
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
@@ -551,6 +554,7 @@ namespace
 		msg.time_to_first_token_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageTimeToFirstTokenMsField));
 		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
+		msg.stop_reason = JsonStringOrEmpty(obj.Find("stop_reason"));
 		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
 		msg.continues_turn = JsonBoolOrDefault(obj.Find(kMessageContinuesTurnField), false);
 		msg.acp_prompt_not_sent = JsonBoolOrDefault(obj.Find("acp_prompt_not_sent"), false);
@@ -768,7 +772,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.stop_reason == rhs.stop_reason && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -960,7 +964,10 @@ namespace
 
 	bool ChatScalarFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
+		return lhs.interaction_at == rhs.interaction_at && lhs.attention_revision == rhs.attention_revision && lhs.last_stop_reason == rhs.last_stop_reason &&
+		       lhs.goal_command_revision == rhs.goal_command_revision &&
+		       lhs.goal_pending_continuation_id == rhs.goal_pending_continuation_id &&
+		       ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatBranchFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatDisplayFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatWorkspaceFieldsEquivalentForRecovery(lhs, rhs) &&
@@ -1188,6 +1195,11 @@ namespace
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
+		chat.attention_revision = JsonStringOrEmpty(root.Find("attention_revision"));
+		chat.last_stop_reason = JsonStringOrEmpty(root.Find("last_stop_reason"));
+		chat.goal_command_revision = JsonStringOrEmpty(root.Find("goal_command_revision"));
+		chat.goal_pending_continuation_id = JsonStringOrEmpty(root.Find("goal_pending_continuation_id"));
+		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.pinned = JsonBoolOrDefault(root.Find(kChatPinnedField), false);
 		chat.linked_files = JsonStringArrayOrEmpty(root.Find(kChatLinkedFilesField));
 		chat.workspace_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceDirectoryField));
@@ -1515,6 +1527,7 @@ namespace
 		{
 			chat.updated_at = chat.created_at;
 		}
+		if (chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
 		if (chat.last_opened_at.empty())
 		{
 			chat.last_opened_at = chat.updated_at;
@@ -1653,6 +1666,11 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(root, "attention_revision", chat.attention_revision);
+	uam::json::SetString(root, "last_stop_reason", chat.last_stop_reason);
+	uam::json::SetString(root, "goal_command_revision", chat.goal_command_revision);
+	uam::json::SetString(root, "goal_pending_continuation_id", chat.goal_pending_continuation_id);
+	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetBool(root, kChatPinnedField, chat.pinned);
 	uam::json::SetValue(root, kChatLinkedFilesField, StringArrayToJson(chat.linked_files));
 	uam::json::SetString(root, kChatWorkspaceDirectoryField, chat.workspace_directory);
@@ -1844,6 +1862,8 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	}
 	uam::json::SetString(*summary, kChatLastOpenedAtField,
 	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
+	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
 
@@ -2001,8 +2021,11 @@ namespace
 
 	void CarrySummaryFieldsIntoHydratedChat(ChatSession& hydrated, const ChatSession& summary)
 	{
+		hydrated.interaction_at = summary.interaction_at;
 		if (summary.last_opened_at > hydrated.last_opened_at)
 			hydrated.last_opened_at = summary.last_opened_at;
+		hydrated.attention_revision = summary.attention_revision;
+		hydrated.last_stop_reason = summary.last_stop_reason;
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
@@ -2045,6 +2068,8 @@ namespace
 		hydrated.acp_dispatched_queued_prompt_count =
 		    summary.acp_dispatched_queued_prompt_count;
 		hydrated.active_goal_id = summary.active_goal_id;
+		hydrated.goal_command_revision = summary.goal_command_revision;
+		hydrated.goal_pending_continuation_id = summary.goal_pending_continuation_id;
 		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;
 		hydrated.computer_use_enabled = summary.computer_use_enabled;
@@ -2074,8 +2099,12 @@ namespace
 		const std::uintmax_t source_size = fs::file_size(chat_path, error);
 		if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return;
 		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size);
-		if (summary.chat && summary.chat->id == chat.id && summary.chat->last_opened_at > chat.last_opened_at)
-			chat.last_opened_at = summary.chat->last_opened_at;
+		if (summary.chat && summary.chat->id == chat.id)
+		{
+			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
+			chat.attention_revision = summary.chat->attention_revision;
+			chat.interaction_at = summary.chat->interaction_at;
+		}
 	}
 
 	ChatSession BuildRecoveredChatFromBackup(const fs::path& backup_path, const LoadChatResult& backup_chat, bool include_messages, const std::string& recovered_id)
@@ -2238,6 +2267,37 @@ namespace
 			RecoverChatFromBackup(data_root, entry.path(), primary_path, include_messages, migrated_chat_ids, chats, warning_out);
 		}
 
+		std::optional<std::unordered_map<std::string, std::string>> codex_names;
+		// Older imports used the first raw user event as their title. Read only
+		// affected transcripts, and leave explicit names and source files intact.
+		std::erase_if(chats, [&](ChatSession& chat)
+		{
+			if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) ||
+			    !uam::IsInjectedChatTitle(chat.title)) return false;
+			LoadChatResult loaded;
+			if (!chat.messages_loaded) loaded = ParseLocalChatFile(AppPaths::UamChatFilePath(data_root, chat.id), true);
+			const ChatSession* full = chat.messages_loaded ? &chat : (loaded.chat ? &*loaded.chat : nullptr);
+			if (full == nullptr) return false;
+			const std::vector<Message>::const_iterator first_user = std::ranges::find_if(full->messages, [](const Message& message)
+			{
+				return message.role == MessageRole::User;
+			});
+			if (first_user == full->messages.end() ||
+			    chat.title != uam::strings::TrimAndElide(first_user->content, 48)) return false;
+			const bool helper_only = std::ranges::none_of(full->messages, [](const Message& message)
+			{
+				return message.role == MessageRole::User && !uam::IsCodexSyntheticUserMessage(message.content);
+			});
+			if (helper_only) return true;
+			chat.title = uam::BuildImportedChatTitle(full->messages, chat.created_at);
+			if (uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				if (!codex_names) codex_names = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).ReadNativeSessionNames();
+				const std::unordered_map<std::string, std::string>::const_iterator name = codex_names->find(chat.native_session_id);
+				if (name != codex_names->end() && !uam::IsInjectedChatTitle(name->second)) chat.title = name->second;
+			}
+			return false;
+		});
 		std::ranges::sort(chats, ChatUpdatedNewestFirst);
 		return chats;
 	}

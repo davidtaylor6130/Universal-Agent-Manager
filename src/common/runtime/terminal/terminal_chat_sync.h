@@ -19,7 +19,6 @@ bool ChatHasRunningRuntime(const AppState& app, std::string_view chat_id);
 bool ChatHasActiveCliTerminal(const AppState& app, std::string_view chat_id);
 bool HasAnyActiveCliTerminal(const AppState& app);
 void MarkChatUnseen(AppState& app, std::string_view chat_id);
-void MarkSelectedChatSeen(AppState& app);
 bool ChatExists(const AppState& app, std::string_view chat_id);
 bool NativeChatMatchesPreferredSyncId(const ChatSession& chat, std::string_view preferred_chat_id);
 void RemoveMissingChatIds(const AppState& app, std::unordered_set<std::string>& chat_ids);

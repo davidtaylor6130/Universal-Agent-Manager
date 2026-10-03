@@ -17,6 +17,7 @@
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -215,16 +216,82 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 
 void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string folder_id = payload.value("folderId", "");
+	StartWorkspaceDeletion(browser, {payload.value("folderId", "")}, cb);
+}
 
-	if (!DeleteFolderById(m_app, folder_id))
+void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto ids = payload.find("folderIds");
+	if (ids == payload.end() || !ids->is_array() || ids->empty() ||
+	    !std::ranges::all_of(*ids, [](const nlohmann::json& id) { return id.is_string(); }))
+	{
+		cb->Failure(400, "Workspace ids are required.");
+		return;
+	}
+	StartWorkspaceDeletion(browser, ids->get<std::vector<std::string>>(), cb);
+}
+
+void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& folder_ids, CefRefPtr<Callback> cb)
+{
+	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
+	if (!uam::PrepareWorkspaceDeletion(m_app, folder_ids, *task))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
 		return;
 	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	for (const std::string& id : task->deleted_ids)
+	{
+		if (m_nativeHistoryRequests.contains(id))
+		{
+			cb->Failure(409, "Wait for workspace history to finish loading.");
+			return;
+		}
+	}
+	m_workspaceDeletionPending = true;
+	m_app.worktree_operation_chat_ids.insert(task->deleted_ids.begin(), task->deleted_ids.end());
+	const auto unlock = [this, task]()
+	{
+		for (const std::string& id : task->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
+		m_workspaceDeletionPending = false;
+	};
+	if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [task]()
+	    {
+		    return uam::StageWorkspaceDeletion(*task)
+		        ? uam::query_handler_async::AsyncSuccess({})
+		        : uam::query_handler_async::AsyncFailure(500, task->snapshot.status_line);
+	    },
+	    [this, browser, cb, task, unlock](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) { unlock(); return; }
+		    uam::CommitWorkspaceDeletion(m_app, *task);
+		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
+		    response = uam::query_handler_async::AsyncSuccess({
+		        {"deletedChatIds", task->deleted_ids},
+		        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
+		    // Acknowledge the committed deletion before serializing the sidebar or cleaning files.
+		    // The renderer can close confirmation and paint immediately while native work continues.
+		    cb->Success(response.body);
+		    response.callback_deferred = true;
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+		    if (!CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, nullptr,
+		        [task]()
+		        {
+			        (void)uam::CleanupWorkspaceDeletion(*task);
+			        return uam::query_handler_async::AsyncSuccess({});
+		        },
+		        [this, browser, task, unlock](uam::query_handler_async::AsyncCefResult& result)
+		        {
+			        unlock();
+			        m_app.status_line = result.ok ? task->snapshot.status_line
+			            : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			        uam::PushStateUpdateIfChanged(browser, m_app);
+		        })))
+		    {
+			    unlock();
+			    m_app.status_line = "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+		    }
+	    })) unlock();
 }
 
 void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

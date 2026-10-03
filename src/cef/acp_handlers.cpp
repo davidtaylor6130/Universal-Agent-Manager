@@ -899,10 +899,11 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	if (!uam::StopAcpSession(m_app, chat_id))
+	const uam::AcpStopPurpose purpose = payload.value("purpose", "interrupt") == "timeout" ? uam::AcpStopPurpose::Timeout : uam::AcpStopPurpose::Interrupt;
+	if (!uam::StopAcpSession(m_app, chat_id, purpose))
 	{
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
-		if (session != nullptr && session->remote_stop_pending)
+		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
