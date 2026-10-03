@@ -348,6 +348,7 @@ namespace uam
 	{
 		std::string chat_id;
 		std::string provider_id;
+		std::string process_execution_host_id;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
 		std::string session_id;
 		std::string codex_thread_id;
@@ -531,6 +532,8 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		std::string chat_id;
+		std::string native_writer_key;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};

@@ -75,7 +75,7 @@ namespace uam::acp_detail
 			if (recover_remote_disconnect && remote_helper_owned)
 			{
 				const bool active_turn = uam::AcpSessionHasActiveTurn(session);
-				if (session.running) QueueAcpProcessStop(app, session);
+				if (session.running) QueueAcpProcessStop(app, session, session.chat_id);
 				MarkAcpProcessExited(session, &chat, false, 0, active_turn);
 				session.processing = active_turn;
 				session.recovering_remote_turn = active_turn && chat.remote_turn_reconnect_pending;

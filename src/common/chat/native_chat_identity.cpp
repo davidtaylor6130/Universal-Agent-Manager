@@ -93,6 +93,14 @@ namespace uam::chat_identity
 		return MakeNativeIdentityKey(chat, NativeWorkspaceForHistoryImport(chat));
 	}
 
+	std::string CodexWriterIdentityKey(const ChatSession& chat)
+	{
+		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) ||
+		    uam::strings::IsBlank(chat.native_session_id)) return {};
+		return "codex-cli|" + uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local") +
+		    "|" + uam::strings::Trim(chat.native_session_id);
+	}
+
 	std::string NativeIdentityKeyHash(std::string_view key)
 	{
 		return uam::hashing::Hex64(uam::hashing::Fnv1a64(key));
