@@ -139,30 +139,35 @@ namespace
 	                            std::vector<std::string>& target_chat_ids,
 	                            std::unordered_set<std::string>& deleted_chat_ids)
 	{
+		// Index dependency edges once instead of rescanning every chat for each deleted owner.
+		std::unordered_map<std::string, std::vector<std::string>> children_by_owner;
+		using ChatIndex = std::unordered_multimap<std::string, const ChatSession*>;
+		ChatIndex chats_by_id;
+		for (const ChatSession& chat : app.chats)
+		{
+			chats_by_id.emplace(uam::strings::Trim(chat.id), &chat);
+			const std::string owner_id = uam::strings::Trim(chat.goal_owner_chat_id);
+			if (!owner_id.empty()) children_by_owner[owner_id].push_back(chat.id);
+		}
+		for (const AgentRun& run : app.agent_runs)
+		{
+			if (uam::strings::IsBlank(run.transcript_chat_id)) continue;
+			const std::pair<ChatIndex::iterator, ChatIndex::iterator> range = chats_by_id.equal_range(uam::strings::Trim(run.transcript_chat_id));
+			for (ChatIndex::iterator found = range.first; found != range.second; ++found)
+			{
+				if (!uam::strings::TrimmedEquals(found->second->agent_run_id, run.id)) continue;
+				children_by_owner[uam::strings::Trim(run.root_chat_id)].push_back(run.transcript_chat_id);
+				break;
+			}
+		}
 		for (std::size_t owner_index = 0; owner_index < target_chat_ids.size(); ++owner_index)
 		{
-			const std::string owner_id = target_chat_ids[owner_index];
-			for (const ChatSession& chat : app.chats)
+			const std::unordered_map<std::string, std::vector<std::string>>::const_iterator children =
+			    children_by_owner.find(uam::strings::Trim(target_chat_ids[owner_index]));
+			if (children == children_by_owner.end()) continue;
+			for (const std::string& child_id : children->second)
 			{
-				if (uam::strings::TrimmedEquals(chat.goal_owner_chat_id, owner_id) &&
-				    deleted_chat_ids.insert(chat.id).second)
-				{
-					target_chat_ids.push_back(chat.id);
-				}
-			}
-			for (const AgentRun& run : app.agent_runs)
-			{
-				if (uam::strings::TrimmedEquals(run.root_chat_id, owner_id) &&
-				    !uam::strings::IsBlank(run.transcript_chat_id) &&
-				    std::ranges::any_of(app.chats, [&](const ChatSession& chat)
-				    {
-					    return uam::strings::TrimmedEquals(chat.id, run.transcript_chat_id) &&
-					           uam::strings::TrimmedEquals(chat.agent_run_id, run.id);
-				    }) &&
-				    deleted_chat_ids.insert(run.transcript_chat_id).second)
-				{
-					target_chat_ids.push_back(run.transcript_chat_id);
-				}
+				if (deleted_chat_ids.insert(child_id).second) target_chat_ids.push_back(child_id);
 			}
 		}
 	}
@@ -405,12 +410,11 @@ namespace
 		return uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(staging_root);
 	}
 
-	bool CompleteDeletionTransaction(uam::AppState& app,
-	                                 const DeletionIntent& intent,
-	                                 std::vector<ChatSession>& next_chats,
-	                                 std::vector<ChatFolder>& next_folders,
-	                                 std::vector<ChatSession>& deleted_chats,
-	                                 bool& native_cleanup_failed)
+	bool CommitDeletionMetadata(uam::AppState& app,
+	                            const DeletionIntent& intent,
+	                            std::vector<ChatSession>& next_chats,
+	                            std::vector<ChatFolder>& next_folders,
+	                            const std::vector<ChatSession>& deleted_chats)
 	{
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		next_chats = app.chats;
@@ -423,7 +427,7 @@ namespace
 			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
 			std::erase_if(next_folders, [&](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
 		}
-		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
+
 		std::vector<std::string> added_tombstones;
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones)) return false;
 
@@ -444,6 +448,11 @@ namespace
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
 		}
 
+		return true;
+	}
+
+	bool CleanupDeletionTransaction(uam::AppState& app, const DeletionIntent& intent, const std::vector<ChatSession>& deleted_chats, bool& native_cleanup_failed)
+	{
 		for (const std::string& id : intent.chat_ids)
 		{
 			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;
@@ -470,6 +479,18 @@ namespace
 		}
 
 		return RemoveDeletionTransactionFiles(app.data_root);
+	}
+
+	bool CompleteDeletionTransaction(uam::AppState& app,
+	                                 const DeletionIntent& intent,
+	                                 std::vector<ChatSession>& next_chats,
+	                                 std::vector<ChatFolder>& next_folders,
+	                                 std::vector<ChatSession>& deleted_chats,
+	                                 bool& native_cleanup_failed)
+	{
+		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
+		return CommitDeletionMetadata(app, intent, next_chats, next_folders, deleted_chats) &&
+		       CleanupDeletionTransaction(app, intent, deleted_chats, native_cleanup_failed);
 	}
 
 	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved, bool native_cleanup_failed)
@@ -1326,7 +1347,7 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	return DeleteFoldersByIds(app, {folder_id});
 }
 
-bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& folder_ids)
+bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task)
 {
 	std::unordered_set<std::string> target_folder_ids;
 	for (const std::string& requested_id : folder_ids)
@@ -1392,53 +1413,72 @@ bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& fold
 		app.status_line = "Cannot delete a folder while one of its chats has a running runtime.";
 		return false;
 	}
-	if (!HydrateDeletedChatsForRollback(app.data_root, deleted.chats, deleted.ids))
-	{
-		app.status_line = "Failed to prepare folder chat history for safe deletion.";
-		return false;
-	}
-	const std::vector<std::string> normalized_folder_ids(target_folder_ids.begin(), target_folder_ids.end());
-	if (!BeginDeletionTransaction(app, deleted.chats, normalized_folder_ids))
-	{
-		app.status_line = "Failed to create a durable folder deletion transaction.";
-		return false;
-	}
 	StopChatRuntimes(app, deleted.chats);
+	task.folder_ids.assign(target_folder_ids.begin(), target_folder_ids.end());
+	task.deleted_ids = std::move(deleted.ids);
+	task.snapshot.data_root = app.data_root;
+	task.snapshot.settings = app.settings;
+	task.snapshot.provider_profiles = app.provider_profiles;
+	task.snapshot.folders = app.folders;
+	task.snapshot.chats = std::move(deleted.chats);
+	return true;
+}
+
+bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
+{
+	if (!HydrateDeletedChatsForRollback(task.snapshot.data_root, task.snapshot.chats, task.deleted_ids))
+	{
+		task.snapshot.status_line = "Failed to prepare workspace history for safe deletion.";
+		return false;
+	}
+	if (!BeginDeletionTransaction(task.snapshot, task.snapshot.chats, task.folder_ids))
+	{
+		task.snapshot.status_line = "Failed to create a durable workspace deletion transaction.";
+		return false;
+	}
+	return true;
+}
+
+void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
+{
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const int previous_selected_chat_index = app.selected_chat_index;
-	DeletionIntent intent;
-	intent.folder_ids = normalized_folder_ids;
-	intent.chat_ids.assign(deleted.ids.begin(), deleted.ids.end());
-	std::ranges::sort(intent.chat_ids);
+	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
 	std::vector<ChatSession> next_chats;
 	std::vector<ChatFolder> next_folders;
-	std::vector<ChatSession> deleted_chats;
-	bool native_cleanup_failed = false;
-	if (!CompleteDeletionTransaction(app, intent, next_chats, next_folders, deleted_chats, native_cleanup_failed))
-	{
-		app.chats = std::move(next_chats);
-		ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id,
-		                          previous_selected_chat_index, !deleted.chats.empty());
-		if (target_folder_ids.contains(uam::strings::Trim(app.new_chat_folder_id)))
-			app.new_chat_folder_id.clear();
-		app.folders = std::move(next_folders);
-		(void)PersistenceCoordinator().SaveSettings(app);
-		app.status_line = "Folder deletion is committed and hidden. Disk cleanup will finish safely on restart.";
-		return true;
-	}
-
+	task.metadata_saved = CommitDeletionMetadata(app, intent, next_chats, next_folders, task.snapshot.chats);
 	app.chats = std::move(next_chats);
-	ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id, previous_selected_chat_index, !deleted.chats.empty());
-
-	if (target_folder_ids.contains(uam::strings::Trim(app.new_chat_folder_id)))
-	{
-		app.new_chat_folder_id.clear();
-	}
-
 	app.folders = std::move(next_folders);
-	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
+	ApplyDeletedChatsToUiState(app, task.deleted_ids, selected_chat_id, previous_selected_chat_index, !task.deleted_ids.empty());
+	if (std::ranges::find(task.folder_ids, uam::strings::Trim(app.new_chat_folder_id)) != task.folder_ids.end())
+		app.new_chat_folder_id.clear();
+	task.settings_saved = PersistenceCoordinator().SaveSettings(app);
+	app.status_line = "Workspaces deleted. Cleaning up history.";
+}
 
-	app.status_line = StatusAfterFolderDelete(deleted_chats.size(), settings_saved, native_cleanup_failed);
+bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
+{
+	bool native_cleanup_failed = false;
+	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
+	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed);
+	task.snapshot.status_line = completed
+	    ? StatusAfterFolderDelete(task.deleted_ids.size(), task.settings_saved, native_cleanup_failed)
+	    : "Workspace deletion is committed and hidden. Disk cleanup will finish safely on restart.";
+	return completed;
+}
+
+bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& folder_ids)
+{
+	uam::WorkspaceDeletionTask task;
+	if (!uam::PrepareWorkspaceDeletion(app, folder_ids, task)) return false;
+	if (!uam::StageWorkspaceDeletion(task))
+	{
+		app.status_line = task.snapshot.status_line;
+		return false;
+	}
+	uam::CommitWorkspaceDeletion(app, task);
+	(void)uam::CleanupWorkspaceDeletion(task);
+	app.status_line = task.snapshot.status_line;
 	return true;
 }
 

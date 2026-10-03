@@ -216,16 +216,7 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 
 void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string folder_id = payload.value("folderId", "");
-
-	if (!DeleteFolderById(m_app, folder_id))
-	{
-		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	StartWorkspaceDeletion(browser, {payload.value("folderId", "")}, cb);
 }
 
 void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -237,25 +228,75 @@ void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const n
 		cb->Failure(400, "Workspace ids are required.");
 		return;
 	}
-	const std::unordered_set<std::string> before_chat_ids = [&]()
-	{
-		std::unordered_set<std::string> result;
-		for (const ChatSession& chat : m_app.chats) result.insert(chat.id);
-		return result;
-	}();
-	if (!DeleteFoldersByIds(m_app, ids->get<std::vector<std::string>>()))
+	StartWorkspaceDeletion(browser, ids->get<std::vector<std::string>>(), cb);
+}
+
+void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& folder_ids, CefRefPtr<Callback> cb)
+{
+	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
+	if (!uam::PrepareWorkspaceDeletion(m_app, folder_ids, *task))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
 		return;
 	}
-	std::unordered_set<std::string> remaining_ids;
-	for (const ChatSession& chat : m_app.chats) remaining_ids.insert(chat.id);
-	nlohmann::json deleted_ids = nlohmann::json::array();
-	for (const std::string& id : before_chat_ids)
-		if (!remaining_ids.contains(id)) deleted_ids.push_back(id);
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
-	cb->Success(nlohmann::json{{"deletedChatIds", deleted_ids}, {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}}.dump());
+	for (const std::string& id : task->deleted_ids)
+	{
+		if (m_nativeHistoryRequests.contains(id))
+		{
+			cb->Failure(409, "Wait for workspace history to finish loading.");
+			return;
+		}
+	}
+	m_workspaceDeletionPending = true;
+	m_app.worktree_operation_chat_ids.insert(task->deleted_ids.begin(), task->deleted_ids.end());
+	const auto unlock = [this, task]()
+	{
+		for (const std::string& id : task->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
+		m_workspaceDeletionPending = false;
+	};
+	if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [task]()
+	    {
+		    return uam::StageWorkspaceDeletion(*task)
+		        ? uam::query_handler_async::AsyncSuccess({})
+		        : uam::query_handler_async::AsyncFailure(500, task->snapshot.status_line);
+	    },
+	    [this, browser, task, unlock](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) { unlock(); return; }
+		    try
+		    {
+			    uam::CommitWorkspaceDeletion(m_app, *task);
+			    uam::PushStateUpdateIfChanged(browser, m_app);
+			    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
+			    response = uam::query_handler_async::AsyncSuccess({
+			        {"deletedChatIds", task->deleted_ids},
+			        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
+			    // The durable transaction is already committed, so acknowledge it before disk cleanup.
+			    if (!CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, nullptr,
+			        [task]()
+			        {
+				        (void)uam::CleanupWorkspaceDeletion(*task);
+				        return uam::query_handler_async::AsyncSuccess({});
+			        },
+			        [this, browser, task, unlock](uam::query_handler_async::AsyncCefResult& result)
+			        {
+				        unlock();
+				        m_app.status_line = result.ok ? task->snapshot.status_line
+				            : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+				        uam::PushStateUpdateIfChanged(browser, m_app);
+			        })))
+			    {
+				    unlock();
+				    m_app.status_line = "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			    }
+		    }
+		    catch (...)
+		    {
+			    unlock();
+			    throw;
+		    }
+	    })) unlock();
 }
 
 void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

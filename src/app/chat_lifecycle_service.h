@@ -9,6 +9,21 @@
 
 namespace uam
 {
+	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
+	struct WorkspaceDeletionTask
+	{
+		AppState snapshot;
+		std::vector<std::string> folder_ids;
+		std::unordered_set<std::string> deleted_ids;
+		bool metadata_saved = false;
+		bool settings_saved = false;
+	};
+
+	bool PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task);
+	bool StageWorkspaceDeletion(WorkspaceDeletionTask& task);
+	void CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task);
+	bool CleanupWorkspaceDeletion(WorkspaceDeletionTask& task);
+
 	struct WorkspaceFolderRecoveryChat
 	{
 		std::string id;

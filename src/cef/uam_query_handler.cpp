@@ -47,6 +47,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		return true;
 	}
 
+	// Read-only queries and unrelated runtime cancellation stay available during disk work.
+	if (m_workspaceDeletionPending && !action.starts_with("get") && !action.starts_with("list") &&
+	    action != "selectSession" && !is_runtime_stop)
+	{
+		cb->Failure(409, "Wait for workspace deletion to finish.");
+		return true;
+	}
+
 	struct Route
 	{
 		std::string_view action;
