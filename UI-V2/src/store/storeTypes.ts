@@ -227,6 +227,7 @@ export interface AppState {
   rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
   deleteFolder: (id: string) => Promise<boolean>
+  deleteFolders: (ids: string[]) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
   listRemoteDirectories: (executionHostId: string, directory: string) => Promise<RemoteDirectoryBrowseResult>
   createResourceCollection: (name: string) => Promise<ResourceCollection | null>

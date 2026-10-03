@@ -130,6 +130,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
+  const deleteFolders       = useAppStore((s) => s.deleteFolders)
   const deleteFolder        = useAppStore((s) => s.deleteFolder)
   const rescanFolderChats    = useAppStore((s) => s.rescanFolderChats)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
@@ -162,6 +163,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [activeCollapsed, setActiveCollapsed] = useState(false)
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(() => new Set())
+  const folderSelectionAnchorRef = useRef<HTMLElement | null>(null)
+  const workspaceDeleteInFlightRef = useRef(false)
+  const [pendingDeleteFolderIds, setPendingDeleteFolderIds] = useState<string[] | null>(null)
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
   const selectionAnchorRowRef = useRef<HTMLElement | null>(null)
@@ -310,6 +315,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    setSelectedFolderIds(new Set())
+    folderSelectionAnchorRef.current = null
     if (isCompanionContext() || !event.shiftKey) {
       selectionAnchorRowRef.current = event.currentTarget
       setSelectionAnchorId(sessionId)
@@ -343,6 +350,79 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     setPendingBulkDeleteIds(null)
     setBulkDeleteFailed(false)
   }, [])
+
+  const visibleFolderRows = useCallback(() => Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-workspace-id]') ?? []).filter((row) => !row.closest('[hidden], [inert], [aria-hidden="true"]')), [])
+
+  const clearWorkspaceSelection = useCallback(() => {
+    setSelectedFolderIds(new Set())
+    folderSelectionAnchorRef.current = null
+    setPendingDeleteFolderIds(null)
+    setDeleteFolderError('')
+  }, [])
+
+  const handleFolderClick = (folderId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    clearBulkSelection()
+    if (isCompanionContext() || !event.shiftKey) {
+      folderSelectionAnchorRef.current = event.currentTarget
+      setSelectedFolderIds(new Set())
+      toggleFolder(folderId)
+      return
+    }
+    event.preventDefault()
+    const rows = visibleFolderRows()
+    const anchor = folderSelectionAnchorRef.current ? rows.indexOf(folderSelectionAnchorRef.current) : -1
+    const target = rows.indexOf(event.currentTarget)
+    if (anchor < 0 || target < 0) {
+      folderSelectionAnchorRef.current = event.currentTarget
+      setSelectedFolderIds(new Set([folderId]))
+      return
+    }
+    setSelectedFolderIds(new Set(rows.slice(Math.min(anchor, target), Math.max(anchor, target) + 1).map((row) => row.dataset.workspaceId!)))
+  }
+
+  useEffect(() => {
+    if (selectedFolderIds.size === 0) return
+    const prune = () => {
+      if (deletingFolder) return
+      const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
+      setSelectedFolderIds((selected) => {
+        const next = new Set([...selected].filter((id) => visible.has(id)))
+        return next.size === selected.size ? selected : next
+      })
+      setPendingDeleteFolderIds((pending) => {
+        if (!pending) return pending
+        const next = pending.filter((id) => visible.has(id))
+        return next.length === pending.length ? pending : next.length > 0 ? next : null
+      })
+    }
+    prune()
+    const observer = new MutationObserver(prune)
+    if (treeRef.current) observer.observe(treeRef.current, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'inert', 'aria-hidden'] })
+    return () => observer.disconnect()
+  }, [selectedFolderIds.size, folders, searchModel, deletingFolder, visibleFolderRows])
+
+  useEffect(() => {
+    if (selectedFolderIds.size === 0 || pendingDeleteFolderIds) return
+    const clear = (event: KeyboardEvent) => { if (event.key === 'Escape') clearWorkspaceSelection() }
+    document.addEventListener('keydown', clear)
+    return () => document.removeEventListener('keydown', clear)
+  }, [selectedFolderIds.size, pendingDeleteFolderIds, clearWorkspaceSelection])
+
+  const confirmDeleteWorkspaces = async () => {
+    if (!pendingDeleteFolderIds || workspaceDeleteInFlightRef.current) return
+    workspaceDeleteInFlightRef.current = true
+    setDeletingFolder(true)
+    setDeleteFolderError('')
+    try {
+      if (await deleteFolders(pendingDeleteFolderIds)) clearWorkspaceSelection()
+      else setDeleteFolderError('The workspaces could not be deleted. Finish active work and try again.')
+    } catch {
+      setDeleteFolderError('The workspaces could not be deleted. Finish active work and try again.')
+    } finally {
+      workspaceDeleteInFlightRef.current = false
+      setDeletingFolder(false)
+    }
+  }
 
   const openWorkspaceRecovery = useCallback(() => {
     const requestId = ++recoveryRequestRef.current
@@ -570,7 +650,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       isEditing={editingFolderId === folder.id}
       editFolderName={editFolderName}
       editFolderDirectory={editFolderDirectory}
-      onToggle={() => toggleFolder(folder.id)}
+      selected={selectedFolderIds.has(folder.id)}
+      onToggle={(event) => handleFolderClick(folder.id, event)}
       onStartRename={() => startRenameFolder(folder)}
       onDelete={() => {
         setDeleteFolderError('')
@@ -613,6 +694,20 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onKeyDownCapture={(event) => { if (isCompanionContext() && (event.shiftKey || ['F2', 'ContextMenu', 'ArrowUp', 'ArrowDown'].includes(event.key))) event.stopPropagation() }}
     >
+      {selectedFolderIds.size > 0 && (
+        <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
+          <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} workspaces selected</span>
+          <Button size="sm" variant="ghost" disabled={deletingFolder} onClick={clearWorkspaceSelection}>Clear</Button>
+          <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${selectedFolderIds.size} selected workspaces`} onClick={() => {
+            const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
+            const ids = [...selectedFolderIds].filter((id) => visible.has(id))
+            if (ids.length > 0) {
+              setDeleteFolderError('')
+              setPendingDeleteFolderIds(ids)
+            }
+          }}>Delete</Button>
+        </div>
+      )}
       {selectedSessionIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
@@ -1071,6 +1166,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         />
       )}
 
+      {pendingDeleteFolderIds && (
+        <DeleteWorkspacesModal
+          folderCount={pendingDeleteFolderIds.length}
+          chatCount={sessions.filter((session) => session.folderId && pendingDeleteFolderIds.includes(session.folderId)).length}
+          error={deleteFolderError}
+          deleting={deletingFolder}
+          onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
+          onConfirm={() => { void confirmDeleteWorkspaces() }}
+        />
+      )}
       {pendingDeleteFolder && (
         <DeleteFolderModal
           folder={pendingDeleteFolder}
@@ -1275,6 +1380,47 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
       ))}
     </span>
   )
+}
+
+function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCancel, onConfirm }: {
+  folderCount: number; chatCount: number; error: string; deleting: boolean; onCancel: () => void; onConfirm: () => void
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null
+    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    return () => previousFocus?.focus()
+  }, [])
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        if (!deleting) onCancel()
+      }
+      if (event.key === 'Tab') {
+        const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
+        if (buttons.length === 0) { event.preventDefault(); return }
+        const first = buttons[0], last = buttons[buttons.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [deleting, onCancel])
+  return <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }} onClick={(event) => { if (event.target === event.currentTarget && !deleting) onCancel() }}>
+    <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-label="Delete selected workspaces" aria-describedby="delete-workspaces-description" aria-busy={deleting} tabIndex={-1} className="w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}>
+      <div className="px-5 py-4 text-sm font-semibold">Delete selected workspaces?</div>
+      <div className="px-5 pb-5 text-sm">
+        <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
+        {error && <p role="alert" className="mt-2" style={{ color: 'var(--red)' }}>{error}</p>}
+      </div>
+      <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+        <Button size="sm" disabled={deleting} onClick={onCancel}>Cancel</Button>
+        <Button size="sm" variant="danger" disabled={deleting} onClick={onConfirm}>{deleting ? 'Deleting…' : 'Delete workspaces'}</Button>
+      </div>
+    </div>
+  </div>
 }
 
 interface DeleteFolderModalProps {
@@ -1558,7 +1704,8 @@ interface FolderRowProps {
   isEditing: boolean
   editFolderName: string
   editFolderDirectory: string
-  onToggle: () => void
+  selected: boolean
+  onToggle: (event: ReactMouseEvent<HTMLDivElement>) => void
   onStartRename: () => void
   onDelete: () => void
   onRescan: () => void
@@ -1593,6 +1740,7 @@ const FolderRow = memo(function FolderRow({
   isEditing,
   editFolderName,
   editFolderDirectory,
+  selected,
   onToggle,
   onStartRename,
   onDelete,
@@ -1683,18 +1831,29 @@ const FolderRow = memo(function FolderRow({
       {/* Folder header */}
       <div
         data-testid={`folder-header-${folder.id}`}
+        data-workspace-id={folder.id}
+        title={isCompanionContext() ? undefined : "Shift-click to select workspaces"}
+        role="button"
+        aria-label={`${folder.name}${selected ? ", selected for bulk actions" : ""}`}
+        aria-pressed={selected}
         tabIndex={draggable ? 0 : -1}
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
-        aria-keyshortcuts="ArrowUp ArrowDown"
+        aria-keyshortcuts="ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space"
         className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
         style={{
-          background: 'transparent',
-          color: 'var(--text-2)',
+          background: selected ? 'var(--accent-dim)' : 'transparent',
+          color: selected ? 'var(--text)' : 'var(--text-2)',
         }}
         onClick={onToggle}
         onKeyDown={(event) => {
-          if (event.currentTarget !== event.target || !draggable || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+          if (event.currentTarget !== event.target) return
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            event.currentTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: event.shiftKey }))
+            return
+          }
+          if (!draggable || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
           event.preventDefault()
           onMove(event.key === 'ArrowUp' ? -1 : 1)
         }}
@@ -1704,7 +1863,7 @@ const FolderRow = memo(function FolderRow({
           setMenuPos({ x: event.clientX, y: event.clientY })
         }}
       >
-        {shouldShowSessions ? (
+        {selected ? <Check size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden /> : shouldShowSessions ? (
           <FolderOpenIcon data-testid={`folder-icon-${folder.id}`} size={14} style={{ flexShrink: 0, color: 'var(--text-3)', opacity: 0.85 }} aria-hidden />
         ) : (
           <PaneColorIcon Icon={FolderIcon} colors={hiddenPaneColors} testId={`folder-icon-${folder.id}`} />
