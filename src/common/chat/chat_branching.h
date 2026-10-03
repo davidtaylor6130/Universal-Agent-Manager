@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_set>
 
 /// <summary>
 /// Applies branch lineage normalization and reparents branch children after deletions.
@@ -16,4 +17,6 @@ class ChatBranching
 	static void Normalize(std::vector<ChatSession>& chats);
 	/// <summary>Reparents descendants when a branch node is removed.</summary>
 	static void ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, std::string_view deleted_chat_id);
+	/// <summary>Reparents survivors to the nearest remaining ancestor before a batch is removed.</summary>
+	static void ReparentChildrenAfterDeletes(std::vector<ChatSession>& chats, const std::unordered_set<std::string>& deleted_ids);
 };
