@@ -383,6 +383,8 @@ namespace
 		import_index.existing_id_by_native_key.reserve(local_chats.size());
 		import_index.existing_summary_by_native_key.reserve(local_chats.size());
 
+		std::unordered_map<std::string, const ChatSession*> selected_chats;
+		selected_chats.reserve(local_chats.size());
 		for (const ChatSession& chat : local_chats)
 		{
 			import_index.existing_ids.insert(chat.id);
@@ -391,12 +393,14 @@ namespace
 
 				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 				if (uam::strings::StartsWith(chat.id, "chat-")) import_index.owned_native_keys.insert(native_key);
-				const auto existing = import_index.existing_summary_by_native_key.find(native_key);
-				if (existing == import_index.existing_summary_by_native_key.end() ||
-				    ChatDomainService().ShouldReplaceChatForDuplicateId(chat, existing->second))
+				const auto existing = selected_chats.find(native_key);
+				if (existing == selected_chats.end() ||
+				    ChatDomainService().ShouldReplaceChatForDuplicateId(chat, *existing->second))
 				{
 					import_index.existing_id_by_native_key[native_key] = chat.id;
-					import_index.existing_summary_by_native_key[native_key] = chat;
+					selected_chats[native_key] = &chat;
+					if (sidebar != nullptr) import_index.existing_summary_by_native_key[native_key].id = chat.id;
+					else import_index.existing_summary_by_native_key[native_key] = chat;
 				}
 
 			}
@@ -3093,28 +3097,111 @@ bool ChatHistorySyncService::DeleteNativeWorkspaceHistoryForFolder(const uam::Ap
 	}
 
 	const fs::path workspace_root = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(folder_directory);
-	const auto tmp_dir = AppPaths::ResolveGeminiProjectTmpDir(workspace_root);
-
-	if (!tmp_dir)
-	{
-		return false;
-	}
-
-	const fs::path project_root_file = *tmp_dir / ".project_root";
-	const std::string recorded_project_root = uam::strings::Trim(uam::io::ReadTextFile(project_root_file));
-
-	if (recorded_project_root.empty() || !FolderDirectoryMatches(workspace_root, uam::paths::PathFromUtf8(recorded_project_root)))
-	{
-		return false;
-	}
-
+	const fs::path journal = app.data_root / ".deletion-transaction" / "native-workspace.json";
+	nlohmann::json workspace_records = nlohmann::json::object();
+	bool legacy_record = false;
+	const std::string workspace_key = folder.id.empty() ? uam::paths::Utf8PathString(workspace_root) : folder.id;
+	fs::path source;
+	fs::path staged;
+	bool already_staged = false;
 	std::error_code error;
-	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(*tmp_dir, &error);
-
-	if (error_out != nullptr)
+	if (uam::paths::PathExistsNoThrow(journal))
 	{
-		*error_out = error;
+		const nlohmann::json recorded = nlohmann::json::parse(uam::io::ReadTextFile(journal), nullptr, false);
+		if (!recorded.is_object() || (recorded.contains("workspaces") && !recorded["workspaces"].is_object()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+		// Legacy transactions contained exactly one workspace. Retain that record
+		// under its owner when the batch journal is first updated.
+		if (recorded.contains("workspaces")) workspace_records = recorded["workspaces"];
+		else
+		{
+			workspace_records[workspace_key] = recorded;
+			legacy_record = true;
+		}
 	}
+	if (workspace_records.contains(workspace_key))
+	{
+		const nlohmann::json& recorded = workspace_records[workspace_key];
+		if (!recorded.is_object() || !recorded.contains("source") || !recorded["source"].is_string() ||
+		    (recorded.contains("staged") && !recorded["staged"].is_boolean()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+		source = uam::paths::PathFromUtf8(recorded["source"].get<std::string>());
+		already_staged = recorded.value("staged", false);
+		if (source.parent_path() != AppPaths::GeminiHomePath() / "tmp" || source.filename().empty() || source.filename() == "." || source.filename() == "..")
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+		if (legacy_record && !uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::io_error);
+			return false;
+		}
+	}
+	else
+	{
+		const auto tmp_dir = AppPaths::ResolveGeminiProjectTmpDir(workspace_root);
+		if (!tmp_dir) return false;
+		source = *tmp_dir;
+		const std::string recorded_project_root = uam::strings::Trim(uam::io::ReadTextFile(source / ".project_root"));
+		if (recorded_project_root.empty() || !FolderDirectoryMatches(workspace_root, uam::paths::PathFromUtf8(recorded_project_root))) return false;
+		staged = source.parent_path().parent_path() / (fs::path(".uam-deleted-") += source.filename());
+		if (uam::paths::PathExistsNoThrow(staged))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::file_exists);
+			return false;
+		}
+		workspace_records[workspace_key] = nlohmann::json{{"source", uam::paths::Utf8PathString(source)}};
+		if (!uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
+		{
+			if (error_out != nullptr) *error_out = std::make_error_code(std::errc::io_error);
+			return false;
+		}
+	}
+	// Stage outside Gemini's tmp discovery root; interrupted cleanup cannot be imported.
+	staged = source.parent_path().parent_path() / (fs::path(".uam-deleted-") += source.filename());
+	if (!already_staged && !uam::paths::PathExistsNoThrow(staged) && uam::paths::PathExistsNoThrow(source))
+	{
+#if defined(_WIN32)
+		if (!MoveFileExW(source.c_str(), staged.c_str(), MOVEFILE_WRITE_THROUGH))
+			error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+#else
+		fs::rename(source, staged, error);
+#endif
+	}
+#if !defined(_WIN32)
+	if (!error && !already_staged)
+	{
+		uam::io::AtomicWriteResult sync_result;
+		if (!uam::io::SyncAtomicWriteDirectory(source.parent_path(), sync_result) ||
+		    !uam::io::SyncAtomicWriteDirectory(staged.parent_path(), sync_result)) error = std::make_error_code(std::errc::io_error);
+	}
+#endif
+	if (!error && !already_staged)
+	{
+		workspace_records[workspace_key] = nlohmann::json{{"source", uam::paths::Utf8PathString(source)}, {"staged", true}};
+		if (!uam::io::WriteTextFileWithBackup(journal, nlohmann::json{{"workspaces", workspace_records}}.dump()))
+			error = std::make_error_code(std::errc::io_error);
+	}
+	if (!error && uam::paths::PathExistsNoThrow(staged))
+	{
+		if (uam::paths::IsLinkOrReparsePointNoThrow(staged)) error = std::make_error_code(std::errc::invalid_argument);
+		else uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(staged, &error);
+	}
+#if !defined(_WIN32)
+	if (!error)
+	{
+		uam::io::AtomicWriteResult sync_result;
+		if (!uam::io::SyncAtomicWriteDirectory(staged.parent_path(), sync_result)) error = std::make_error_code(std::errc::io_error);
+	}
+#endif
+	if (error_out != nullptr) *error_out = error;
 
 	return !error;
 }

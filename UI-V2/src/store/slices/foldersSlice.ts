@@ -23,6 +23,34 @@ function makeId(prefix: string, counter: number) {
 }
 
 export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
+  async function deleteWorkspaceFolders(ids: string[], action: 'deleteFolder' | 'deleteFolders'): Promise<boolean> {
+    const folderIds = new Set(ids.map((id) => id.trim()))
+    if (folderIds.size === 0 || folderIds.has('')) return false
+    const snapshot = get()
+    if (isCefContext() && [...folderIds].some((id) => !snapshot.folders.some((folder) => folder.id === id))) return false
+    const deletedSessionIds = new Set(snapshot.sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
+    let selectedChatId: string | null | undefined
+    if (isCefContext()) {
+      const response = await sendWhenRemoteStopSettles<{ deletedChatIds?: string[]; selectedChatId?: string | null }>({
+        action,
+        payload: action === 'deleteFolder' ? { folderId: [...folderIds][0] } : { folderIds: [...folderIds] },
+        requestId: createRequestId(action),
+      })
+      if (!response.ok) return false
+      selectedChatId = response.data?.selectedChatId
+      // The native transaction also deletes hidden goal iterations and agent transcripts.
+      for (const id of response.data?.deletedChatIds ?? []) deletedSessionIds.add(id)
+    }
+    discardPendingPushesForChats(deletedSessionIds)
+    set((state) => ({
+      ...deleteSessionsFromState(state, deletedSessionIds, selectedChatId),
+      folders: state.folders.filter((folder) => !folderIds.has(folder.id)),
+    }))
+    removeChatsFromGrid(deletedSessionIds)
+    removeComposerDrafts(deletedSessionIds)
+    return true
+  }
+
   return {
     markdownStoreDirectory: '',
     memoryLibraryScope: null as MemoryScope | null,
@@ -239,42 +267,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    deleteFolder: async (id: string): Promise<boolean> => {
-      if (isCefContext()) {
-        const deletedFolder = get().folders.find((folder) => folder.id === id)
-        if (!deletedFolder) {
-          return false
-        }
-		const deletedSessionIds = new Set(get().sessions
-		  .filter((session) => session.folderId === id)
-		  .map((session) => session.id))
-
-        const requestId = createRequestId('deleteFolder')
-        const response = await sendWhenRemoteStopSettles({ action: 'deleteFolder', payload: { folderId: id }, requestId })
-        if (response.ok) {
-          discardPendingPushesForChats(deletedSessionIds)
-          set((state) => ({
-            ...deleteSessionsFromState(state, deletedSessionIds),
-            folders: state.folders.filter((folder) => folder.id !== id),
-          }))
-          removeChatsFromGrid(deletedSessionIds)
-          removeComposerDrafts(deletedSessionIds)
-        }
-        return response.ok
-      }
-
-      const deletedSessionIds = new Set(get().sessions
-        .filter((session) => session.folderId === id)
-        .map((session) => session.id))
-      discardPendingPushesForChats(deletedSessionIds)
-      set((state) => ({
-        ...deleteSessionsFromState(state, deletedSessionIds),
-        folders: state.folders.filter((folder) => folder.id !== id),
-      }))
-      removeChatsFromGrid(deletedSessionIds)
-      removeComposerDrafts(deletedSessionIds)
-      return true
-    },
+    deleteFolder: (id: string) => deleteWorkspaceFolders([id], 'deleteFolder'),
+    deleteFolders: (ids: string[]) => deleteWorkspaceFolders(ids, 'deleteFolders'),
 
     browseFolderDirectory: async (currentValue: string) => {
       if (!isCefContext()) {

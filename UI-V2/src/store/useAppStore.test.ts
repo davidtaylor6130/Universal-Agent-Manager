@@ -6397,3 +6397,41 @@ describe('useAppStore Gemini CLI slice', () => {
     }
   })
 })
+
+
+describe('bulk workspace deletion', () => {
+  it('sends one batch, keeps state on failure, and removes native-reported dependent chats on success', async () => {
+    const now = new Date()
+    const testWindow = ensureTestWindow()
+    const originalQuery = testWindow.cefQuery
+    const requests: { action: string; payload: unknown }[] = []
+    let succeed = false
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (succeed) onSuccess(JSON.stringify({ deletedChatIds: ['hidden'], selectedChatId: 'keep' }))
+      else onFailure(409, 'A runtime is running.')
+    }
+    useAppStore.setState({
+      folders: ['a', 'b', 'keep'].map((id) => ({ id, name: id, parentId: null, directory: `/tmp/${id}`, isExpanded: true, createdAt: now })),
+      sessions: ['a', 'b', 'hidden', 'keep'].map((id) => ({ id, name: id, folderId: id === 'hidden' ? null : id, viewMode: 'chat', createdAt: now, updatedAt: now })),
+      activeSessionId: 'a', messages: {},
+    })
+    try {
+      await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(false)
+      expect(useAppStore.getState().folders).toHaveLength(3)
+      expect(useAppStore.getState().sessions).toHaveLength(4)
+      succeed = true
+      await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(true)
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toMatchObject({ action: 'deleteFolders', payload: { folderIds: ['a', 'b'] } })
+      expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['keep'])
+      expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['keep'])
+      expect(useAppStore.getState().activeSessionId).toBe('keep')
+      await expect(useAppStore.getState().deleteFolders([])).resolves.toBe(false)
+      await expect(useAppStore.getState().deleteFolders(['missing'])).resolves.toBe(false)
+      expect(requests).toHaveLength(2)
+    } finally {
+      testWindow.cefQuery = originalQuery
+    }
+  })
+})
