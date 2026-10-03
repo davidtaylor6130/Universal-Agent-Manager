@@ -4011,12 +4011,14 @@ UAM_TEST(FolderDeleteStopsIdleRuntimesBeforeNativeCleanup)
 	const std::string source = ReadFile(source_root / "src/app/chat_lifecycle_service.cpp");
 	const std::size_t folder_delete = source.find("bool DeleteFolderById");
 	const std::size_t stop = source.find("StopChatRuntimes(app, deleted.chats)", folder_delete);
-	const std::size_t cleanup = source.find("CompleteDeletionTransaction(app", stop);
+	const std::size_t snapshot = source.find("task.snapshot.chats = std::move(deleted.chats)", stop);
+	const std::size_t cleanup = source.find("bool uam::CleanupWorkspaceDeletion", snapshot);
 
 	UAM_ASSERT(folder_delete != std::string::npos);
 	UAM_ASSERT(stop != std::string::npos);
+	UAM_ASSERT(snapshot != std::string::npos);
 	UAM_ASSERT(cleanup != std::string::npos);
-	UAM_ASSERT(stop < cleanup);
+	UAM_ASSERT(stop < snapshot && snapshot < cleanup);
 }
 
 UAM_TEST(ThoughtHandlersDoNotUseAssistantTokenFastPath)
@@ -15754,6 +15756,244 @@ UAM_TEST(DeleteFolderTombstonesCommittedDeletionWhenMetadataCleanupIsDeferred)
 	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
 }
 #endif
+
+UAM_TEST(DeleteFoldersBatchPreservesUnrelatedHistoryAndReparentsSurvivors)
+{
+	TempDir temp("uam-workspace-batch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"a", "A", (temp.root / "workspace-a").string(), false},
+	              {"b", "B", (temp.root / "workspace-b").string(), false},
+	              {"keep", "Keep", (temp.root / "workspace-keep").string(), false}};
+	for (const ChatFolder& folder : app.folders) fs::create_directories(folder.directory);
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	ChatSession keep;
+	keep.id = "keep";
+	keep.folder_id = "keep";
+	keep.provider_id = uam::provider_ids::kCodexCli;
+	ChatSession a = keep;
+	a.id = "a";
+	a.folder_id = "a";
+	a.parent_chat_id = keep.id;
+	ChatSession b = a;
+	b.id = "b";
+	b.folder_id = "b";
+	b.parent_chat_id = a.id;
+	ChatSession child = keep;
+	child.id = "child";
+	child.parent_chat_id = b.id;
+	child.branch_from_message_index = 2;
+	ChatSession hidden = a;
+	hidden.id = "hidden";
+	hidden.folder_id.clear();
+	hidden.goal_owner_chat_id = a.id;
+	app.chats = {keep, a, b, child, hidden};
+	ChatBranching::Normalize(app.chats);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path keep_path = AppPaths::UamChatFilePath(temp.root, keep.id);
+	const fs::file_time_type sentinel = fs::file_time_type::clock::now() - std::chrono::hours(24);
+	fs::last_write_time(keep_path, sentinel);
+	const std::string keep_contents = ReadFile(keep_path);
+	app.selected_chat_index = 1;
+	app.new_chat_folder_id = "b";
+	UAM_ASSERT(DeleteFoldersByIds(app, {" a ", "b", "a"}));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(app.new_chat_folder_id.empty());
+	UAM_ASSERT(fs::last_write_time(keep_path) == sentinel);
+	UAM_ASSERT_EQ(ReadFile(keep_path), keep_contents);
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	const ChatSession* saved_child = nullptr;
+	for (const ChatSession& chat : saved) if (chat.id == child.id) saved_child = &chat;
+	UAM_ASSERT(saved_child != nullptr);
+	UAM_ASSERT_EQ(saved_child->parent_chat_id, keep.id);
+	UAM_ASSERT_EQ(saved_child->branch_root_chat_id, keep.id);
+	UAM_ASSERT_EQ(saved_child->branch_from_message_index, 2);
+	for (const std::string& id : {a.id, b.id, hidden.id}) UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, id)));
+	UAM_ASSERT(fs::exists(temp.root / "workspace-a"));
+	UAM_ASSERT(fs::exists(temp.root / "workspace-b"));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	UAM_ASSERT(!fs::exists(temp.root / ".deletion-transaction"));
+}
+
+UAM_TEST(WorkspaceDeletionBackgroundPhasesPreserveLiveChangesAndRecoverBeforeCommit)
+{
+	TempDir temp("uam-workspace-background");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"delete", "Delete", temp.root.string(), false}, {"keep", "Keep", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	ChatSession doomed;
+	doomed.id = "doomed";
+	doomed.folder_id = "delete";
+	doomed.provider_id = uam::provider_ids::kCodexCli;
+	ChatSession survivor = doomed;
+	survivor.id = "survivor";
+	survivor.folder_id = "keep";
+	survivor.parent_chat_id = doomed.id;
+	app.chats = {doomed, survivor};
+	ChatBranching::Normalize(app.chats);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	bool staged = false;
+	std::thread stage([&]() { staged = uam::StageWorkspaceDeletion(task); });
+	stage.join();
+	UAM_ASSERT(staged);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	// A pending unrelated runtime or history completion can update live state during staging.
+	app.chats[1].title = "Updated while staging";
+	app.chats[1].messages.push_back({MessageRole::User, "Live message", "2026-10-03T00:00:00Z"});
+	app.folders.push_back({"new", "New", temp.root.string(), false});
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().title, "Updated while staging");
+	UAM_ASSERT(app.chats.front().parent_chat_id.empty());
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, doomed.id)));
+	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
+	bool cleaned = false;
+	std::thread cleanup([&]() { cleaned = uam::CleanupWorkspaceDeletion(task); });
+	cleanup.join();
+	UAM_ASSERT(cleaned);
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, doomed.id)));
+	const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(saved.front().messages.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().messages.front().content, "Live message");
+
+	// Closing the app after background staging still leaves a complete recovery transaction.
+	uam::WorkspaceDeletionTask interrupted;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"keep"}, interrupted));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(interrupted));
+	uam::AppState recovery;
+	recovery.data_root = temp.root;
+	recovery.provider_profiles = app.provider_profiles;
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(recovery));
+	UAM_ASSERT(ChatRepository::LoadLocalChats(temp.root).empty());
+	UAM_ASSERT_EQ(ChatFolderStore::Load(temp.root).size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(WorkspaceDeletionLargeBatchStagesAndCleansOutsideTheUiPhases)
+{
+	TempDir temp("uam-workspace-background-large");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"delete", "Delete", temp.root.string(), false}, {"keep", "Keep", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	for (int index = 0; index < 1000; ++index)
+	{
+		ChatSession chat;
+		chat.id = "large-" + std::to_string(index);
+		chat.folder_id = index < 500 ? "delete" : "keep";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.messages.push_back({MessageRole::User, std::string(2048, 'x')});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+	ChatBranching::Normalize(app.chats);
+	uam::WorkspaceDeletionTask task;
+	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+	const std::chrono::steady_clock::time_point prepared = std::chrono::steady_clock::now();
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	bool staged = false;
+	std::thread stage([&]() { staged = uam::StageWorkspaceDeletion(task); });
+	stage.join();
+	UAM_ASSERT(staged);
+	const std::chrono::steady_clock::time_point staged_at = std::chrono::steady_clock::now();
+	uam::CommitWorkspaceDeletion(app, task);
+	const std::chrono::steady_clock::time_point committed = std::chrono::steady_clock::now();
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(500));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(temp.root, "large-0")));
+	bool cleaned = false;
+	std::thread cleanup([&]() { cleaned = uam::CleanupWorkspaceDeletion(task); });
+	cleanup.join();
+	UAM_ASSERT(cleaned);
+	const std::chrono::steady_clock::time_point finished = std::chrono::steady_clock::now();
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, "large-0")));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(500));
+	const double ui_ms = std::chrono::duration<double, std::milli>(prepared - start + committed - staged_at).count();
+	const double disk_ms = std::chrono::duration<double, std::milli>(staged_at - prepared + finished - committed).count();
+	std::cout << "[PERF] Workspace deletion 500 chats: UI phases=" << ui_ms << "ms, background disk phases=" << disk_ms << "ms\n";
+}
+
+UAM_TEST(DeleteFoldersBatchPreflightsEveryWorkspaceBeforeDeletion)
+{
+	TempDir temp("uam-workspace-batch-blocked");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"a", "A", temp.root.string(), false}, {"b", "B", temp.root.string(), false}};
+	ChatSession a;
+	a.id = "a";
+	a.folder_id = "a";
+	ChatSession hidden;
+	hidden.id = "hidden";
+	hidden.goal_owner_chat_id = a.id;
+	app.chats = {a, hidden};
+	UAM_ASSERT(!DeleteFoldersByIds(app, {}));
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"a", "missing"}));
+	app.worktree_operation_chat_ids.insert(hidden.id);
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"a", "b"}));
+	app.worktree_operation_chat_ids.clear();
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = hidden.id;
+	session->running = true;
+	session->processing = true;
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!DeleteFoldersByIds(app, {"b", "a"}));
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+}
+
+UAM_TEST(DeleteFoldersBatchRecoversInterruptedCleanupAtEveryStage)
+{
+	for (int stage = 0; stage < 4; ++stage)
+	{
+		TempDir temp("uam-workspace-batch-recovery-" + std::to_string(stage));
+		const std::vector<ChatFolder> folders = {{"a", "A", temp.root.string(), false}, {"b", "B", temp.root.string(), false}};
+		UAM_ASSERT(ChatFolderStore::Save(temp.root, folders));
+		ChatSession a;
+		a.id = "a";
+		a.folder_id = "a";
+		a.provider_id = uam::provider_ids::kCodexCli;
+		ChatSession b = a;
+		b.id = "b";
+		b.folder_id = "b";
+		ChatSession child = a;
+		child.id = "child";
+		child.folder_id.clear();
+		child.parent_chat_id = a.id;
+		child.branch_root_chat_id = a.id;
+		child.branch_from_message_index = 1;
+		const fs::path staging = temp.root / ".deletion-transaction";
+		for (const ChatSession& chat : {a, b, child}) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		for (const ChatSession& chat : {a, b}) UAM_ASSERT(ChatRepository::SaveChat(staging, chat));
+		UAM_ASSERT(ChatFolderStore::Save(staging, folders));
+		const nlohmann::json intent = {{"version", 2}, {"complete", true}, {"folderIds", {"a", "b"}}, {"chatIds", {"a", "b"}}};
+		UAM_ASSERT(uam::io::WriteTextFileWithBackup(temp.root / "deletion-transaction.json", intent.dump()));
+		if (stage >= 1) UAM_ASSERT(ChatFolderStore::Save(temp.root, {}));
+		if (stage >= 2) UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, a.id).Failed());
+		if (stage >= 3) UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, b.id).Failed());
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		UAM_ASSERT(ChatFolderStore::Load(temp.root).empty());
+		const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
+		UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(saved.front().parent_chat_id.empty());
+		UAM_ASSERT_EQ(saved.front().branch_root_chat_id, child.id);
+		UAM_ASSERT_EQ(saved.front().branch_from_message_index, -1);
+		UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	}
+}
 
 UAM_TEST(DeleteFolderBlocksWhenContainedChatIsRunning)
 {
