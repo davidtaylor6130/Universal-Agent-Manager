@@ -469,6 +469,8 @@ export interface MemoryWorkerBinding {
 }
 
 export interface ProviderChatDefaults {
+  hiddenModelIds?: string[]
+  hiddenProviderIds?: string[]
   modelId: string
   reviewerModelId?: string
   featurePreference?: 'uam' | 'provider'

@@ -18,6 +18,7 @@ export interface ModelOption {
   label: string
   shortLabel: string
   detail: string
+  disabled?: boolean
 }
 
 type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind' | 'configOptions'>>
@@ -76,7 +77,8 @@ export function buildModelOptions(
   selectedModelId: string,
   provider: Provider | undefined,
   providerId: string,
-  includeDefault = false
+  includeDefault = false,
+  visibility?: { hiddenModelIds?: string[]; hiddenProviderIds?: string[] }
 ): ModelOption[] {
   const providerName = providerShortName(provider, providerId)
   const caps = providerCapabilities(providerId, provider)
@@ -137,6 +139,13 @@ export function buildModelOptions(
     )
   }
 
+  if (providerId === 'opencode-cli' && visibility) {
+    return options.flatMap((option) => {
+      const hidden = Boolean(option.id) && (visibility.hiddenModelIds?.includes(option.id) || visibility.hiddenProviderIds?.includes(option.id.split('/')[0]))
+      if (!hidden) return [option]
+      return option.id === selectedModelId ? [{ ...option, label: `${option.label} (hidden)`, disabled: true }] : []
+    })
+  }
   return options
 }
 

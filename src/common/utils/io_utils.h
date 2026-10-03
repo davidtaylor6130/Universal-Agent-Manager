@@ -428,6 +428,112 @@ namespace uam::io
 	}
 #endif
 
+	/// <summary>Publishes an already synced temporary file with the normal atomic backup contract.</summary>
+	inline AtomicWriteResult CommitSyncedAtomicTemp(const std::filesystem::path& path,
+	    const std::filesystem::path& temp_path, bool preserve_backup = false,
+	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true)
+	{
+		AtomicWriteResult result;
+		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
+		std::error_code ec;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(path, ec);
+		if (ec && ec != std::errc::no_such_file_or_directory) { result.error = "Could not inspect destination: " + ec.message(); return result; }
+		const bool destination_exists = !ec && status.type() != std::filesystem::file_type::not_found;
+		if (destination_exists && !std::filesystem::is_regular_file(status)) { result.error = "Destination must be a regular file."; return result; }
+		const std::filesystem::path backup_path = MakeBackupPath(path);
+		const std::filesystem::path backup_temp_path = MakeTempWritePath(backup_path);
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeReplace, result))
+		{
+			return result;
+		}
+
+#if defined(_WIN32)
+		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result))
+		{
+			RemoveAtomicTempNoThrow(temp_path);
+			return result;
+		}
+		result.primary_committed = true;
+#else
+		if (destination_exists)
+		{
+			if (renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP) != 0)
+			{
+				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno);
+				RemoveAtomicTempNoThrow(temp_path);
+				return result;
+			}
+		}
+		else if (rename(temp_path.c_str(), path.c_str()) != 0)
+		{
+			result.error = "Failed to atomically install destination: " + AtomicWriteSystemError(errno);
+			RemoveAtomicTempNoThrow(temp_path);
+			return result;
+		}
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterReplaceBeforeDirectorySync, result))
+		{
+			return result;
+		}
+#if defined(__APPLE__)
+		if (sync_directory && !SyncAtomicWriteDirectory(parent, result))
+		{
+			return result;
+		}
+		result.primary_committed = true;
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeBackupCleanup, result))
+		{
+			if (result.primary_committed)
+			{
+				result.success = true;
+				result.backup_degraded = preserve_backup && destination_exists;
+			}
+			return result;
+		}
+
+		if (destination_exists)
+		{
+			if (!preserve_backup)
+			{
+#if defined(__APPLE__)
+				RemoveAtomicTempNoThrow(temp_path);
+#endif
+				result.success = true;
+				result.primary_committed = true;
+				result.stage = AtomicWriteStage::Complete;
+				return result;
+			}
+#if defined(_WIN32)
+			if (!MoveFileExW(backup_temp_path.c_str(), backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{
+				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(GetLastError());
+				result.success = true;
+				result.backup_degraded = true;
+				return result;
+			}
+#else
+			if (rename(temp_path.c_str(), backup_path.c_str()) != 0)
+			{
+				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(errno);
+				result.success = true;
+				result.backup_degraded = true;
+				return result;
+			}
+			if (sync_directory && !SyncAtomicWriteDirectory(parent, result))
+			{
+				result.success = true;
+				result.backup_degraded = true;
+				return result;
+			}
+#endif
+		}
+
+		result.success = true;
+		result.primary_committed = true;
+		result.stage = AtomicWriteStage::Complete;
+		return result;
+	}
 	inline AtomicWriteResult AtomicWriteFileDetailed(
 	    const std::filesystem::path& path,
 	    std::string_view content,
@@ -477,98 +583,9 @@ namespace uam::io
 			}
 			return result;
 		}
-		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeReplace, result))
-		{
-			return result;
-		}
-
-#if defined(_WIN32)
-		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result))
-		{
-			RemoveAtomicTempNoThrow(temp_path);
-			return result;
-		}
-		result.primary_committed = true;
-#else
-		if (destination_exists)
-		{
-			if (renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP) != 0)
-			{
-				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno);
-				RemoveAtomicTempNoThrow(temp_path);
-				return result;
-			}
-		}
-		else if (rename(temp_path.c_str(), path.c_str()) != 0)
-		{
-			result.error = "Failed to atomically install destination: " + AtomicWriteSystemError(errno);
-			RemoveAtomicTempNoThrow(temp_path);
-			return result;
-		}
-#endif
-		if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterReplaceBeforeDirectorySync, result))
-		{
-			return result;
-		}
-#if defined(__APPLE__)
-		if (!SyncAtomicWriteDirectory(parent, result))
-		{
-			return result;
-		}
-		result.primary_committed = true;
-#endif
-		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeBackupCleanup, result))
-		{
-			if (result.primary_committed)
-			{
-				result.success = true;
-				result.backup_degraded = preserve_backup && destination_exists;
-			}
-			return result;
-		}
-
-		if (destination_exists)
-		{
-			if (!preserve_backup)
-			{
-#if defined(__APPLE__)
-				RemoveAtomicTempNoThrow(temp_path);
-#endif
-				result.success = true;
-				result.primary_committed = true;
-				result.stage = AtomicWriteStage::Complete;
-				return result;
-			}
-#if defined(_WIN32)
-			if (!MoveFileExW(backup_temp_path.c_str(), backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-			{
-				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(GetLastError());
-				result.success = true;
-				result.backup_degraded = true;
-				return result;
-			}
-#else
-			if (rename(temp_path.c_str(), backup_path.c_str()) != 0)
-			{
-				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(errno);
-				result.success = true;
-				result.backup_degraded = true;
-				return result;
-			}
-			if (!SyncAtomicWriteDirectory(parent, result))
-			{
-				result.success = true;
-				result.backup_degraded = true;
-				return result;
-			}
-#endif
-		}
-
-		result.success = true;
-		result.primary_committed = true;
-		result.stage = AtomicWriteStage::Complete;
-		return result;
+		return CommitSyncedAtomicTemp(path, temp_path, preserve_backup, hook);
 	}
+
 
 	inline bool AtomicWriteFile(const std::filesystem::path& path, std::string_view content)
 	{

@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
 import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check } from 'lucide-react'
-import type { AcpBinding, AcpConfigOption } from '../../store/useAppStore'
+import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
@@ -263,10 +263,11 @@ export function ComposerToolbar({
   dictationAvailable: boolean
   onToggleDictation: () => void
 }) {
+  const modelVisibility = useAppStore((state) => state.providerChatDefaults[providerId])
   const caps = providerCapabilities(providerId, provider)
-  const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel)
+  const modelOptions = buildModelOptions(acp, modelId ?? '', provider, providerId, includeDefaultModel, modelVisibility)
   const currentModel = modelOptionFor(modelOptions, modelId)
-  const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel)
+  const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel, modelVisibility)
   const currentReviewerModel = modelOptionFor(reviewerModelOptions, reviewerModelId || modelId)
   const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
   const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
@@ -356,7 +357,7 @@ export function ComposerToolbar({
     }
     if (event.key === 'Enter') {
       if (!modelOptionRefs.current.includes(document.activeElement as HTMLButtonElement)) return
-      if (modelDisabled) return
+      if (modelDisabled || modelOptions[modelFocusIndex]?.disabled) return
       event.preventDefault()
       onSelectModel(modelOptions[modelFocusIndex]?.id ?? currentModel.id)
       modelTriggerRef.current?.focus()
@@ -597,7 +598,7 @@ export function ComposerToolbar({
                   <MenuSelect
                     label="Worker model"
                     value={currentModel.id}
-                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                    options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
                     onChange={onSelectModel}
                     disabled={modelDisabled}
                   />
@@ -607,7 +608,7 @@ export function ComposerToolbar({
                 <MenuSelect
                   label="Reviewer model"
                   value={currentReviewerModel.id}
-                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
                   onChange={onSelectReviewerModel}
                   disabled={modelDisabled}
                 />

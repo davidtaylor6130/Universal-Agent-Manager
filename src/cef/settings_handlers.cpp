@@ -295,6 +295,19 @@ void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	if (const nlohmann::json* entries = uam::nlohmann_json::FindObjectField(payload, "defaults"))
+	{
+		for (const auto& entry : entries->items()) for (const char* key : {"hiddenModelIds", "hiddenProviderIds"})
+		{
+			if (!entry.value().is_object() || !entry.value().contains(key)) continue;
+			const auto& values = entry.value()[key];
+			if (!values.is_array() || values.size() > 4096 || std::ranges::any_of(values, [](const nlohmann::json& id) { return !id.is_string() || id.get_ref<const std::string&>().size() > 1024; }))
+			{
+				cb->Failure(400, std::string(key) + " must contain at most 4096 model or provider IDs.");
+				return;
+			}
+		}
+	}
 	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
 	if (!requested_default_provider_id.empty())
 	{

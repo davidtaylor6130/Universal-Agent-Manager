@@ -781,10 +781,25 @@ export const useAppStore = create<AppState>((set, get) => {
                 (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
                   (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
               )
+              const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
+              const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
+              // External history imports publish summaries. Refresh an already loaded idle
+              // transcript when its count or content digest changes, just as turn completion does.
+              const refreshedIdleHistory = Boolean(
+                activeChatId && current.messages[activeChatId] !== undefined &&
+                activeSessionBefore && activeSessionAfter &&
+                !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
+                !current.cliBindingBySessionId[activeChatId]?.processing &&
+                !get().cliBindingBySessionId[activeChatId]?.processing &&
+                !current.messages[activeChatId].some((message) => message.isStreaming) &&
+                !msg.data.messagesByChatId?.[activeChatId] &&
+                ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
+                  (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
+              )
               if (
                 activeChatId &&
                 activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages)
+                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory)
               ) {
                 get().loadSessionMessages(activeChatId, true)
               }

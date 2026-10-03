@@ -1527,10 +1527,11 @@ namespace
 
 } // namespace
 
-bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged)
+bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint)
 {
 	static std::mutex save_mutex;
-	std::lock_guard<std::mutex> lock(save_mutex);
+	std::unique_lock<std::mutex> lock(save_mutex, std::defer_lock);
+	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id))
 	{
@@ -1693,11 +1694,11 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetBool(root, "uamControlEnabled", chat.uam_control_enabled);
 
 	std::size_t persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
-	std::string persisted_messages_digest = chat.messages_loaded
+	std::string persisted_messages_digest = chat.messages_loaded && fingerprint == nullptr
 	    ? SummaryDigest(chat, persisted_message_count)
 	    : chat.persisted_messages_digest;
 	bool preserve_existing_primary_as_backup = true;
-	if (chat.messages_loaded && !chat.messages.empty())
+	if (fingerprint == nullptr && chat.messages_loaded && !chat.messages.empty())
 	{
 		JsonValue msgs = uam::json::Array();
 		for (const auto& m : chat.messages)
@@ -1706,7 +1707,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		}
 		uam::json::SetValue(root, kChatMessagesField, std::move(msgs));
 	}
-	else if (!chat.messages_loaded)
+	else if (fingerprint == nullptr && !chat.messages_loaded)
 	{
 		UnloadedTranscriptSelection transcript =
 		    SelectTranscriptForUnloadedSave(file_path, chat.id, chat.persisted_message_count);
@@ -1795,6 +1796,14 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		uam::json::SetString(root, "activeGoalId", chat.active_goal_id);
 	}
 
+	if (fingerprint != nullptr)
+	{
+		uam::json::SetBool(root, "validationMessagesLoaded", chat.messages_loaded);
+		uam::json::SetNumber(root, "validationPersistedCount", static_cast<double>(chat.persisted_message_count));
+		uam::json::SetString(root, "validationPersistedDigest", chat.persisted_messages_digest);
+		*fingerprint = SerializeJson(root);
+		return true;
+	}
 	const std::string json = SerializeJson(root);
 	const auto matches_file = [](const fs::path& path, const std::string& content)
 	{
@@ -1804,6 +1813,26 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		return !error && fs::is_regular_file(status) &&
 		       uam::io::TryReadTextFile(path, existing, content.size()) && existing == content;
 	};
+
+	root.object_value.erase(std::string(kChatMessagesField));
+	uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(persisted_message_count));
+	uam::json::SetString(root, kChatPersistedMessagesDigestField,
+	                     persisted_messages_digest.empty() ? SummaryDigest(chat, persisted_message_count) : persisted_messages_digest);
+	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+	const std::string summary_json = SerializeJson(root);
+	if (prepared != nullptr)
+	{
+		if (!uam::paths::CreateDirectoriesNoThrow(summary_path.parent_path())) return false;
+		prepared->primary_path = file_path;
+		prepared->primary_temp = uam::io::MakeTempWritePath(file_path);
+		prepared->summary_path = summary_path;
+		prepared->summary_temp = uam::io::MakeTempWritePath(summary_path);
+		prepared->preserve_backup = preserve_existing_primary_as_backup;
+		uam::io::AtomicWriteResult result;
+		return uam::io::WriteAndSyncAtomicTemp(prepared->primary_temp, json, {}, result) &&
+		       uam::io::WriteAndSyncAtomicTemp(prepared->summary_temp, summary_json, {}, result);
+	}
 	const bool primary_unchanged = skip_unchanged && matches_file(file_path, json);
 	const bool chat_saved = primary_unchanged || (preserve_existing_primary_as_backup
 	    ? uam::io::WriteTextFileWithBackup(file_path, json)
@@ -1813,18 +1842,39 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		return false;
 	}
 
-	root.object_value.erase(std::string(kChatMessagesField));
-	uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(persisted_message_count));
-	uam::json::SetString(root, kChatPersistedMessagesDigestField,
-	                     persisted_messages_digest.empty() ? SummaryDigest(chat, persisted_message_count) : persisted_messages_digest);
-	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
-	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
-	const std::string summary_json = SerializeJson(root);
 	if (!primary_unchanged || !SummaryCacheIsCurrent(file_path, summary_path) || !matches_file(summary_path, summary_json))
 	{
 		(void)uam::io::WriteTextFile(summary_path, summary_json);
 	}
 	return true;
+}
+
+PreparedChatSave::~PreparedChatSave()
+{
+	uam::io::RemoveAtomicTempNoThrow(primary_temp);
+	uam::io::RemoveAtomicTempNoThrow(summary_temp);
+}
+
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat)
+{
+	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
+	return SaveChatImpl(data_root, chat, false, false, prepared.get()) ? prepared : nullptr;
+}
+
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory)
+{
+	if (!prepared) return false;
+	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
+	if (!primary.success) return false;
+	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
+	return true;
+}
+
+std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, const ChatSession& chat)
+{
+	std::string fingerprint;
+	(void)SaveChatImpl(data_root, chat, false, false, nullptr, &fingerprint);
+	return fingerprint;
 }
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
