@@ -221,7 +221,7 @@ describe('MainPanel', () => {
     expect(stopButton()?.querySelector('.lucide-power-off')).toBeTruthy()
     expect(host.querySelector('.uam-composer-action[title="Stop runtime"]')).toBeNull()
     await act(async () => { stopButton()?.click(); await Promise.resolve() })
-    expect(stopAcpSession).toHaveBeenCalledWith('chat-1')
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1', 'timeout')
 
     act(() => useAppStore.setState((state) => ({
       acpBindingBySessionId: {

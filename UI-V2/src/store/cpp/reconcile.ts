@@ -487,6 +487,9 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.threadId === next.threadId &&
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
+    existing.idleCountdownStartsAtMs === next.idleCountdownStartsAtMs &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
@@ -531,6 +534,9 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
     existing.turnState === next.turnState &&
+    existing.idleCountdownStartsAtMs === next.idleCountdownStartsAtMs &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.active === next.active &&
@@ -553,6 +559,9 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
+    idleCountdownStartsAtMs: chat.cliTerminal.idleCountdownStartsAtMs,
+    idleShutdownAtMs: chat.cliTerminal.idleShutdownAtMs,
+    idleShutdownTimeoutSeconds: chat.cliTerminal.idleShutdownTimeoutSeconds,
     running,
     lifecycleState,
     turnState: lifecycleState === 'unknown' ? 'unknown' : processing ? 'busy' : 'idle',
@@ -586,6 +595,9 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     running,
     lifecycleState,
     processing: effectiveProcessing,
+    idleCountdownStartsAtMs: acp?.idleCountdownStartsAtMs,
+    idleShutdownAtMs: acp?.idleShutdownAtMs,
+    idleShutdownTimeoutSeconds: acp?.idleShutdownTimeoutSeconds,
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing

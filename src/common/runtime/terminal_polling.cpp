@@ -398,6 +398,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (!output_for_frontend.empty())
 	{
 		terminal.recent_output_bytes.append(output_for_frontend);
+		terminal.output_cursor += output_for_frontend.size();
 		if (terminal.recent_output_bytes.size() > kRecentOutputBufferLimitBytes)
 		{
 			terminal.recent_output_bytes.erase(0, terminal.recent_output_bytes.size() - kRecentOutputBufferLimitBytes);
@@ -609,6 +610,17 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 				changed = true;
 			}
 			continue;
+		}
+
+		if (!terminal->running || terminal->lifecycle_state != uam::CliTerminalLifecycleState::Idle || !terminal->pending_steer_prompt.empty())
+			{
+			if (terminal->idle_interaction_started_time_s > 0.0) changed = true;
+			terminal->idle_interaction_started_time_s = 0.0;
+		}
+		else if (terminal->idle_interaction_started_time_s <= 0.0)
+			{
+			terminal->idle_interaction_started_time_s = now;
+			changed = true;
 		}
 
 		if (uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, *terminal, selected_chat_id, now))

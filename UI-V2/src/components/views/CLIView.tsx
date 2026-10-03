@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { AlertTriangle, X } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
@@ -68,6 +68,7 @@ function terminalTheme(isDark: boolean) {
 }
 
 export function CLIView({ session }: CLIViewProps) {
+  const companion = isCompanionContext()
   const terminalRef = useRef<HTMLDivElement>(null)
   const termInstanceRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -130,9 +131,9 @@ export function CLIView({ session }: CLIViewProps) {
       fontFamily: '"JetBrains Mono", monospace',
       fontSize: 13,
       lineHeight: 1,
-      cursorBlink: true,
+      cursorBlink: !companion,
       cursorStyle: 'block',
-      theme: terminalTheme(isDark),
+      theme: companion ? { ...terminalTheme(true), background: '#000', foreground: '#fff' } : terminalTheme(isDark),
       minimumContrastRatio: 4.5,
       allowTransparency: true,
       scrollback: 5000,
@@ -149,6 +150,70 @@ export function CLIView({ session }: CLIViewProps) {
 
       termInstanceRef.current = term
       fitAddonRef.current = fitAddon
+
+      if (companion) {
+        let cancelled = false
+        let reading = false
+        let inputFailed = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let attached: { terminalId: string; startupTime: number; cursor: number } | null = null
+        type CompanionTerminalResponse = { terminalId: string; sourceChatId: string; startupTime: number; cursor: number; cols: number; rows: number; replayData: string }
+        const fail = (error: string, inputFailure = false) => {
+          if (inputFailure) inputFailed = true
+          if (!cancelled) setCliBinding(session.id, { lastError: error })
+        }
+        const read = async (operation: 'attach' | 'read') => {
+          if (cancelled || reading || document.visibilityState === 'hidden') return
+          reading = true
+          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          const terminalId = attached?.terminalId || binding?.terminalId || ''
+          const response = await sendToCEF<CompanionTerminalResponse>({ action: 'companionCliTerminal', payload: {
+            chatId: session.id, terminalId, operation,
+            ...(attached ? { startupTime: attached.startupTime, cursor: attached.cursor } : {}),
+          } })
+          reading = false
+          if (cancelled) return
+          if (!response.ok || !response.data) {
+            fail(response.error || 'Terminal unavailable. Retry attaching to continue.')
+            return
+          }
+          const data = response.data
+          if (operation === 'attach') term.reset()
+          // Preserve the owned process grid without resizing the desktop terminal.
+          term.resize(data.cols, data.rows)
+          const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
+          if (terminalRef.current && screen?.style.width) terminalRef.current.style.width = screen.style.width
+          if (data.replayData) term.write(decodeReplayData(data.replayData))
+          attached = { terminalId: data.terminalId, startupTime: data.startupTime, cursor: data.cursor }
+          if (!inputFailed) setCliBinding(session.id, { lastError: '' })
+          timer = setTimeout(() => { void read('read').catch(() => fail('Connection lost. Retry attaching to continue.')) }, 500)
+        }
+        const onData = term.onData((data) => {
+          if (cancelled || !attached) return
+          void sendToCEF({ action: 'companionCliTerminal', payload: {
+            chatId: session.id, terminalId: attached.terminalId, startupTime: attached.startupTime, operation: 'write', data,
+          } }).then((response) => { if (!response.ok) fail(response.error || 'Terminal input could not be delivered.', true) })
+        })
+        const reconnect = () => {
+          if (document.visibilityState === 'hidden') { if (timer) clearTimeout(timer); return }
+          if (timer) clearTimeout(timer)
+          void read(attached ? 'read' : 'attach').catch(() => fail('Connection lost. Retry attaching to continue.'))
+        }
+        document.addEventListener('visibilitychange', reconnect)
+        window.addEventListener('online', reconnect)
+        void read('attach').catch(() => fail('Connection lost. Retry attaching to continue.'))
+        return () => {
+          cancelled = true
+          if (timer) clearTimeout(timer)
+          onData.dispose()
+          document.removeEventListener('visibilitychange', reconnect)
+          window.removeEventListener('online', reconnect)
+          termInstanceRef.current = null
+          fitAddonRef.current = null
+          if (terminalRef.current) terminalRef.current.style.width = ''
+          term.dispose()
+        }
+      }
 
       if (isCefContext()) {
         const attachmentId = createRequestId('terminal-view')
@@ -350,9 +415,9 @@ export function CLIView({ session }: CLIViewProps) {
   // Refit and recolor the live terminal on theme change.
   useEffect(() => {
     if (termInstanceRef.current?.options) {
-      termInstanceRef.current.options.theme = terminalTheme(resolvedTheme === 'dark')
+      termInstanceRef.current.options.theme = companion ? { ...terminalTheme(true), background: '#000', foreground: '#fff' } : terminalTheme(resolvedTheme === 'dark')
     }
-    requestAnimationFrame(() => fitAddonRef.current?.fit())
+    if (!companion) requestAnimationFrame(() => fitAddonRef.current?.fit())
   }, [resolvedTheme])
 
   if (!providerSupported) {
@@ -386,10 +451,10 @@ export function CLIView({ session }: CLIViewProps) {
         >
           <div className="flex items-start gap-2">
             <span className="min-w-0 flex-1">{visibleTerminalError}</span>
-            {!cliBinding?.running && (
+            {(!cliBinding?.running || companion) && (
               <button
                 type="button"
-                aria-label="Retry terminal start"
+                aria-label={companion ? "Retry terminal attachment" : "Retry terminal start"}
                 onClick={() => {
                   setDismissedTerminalError('')
                   setCliBinding(session.id, { lastError: '' })
@@ -398,10 +463,10 @@ export function CLIView({ session }: CLIViewProps) {
                 className="rounded px-2 py-0.5 font-medium"
                 style={{ color: 'inherit', border: '1px solid currentColor' }}
               >
-                Retry
+                {companion ? 'Retry attach' : 'Retry'}
               </button>
             )}
-            <button
+            {!companion && <button
               type="button"
               aria-label="Check provider CLI"
               onClick={() => void refreshCliProviderVersion(currentProviderId)}
@@ -409,8 +474,8 @@ export function CLIView({ session }: CLIViewProps) {
               style={{ color: 'inherit', border: '1px solid currentColor' }}
             >
               Check CLI
-            </button>
-            <button
+            </button>}
+            {!companion && <button
               type="button"
               aria-label="Open CLI settings"
               onClick={() => setSettingsOpen(true)}
@@ -418,7 +483,7 @@ export function CLIView({ session }: CLIViewProps) {
               style={{ color: 'inherit', border: '1px solid currentColor' }}
             >
               Settings
-            </button>
+            </button>}
             <button
               type="button"
               aria-label="Dismiss terminal error"
@@ -433,10 +498,18 @@ export function CLIView({ session }: CLIViewProps) {
         </div>
       )}
 
+      {companion && <div data-cli-controls className="flex flex-wrap gap-2 border-b p-2" style={{ borderColor: 'var(--border)' }}>
+        <button type="button" onClick={() => termInstanceRef.current?.focus()}>Keyboard</button>
+        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b', true)}>Esc</button>
+        <button type="button" onClick={() => termInstanceRef.current?.input('\t', true)}>Tab</button>
+        <button type="button" aria-label="Interrupt terminal" onClick={() => termInstanceRef.current?.input('\x03', true)}>Ctrl C</button>
+        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</button>
+        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</button>
+      </div>}
       {/* Terminal area */}
       <div
-        className="flex-1 overflow-hidden"
-        style={{ background: 'var(--term-bg)', padding: '12px 18px 18px' }}
+        className={`flex-1 ${companion ? 'overflow-auto' : 'overflow-hidden'}`}
+        style={{ background: companion ? '#000' : 'var(--term-bg)', padding: '12px 18px 18px' }}
       >
         <div ref={terminalRef} className="h-full" />
       </div>

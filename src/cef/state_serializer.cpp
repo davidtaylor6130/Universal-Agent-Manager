@@ -16,6 +16,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -608,6 +609,16 @@ namespace uam
 			return uam::FindCliTerminalForChat(app, chat);
 		}
 
+		void SerializeIdleDeadline(nlohmann::json& state, double started, int timeout)
+		{
+			if (started <= 0.0) return;
+			static const std::int64_t epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			    std::chrono::system_clock::now().time_since_epoch()).count() - static_cast<std::int64_t>(GetAppTimeSeconds() * 1000.0);
+			state["idleCountdownStartsAtMs"] = epoch_ms + static_cast<std::int64_t>((started + 60.0) * 1000.0);
+			state["idleShutdownAtMs"] = epoch_ms + static_cast<std::int64_t>((started + 60.0 + timeout) * 1000.0);
+			state["idleShutdownTimeoutSeconds"] = timeout;
+		}
+
 		nlohmann::json SerializeChatTerminalSummary(const AppState& app, const ChatSession& chat)
 		{
 			const bool ready_since_last_select = ChatHasUnseenUpdate(app, chat);
@@ -627,6 +638,8 @@ namespace uam
 				terminal_json["active"] = uam::CliTerminalLifecycleIsIdleLive(*terminal);
 				terminal_json["pendingSteer"] = !terminal->pending_steer_prompt.empty();
 				terminal_json["lastError"] = terminal->last_error;
+				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty())
+					SerializeIdleDeadline(terminal_json, terminal->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 				return terminal_json;
 			}
 
@@ -996,6 +1009,8 @@ namespace uam
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing;
+			if (AcpSessionCanIdleShutdown(*session, chat))
+				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
 			acp_json["lastStopReason"] = chat.last_stop_reason;
 			const std::optional<AcpPendingUserInputState> uam_control_approval =

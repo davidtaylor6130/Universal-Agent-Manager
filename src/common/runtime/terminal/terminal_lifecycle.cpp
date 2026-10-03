@@ -68,6 +68,7 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 		const double now = GetAppTimeSeconds();
 		terminal.last_activity_time_s = now;
 		terminal.last_user_input_time_s = now;
+		terminal.idle_interaction_started_time_s = now;
 	}
 	else if (!wrote && terminal.running)
 	{
@@ -380,23 +381,11 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
                                                     std::string_view selected_chat_id,
                                                     double now)
 {
-	if (!terminal.running || terminal.ui_attached || terminal.lifecycle_state != CliTerminalLifecycleState::Idle)
-	{
-		return false;
-	}
-
-	if (CliTerminalPrimaryChatId(terminal).empty())
-	{
-		return false;
-	}
-
-	if (!selected_chat_id.empty() && CliTerminalMatchesChatId(terminal, selected_chat_id))
-	{
-		return false;
-	}
-
-	return terminal.last_idle_confirmed_time_s > 0.0 &&
-	       (now - terminal.last_idle_confirmed_time_s) >= static_cast<double>(app.settings.cli_idle_timeout_seconds);
+	(void)selected_chat_id;
+	return terminal.running && terminal.lifecycle_state == CliTerminalLifecycleState::Idle &&
+	       !CliTerminalPrimaryChatId(terminal).empty() && terminal.pending_steer_prompt.empty() &&
+	       terminal.idle_interaction_started_time_s > 0.0 &&
+	       now - terminal.idle_interaction_started_time_s >= 60.0 + app.settings.cli_idle_timeout_seconds;
 }
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
@@ -430,6 +419,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	terminal.startup_time_s = 0.0;
 	MarkCliTerminalStopped(terminal);
 	terminal.last_output_time_s = 0.0;
+	terminal.idle_interaction_started_time_s = 0.0;
 	terminal.recent_output_bytes.clear();
 	terminal.last_native_history_snapshot_digest.clear();
 

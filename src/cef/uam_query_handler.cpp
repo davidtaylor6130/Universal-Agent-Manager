@@ -195,6 +195,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
 		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},
+		{"recordRuntimeActivity", &UamQueryHandler::HandleRuntimeActivity},
+		{"companionCliTerminal", &UamQueryHandler::HandleCompanionCli},
 		{"startCliTerminal", &UamQueryHandler::HandleStartCli},
 		{"stopCliTerminal", &UamQueryHandler::HandleStopCli},
 		{"steerCliTerminal", &UamQueryHandler::HandleSteerCliTerminal},

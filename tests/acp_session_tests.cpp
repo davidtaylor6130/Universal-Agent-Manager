@@ -7,6 +7,7 @@
 #include "common/config/mcp_server_config.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
 #include "remote/runner_proxy.h"
 
 using namespace uam_test;
@@ -9638,8 +9639,8 @@ UAM_TEST(AcpReadyRuntimeStopsAfterIdleTimeoutWithoutStoppingWork)
 	uam::AppState app;
 	app.data_root = temp.root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	// Zero avoids a wall-clock wait; persisted settings clamp this to at least 30 seconds.
-	app.settings.cli_idle_timeout_seconds = 0;
+	// Cancel the grace in this raw test setting to avoid a wall-clock wait; persisted settings clamp to 30 seconds.
+	app.settings.cli_idle_timeout_seconds = -61;
 
 	ChatSession chat;
 	chat.id = "chat-ready-idle-timeout";
@@ -10820,4 +10821,34 @@ UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)
 		UAM_ASSERT_EQ(saved->interaction_at, app.chats.front().interaction_at);
 		UAM_ASSERT(permission ? session->pending_permission.request_id_json.empty() : session->pending_user_input.request_id_json.empty());
 	}
+}
+
+UAM_TEST(AcpIdleGraceUsesInteractionAndBlockingGuards)
+{
+	uam::AppState app;
+	ChatSession chat;
+	uam::AcpSessionState session;
+	session.running = true;
+	session.session_ready = true;
+	session.lifecycle_state = "ready";
+	session.idle_interaction_started_time_s = 100.0;
+	UAM_ASSERT_EQ(*uam::AcpIdleShutdownDeadlineSeconds(app, session, chat), 760.0);
+	session.last_runtime_activity_time_s = 500.0;
+	UAM_ASSERT_EQ(*uam::AcpIdleShutdownDeadlineSeconds(app, session, chat), 760.0);
+	session.idle_interaction_started_time_s = 200.0;
+	UAM_ASSERT_EQ(*uam::AcpIdleShutdownDeadlineSeconds(app, session, chat), 860.0);
+	session.processing = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
+	session.processing = false;
+	session.waiting_for_permission = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
+	session.waiting_for_permission = false;
+	session.waiting_for_user_input = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
+	session.waiting_for_user_input = false;
+	session.local_stop_pending = true;
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
+	session.local_stop_pending = false;
+	chat.remote_prompt_delivery_id = "outbox";
+	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
 }

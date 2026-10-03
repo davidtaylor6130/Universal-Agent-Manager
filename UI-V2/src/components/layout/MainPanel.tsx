@@ -8,6 +8,8 @@ import { createRequestId, sendToCEF, isCefContext } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
+import { RuntimeTimeout } from '../shared/RuntimeTimeout'
+import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -99,6 +101,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     return Boolean(acp?.running && acp.lifecycleState === 'ready' &&
       !acp.processing && !acp.pendingPermission && !acp.pendingUserInput)
   })
+  const recordActivity = useRuntimeActivity(session.id)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
   useEffect(() => setStopRuntimeError(''), [session.id])
@@ -136,6 +139,10 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     <div
       className="uam-chat-pane relative flex flex-col h-full overflow-hidden"
       data-testid={`chat-pane-${session.id}`}
+      onPointerDownCapture={recordActivity}
+      onKeyDownCapture={recordActivity}
+      onWheelCapture={recordActivity}
+      onTouchMoveCapture={recordActivity}
       data-pane={paneIndex + 1}
       data-focused={active}
       data-multi-pane={multiPane}
@@ -219,6 +226,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           </Tooltip>
         </div>
         {session.temporaryParentChatId && <><Button size="sm" variant="ghost" onClick={returnToParent}>Return</Button><Button size="sm" variant="danger" disabled={sideDismissBusy} onClick={() => void dismissSide()}>Dismiss</Button></>}
+        <RuntimeTimeout chatId={session.id} />
         {canStopAcpRuntime && (
           <IconButton
             icon={<PowerOff size={14} aria-hidden />}
@@ -229,7 +237,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             size="sm"
             onClick={() => {
               setStopRuntimeError('')
-              void stopAcpSession(session.id).then((ok) => {
+              void stopAcpSession(session.id, 'timeout').then((ok) => {
                 if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
               }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
             }}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { sessionFromCppChat, acpBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
+import { sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
 import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
@@ -305,4 +305,20 @@ it('preserves state event recency through bridge sanitization and streaming snap
   expect(completed.interactionAt?.getTime()).toBeGreaterThan(streamed.interactionAt!.getTime())
   const legacy = sessionFromCppChat({ ...chat, interactionAt: undefined }, streamed, [])
   expect(legacy.interactionAt?.getTime()).toBe(streamed.interactionAt?.getTime())
+})
+
+describe('native inactivity deadlines', () => {
+  it('preserves grace and shutdown timing for both views and clears stale timing', () => {
+    const timing = { idleCountdownStartsAtMs: 60_000, idleShutdownAtMs: 660_000, idleShutdownTimeoutSeconds: 600 }
+    const chat = sanitizeCppChat({ id: 'timing', name: 'Timing', createdAt: '', updatedAt: '',
+      cliTerminal: { running: true, lifecycleState: 'idle', ...timing },
+      acpSession: { running: true, lifecycleState: 'ready', ...timing } })!
+    const cli = cliBindingFromCppChat(chat, undefined)!
+    const acp = acpBindingFromCppChat(chat, undefined)
+    expect(cli.idleCountdownStartsAtMs).toBe(60_000)
+    expect(cli.idleShutdownAtMs).toBe(acp.idleShutdownAtMs)
+    expect(acp.idleShutdownTimeoutSeconds).toBe(600)
+    expect(cliBindingFromCppChat({ ...chat, cliTerminal: { running: false, lastError: '' } }, cli)?.idleShutdownAtMs).toBeUndefined()
+    expect(acpBindingFromCppChat({ ...chat, acpSession: { running: false } }, acp).idleShutdownAtMs).toBeUndefined()
+  })
 })

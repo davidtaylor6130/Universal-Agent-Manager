@@ -140,3 +140,14 @@
   .uam-companion-page-track { transition: none; }
   * { scroll-behavior: auto !important; }
 }
+
+.uam-companion-header select { color: #fff; background: #000; border: 1px solid var(--border); min-height: 36px; max-width: 112px; cursor: pointer; }
+.uam-companion [aria-label="Runtime idle timeout"] { font-size: 11px; }
+.uam-companion .xterm { touch-action: pan-x pan-y; }
+.uam-companion .xterm-viewport { overscroll-behavior: contain; }
+.uam-companion [data-cli-controls] button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--border); cursor: pointer; }
+.uam-companion [data-cli-controls] button:hover { background: var(--surface-up); }
+.uam-companion [data-cli-controls] button:focus-visible { outline: 2px solid var(--accent); }
+
+.uam-companion-timeout-row { padding: 4px 16px; border-bottom: 1px solid var(--border); }
+.uam-companion-timeout-row:empty { display: none; }

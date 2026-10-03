@@ -3,6 +3,7 @@
 #include "common/state/app_state.h"
 
 #include <algorithm>
+#include <optional>
 
 namespace uam
 {
@@ -70,6 +71,28 @@ inline bool AcpSessionHasDeferredUserQueueOnly(const AcpSessionState& session)
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)
 {
 	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session);
+}
+
+
+/// <summary>Only ready, unblocked structured sessions may enter the idle grace period.</summary>
+inline bool AcpSessionCanIdleShutdown(const AcpSessionState& session, const ChatSession& chat)
+{
+	return session.running && session.session_ready && session.lifecycle_state == "ready" &&
+	    !session.model_discovery_only && !session.reconnect_pending &&
+	    !session.recovering_remote_turn && !session.recovering_remote_process &&
+	    !session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed &&
+	    session.managed_agent_run_id.empty() && !session.goal_review_scheduled &&
+	    !AcpSessionHasBlockingRuntimeWork(session) &&
+	    !chat.remote_turn_reconnect_pending && !chat.remote_restart_pending &&
+	    !chat.remote_stop_cleanup_pending && chat.acp_queued_prompts.empty() &&
+	    chat.remote_pending_requests.empty() && chat.remote_interaction_responses.empty() &&
+	    chat.remote_prompt_delivery_id.empty();
+}
+
+inline std::optional<double> AcpIdleShutdownDeadlineSeconds(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	if (!AcpSessionCanIdleShutdown(session, chat) || session.idle_interaction_started_time_s <= 0.0) return std::nullopt;
+	return session.idle_interaction_started_time_s + 60.0 + app.settings.cli_idle_timeout_seconds;
 }
 
 } // namespace uam
