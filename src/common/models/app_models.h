@@ -137,6 +137,7 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	std::string stop_reason;
 	bool priority_steer = false;
 	std::string checkpoint_sha;
 	std::string checkpoint_parent_sha;
@@ -319,6 +320,12 @@ struct ChatSession
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
+	/// Nonempty until an explicit interaction acknowledges this exact update.
+	std::string attention_revision;
+	std::string last_stop_reason;
+	/// Changes only for explicit goal commands, invalidating older completions.
+	std::string goal_command_revision;
+	std::string goal_pending_continuation_id;
 	/// Persisted recency of user input and runtime state events, excluding stream traffic.
 	std::string interaction_at;
 	bool pinned = false;

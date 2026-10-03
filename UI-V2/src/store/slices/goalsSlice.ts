@@ -141,13 +141,13 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
 	      return { ok: true }
 	    },
 
-	    resumeGoal: async (chatId: string, goalId: string) => {
+	    resumeGoal: async (chatId: string, goalId: string, restart = false) => {
 	      if (!goalId) return { ok: false, error: 'Goal id is required.' }
       const goalAtStart = (get().goalsByChatId[chatId] ?? []).find((goal) => goal.id === goalId)
       if (isCefContext()) {
         const response = await sendWhenRemoteStopSettles({
           action: 'resumeGoal',
-          payload: { chatId, goalId },
+          payload: restart ? { chatId, goalId, restart: true } : { chatId, goalId },
           requestId: createRequestId('resumeGoal'),
         })
 	        if (!response.ok) return { ok: false, error: response.error }
@@ -162,7 +162,7 @@ export function createGoalsSlice(set: ZustandSet, get: ZustandGet) {
             ...state.goalsByChatId,
             [chatId]: goals.map((goal) =>
               goal.id === goalId
-								? { ...goal, status: 'active', blockedTurnCount: 0, lastBlocker: '', lastBlockerKind: '', updatedAt: new Date() }
+								? { ...goal, ...(restart ? { tokensUsed: 0, loopCount: 0, completedItems: [], remainingItems: [], currentStep: '', lastNextPrompt: '' } : {}), status: 'active', blockedTurnCount: 0, lastBlocker: '', lastBlockerKind: '', updatedAt: new Date() }
                 : goal
             ),
           },

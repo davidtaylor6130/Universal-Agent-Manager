@@ -1,7 +1,7 @@
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
-import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent } from './MessageBlocks'
+import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineContent, stoppedResponseLabel } from './MessageBlocks'
 import { ToolCallModal } from './ToolCallViews'
 import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
@@ -30,6 +30,27 @@ describe('AttachmentList', () => {
 })
 
 describe('working transcript', () => {
+  it('distinguishes a timeout stop from an interrupted response', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const render = (interrupted: boolean) => act(() => root.render(<TurnTimelineContent events={[]} tools={[]}
+      interrupted={interrupted} stopReason="timeout" pendingPermission={null} pendingUserInput={null}
+      onSelectTool={() => undefined} onResolvePermission={() => Promise.resolve(true)}
+      onResolveUserInput={() => Promise.resolve(true)} onCancelTurn={() => undefined} onStopRuntime={() => undefined} />))
+    render(false)
+    expect(host.textContent).toContain('Stopped after timeout')
+    expect(host.textContent).not.toContain('Response interrupted')
+    render(true)
+    expect(host.textContent).toContain('Response interrupted')
+    expect(host.textContent).not.toContain('Stopped after timeout')
+    expect(stoppedResponseLabel('forced', true)).toBe('Forced stop')
+    expect(stoppedResponseLabel('failed', true)).toBe('Provider failed')
+    expect(stoppedResponseLabel('unknown', true)).toBe('Provider stopped')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows a pending permission even before the provider emits a matching event', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

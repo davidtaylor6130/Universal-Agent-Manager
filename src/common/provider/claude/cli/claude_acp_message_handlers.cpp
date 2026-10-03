@@ -236,6 +236,13 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		return;
 	}
 
+	if (type == uam::acp_claude_stream::kMessageTypeAssistant ||
+	    type == uam::acp_claude_stream::kMessageTypeResult)
+	{
+		// Claude emits live answers, rather than ACP session/load history replay.
+		session.assistant_replay_prefixes.clear();
+		session.load_history_replay_updates.clear();
+	}
 	if (type == uam::acp_claude_stream::kMessageTypeAssistant)
 	{
 		HandleClaudeAssistantMessage(app, session, chat, message, browser);

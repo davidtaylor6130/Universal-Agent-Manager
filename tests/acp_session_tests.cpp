@@ -132,6 +132,28 @@ UAM_TEST(CodexWriterOwnershipWaitsForConfirmedProcessStop)
 	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
 }
 
+UAM_TEST(CodexWriterOwnershipRetainsUnconfirmedTimeoutAfterChatRemoval)
+{
+	uam::AppState app;
+	ChatSession alias;
+	alias.id = "replacement-chat";
+	alias.provider_id = "codex-cli";
+	alias.native_session_id = "01a0ff71-5253-7621-ab10-cd0928b17e5a";
+	uam::AsyncAcpProcessStopTask task;
+	task.chat_id = "removed-chat";
+	task.native_writer_key = uam::chat_identity::CodexWriterIdentityKey(alias);
+	task.finished = std::make_shared<std::atomic<bool>>(true);
+	task.purpose = uam::AcpStopPurpose::Timeout;
+	task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+	app.acp_process_stop_tasks.push_back(std::move(task));
+	std::string error;
+	UAM_ASSERT(!uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(uam::AcpStopInProgress(app, "removed-chat"));
+	app.acp_process_stop_tasks.front().result->exit_confirmed = true;
+	UAM_ASSERT(uam::PrepareCodexThreadForRuntimeLaunch(app, alias, &error));
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "removed-chat"));
+}
+
 UAM_TEST(CodexWriterOwnershipHandsOffIdleProcessWithoutChangingThread)
 {
 	TempDir temp("uam-codex-writer-handoff");
@@ -9568,6 +9590,14 @@ UAM_TEST(AcpReadyRuntimeStopsAfterIdleTimeoutWithoutStoppingWork)
 	UAM_ASSERT(raw_session->running);
 	raw_session->recovering_remote_process = false;
 	UAM_ASSERT(uam::PollAllAcpSessions(app));
+	UAM_ASSERT(raw_session->local_stop_pending);
+	for (int attempt = 0; attempt < 300 && raw_session->local_stop_pending; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!raw_session->local_stop_pending);
+	UAM_ASSERT_EQ(app.chats.front().last_stop_reason, std::string("timeout"));
 	UAM_ASSERT(!raw_session->running);
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
 	UAM_ASSERT(std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
@@ -10514,6 +10544,62 @@ UAM_TEST(RejectedProviderHandoffPromptRetainsContextForRetry)
 	UAM_ASSERT(chat.provider_handoff_session_id.empty());
 	UAM_ASSERT_EQ(chat.provider_handoff_context, std::string("User: Remember 4821."));
 }
+UAM_TEST(ClaudeResumedTurnRetainsRepeatedAnswersAndResultFallback)
+{
+	for (const std::string previous_answer : {std::string("QA-CEDAR-395"), std::string(160, 'a')})
+	{
+		for (const std::string answer : {previous_answer, previous_answer + "\nA new detail."})
+		{
+			for (const bool assistant_event : {false, true})
+			{
+				TempDir temp("uam-claude-repeated-resume");
+				uam::AppState app;
+				app.data_root = temp.root;
+				ChatSession chat;
+				chat.id = "claude-repeated-reply";
+				chat.provider_id = uam::provider_ids::kClaudeCli;
+				chat.native_session_id = "69849d61-537a-460b-9f3e-581b145ad6d0";
+				chat.messages.push_back({MessageRole::User, "Answer once.", "now"});
+				chat.messages.push_back({MessageRole::Assistant, previous_answer, "now"});
+				chat.messages.push_back({MessageRole::User, "Repeat your earlier answer.", "later"});
+				app.chats.push_back(chat);
+				uam::AcpSessionState session;
+				session.chat_id = chat.id;
+				session.provider_id = chat.provider_id;
+				session.protocol_kind = ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpProtocolKind();
+				session.session_id = chat.native_session_id;
+				session.running = true;
+				session.initialized = true;
+				session.processing = true;
+				session.turn_serial = 1;
+				session.turn_user_message_index = 2;
+				uam::acp_detail::RememberAssistantReplayPrefixes(session, chat, 2);
+				uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 2);
+				if (assistant_event)
+				{
+					UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json{
+					    {"type", "assistant"}, {"session_id", chat.native_session_id},
+					    {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", answer}}})}}}}.dump()));
+					UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+					UAM_ASSERT_EQ(app.chats.front().messages.back().content, answer);
+				}
+				UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json{
+				    {"type", "result"}, {"subtype", "success"}, {"session_id", chat.native_session_id}, {"result", answer}}.dump()));
+				UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
+				UAM_ASSERT_EQ(app.chats.front().messages.back().content, answer);
+				UAM_ASSERT_EQ(app.chats.front().messages[1].content, previous_answer);
+				UAM_ASSERT_EQ(app.chats.front().native_session_id, chat.native_session_id);
+				UAM_ASSERT_EQ(session.lifecycle_state, std::string("ready"));
+				UAM_ASSERT(!session.processing);
+				const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+				UAM_ASSERT(loaded.has_value());
+				UAM_ASSERT_EQ(loaded->messages.size(), static_cast<std::size_t>(4));
+				UAM_ASSERT_EQ(loaded->messages.back().content, answer);
+			}
+		}
+	}
+}
+
 UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)
 {
 	for (const bool permission : {true, false})

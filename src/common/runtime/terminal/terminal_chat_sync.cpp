@@ -314,21 +314,7 @@ void MarkChatUnseen(AppState& app, std::string_view chat_id)
 		return;
 	}
 
-	if (ChatDomainService().SelectedChatId(app) == normalized_chat_id)
-	{
-		return;
-	}
-
-	app.chats_with_unseen_updates.emplace(normalized_chat_id);
-}
-
-void MarkSelectedChatSeen(AppState& app)
-{
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
-	if (!selected_chat_id.empty())
-	{
-		app.chats_with_unseen_updates.erase(selected_chat_id);
-	}
+	ChatDomainService().MarkChatNeedsAttention(app, normalized_chat_id);
 }
 
 bool ChatExists(const AppState& app, std::string_view chat_id)
@@ -411,7 +397,6 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 		LogCliDiagnosticEvent(app, "sync_native_history", "chat_load_failed", nullptr, app.status_line);
 		return false;
 	}
-	MarkSelectedChatSeen(app);
 	return true;
 }
 

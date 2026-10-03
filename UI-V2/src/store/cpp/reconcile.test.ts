@@ -258,6 +258,16 @@ describe('historical model provenance', () => {
   })
 })
 
+describe('Chat attention revision sanitization', () => {
+  it('preserves opaque revisions and explicit clearing while rejecting malformed values', () => {
+    const chat = { id: 'attention-chat', createdAt: '', updatedAt: '' }
+    expect(sanitizeCppChat({ ...chat, attentionRevision: 'completion-one' })?.attentionRevision).toBe('completion-one')
+    expect(sanitizeCppChat({ ...chat, attentionRevision: '' })?.attentionRevision).toBe('')
+    for (const attentionRevision of [undefined, null, 12, { id: 'completion' }]) {
+      expect(sanitizeCppChat({ ...chat, attentionRevision })?.attentionRevision).toBeUndefined()
+    }
+  })
+})
 
 describe('compaction reload and live event parity', () => {
   it('keeps provider summaries as compaction blocks through save reload reconciliation', () => {

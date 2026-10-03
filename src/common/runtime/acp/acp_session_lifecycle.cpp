@@ -299,6 +299,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (!session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	session.initialized = false;
 	session.session_ready = false;
@@ -1062,6 +1063,21 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	// A command made while startup was pending may invalidate an unsent goal turn.
+	if (!session.goal_turn_kind.empty() && session.prompt_request_id == 0 && !session.queued_prompt.empty())
+	{
+		const ChatSession* owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
+		if (owner == nullptr || owner->goal_command_revision != session.goal_command_revision)
+		{
+			session.queued_prompt.clear();
+			session.goal_turn_kind.clear();
+			session.goal_review_turn = false;
+			session.processing = false;
+			session.lifecycle_state = session.running ? kAcpLifecycleReady : kAcpLifecycleStopped;
+			return true;
+		}
+	}
+
 	if (session.turn_checkpoint_preflight_pending)
 	{
 		return false;
@@ -1471,6 +1487,8 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.turn_user_message_index = -1;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial += 1;
+	const ChatSession* goal_owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
+	session.goal_command_revision = goal_owner != nullptr ? goal_owner->goal_command_revision : "";
 	ResetAcpTurnStreamState(session);
 	ResetAcpPendingInteractionState(session);
 	session.turn_started_time_s = GetAppTimeSeconds();
@@ -1535,12 +1553,7 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat)
 {
-	if (ChatDomainService().SelectedChatId(app) == chat.id)
-	{
-		return;
-	}
-
-	app.chats_with_unseen_updates.insert(chat.id);
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
 }
 
 } // namespace uam::acp_detail

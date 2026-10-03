@@ -606,11 +606,6 @@ void ChatDomainService::SelectChatById(uam::AppState& app, const std::string& ch
 	const std::string previous_id = SelectedChatId(app);
 	app.selected_chat_index = FindChatIndexById(app, target_chat_id);
 
-	const std::string selected_id = SelectedChatId(app);
-	if (!selected_id.empty())
-	{
-		app.chats_with_unseen_updates.erase(selected_id);
-	}
 
 	if (previous_id != target_chat_id)
 	{
@@ -861,4 +856,41 @@ void ChatDomainService::AddMessage(ChatSession& chat, const MessageRole role, co
 void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const MessageRole role, const std::string& text, const MessageAnalytics& analytics) const
 {
 	AppendMessage(chat, role, text, &analytics);
+}
+
+void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const
+{
+	ChatSession* chat = FindChatById(app, chat_id);
+	if (chat == nullptr) return;
+	chat->attention_revision = uam::chat_ids::NewChatId();
+	app.chats_with_unseen_updates.insert(chat_id);
+	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+		app.pending_chat_save_at_by_chat_id[chat_id] = 0.0;
+}
+
+bool ChatDomainService::AcknowledgeChatAttention(uam::AppState& app, const std::string& chat_id, const std::string& revision) const
+{
+	ChatSession* chat = FindChatById(app, chat_id);
+	if (chat == nullptr) return false;
+	if (revision.empty() || AttentionRevision(app, *chat) != revision) return true;
+	const std::string previous_revision = chat->attention_revision;
+	const std::string previous_opened = chat->last_opened_at;
+	chat->attention_revision.clear();
+	chat->last_opened_at = std::max(uam::time::TimestampNow(), chat->updated_at);
+	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+	{
+		chat->attention_revision = previous_revision;
+		chat->last_opened_at = previous_opened;
+		return false;
+	}
+	app.chats_with_unseen_updates.erase(chat_id);
+	return true;
+}
+
+std::string ChatDomainService::AttentionRevision(const uam::AppState& app, const ChatSession& chat) const
+{
+	if (!chat.attention_revision.empty()) return chat.attention_revision;
+	if (app.chats_with_unseen_updates.contains(chat.id) || (!chat.last_opened_at.empty() && chat.updated_at > chat.last_opened_at))
+		return "legacy:" + chat.updated_at;
+	return "";
 }

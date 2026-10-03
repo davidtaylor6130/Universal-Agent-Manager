@@ -2353,7 +2353,7 @@ UAM_TEST(RemoteRunnerProxyStopsAndRemovesTheProviderOnlyOnTheExplicitControlLine
 	const std::string runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	const std::string spec = uam::remote::BuildProcessProxySpec(
 	    "acp-proxy-stop", temp.root,
-	    {"/bin/sh", "-c", "IFS= read -r line; printf 'unexpected:%s\\n' \"$line\"; sleep 10"},
+	    {"/bin/sh", "-c", "if IFS= read -r line; then printf 'unexpected:%s\\n' \"$line\"; fi; sleep 10"},
 	    {}, false, "proxy-stop-token");
 	uam::platform::StdioProcessPlatformFields proxy;
 	std::string error;
@@ -2796,4 +2796,38 @@ UAM_TEST(RemoteRunnerHandshakeCancellationBoundsCleanupShutdown)
 	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(2));
 	UAM_ASSERT(!client.IsConnected());
 #endif
+}
+
+UAM_TEST(RemoteRunnerReportsObservedGracefulAndForcedShutdown)
+{
+	for (bool cooperative : {true, false})
+	{
+		TempDir temp("uam-runner-observed-stop");
+		uam::remote::RunnerState state;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", cooperative ? "more > NUL & echo final-output & exit /b 0" : "ping -n 11 127.0.0.1 > NUL"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", cooperative ? "cat >/dev/null; printf 'final-output\\n'; exit 0" : "trap '' TERM; sleep 10"};
+#endif
+		const auto request = [&](nlohmann::json value)
+		{
+			value["sessionId"] = "observed-stop";
+			value["controlToken"] = kProcessControlToken;
+			return uam::remote::HandleRunnerRequest(std::move(value), "test-version", &state);
+		};
+		UAM_ASSERT(request({{"id", "start"}, {"type", "process.start"}, {"cwd", temp.root.string()}, {"argv", argv}}).value("ok", false));
+		const nlohmann::json stopped = request({{"id", "stop"}, {"type", "process.stop"}, {"graceful", true}});
+		UAM_ASSERT(stopped.value("ok", false));
+		UAM_ASSERT_EQ(stopped["result"].value("stopOutcome", ""), cooperative ? std::string("graceful") : std::string("forced"));
+		if (cooperative)
+		{
+			const nlohmann::json polled = request({{"id", "poll"}, {"type", "process.poll"}});
+			UAM_ASSERT(polled.value("ok", false));
+			std::string output;
+			UAM_ASSERT(uam::base64::Decode(polled["result"].value("stdoutBase64", ""), output));
+			UAM_ASSERT(output.find("final-output") != std::string::npos);
+			UAM_ASSERT_EQ(polled["result"].value("exitCode", -1), 0);
+		}
+		UAM_ASSERT(request({{"id", "remove"}, {"type", "process.remove"}}).value("ok", false));
+	}
 }

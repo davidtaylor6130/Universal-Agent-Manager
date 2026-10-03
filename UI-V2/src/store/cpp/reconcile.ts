@@ -182,8 +182,9 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.viewMode === next.viewMode &&
     previous.createdAt.getTime() === next.createdAt.getTime() &&
     previous.updatedAt.getTime() === next.updatedAt.getTime() &&
-    previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
-    (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime()
+    (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime() &&
+    previous.attentionRevision === next.attentionRevision &&
+    previous.interactionAt?.getTime() === next.interactionAt?.getTime()
 }
 
 export function sessionFromCppChat(
@@ -244,6 +245,7 @@ export function sessionFromCppChat(
     updatedAt,
     interactionAt: chat.interactionAt ? new Date(chat.interactionAt) : previous?.interactionAt ?? updatedAt,
     lastOpenedAt,
+    attentionRevision: chat.attentionRevision,
   }
 
   return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
@@ -294,6 +296,7 @@ export function normalizeCliLifecycleState(
     value === 'stopped' ||
     value === 'idle' ||
     value === 'busy' ||
+    value === 'starting' ||
     value === 'shuttingDown'
   ) {
     return value
@@ -483,6 +486,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.lastError === next.lastError &&
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
+    existing.lastStopReason === next.lastStopReason &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
     toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
     existing.planSummary === next.planSummary &&
@@ -584,6 +588,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     lastError: acp?.lastError ?? '',
     recentStderr: acp?.recentStderr ?? '',
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
+    lastStopReason: acp?.lastStopReason,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',
@@ -727,6 +732,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
     attachmentsEquivalent(existing.attachments ?? [], messageAttachments(next)) &&
     (existing.processingTimeMs ?? 0) === (next.processingTimeMs ?? 0) &&
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
+    existing.stopReason === next.stopReason &&
 		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
 		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
@@ -754,6 +760,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),
+    stopReason: message.stopReason === 'timeout' || message.stopReason === 'provider-update' || message.stopReason === 'forced' || message.stopReason === 'failed' || message.stopReason === 'unknown' || message.stopReason === 'interrupt' ? message.stopReason : undefined,
 		acpPromptNotSent: Boolean(message.acpPromptNotSent),
 		prioritySteer: Boolean(message.prioritySteer),
 		continuesTurn: Boolean(message.continuesTurn),

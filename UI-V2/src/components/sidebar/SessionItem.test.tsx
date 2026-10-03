@@ -138,6 +138,24 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('acknowledges the rendered completion only on deliberate mouse or keyboard selection', () => {
+    const original = useAppStore.getState().acknowledgeChatAttention
+    const acknowledge = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ sessions: [{ ...makeSession(), attentionRevision: 'rendered-completion' }], acknowledgeChatAttention: acknowledge })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" />))
+    expect(acknowledge).not.toHaveBeenCalled()
+    act(() => host.querySelector('[data-session-id="chat-1"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(acknowledge).toHaveBeenLastCalledWith('chat-1', 'rendered-completion')
+    act(() => host.querySelector('[data-session-id="chat-1"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(acknowledge).toHaveBeenCalledTimes(2)
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ acknowledgeChatAttention: original })
+  })
+
   it('does not reserve pin space and keeps row actions keyboard discoverable', () => {
     const { host, root } = renderSessionItem()
 

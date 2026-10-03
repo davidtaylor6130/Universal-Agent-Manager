@@ -87,7 +87,7 @@ namespace uam::remote
 		bool AcknowledgeProcessOutput(const std::string& session_id,
 		                              const ProcessPollResult& result,
 		                              std::string* error_out = nullptr);
-		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr);
+		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr, bool graceful = false, std::string* outcome_out = nullptr);
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
 		/// <summary>Leased handoffs require a fresh, never-reused UUID and attach_if_exists=false.</summary>
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,

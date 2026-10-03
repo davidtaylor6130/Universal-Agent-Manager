@@ -820,15 +820,22 @@ namespace uam::remote
 		return acknowledged;
 	}
 
-	bool RunnerClient::StopProcess(const std::string& session_id, std::string* error_out)
+	bool RunnerClient::StopProcess(const std::string& session_id, std::string* error_out, bool graceful, std::string* outcome_out)
 	{
 		if (!Connect(error_out)) return false;
-		nlohmann::json request = {{"type", "process.stop"}, {"sessionId", session_id}};
+		if (outcome_out != nullptr) *outcome_out = "unknown";
+		nlohmann::json request = {{"type", "process.stop"}, {"sessionId", session_id}, {"graceful", graceful}};
 		if (!AddProcessControlToken(request, session_id, error_out)) return false;
 		nlohmann::json response;
 		bool stopped = Request(request, response, error_out);
 		if (!stopped && !m_connected && Connect(error_out))
 			stopped = Request(std::move(request), response, error_out);
+		if (stopped && outcome_out != nullptr)
+		{
+			const nlohmann::json result = response.value("result", nlohmann::json::object());
+			const std::string outcome = result.is_object() && result.contains("stopOutcome") && result["stopOutcome"].is_string() ? result["stopOutcome"].get<std::string>() : "unknown";
+			if (outcome == "graceful" || outcome == "forced" || outcome == "failed") *outcome_out = outcome;
+		}
 		return stopped;
 	}
 

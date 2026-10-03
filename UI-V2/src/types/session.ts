@@ -102,6 +102,7 @@ export interface Session {
   updatedAt: Date
   interactionAt?: Date
   lastOpenedAt?: Date
+  attentionRevision?: string
 }
 
 export interface Folder {

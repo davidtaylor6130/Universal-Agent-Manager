@@ -1067,6 +1067,10 @@ namespace
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{
 			native.last_opened_at = local.last_opened_at;
+			native.attention_revision = local.attention_revision;
+			native.last_stop_reason = local.last_stop_reason;
+			native.goal_command_revision = local.goal_command_revision;
+			native.goal_pending_continuation_id = local.goal_pending_continuation_id;
 		}
 	}
 

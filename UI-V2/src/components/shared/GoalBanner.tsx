@@ -10,6 +10,8 @@ interface GoalBannerProps {
   onComplete: () => void
   onPause?: () => void
   onResume?: () => void
+  onRestart?: () => void
+  turnRunning?: boolean
   resumePending?: boolean
   onRemove: () => void
   onEdit?: (objective: string) => Promise<boolean>
@@ -162,7 +164,7 @@ function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onC
   )
 }
 
-export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel }: GoalBannerProps) {
+export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, turnRunning = false, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel }: GoalBannerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -255,6 +257,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
       </details>
 
       <div className="uam-goal-banner__progress flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
+        {goal.pendingContinuation ? <span>Queued after current turn</span> : turnRunning && goal.status === 'paused' ? <span>Current turn will finish</span> : null}
         <progress
           aria-label="Goal progress"
           aria-valuetext={isComplete ? 'Goal complete' : totalItems > 0 ? `${completedCount} of ${totalItems} planned steps complete` : progressLabel}
@@ -309,6 +312,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, resumePending 
             {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
               <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label={resumePending ? 'Resuming…' : 'Resume goal'} onClick={() => { setMenuOpen(false); onResume() }} />
             )}
+            {onRestart && <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label="Restart goal" onClick={() => { setMenuOpen(false); onRestart() }} />}
             {!isComplete && goal.executionOwner !== 'provider' && onEdit && (
               <MenuItem disabled={resumePending} icon={<Pencil size={14} aria-hidden />} label="Edit goal" onClick={() => { setMenuOpen(false); setEditing(true) }} />
             )}

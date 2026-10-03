@@ -11,6 +11,7 @@ export interface Goal {
   lastBlocker?: string
 	lastBlockerKind?: string
   lastDiagnostic?: string
+  pendingContinuation?: boolean
   completedItems?: string[]
   remainingItems?: string[]
   currentStep?: string

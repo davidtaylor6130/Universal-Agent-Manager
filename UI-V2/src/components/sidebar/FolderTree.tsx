@@ -41,7 +41,7 @@ function cliRuntimeStatus(binding: ReturnType<typeof useAppStore.getState>['cliB
   if (!binding) return ''
   const cached = cliRuntimeStatusCache.get(binding)
   if (cached !== undefined) return cached
-  const status: CompactRuntimeStatus = binding.processing || binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown'
+  const status: CompactRuntimeStatus = binding.processing || binding.lifecycleState === 'starting' || binding.lifecycleState === 'busy' || binding.lifecycleState === 'shuttingDown'
     ? 'processing'
     : binding.readySinceLastSelect ? 'done' : ''
   cliRuntimeStatusCache.set(binding, status)
@@ -55,7 +55,7 @@ function acpRuntimeStatus(binding: ReturnType<typeof useAppStore.getState>['acpB
   const attentionKind = binding.attentionKind && binding.attentionKind !== 'error' ? binding.attentionKind : null
   const status: CompactRuntimeStatus = attentionKind
     ? `attention:${attentionKind}`
-    : binding.processing || binding.lifecycleState === 'waitingPermission'
+    : binding.processing || binding.lifecycleState === 'starting' || binding.lifecycleState === 'waitingPermission'
       ? 'processing'
       : binding.readySinceLastSelect ? 'done' : ''
   acpRuntimeStatusCache.set(binding, status)
