@@ -379,7 +379,7 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		session.remote_stop_pending = true;
 		return false;
 	}
-	QueueAcpProcessStop(app, session);
+	QueueAcpProcessStop(app, session, session.chat_id);
 	session.running = false;
 	return true;
 }
@@ -479,6 +479,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.running)
 	{
 		return true;
+	}
+	if (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
+	{
+		return false;
 	}
 	const bool remote_stop_pending = session.remote_stop_pending || std::ranges::any_of(
 	    app.pending_acp_remote_stops,
@@ -601,6 +605,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	session.chat_id = chat.id;
 	session.provider_id = provider.id;
+	session.process_execution_host_id = chat.execution_host_id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? runtime.OnAcpValidateResumeId(chat) : std::string{};
