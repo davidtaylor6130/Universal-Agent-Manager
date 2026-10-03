@@ -403,6 +403,22 @@ namespace uam
 		Timeout
 	};
 
+	struct RemoteContextPreparation
+	{
+		ExecutionHost host;
+		std::string workspace;
+		std::string prompt;
+		std::string context;
+		std::string error;
+		std::stop_source cancel;
+		std::atomic<bool> finished{false};
+	};
+	struct RemoteContextTask
+	{
+		std::shared_ptr<RemoteContextPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		AcpStopPurpose stop_purpose = AcpStopPurpose::Interrupt;
@@ -478,6 +494,7 @@ namespace uam
 		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
+		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
 		// crash-looping provider cannot restart forever; cleared when a new user
@@ -641,6 +658,8 @@ namespace uam
 		std::string hydrated_messages_digest;
 		bool low_signal_skip = false;
 		bool hydration_failed = false;
+		bool remote_applied = false;
+		int remote_entry_count = 0;
 	};
 
 	struct AsyncMemoryExtractionTask
@@ -654,6 +673,8 @@ namespace uam
 		std::string source_persisted_messages_digest;
 		int scan_start_message_index = -1;
 		std::filesystem::path workspace_root;
+		std::optional<ExecutionHost> remote_host;
+		std::string remote_workspace;
 		std::filesystem::path native_history_chats_dir;
 		std::vector<std::string> native_history_files_before;
 		std::shared_ptr<AsyncProcessTaskState> state;
@@ -853,6 +874,7 @@ namespace uam
 		std::unique_ptr<std::jthread> provider_context_cleanup_worker;
 		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
 		double provider_context_cleanup_not_before_s = 0.0;
+		std::vector<RemoteContextTask> remote_context_tasks;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;

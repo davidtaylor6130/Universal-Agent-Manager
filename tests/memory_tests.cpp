@@ -181,7 +181,7 @@ UAM_TEST(RemoteWorkspaceMemoryNeverUsesAControllerPathCollision)
 	app.chats.push_back(chat);
 
 	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue");
-	UAM_ASSERT(recall.find("Global memory remains available") != std::string::npos);
+	UAM_ASSERT(recall.find("Global memory remains available") == std::string::npos);
 	UAM_ASSERT(recall.find("Never read this controller collision") == std::string::npos);
 	UAM_ASSERT(MemoryService::ListManualScanCandidates(app).empty());
 	int queued_count = -1;
@@ -191,9 +191,20 @@ UAM_TEST(RemoteWorkspaceMemoryNeverUsesAControllerPathCollision)
 
 	MemoryLibraryService::Scope scope;
 	UAM_ASSERT(!MemoryLibraryService::ResolveScope(app, "folder", folder.id, scope, &error));
-	UAM_ASSERT(error.find("remote") != std::string::npos);
+	UAM_ASSERT(error.find("SSH host") != std::string::npos);
+	UAM_ASSERT(!MemoryLibraryService::ResolveScope(app, "all", "", scope, &error));
+	ExecutionHost remote_host;
+	remote_host.id = folder.execution_host_id;
+	remote_host.ssh_alias = "fixture";
+	remote_host.platform = "linux";
+	app.settings.execution_hosts.push_back(remote_host);
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "folder", folder.id, scope, &error));
+	UAM_ASSERT(scope.remote_host.has_value());
+	UAM_ASSERT(scope.root_path.empty());
+	UAM_ASSERT_EQ(scope.remote_workspace, folder.directory);
 	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "all", "", scope, &error));
 	UAM_ASSERT_EQ(scope.roots.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(scope.remote_scopes.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(scope.roots.front().root_path, MemoryService::GlobalMemoryRoot(app.data_root));
 }
 
@@ -1858,3 +1869,59 @@ UAM_TEST(MemoryServiceRejectsIneligibleScansBeforeReadingOrWritingHistory)
 		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
 	}
 }
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteProjectMemoryScanRunsWithTargetPolicyAndLeavesControllerMemoryUntouched)
+{
+	TempDir temp("uam-remote-memory-scan");
+	const fs::path root = fs::canonical(temp.root);
+	const fs::path target = root / "target";
+	fs::create_directories(target);
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path ssh = root / "ssh";
+	const fs::path worker = root / "fixture-provider";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$UAM_TEST_MEMORY_SSH_LOG\"\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(worker, R"(#!/bin/sh
+[ -f opencode.json ] || exit 2
+cat > "$UAM_TEST_MEMORY_PROMPT"
+printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Target lesson","memory":"Use Allman braces in this project.","evidence":"User explicitly requested Allman braces.","confidence":"high"}]}'
+)"));
+	fs::permissions(ssh, fs::perms::owner_all);
+	fs::permissions(worker, fs::perms::owner_all);
+	ScopedEnvVar path_env("PATH", root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	ScopedEnvVar runner_env("UAM_TEST_RUNNER", runner.string());
+	ScopedEnvVar prompt_env("UAM_TEST_MEMORY_PROMPT", (root / "prompt.txt").string());
+	ScopedEnvVar log_env("UAM_TEST_MEMORY_SSH_LOG", (root / "ssh.log").string());
+	uam::AppState app;
+	app.data_root = root / "controller";
+	ExecutionHost host;
+	host.id = "ssh-memory-fixture"; host.ssh_alias = "memory-target"; host.platform = "linux";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts.push_back(host);
+	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	profile.interactive_command = uam::shell::EscapeArg(worker.string());
+	app.provider_profiles.push_back(profile);
+	ChatFolder folder;
+	folder.id = "remote-memory-folder"; folder.title = "Target project"; folder.directory = target.string(); folder.execution_host_id = host.id;
+	app.folders.push_back(folder);
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, profile.id);
+	chat.id = "remote-memory-chat"; chat.execution_host_id = host.id; chat.workspace_directory = folder.directory; chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Please remember to use Allman braces in this project.", "now"});
+	app.chats.push_back(chat);
+	int queued = 0;
+	std::string error;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
+	UAM_ASSERT(fs::exists(target / ".UAM/Lessons/User_Lessons/target-lesson.md"));
+	UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
+	UAM_ASSERT(uam::io::ReadTextFile(root / "prompt.txt").find("Please remember") != std::string::npos);
+	UAM_ASSERT(uam::io::ReadTextFile(root / "ssh.log").find("memory-target") != std::string::npos);
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT(uam::io::ReadTextFile(target / ".UAM/Lessons/User_Lessons/target-lesson.md").find("Occurrence count: 1") != std::string::npos);
+}
+#endif

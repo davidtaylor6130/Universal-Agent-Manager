@@ -52,7 +52,7 @@ namespace uam
 	    std::vector<std::string>& argv, std::string& error)
 	{
 		if (!chat.native_session_id.empty()) return true;
-		if (!chat.remote_claude_session_unstarted)
+		if (!chat.remote_claude_session_unstarted && !chat.native_session_reset_pending)
 		{
 			// Older chats may have launched before UAM recorded remote Claude IDs.
 			argv.push_back("--resume");
@@ -67,11 +67,14 @@ namespace uam
 			error = "Could not create a Claude session ID.";
 			return false;
 		}
+		const bool previous_reset_pending = chat.native_session_reset_pending;
 		chat.native_session_id = session_id;
+		chat.native_session_reset_pending = false;
 		chat.remote_claude_session_unstarted = false;
 		if (!ChatRepository::SaveChat(app.data_root, chat))
 		{
 			chat.native_session_id.clear();
+			chat.native_session_reset_pending = previous_reset_pending;
 			chat.remote_claude_session_unstarted = true;
 			error = "Could not save the Claude session ID. Retry when storage is available.";
 			return false;

@@ -65,6 +65,8 @@ export interface ChatAttachmentInput {
 export interface CppChat {
   id: string
   executionHostId?: string
+  remoteRecoveryEnabled?: boolean
+  remoteRecoveryState?: string
   title: string
   folderId: string
   pinned?: boolean

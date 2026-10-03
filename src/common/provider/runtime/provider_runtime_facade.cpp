@@ -52,7 +52,7 @@ std::string NormalizeInputPromptLine(std::string_view line)
 
 void IProviderRuntime::NormalizeLoadedNativeSessionId(ChatSession& chat) const
 {
-	if (chat.native_session_id.empty() && !chat.id.empty() && !uam::chat_ids::IsLocalDraftChatId(chat.id))
+	if (!chat.native_session_reset_pending && chat.native_session_id.empty() && !chat.id.empty() && !uam::chat_ids::IsLocalDraftChatId(chat.id))
 	{
 		chat.native_session_id = chat.id;
 	}

@@ -691,6 +691,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
@@ -3116,6 +3117,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
                           This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
+                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <label className="mt-2 flex items-center gap-2">
+                            <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
+                              void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
+                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
+                              })
+                            }} />
+                            Recover this chat after host restart
+                          </label>
+                          {(!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled') && <div className="mt-1">Enable runner startup in SSH host settings first.</div>}
+                          {session.remoteRecoveryState === 'blocked' && <div className="mt-1" role="status">Recovery blocked. Review the last turn before retrying.</div>}
                         </div>
                       ) : (
                         <>

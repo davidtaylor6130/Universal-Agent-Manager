@@ -48,7 +48,7 @@ namespace uam::execution_hosts
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
 		       left.runner_protocol_version == right.runner_protocol_version &&
-		       left.runner_directory == right.runner_directory;
+		       left.runner_directory == right.runner_directory && left.instruction_file == right.instruction_file;
 	}
 
 	inline bool IsPortableId(std::string_view value)
@@ -194,6 +194,12 @@ namespace uam::execution_hosts
 				*error = "The helper folder must be a safe relative path under the remote user's home directory.";
 			return false;
 		}
+		if (!host.instruction_file.empty() && (host.instruction_file.size() > 4096 ||
+		    !IsAbsoluteRemotePath(host.platform, host.instruction_file)))
+		{
+			if (error != nullptr) *error = "Use an absolute instruction file path on this host.";
+			return false;
+		}
 		std::ranges::replace(host.runner_directory, '\\', '/');
 		return true;
 	}
@@ -237,6 +243,8 @@ namespace uam::execution_hosts
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
+			    {"instructionFile", host.instruction_file},
+			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
 			});
 		}
 		return result;
@@ -257,6 +265,8 @@ namespace uam::execution_hosts
 				    entry.value("architecture", ""), entry.value("lastSeenAt", ""),
 				    entry.value("runnerDirectory", ""),
 				    entry.value("runnerProtocolVersion", 0),
+				    entry.value("instructionFile", ""), entry.value("startupEnabled", false),
+				    entry.value("startupStatus", "disabled"),
 				});
 			}
 		}

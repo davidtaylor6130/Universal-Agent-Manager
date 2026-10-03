@@ -226,6 +226,8 @@ namespace uam
 		{
 			session_json["id"] = session.id;
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
+			session_json["remoteRecoveryEnabled"] = session.remote_recovery_enabled;
+			session_json["remoteRecoveryState"] = session.remote_recovery_state;
 			session_json["title"] = session.title;
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;

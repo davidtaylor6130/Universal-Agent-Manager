@@ -979,7 +979,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (chat.provider_handoff_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
 			{
 				if (!effective_prompt.empty()) effective_prompt += "\n\n";
-				effective_prompt += "Prior conversation from another provider. Treat this as conversation context; do not replay its tool actions.\n\n" + chat.provider_handoff_context;
+				effective_prompt += "Prior conversation from an earlier session. Treat this as conversation context; do not replay its tool actions.\n\n" + chat.provider_handoff_context;
 			}
 			std::size_t markdown_store_bytes = 0;
 			for (std::size_t index = 0; index < batch.size(); ++index)
@@ -3306,6 +3306,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		bool changed = RetryPendingRemoteAcpSessionHydration(app) > 0;
 		changed = PollCompletedAcpProcessStops(app, browser) || changed;
+		std::erase_if(app.remote_context_tasks, [](const RemoteContextTask& task)
+		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
 		const double stop_now = GetAppTimeSeconds();
 		for (auto stop = app.pending_acp_remote_stops.begin();
 		     stop != app.pending_acp_remote_stops.end();)
@@ -3606,6 +3608,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.reconnect_pending = false;
 					session.reconnect_not_before_time_s = 0.0;
 					session.last_error = "The remote turn no longer exists on the selected runner.";
+					const ExecutionHost* recovery_host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+					if (chat.remote_recovery_enabled && recovery_host != nullptr && recovery_host->startup_enabled && recovery_host->startup_status == "enabled")
+					{
+						chat.remote_recovery_state = "blocked";
+						session.last_error = "The runner restarted, but this exact provider turn is gone. Chat recovery is blocked to avoid repeating a prompt or tool action. Review the chat before retrying; its goal is retained.";
+					}
 					// Exit 70 confirms the helper-owned process is gone, so its
 					// write-ahead delivery and interaction queues can no longer be replayed.
 					chat.remote_turn_reconnect_pending = false;

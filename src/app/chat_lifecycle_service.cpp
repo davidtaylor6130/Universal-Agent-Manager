@@ -7,6 +7,7 @@
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_branching.h"
+#include "common/chat/conversation_handoff.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -1565,11 +1566,6 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 	const std::vector<ChatSession> original_chats = app.chats;
 	const std::string original_status_line = app.status_line;
 	const bool directory_changed = !FolderDirectoryMatches(original.directory, input.directory);
-	if (directory_changed && original.execution_host_id != uam::execution_hosts::kLocalHostId)
-	{
-		app.status_line = "A remote workspace directory cannot be changed. Create a new workspace instead.";
-		return false;
-	}
 	if (directory_changed && FolderHasRunningChat(app, target_folder_id))
 	{
 		app.status_line = "Cannot change a folder directory while one of its chats has a running runtime.";
@@ -1586,6 +1582,20 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			}
 			if (FolderDirectoryMatches(chat.workspace_directory, original.directory))
 			{
+				if (original.execution_host_id != uam::execution_hosts::kLocalHostId)
+				{
+					std::string warning;
+					if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning) ||
+					    !uam::chat::BuildConversationHandoff(chat, chat.provider_handoff_context, &warning))
+					{
+						app.chats = original_chats;
+						app.status_line = "The workspace was kept because its chat context could not be prepared. " + warning;
+						return false;
+					}
+					chat.native_session_id.clear();
+					chat.native_session_reset_pending = true;
+					chat.provider_handoff_session_id.clear();
+				}
 				chat.workspace_directory = input.directory;
 			}
 			if (FolderDirectoryMatches(chat.workspace_source_directory, original.directory))
@@ -1617,6 +1627,13 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			app.status_line = uam::strings::NonEmptyOrFallback(original_status_line, "Failed to persist folder settings.");
 		}
 		return false;
+	}
+
+	if (directory_changed && original.execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		for (const ChatSession& chat : app.chats)
+			if (ChatBelongsToFolder(chat, target_folder_id) && chat.native_session_reset_pending)
+				app.resolved_native_sessions_by_chat_id.erase(chat.id);
 	}
 
 	app.status_line = "Folder settings saved.";

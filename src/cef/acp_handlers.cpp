@@ -329,9 +329,21 @@ namespace
 			const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
 			if (attachment_kind == attachment_frontend_fields::kDirectoryKind)
 			{
-				result.status = 400;
-				result.error = "Remote directory attachments are not supported; attach files instead.";
-				break;
+				const std::string path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+				if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, path))
+				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
+				uam::remote::DirectoryListing listing;
+				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) break;
+				MessageAttachment attachment;
+				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
+				if (attachment.id.empty()) attachment.id = AttachmentId();
+				attachment.name = SafeAttachmentName(uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kNameField}), "directory");
+				attachment.kind = attachment_kind;
+				attachment.path = listing.directory;
+				attachment.copied = false;
+				result.attachments.push_back(AttachmentToJson(attachment));
+				++index;
+				continue;
 			}
 			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
 			    item, {attachment_fields::kPathField});

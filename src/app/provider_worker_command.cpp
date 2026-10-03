@@ -1,3 +1,4 @@
+#include "common/provider/provider_text_worker.h"
 #include "app/provider_worker_command.h"
 
 #include "common/platform/platform_services.h"
@@ -59,65 +60,7 @@ namespace
 		                                                });
 	}
 
-	bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv)
-	{
-		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
-		{
-			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"share":"disabled","autoupdate":false})"))
-			{
-				return false;
-			}
-			argv.insert(argv.begin() + 2, "--pure");
-		}
-		else if (IsProvider(profile, uam::provider_ids::kGeminiCli))
-		{
-			const std::filesystem::path policy_file = workspace / "deny-all-tools.toml";
-			if (!uam::io::WriteTextFile(policy_file, R"([[rule]]
-toolName = "*"
-decision = "deny"
-priority = 999999
 
-[[rule]]
-mcpName = "*"
-decision = "deny"
-priority = 999999
-)"))
-			{
-				return false;
-			}
-			argv.insert(argv.begin() + 1, {
-			                                  "--approval-mode",
-			                                  "plan",
-			                                  "--admin-policy",
-			                                  uam::paths::Utf8PathString(policy_file),
-			                              });
-		}
-		return true;
-	}
-
-	bool RemoveWorkerPromptArgument(const ProviderProfile& profile, std::vector<std::string>& argv)
-	{
-		if (IsProvider(profile, uam::provider_ids::kGeminiCli) || IsProvider(profile, uam::provider_ids::kCopilotCli))
-		{
-			const auto prompt_flag = std::ranges::find(argv, "-p");
-			if (prompt_flag == argv.end() || std::next(prompt_flag) == argv.end()) return false;
-			argv.erase(prompt_flag, std::next(prompt_flag, 2));
-			return true;
-		}
-		if (IsProvider(profile, uam::provider_ids::kClaudeCli))
-		{
-			if (argv.size() < 2 || argv[argv.size() - 2] != "--") return false;
-			argv.erase(argv.end() - 2, argv.end());
-			return true;
-		}
-		if (IsProvider(profile, uam::provider_ids::kCodexCli) || IsProvider(profile, uam::provider_ids::kOpenCodeCli))
-		{
-			if (argv.size() < 2) return false;
-			argv.pop_back();
-			return true;
-		}
-		return false;
-	}
 
 	std::vector<std::pair<std::string, std::string>> WorkerEnvironment(uam::ProviderWorkerPathMode path_mode)
 	{
@@ -258,18 +201,18 @@ priority = 999999
 
 namespace uam
 {
-	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out)
+	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out, bool remote_target)
 	{
 		if (error_out != nullptr)
 		{
 			error_out->clear();
 		}
-		if (const std::string update_error = ProviderCliLaunchBlockReason(app, profile.id); !update_error.empty())
+		if (const std::string update_error = remote_target ? std::string{} : ProviderCliLaunchBlockReason(app, profile.id); !update_error.empty())
 		{
 			SetError(error_out, update_error);
 			return {};
 		}
-		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
+		if (!remote_target && IsProvider(profile, uam::provider_ids::kCopilotCli))
 		{
 			if (const std::string compatibility_error = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).LocalCliCompatibilityError(app); !compatibility_error.empty())
 			{
@@ -291,12 +234,12 @@ namespace uam
 			SetError(error_out, "Failed to prepare the isolated provider worker directory.");
 			return {};
 		}
-		if (!ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
+		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
 		{
 			SetError(error_out, "Failed to prepare the provider worker safety policy.");
 			return {};
 		}
-		if (!RemoveWorkerPromptArgument(profile, argv))
+		if (!uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
 		{
 			SetError(error_out, "Provider worker prompt arguments are invalid.");
 			return {};
@@ -306,11 +249,11 @@ namespace uam
 		invocation.direct_process = true;
 		invocation.argv = std::move(argv);
 		invocation.standard_input = std::string(prompt);
-		invocation.environment_overrides =
+		if (!remote_target) invocation.environment_overrides =
 		    uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(profile);
 		const std::vector<std::pair<std::string, std::string>> worker_environment =
 		    WorkerEnvironment(path_mode);
-		invocation.environment_overrides.insert(invocation.environment_overrides.end(),
+		if (!remote_target) invocation.environment_overrides.insert(invocation.environment_overrides.end(),
 		                                        worker_environment.begin(), worker_environment.end());
 		invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
 		invocation.isolated_working_directory = isolation_directory;

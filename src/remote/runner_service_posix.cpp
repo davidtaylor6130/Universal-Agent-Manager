@@ -501,10 +501,14 @@ namespace uam::remote
 		                      {{"id", "stop"}, {"type", "service.shutdown"}}))
 			return 2;
 		nlohmann::json response;
-		return ReadSocketFrame(service.Get(), response, error) == FrameReadResult::Ok &&
-		               response.value("ok", false)
-		           ? 0
-		           : 2;
+		if (ReadSocketFrame(service.Get(), response, error) != FrameReadResult::Ok)
+		{ std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n"; return 2; }
+		if (!response.value("ok", false))
+		{
+			std::cerr << response.value("error", nlohmann::json::object()).value("message", "The runner cannot stop safely.") << '\n';
+			return 2;
+		}
+		return 0;
 	}
 
 	int RunRunnerBridge(const std::filesystem::path& socket_path)

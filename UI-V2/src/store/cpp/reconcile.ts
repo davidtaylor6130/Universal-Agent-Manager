@@ -201,6 +201,8 @@ export function sessionFromCppChat(
     uamControlEnabled: chat.uamControlEnabled ?? false,
     id: chat.id,
     executionHostId: chat.executionHostId ?? 'local',
+    remoteRecoveryEnabled: chat.remoteRecoveryEnabled ?? false,
+    remoteRecoveryState: chat.remoteRecoveryState ?? '',
     name: chat.title || 'Untitled',
     viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,

@@ -934,7 +934,12 @@ namespace
 		       lhs.remote_turn_reconnect_pending == rhs.remote_turn_reconnect_pending &&
 		       lhs.remote_process_exists == rhs.remote_process_exists &&
 		       lhs.remote_stop_cleanup_pending == rhs.remote_stop_cleanup_pending &&
+		       lhs.native_session_reset_pending == rhs.native_session_reset_pending &&
+		       lhs.provider_handoff_context == rhs.provider_handoff_context &&
+		       lhs.provider_handoff_session_id == rhs.provider_handoff_session_id &&
 		       lhs.remote_restart_pending == rhs.remote_restart_pending &&
+		       lhs.remote_recovery_enabled == rhs.remote_recovery_enabled &&
+		       lhs.remote_recovery_state == rhs.remote_recovery_state &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -1059,6 +1064,11 @@ namespace
 		    chat.remote_turn_reconnect_pending);
 		chat.remote_stop_cleanup_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteStopCleanupPendingField), false);
+		chat.native_session_reset_pending = JsonBoolOrDefault(root.Find("native_session_reset_pending"), false);
+		chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
+		chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+		chat.remote_recovery_enabled = JsonBoolOrDefault(root.Find("remote_recovery_enabled"), false);
+		chat.remote_recovery_state = JsonStringOrEmpty(root.Find("remote_recovery_state"));
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -1589,6 +1599,11 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	                   chat.remote_process_exists);
 	uam::json::SetBool(root, kChatRemoteStopCleanupPendingField,
 	                   chat.remote_stop_cleanup_pending);
+	uam::json::SetBool(root, "native_session_reset_pending", chat.native_session_reset_pending);
+	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
+	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	uam::json::SetBool(root, "remote_recovery_enabled", chat.remote_recovery_enabled);
+	uam::json::SetString(root, "remote_recovery_state", chat.remote_recovery_state);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -2128,6 +2143,11 @@ namespace
 		hydrated.remote_process_exists = summary.remote_process_exists;
 		hydrated.remote_stop_cleanup_pending = summary.remote_stop_cleanup_pending;
 		hydrated.remote_restart_pending = summary.remote_restart_pending;
+		hydrated.native_session_reset_pending = summary.native_session_reset_pending;
+		hydrated.provider_handoff_context = summary.provider_handoff_context;
+		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.remote_recovery_enabled = summary.remote_recovery_enabled;
+		hydrated.remote_recovery_state = summary.remote_recovery_state;
 		hydrated.remote_process_control_token = summary.remote_process_control_token;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
