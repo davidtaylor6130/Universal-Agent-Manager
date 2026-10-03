@@ -395,7 +395,13 @@ namespace uam
 		std::string provider_turn_id;
 	};
 
-	enum class AcpStopPurpose { Interrupt, ProviderUpdate, Timeout };
+	/// <summary>Intent survives asynchronous remote shutdown through final settlement.</summary>
+	enum class AcpStopPurpose
+	{
+		Interrupt,
+		ProviderUpdate,
+		Timeout
+	};
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
@@ -757,6 +763,15 @@ namespace uam
 		std::string message;
 		std::string check_error;
 		std::string install_output;
+		bool verify_failed_install = false;
+	};
+
+	struct PendingCliUpdate
+	{
+		std::string provider_id;
+		std::string version;
+		ExecutionHost execution_host;
+		double deadline = 0;
 	};
 
 	struct PendingGoalIterationState
@@ -844,9 +859,9 @@ namespace uam
 
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
 		AsyncCommandTask runtime_cli_version_check_task;
-		AsyncCommandTask runtime_cli_pin_task;
+		std::unordered_map<std::string, AsyncCommandTask> runtime_cli_install_tasks;
+		std::unordered_map<std::string, PendingCliUpdate> pending_cli_updates;
 		std::string runtime_cli_version_provider_id;
-		std::string runtime_cli_pin_provider_id;
 		std::deque<std::pair<std::string, std::string>> runtime_cli_version_check_queue;
 		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;

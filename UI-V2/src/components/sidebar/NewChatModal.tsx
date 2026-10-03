@@ -1,3 +1,4 @@
+import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderPlus, Monitor, RefreshCw, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -324,7 +325,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <SelectionGrid
             label="Runs on"
             value={executionHostId}
-            options={executionHosts.map((host) => ({
+            options={executionHosts.filter((host) => SSH_ENABLED || host.transport !== 'ssh').map((host) => ({
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,

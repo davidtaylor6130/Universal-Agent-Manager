@@ -169,6 +169,8 @@ There is no Linux desktop GUI build. RAG engines, local model engines, templates
 
 ## Build from source
 
+Open **Build UAM.command** on macOS or **Build UAM.bat** on Windows for the browser configurator. It checks prerequisites, selects providers and optional features, builds into a separate folder inside `Builds/`, and offers Launch after success. [Configurator instructions and feature flags](tools/build-configurator/README.md).
+
 Requirements:
 
 - CMake 3.20 or newer

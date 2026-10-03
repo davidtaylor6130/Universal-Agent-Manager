@@ -1,3 +1,4 @@
+#include "common/config/build_features.h"
 #include "remote/runner_client.h"
 
 #include "common/config/execution_host_config.h"
@@ -139,6 +140,7 @@ namespace uam::remote
 	try
 	{
 		if (stop_token.stop_requested()) return false;
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "SSH remote execution is disabled in this build."; return false; }
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())
 		{

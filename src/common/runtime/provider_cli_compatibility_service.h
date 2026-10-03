@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <tuple>
 
 namespace uam
 {
@@ -20,7 +21,8 @@ class ProviderCliCompatibilityService
  public:
 	void StartVersionCheck(uam::AppState& app, bool force, bool include_remote = false) const;
 	bool StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force, std::string_view execution_host_id = {}, std::string* error_out = nullptr) const;
-	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr, std::string_view execution_host_id = {}) const;
+	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr, std::string_view execution_host_id = {}, bool stop_sessions = false, bool prepare_only = false) const;
+	void StartInstallProviderVersions(uam::AppState& app, const std::vector<std::tuple<std::string, std::string, std::string>>& targets) const;
 	void Poll(uam::AppState& app) const;
 	std::vector<CliProviderVersionOption> SupportedVersionsForProvider(std::string_view provider_id) const;
 	std::string PreferredVersionForProvider(std::string_view provider_id) const;
@@ -53,3 +55,11 @@ std::string CliProviderVersionStateKey(std::string_view provider_id, std::string
 /// <summary>Tests the same remote installation identity check used before mutation.</summary>
 bool ValidateRemoteCliInstallProbeForTests(std::string_view previous, std::string_view current, std::string_view platform, std::string* error);
 std::string BuildInstallAwareCliProbeForTests(std::string_view provider_id, std::string_view platform);
+
+/// <summary>Lists UAM-owned sessions using one provider installation, including idle processes.</summary>
+std::vector<std::string> ProviderCliBlockingChatIds(const uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id = {});
+
+/// <summary>Builds one safe npm transaction from curated provider package/version pairs.</summary>
+std::string BuildBulkNpmInstallCommand(const std::vector<std::pair<std::string, std::string>>& targets);
+
+std::string BuildBulkHomebrewUpgradeCommand(const std::vector<std::pair<std::string, std::string>>& targets);

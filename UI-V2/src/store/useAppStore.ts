@@ -106,6 +106,7 @@ function deserializeState(
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
     updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
     updateLastCheckedAt: string
     dismissedUpdateVersions: Record<string, string>
     memoryLastStatus: string
@@ -296,6 +297,7 @@ function deserializeState(
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
+    automaticProviderUpdates: cpp.settings.automaticProviderUpdates,
     updateLastCheckedAt: cpp.settings.updateLastCheckedAt,
     dismissedUpdateVersions: cpp.settings.dismissedUpdateVersions,
     memoryLastStatus: cpp.settings.memoryLastStatus,
@@ -482,6 +484,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
+    automaticProviderUpdates: patch.settings?.automaticProviderUpdates ?? current.automaticProviderUpdates,
     updateLastCheckedAt: patch.settings?.updateLastCheckedAt ?? current.updateLastCheckedAt,
     dismissedUpdateVersions: patch.settings?.dismissedUpdateVersions ?? current.dismissedUpdateVersions,
     memoryLastStatus: patch.settings?.memoryLastStatus ?? current.memoryLastStatus,
@@ -660,6 +663,7 @@ export const useAppStore = create<AppState>((set, get) => {
             showProviderIconsInSidebar: current.showProviderIconsInSidebar,
             showWorktreePathInSidebar: current.showWorktreePathInSidebar,
             updateChecksEnabled: current.updateChecksEnabled,
+            automaticProviderUpdates: current.automaticProviderUpdates,
             updateLastCheckedAt: current.updateLastCheckedAt,
             dismissedUpdateVersions: current.dismissedUpdateVersions,
             memoryLastStatus: current.memoryLastStatus,
@@ -971,6 +975,7 @@ export const useAppStore = create<AppState>((set, get) => {
         showProviderIconsInSidebar: current.showProviderIconsInSidebar,
         showWorktreePathInSidebar: current.showWorktreePathInSidebar,
         updateChecksEnabled: current.updateChecksEnabled,
+            automaticProviderUpdates: current.automaticProviderUpdates,
         updateLastCheckedAt: current.updateLastCheckedAt,
         dismissedUpdateVersions: current.dismissedUpdateVersions,
         memoryLastStatus: current.memoryLastStatus,

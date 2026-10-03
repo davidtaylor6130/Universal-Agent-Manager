@@ -254,9 +254,9 @@ UAM_TEST(CliProviderInstallBlocksMatchingRuntimeStarts)
 	chat.id = "installer-admission";
 	chat.provider_id = "codex-cli";
 	chat.execution_host_id = "remote-a";
-	app.runtime_cli_pin_task.running = true;
-	app.runtime_cli_pin_task.execution_host.id = "remote-a";
-	app.runtime_cli_pin_provider_id = " CoDeX ";
+	app.runtime_cli_install_tasks["remote-a/codex-cli"].running = true;
+	app.runtime_cli_install_tasks["remote-a/codex-cli"].execution_host.id = "remote-a";
+
 	uam::AcpSessionState session;
 	session.running = true;
 	std::string error;
@@ -296,16 +296,17 @@ UAM_TEST(CliProviderInstallBlocksMatchingRuntimeStarts)
 	UAM_ASSERT(uam::PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
 	chat.provider_id = "codex-cli";
 	chat.execution_host_id.clear();
-	app.runtime_cli_pin_task.execution_host.id = "local";
+	app.runtime_cli_install_tasks["codex-cli"] = std::move(app.runtime_cli_install_tasks["remote-a/codex-cli"]);
+	app.runtime_cli_install_tasks["codex-cli"].execution_host.id = "local";
 	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error));
 	UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
 	const ProviderProfile& profile = *ProviderProfileStore::FindById(app.provider_profiles, "codex-cli");
 	UAM_ASSERT(uam::BuildProviderWorkerInvocation(app, profile, app.settings, "fixture prompt", "", uam::ProviderWorkerPathMode::BasePath, &error).Empty());
 	UAM_ASSERT(uam::strings::Contains(error, "being updated"));
-	app.runtime_cli_pin_task.state = std::make_shared<AsyncProcessTaskState>();
-	app.runtime_cli_pin_task.state->completed.store(true);
+	app.runtime_cli_install_tasks["codex-cli"].state = std::make_shared<AsyncProcessTaskState>();
+	app.runtime_cli_install_tasks["codex-cli"].state->completed.store(true);
 	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error));
-	app.runtime_cli_pin_task.running = false;
+	app.runtime_cli_install_tasks["codex-cli"].running = false;
 	UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error));
 	UAM_ASSERT(uam::PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
 }
@@ -10544,6 +10545,36 @@ UAM_TEST(RejectedProviderHandoffPromptRetainsContextForRetry)
 	UAM_ASSERT(chat.provider_handoff_session_id.empty());
 	UAM_ASSERT_EQ(chat.provider_handoff_context, std::string("User: Remember 4821."));
 }
+UAM_TEST(AcpProviderUpdateStopPreservesIntentWithoutProviderError)
+{
+	TempDir temp("uam-update-stop-purpose");
+	for (const uam::AcpStopPurpose purpose : {uam::AcpStopPurpose::Interrupt, uam::AcpStopPurpose::ProviderUpdate})
+	{
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = purpose == uam::AcpStopPurpose::ProviderUpdate ? "update-stop" : "interrupt-stop";
+		Message response;
+		response.role = MessageRole::Assistant;
+		response.content = "Partial fixture response";
+		chat.messages.push_back(response);
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.processing = true;
+		session.current_assistant_message_index = 0;
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>(std::move(session)));
+		UAM_ASSERT(uam::StopAcpSession(app, chat.id, purpose));
+		UAM_ASSERT(app.acp_sessions.back()->stop_purpose == purpose);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().interrupted, purpose == uam::AcpStopPurpose::Interrupt);
+		if (purpose == uam::AcpStopPurpose::ProviderUpdate)
+		{
+			UAM_ASSERT_EQ(app.acp_sessions.back()->last_turn_outcome, std::string("provider-update"));
+			UAM_ASSERT(app.acp_sessions.back()->last_error.empty());
+		}
+	}
+}
+
 UAM_TEST(ClaudeResumedTurnRetainsRepeatedAnswersAndResultFallback)
 {
 	for (const std::string previous_answer : {std::string("QA-CEDAR-395"), std::string(160, 'a')})
@@ -10598,6 +10629,49 @@ UAM_TEST(ClaudeResumedTurnRetainsRepeatedAnswersAndResultFallback)
 			}
 		}
 	}
+}
+
+UAM_TEST(AcpProviderUpdateWaitsForLocalProcessStopCompletion)
+{
+	uam::AppState app;
+	uam::AsyncAcpProcessStopTask stop;
+	stop.chat_id = "affected-chat";
+	stop.provider_id = "codex-cli";
+	stop.finished = std::make_shared<std::atomic<bool>>(false);
+	const std::shared_ptr<std::atomic<bool>> finished = stop.finished;
+	app.acp_process_stop_tasks.push_back(std::move(stop));
+	UAM_ASSERT(uam::AcpStopInProgress(app, "affected-chat"));
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "other-chat"));
+	UAM_ASSERT_EQ(ProviderCliBlockingChatIds(app, "codex-cli").size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(ProviderCliBlockingChatIds(app, "gemini-cli").empty());
+	finished->store(true);
+	UAM_ASSERT(!uam::AcpStopInProgress(app, "affected-chat"));
+}
+
+UAM_TEST(AcpProviderFailureRemainsAnErrorDuringUpdateStop)
+{
+	TempDir temp("uam-update-source-error");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "failed-provider";
+	Message response;
+	response.role = MessageRole::Assistant;
+	response.content = "Partial response";
+	chat.messages.push_back(response);
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->processing = true;
+	session->current_assistant_message_index = 0;
+	session->lifecycle_state = "error";
+	session->last_error = "Fixture provider failure";
+	session->last_turn_outcome = "error";
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::ProviderUpdate));
+	UAM_ASSERT(app.chats.front().messages.front().interrupted);
+	UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, std::string("Fixture provider failure"));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->last_turn_outcome, std::string("error"));
 }
 
 UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)

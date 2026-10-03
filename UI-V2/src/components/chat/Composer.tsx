@@ -1,3 +1,4 @@
+import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
@@ -477,7 +478,7 @@ export function ComposerToolbar({
                 style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)', outline: 'none' }}
               />
             </label>
-            {!isCompanionContext() && <button
+            {COMPUTER_USE_ENABLED && !isCompanionContext() && <button
               type="button"
               role="menuitem"
               title={computerUseMode ? 'Turn off computer use' : 'Turn on computer use'}
@@ -656,7 +657,7 @@ export function ComposerToolbar({
       ) : <>
       <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
-        {computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
+        {COMPUTER_USE_ENABLED && computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
         {featurePreference === 'provider' && providerPlanActive && <ComposerChoice label="Provider mode" chipLabel="Provider Plan" value={providerModeId ?? 'default'} icon={<ClipboardList size={12} aria-hidden />} options={providerModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description }))} onChange={onSelectProviderMode} disabled={modelDisabled} />}
         <ComposerChoice
           label="Permissions"

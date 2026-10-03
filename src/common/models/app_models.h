@@ -529,6 +529,7 @@ struct AppSettings
 	int acp_setup_inactivity_timeout_seconds = 600;
 	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;
+	bool automatic_provider_updates = false;
 	std::string update_last_checked_at;
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;

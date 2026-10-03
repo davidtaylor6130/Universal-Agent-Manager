@@ -579,6 +579,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
 	WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
 	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
+	WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
 	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
 	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
 	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
@@ -756,6 +757,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kUpdateChecksEnabledKey)
 		{
 			settings.update_checks_enabled = uam::parse::BoolOr(value, settings.update_checks_enabled);
+		}
+		else if (key == "automatic_provider_updates")
+		{
+			settings.automatic_provider_updates = uam::parse::BoolOr(value, false);
 		}
 		else if (key == kUpdateLastCheckedAtKey)
 		{

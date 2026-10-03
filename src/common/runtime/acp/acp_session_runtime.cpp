@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/config/build_features.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -1394,6 +1395,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool BuildQueuedAcpUserPrompt(AppState& app, ChatSession& chat, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, const std::string& goal_id, bool computer_use_mode, AcpQueuedUserPromptState& queued, std::string* error_out)
 		{
+			if (!UAM_ENABLE_COMPUTER_USE && computer_use_mode)
+			{
+				if (error_out != nullptr) *error_out = "Computer use is disabled in this build.";
+				return false;
+			}
 			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId && computer_use_mode)
 			{
 				if (error_out != nullptr) *error_out = "Computer Use is disabled for remote execution hosts.";
@@ -2657,6 +2663,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool FinalizeStoppedAcpSession(AppState& app, AcpSessionState& session,
 	                               ChatSession* chat)
 	{
+		const bool graceful_update_stop = session.stop_purpose == AcpStopPurpose::ProviderUpdate &&
+		    session.lifecycle_state != kAcpLifecycleError && session.last_error.empty();
 		if (chat != nullptr) acp_detail::InterruptUnconfirmedAcpSteers(app, session, *chat);
 		const std::string chat_id = session.chat_id;
 		acp_detail::CancelTurnCheckpointTasksForChat(app, chat_id);
@@ -2707,6 +2715,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.cancel_requested_time_s = 0.0;
 		session.inactivity_timeout_pending = false;
 		session.lifecycle_state = kAcpLifecycleStopped;
+		if (graceful_update_stop)
+		{
+			session.last_turn_outcome = "provider-update";
+			session.last_turn_error.clear();
+			session.last_error.clear();
+		}
 		session.queued_prompt.clear();
 		session.queued_user_prompts.clear();
 		session.goal_turn_kind.clear();
