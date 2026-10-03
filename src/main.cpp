@@ -1,9 +1,10 @@
 // UAM — CEF multiprocess entry point.
 //
-// CefExecuteProcess() must be called first so that CEF can dispatch renderer,
-// GPU, and utility subprocess invocations before the main process continues.
+// CEF subprocesses and service modes bypass GUI crash supervision. The GUI child
+// dispatches CEF before initializing the macOS application or running the app.
 
 #include "app/application.h"
+#include "common/platform/app_crash_supervisor.h"
 #include "app/uam_control_service.h"
 #include "cef/uam_cef_app.h"
 #include "computer_use/computer_use_mcp_server.h"
@@ -58,6 +59,11 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR
 	CefMainArgs main_args(GetModuleHandle(nullptr));
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
+	if (!uam::UamControlService::IsStdioServerInvocation(arguments))
+	{
+		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
+			return *supervisor_exit;
+	}
 	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
@@ -90,6 +96,11 @@ int main(int argc, char* argv[])
 	CefMainArgs main_args(argc, argv);
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
+	if (!uam::UamControlService::IsStdioServerInvocation(arguments))
+	{
+		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
+			return *supervisor_exit;
+	}
 	auto cef_app = CefRefPtr<UamCefApp>(new UamCefApp());
 	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
 	if (exit_code >= 0)
