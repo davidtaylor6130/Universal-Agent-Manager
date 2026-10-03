@@ -7,17 +7,20 @@ expected_ui_dist=${2:-}
 smoke_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 smoke_root=$(mktemp -d "$smoke_parent/uam-package-smoke.XXXXXX")
 app_pid=""
+gui_pid=""
 
 cleanup()
 {
-    if [[ "$app_pid" =~ ^[0-9]+$ ]] && kill -0 "$app_pid" 2>/dev/null; then
-        kill -TERM "$app_pid" 2>/dev/null || true
-        for _ in {1..10}; do
-            kill -0 "$app_pid" 2>/dev/null || break
-            sleep 1
-        done
-        kill -KILL "$app_pid" 2>/dev/null || true
-    fi
+    for pid in "$app_pid" "$gui_pid"; do
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in {1..10}; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+            done
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
     if [[ -n "$smoke_root" && -d "$smoke_root" && "$smoke_root" == "$smoke_parent"/uam-package-smoke.* ]]; then
         rm -rf "$smoke_root"
     fi
@@ -83,9 +86,9 @@ if [[ -n "$expected_ui_dist" ]]; then
     diff -qr "$expected_ui_dist" "$packaged_ui"
 fi
 
-UAM_DATA_DIR="$data_root" /usr/bin/open -n "$app_root"
+/usr/bin/open -n --env "UAM_DATA_DIR=$data_root" "$app_root"
 for _ in {1..10}; do
-    app_pid=$(/usr/bin/pgrep -f "$app_exe" || true)
+    app_pid=$(/usr/bin/pgrep -o -f "$app_exe" || true)
     [[ "$app_pid" =~ ^[0-9]+$ ]] && break
     sleep 1
 done
@@ -94,22 +97,34 @@ if ! [[ "$app_pid" =~ ^[0-9]+$ ]]; then
     echo "Packaged macOS app did not start through Launch Services." >&2
     exit 1
 fi
+for _ in {1..10}; do
+    gui_pid=$(/usr/bin/pgrep -P "$app_pid" -f 'uam-supervised-gui' || true)
+    [[ "$gui_pid" =~ ^[0-9]+$ ]] && break
+    sleep 1
+done
+if ! [[ "$gui_pid" =~ ^[0-9]+$ ]]; then
+    echo "Packaged macOS app supervisor did not launch the GUI." >&2
+    exit 1
+fi
 sleep 8
 
-if ! kill -0 "$app_pid" 2>/dev/null; then
-    echo "Packaged macOS app exited during startup." >&2
+if ! kill -0 "$app_pid" 2>/dev/null || ! kill -0 "$gui_pid" 2>/dev/null; then
+    echo "Packaged macOS app or GUI exited during startup." >&2
     exit 1
 fi
 
 kill -TERM "$app_pid"
 for _ in {1..10}; do
-    kill -0 "$app_pid" 2>/dev/null || break
+    if ! kill -0 "$app_pid" 2>/dev/null && ! kill -0 "$gui_pid" 2>/dev/null; then
+        break
+    fi
     sleep 1
 done
-if kill -0 "$app_pid" 2>/dev/null; then
+if kill -0 "$app_pid" 2>/dev/null || kill -0 "$gui_pid" 2>/dev/null; then
     echo "Packaged macOS app did not stop after SIGTERM." >&2
     exit 1
 fi
 app_pid=""
+gui_pid=""
 
 echo "Packaged macOS smoke test passed."

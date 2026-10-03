@@ -59,7 +59,8 @@ bool ResolveAcpUserInput(AppState& app,
 	bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
 	void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source,
 	                                platform::StdioProcessPlatformFields& destination);
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process);
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {});
+	bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	void FlushPendingChatSaves(AppState& app, bool force = false);

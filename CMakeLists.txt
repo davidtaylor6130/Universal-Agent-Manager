@@ -374,6 +374,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_IMPL_SOURCES}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
+  src/common/platform/app_crash_supervisor.cpp
 	  src/computer_use/computer_use_mcp_config.cpp
 	  src/computer_use/computer_use_mcp_server.cpp
 	  src/app/agent_definition_service.cpp
@@ -1075,6 +1076,19 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_crash_supervisor_tests
+    tests/app_crash_supervisor_tests.cpp
+    src/common/platform/app_crash_supervisor.cpp)
+  target_include_directories(uam_crash_supervisor_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  foreach(crash_case normal once loop term nonzero bypass)
+    add_test(NAME uam_crash_supervisor_${crash_case} COMMAND uam_crash_supervisor_tests ${crash_case})
+  endforeach()
+
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  foreach(parent_stop terminate kill)
+    add_test(NAME uam_crash_supervisor_parent_${parent_stop}
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
+  endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
     src/common/utils/diagnostic_log.cpp

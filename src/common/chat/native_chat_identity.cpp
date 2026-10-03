@@ -17,7 +17,10 @@ namespace
 
 	std::filesystem::path TrimmedWorkspacePath(const ChatSession& chat)
 	{
-		const std::string_view trimmed_workspace = uam::strings::TrimAsciiView(chat.workspace_directory);
+		// Native sessions run in the worktree, while UAM keeps the project folder
+		// separately for navigation. Match the provider's actual working directory.
+		const std::string_view worktree = uam::strings::TrimAsciiView(chat.workspace_worktree_directory);
+		const std::string_view trimmed_workspace = worktree.empty() ? uam::strings::TrimAsciiView(chat.workspace_directory) : worktree;
 		return trimmed_workspace.empty() ? fs::path{} : fs::path(std::string(trimmed_workspace));
 	}
 
@@ -88,6 +91,14 @@ namespace uam::chat_identity
 	std::string NativeIdentityKeyForHistoryImport(const ChatSession& chat)
 	{
 		return MakeNativeIdentityKey(chat, NativeWorkspaceForHistoryImport(chat));
+	}
+
+	std::string CodexWriterIdentityKey(const ChatSession& chat)
+	{
+		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) ||
+		    uam::strings::IsBlank(chat.native_session_id)) return {};
+		return "codex-cli|" + uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local") +
+		    "|" + uam::strings::Trim(chat.native_session_id);
 	}
 
 	std::string NativeIdentityKeyHash(std::string_view key)

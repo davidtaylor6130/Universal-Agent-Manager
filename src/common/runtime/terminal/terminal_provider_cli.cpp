@@ -66,7 +66,7 @@ std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSe
 	return ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, chat);
 }
 
-/// <summary>False with an empty error means a remote stop is pending; retry after confirmation.</summary>
+/// <summary>False with an empty error means a runtime stop is pending; retry after confirmation.</summary>
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out)
 {
 	if (error_out != nullptr)
@@ -80,6 +80,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		if (error_out != nullptr) *error_out = update_error;
 		return false;
 	}
+	if (!PrepareCodexThreadForRuntimeLaunch(app, chat, error_out)) return false;
 	AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 	if (session != nullptr && AcpSessionHasBlockingRuntimeWork(*session))
 	{
@@ -105,6 +106,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		}
 		return false;
 	}
+	if (AcpStopInProgress(app, chat.id)) return false;
 	return true;
 }
 
