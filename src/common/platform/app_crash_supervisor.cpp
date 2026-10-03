@@ -54,7 +54,7 @@ namespace uam::platform
 				const std::from_chars_result parsed = std::from_chars(value.data(), value.data() + value.size(), parent_pid);
 				if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) std::_Exit(1);
 			}
-			if (parent_pid == 0 || parent_pid > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) std::_Exit(1);
+			if (parent_pid == 0 || parent_pid > static_cast<std::uint32_t>((std::numeric_limits<int>::max)())) std::_Exit(1);
 #if defined(_WIN32)
 			// The handle identifies the original process even if its PID is later reused.
 			HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
