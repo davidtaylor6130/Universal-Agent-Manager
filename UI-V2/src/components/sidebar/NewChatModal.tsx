@@ -185,7 +185,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     setCreatingChat(false)
   }
 
-	const providerSessions = sessions.filter((session) => session.providerId === providerId)
+	const providerSessions = sessions.filter((session) => !session.temporaryParentChatId && session.providerId === providerId)
 	const workspaceKey = (value: string | undefined) => {
 	  const normalized = (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
 	  return isRemote && selectedExecutionHost?.platform.toLowerCase() !== 'windows'

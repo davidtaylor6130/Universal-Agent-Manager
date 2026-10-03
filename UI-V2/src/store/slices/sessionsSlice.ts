@@ -333,6 +333,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     cliVersionManager: { ...emptyCliVersionManager } as CliVersionManager,
     defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
+    fileExplorerApplication: '',
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
     mcpServers: [] as McpServerConfiguration[],
@@ -1800,12 +1801,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
-    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>): Promise<boolean> => {
+    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>): Promise<boolean> => {
       const previous = {
+        ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: get().fileExplorerApplication } : {}),
         defaultEditorPresetId: get().defaultEditorPresetId,
         editorFileAssociations: get().editorFileAssociations,
       }
       const next = {
+        ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: settings.fileExplorerApplication } : {}),
         defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
         editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
       }
@@ -1818,6 +1821,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const response = await sendToCEF({
           action: 'setEditorSettings',
           payload: {
+            ...(next.fileExplorerApplication !== undefined ? { fileExplorerApplication: next.fileExplorerApplication } : {}),
             defaultEditorPresetId: next.defaultEditorPresetId,
             fileAssociations: next.editorFileAssociations,
           },

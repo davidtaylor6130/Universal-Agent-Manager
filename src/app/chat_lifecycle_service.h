@@ -73,6 +73,9 @@ namespace uam
 	};
 
 	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id);
+	bool CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id);
+	bool RequestTemporarySideChatCleanup(AppState& app, const std::string& chat_id);
+	bool PollTemporarySideChatCleanup(AppState& app);
 	bool MigrateWorkspaceFolderOwnership(AppState& app);
 	bool RecoverPendingDeletionTransaction(AppState& app);
 	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr);

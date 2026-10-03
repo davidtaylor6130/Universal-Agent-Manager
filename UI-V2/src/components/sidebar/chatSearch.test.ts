@@ -69,6 +69,14 @@ function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
   ])]
 }
 
+  it('excludes temporary side chats from every sidebar group and search result', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [makeSession('main', 'Main', 'general', now, now, false),
+      { ...makeSession('side', 'Side question', 'general', now, now, true), temporaryParentChatId: 'main' }]
+    expect(visibleSessionIds(searchModel('', folders, sessions))).not.toContain('side')
+    expect(visibleSessionIds(searchModel('Side', folders, sessions))).not.toContain('side')
+  })
+
   it('duplicates every displayed status and pinned chat without removing it from all chats', () => {
     const folders = [makeFolder('general')]
     const sessions = [

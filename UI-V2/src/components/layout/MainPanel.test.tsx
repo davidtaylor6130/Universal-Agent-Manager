@@ -712,6 +712,30 @@ describe('MainPanel', () => {
     host.remove()
   })
 
+  it('creates in the chosen empty view and closes that view without deleting chats', () => {
+    const layout = paneLayout('chat-1', '', '')
+    writeChatGridLayout(layout)
+    const setNewChatModalOpen = vi.spyOn(useAppStore.getState(), 'setNewChatModalOpen')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+
+    const newChat = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'New Chat')[1]
+    act(() => newChat.click())
+    expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(layout.root)[2].id)
+    expect(setNewChatModalOpen).toHaveBeenCalledWith(true)
+    const close = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'Close View')[0]
+    expect(close.style.color).toBe('var(--error)')
+    act(() => close.click())
+    expect(chatGridLeaves(readChatGridLayout().root)).toHaveLength(2)
+    expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['chat-1'])
+    expect(chatGridLeaves(readChatGridLayout().root).some((leaf) => leaf.sessionId === 'chat-1')).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('closes an active empty leaf from the keyboard-actionable toolbar control', () => {
     const layout = paneLayout('chat-1', '')
     writeChatGridLayout({ ...layout, activeLeafId: chatGridLeaves(layout.root)[1].id })
@@ -941,4 +965,35 @@ describe('MainPanel', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('returns from a temporary side chat in the current pane without stopping either runtime', async () => {
+    const parent = useAppStore.getState().sessions[0]
+    const side = { ...parent, id: 'side-1', temporaryParentChatId: parent.id, name: 'Side chat' }
+    const stop = vi.fn()
+    useAppStore.setState({ sessions: [parent, side], activeSessionId: side.id, stopAcpSession: stop })
+    writeChatGridLayout(paneLayout(side.id))
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<MainPanel />))
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Return')!.click())
+    expect(readChatGridLayout().root).toMatchObject({ sessionId: parent.id })
+    expect(stop).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('retains a side chat and exposes a failed native dismissal for retry', async () => {
+    const parent = useAppStore.getState().sessions[0]
+    const side = { ...parent, id: 'side-1', temporaryParentChatId: parent.id, name: 'Side chat' }
+    useAppStore.setState({ sessions: [parent, side], activeSessionId: side.id, lastAppliedStateRevision: 1 })
+    writeChatGridLayout(paneLayout(side.id))
+    const requests: { action: string; payload?: Record<string, unknown> }[] = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => { const parsed = JSON.parse(request); requests.push(parsed); if (parsed.action === 'dismissSideChat') onFailure(500, 'Cleanup could not be saved.'); else onSuccess('{}') }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    await act(async () => root.render(<MainPanel />))
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Dismiss')!.click())
+    expect(requests.filter(request => request.action === 'dismissSideChat')).toEqual([expect.objectContaining({ payload: { chatId: side.id } })])
+    expect(host.textContent).toContain('Cleanup could not be saved.')
+    expect(readChatGridLayout().root).toMatchObject({ sessionId: side.id })
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Dismiss')?.disabled).toBe(false)
+    act(() => root.unmount()); host.remove(); delete window.cefQuery
+  })
+
 })

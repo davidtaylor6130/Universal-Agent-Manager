@@ -1,3 +1,4 @@
+import type { CustomIcon } from './customIcon'
 export type ResourceReferenceType =
   | 'workspace-folder'
   | 'chat'
@@ -6,6 +7,7 @@ export type ResourceReferenceType =
   | 'desktop-app'
 
 export interface ResourceReference {
+  customIcon?: CustomIcon
   id: string
   type: ResourceReferenceType
   target: string
@@ -13,6 +15,7 @@ export interface ResourceReference {
 }
 
 export interface ResourceCollection {
+  customIcon?: CustomIcon
   id: string
   name: string
   collapsed: boolean

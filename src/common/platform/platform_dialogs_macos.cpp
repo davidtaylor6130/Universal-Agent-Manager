@@ -1,3 +1,4 @@
+#include "common/platform/file_explorer_application.h"
 #include "platform_services_macos_impl_internal.h"
 #include "common/platform/platform_application_macos.h"
 
@@ -19,7 +20,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		return uam::platform::BrowsePath(target == PlatformPathBrowseTarget::Directory, initial_path, selected_path_out, error_out);
 	}
 
-	bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr) const override
+	bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr, const std::filesystem::path& application_path = {}) const override
 	{
 		if (folder_path.empty())
 		{
@@ -29,6 +30,16 @@ class MacFileDialogService final : public IPlatformFileDialogService
 			}
 
 			return false;
+		}
+
+		if (!application_path.empty())
+		{
+			if (!uam::platform::IsFileExplorerApplication(uam::paths::Utf8PathString(application_path), false))
+			{
+				if (error_out != nullptr) *error_out = "Configured file explorer application is unavailable. Choose another application or reset to system default.";
+				return false;
+			}
+			return uam::platform::OpenPathWithApplication(folder_path, uam::paths::Utf8PathString(application_path), error_out);
 		}
 
 		std::error_code ec;

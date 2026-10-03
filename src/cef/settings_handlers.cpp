@@ -8,6 +8,8 @@
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
 #include "common/memory/memory_levels.h"
+#include "common/paths/path_utils.h"
+#include "common/platform/file_explorer_application.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -414,6 +416,26 @@ void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, con
 void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
+	if (payload.contains("fileExplorerApplication"))
+	{
+		if (!payload["fileExplorerApplication"].is_string())
+		{
+			cb->Failure(400, "File explorer application must be a path.");
+			return;
+		}
+		const std::string application = payload["fileExplorerApplication"].get<std::string>();
+#if defined(_WIN32)
+		constexpr bool windows = true;
+#else
+		constexpr bool windows = false;
+#endif
+		if (!uam::platform::IsFileExplorerApplication(application, windows))
+		{
+			cb->Failure(400, "Choose an existing file explorer application using its full path.");
+			return;
+		}
+		m_app.settings.file_explorer_application = application;
+	}
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
 	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);
 

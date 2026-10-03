@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "common/platform/file_explorer_application.h"
+#include "common/config/custom_icon.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "app/persistence_coordinator.h"
@@ -4818,6 +4820,140 @@ UAM_TEST(SettingsStorePersistsSidebarDisplaySettings)
 	UAM_ASSERT(!loaded.show_worktree_path_in_sidebar);
 }
 
+UAM_TEST(TemporarySideChatObservedStopOnlyTerminatesItsOwnedProcess)
+{
+	TempDir temp("uam-side-observed-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.workspace_directory = temp.root.string();
+	app.chats.push_back(parent);
+	std::string child_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &child_id));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	for (const std::string& id : {parent.id, child_id})
+	{
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = id;
+		session->provider_id = "codex-cli";
+		session->running = true;
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+	}
+	struct Cleanup { uam::AppState& app; ~Cleanup() { uam::FastStopAcpSessionsForExit(app); } } cleanup{app};
+	UAM_ASSERT(uam::RequestTemporarySideChatCleanup(app, child_id));
+	UAM_ASSERT(!uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT_EQ(app.acp_process_stop_tasks.size(), static_cast<std::size_t>(1));
+	const auto finished = app.acp_process_stop_tasks.front().finished;
+	const auto result = app.acp_process_stop_tasks.front().result;
+	for (int attempt = 0; attempt < 250 && !finished->load(); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(finished->load() && result->exit_confirmed);
+	const uam::AcpSessionState* parent_session = uam::FindAcpSessionForChat(app, parent.id);
+	UAM_ASSERT(parent_session != nullptr && parent_session->running);
+	UAM_ASSERT(!service.PollStdioProcessExited(const_cast<uam::AcpSessionState&>(*parent_session)));
+	ChatDomainService().FindChatById(app, child_id)->side_cleanup_retry_time_s = 0.0;
+	UAM_ASSERT(uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, child_id) == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, parent.id) != nullptr);
+}
+
+UAM_TEST(TemporarySideChatKeepsFreshIdentityContextAndSafeCleanup)
+{
+	TempDir temp("uam-side-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.native_session_id = "parent-native-session";
+	parent.title = "Main work";
+	parent.workspace_directory = temp.root.string();
+	ChatDomainService().AddMessage(parent, MessageRole::User, "Keep the current work running");
+	ChatDomainService().AddMessage(parent, MessageRole::Assistant, std::string(50000, 'x') + " latest useful context");
+	app.chats.push_back(parent);
+	app.selected_chat_index = 0;
+	std::string child_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &child_id));
+	ChatSession* child = ChatDomainService().FindChatById(app, child_id);
+	UAM_ASSERT(child != nullptr);
+	UAM_ASSERT(child->native_session_id.empty());
+	UAM_ASSERT_EQ(child->temporary_parent_chat_id, parent.id);
+	UAM_ASSERT(child->messages.empty());
+	UAM_ASSERT(child->provider_handoff_context.size() <= 32768);
+	UAM_ASSERT(child->provider_handoff_context.find("latest useful context") != std::string::npos);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), parent.id);
+	const auto persisted = ChatRepository::LoadLocalChat(temp.root, child_id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->temporary_parent_chat_id, parent.id);
+	UAM_ASSERT_EQ(persisted->provider_handoff_context, child->provider_handoff_context);
+	UAM_ASSERT(!uam::CreateTemporarySideChat(app, child_id, nullptr));
+	UAM_ASSERT(uam::RequestTemporarySideChatCleanup(app, child_id));
+	child = ChatDomainService().FindChatById(app, child_id);
+	child->side_cleanup_stop_finished = std::make_shared<std::atomic<bool>>(false);
+	UAM_ASSERT(!uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, child_id) != nullptr);
+	child->side_cleanup_stop_finished->store(true);
+	uam::AsyncAcpProcessStopTask pending_stop;
+	pending_stop.chat_id = child_id;
+	pending_stop.observe_exit = true;
+	pending_stop.finished = child->side_cleanup_stop_finished;
+	pending_stop.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+	app.acp_process_stop_tasks.push_back(std::move(pending_stop));
+	UAM_ASSERT(uam::AcpStopInProgress(app, child_id));
+	UAM_ASSERT(!RemoveChatById(app, child_id));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, child_id).has_value());
+	app.acp_process_stop_tasks.back().result->exit_confirmed = true;
+	UAM_ASSERT(!uam::AcpStopInProgress(app, child_id));
+	child->side_cleanup_retry_time_s = 0.0;
+	UAM_ASSERT(uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, child_id) == nullptr);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, parent.native_session_id);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), parent.messages.size());
+}
+
+UAM_TEST(TemporarySideChatCleanupSaveFailureKeepsItsRecoveryMetadata)
+{
+	TempDir temp("uam-side-cleanup-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.workspace_directory = temp.root.string();
+	app.chats.push_back(parent);
+	std::string child_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &child_id));
+	const fs::path blocked_root = temp.root / "blocked";
+	std::ofstream(blocked_root) << "not a directory";
+	app.data_root = blocked_root;
+	UAM_ASSERT(!uam::RequestTemporarySideChatCleanup(app, child_id));
+	const ChatSession* child = ChatDomainService().FindChatById(app, child_id);
+	UAM_ASSERT(child != nullptr && !child->side_cleanup_requested);
+	UAM_ASSERT_EQ(child->temporary_parent_chat_id, parent.id);
+}
+
+UAM_TEST(FileExplorerApplicationsRejectCommandsAndWrongNativeTypes)
+{
+	TempDir temp("uam-file-explorer");
+	const std::filesystem::path root = temp.root;
+	const std::filesystem::path mac_app = root / "Explorer & Custom.app";
+	const std::filesystem::path windows_app = root / "Explorer & Custom.exe";
+	std::filesystem::create_directory(mac_app);
+	std::ofstream(windows_app) << "fixture";
+	UAM_ASSERT(uam::platform::IsFileExplorerApplication("", true));
+	UAM_ASSERT(uam::platform::IsFileExplorerApplication(mac_app.string(), false));
+	UAM_ASSERT(uam::platform::IsFileExplorerApplication(windows_app.string(), true));
+	UAM_ASSERT(!uam::platform::IsFileExplorerApplication(mac_app.string(), true));
+	UAM_ASSERT(!uam::platform::IsFileExplorerApplication(windows_app.string(), false));
+	UAM_ASSERT(!uam::platform::IsFileExplorerApplication("explorer.exe /select,", true));
+	UAM_ASSERT(!uam::platform::IsFileExplorerApplication(windows_app.string() + "\n", true));
+	UAM_ASSERT(!uam::platform::IsFileExplorerApplication((root / "missing.exe").string(), true));
+}
+
 UAM_TEST(SettingsStorePersistsEditorSettings)
 {
 	TempDir temp("uam-editor-settings");
@@ -4825,6 +4961,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 
 	AppSettings settings;
 	settings.default_editor_preset_id = "clion";
+	settings.file_explorer_application = "/Applications/Explorer = Custom.app";
 	settings.editor_default_groups_version = 1;
 	settings.editor_file_associations = {
 	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
@@ -4837,6 +4974,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 	SettingsStore::Load(settings_file, loaded);
 
 	UAM_ASSERT_EQ(loaded.default_editor_preset_id, std::string("clion"));
+	UAM_ASSERT_EQ(loaded.file_explorer_application, settings.file_explorer_application);
 	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].name, std::string("C++"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions.size(), static_cast<std::size_t>(2));
@@ -15205,6 +15343,7 @@ UAM_TEST(ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback)
 	folder.directory = "workspace\none";
 	folder.collapsed = true;
 	folder.execution_host_id = "ssh-lab";
+	folder.custom_icon = {"text", "🛠️"};
 
 	UAM_ASSERT(ChatFolderStore::Save(temp.root, {folder}));
 
@@ -15215,6 +15354,7 @@ UAM_TEST(ChatFolderStoreRoundTripsEncodedFieldsAndUsesBackupFallback)
 	UAM_ASSERT_EQ(loaded.front().directory, folder.directory);
 	UAM_ASSERT(loaded.front().collapsed);
 	UAM_ASSERT_EQ(loaded.front().execution_host_id, folder.execution_host_id);
+	UAM_ASSERT(loaded.front().custom_icon == folder.custom_icon);
 
 	const std::string saved_folder_text = ReadFile(temp.root / "folders.txt");
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "folders.txt", "not-a-folder-entry\n"));
@@ -20538,4 +20678,66 @@ UAM_TEST(InteractionRecencySurvivesSummaryReloadAndHydration)
 	UAM_ASSERT(ChatRepository::SaveLastOpenedAt(temp.root, chat));
 	summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
 	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+}
+
+UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
+{
+	TempDir temp("uam-custom-icons");
+	const CustomIcon png{"png", "12345678-1234-1234-1234-123456789abc.png"};
+	UAM_ASSERT(uam::icons::IsValid(png));
+	UAM_ASSERT(!uam::icons::IsValid({"png", "../outside.png"}));
+	UAM_ASSERT(!uam::icons::IsValid({"png", "/tmp/icon.png"}));
+	UAM_ASSERT(!uam::icons::IsValid({"text", "\n"}));
+	UAM_ASSERT(!uam::icons::IsValid({"text", std::string(65, 'a')}));
+	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).empty());
+	std::string bytes;
+	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", bytes));
+	UAM_ASSERT(uam::icons::HasBoundedPngHeader(bytes));
+	fs::create_directories(temp.root / "icons");
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / png.value, bytes));
+	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).starts_with("data:image/png;base64,"));
+	bytes[18] = 1;
+	bytes[19] = 1;
+	UAM_ASSERT(!uam::icons::HasBoundedPngHeader(bytes));
+	UAM_ASSERT(!uam::icons::HasBoundedPngHeader("not a PNG"));
+	fs::remove(temp.root / "icons" / png.value);
+	fs::create_symlink(temp.root / "outside.png", temp.root / "icons" / png.value);
+	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).empty());
+	ExecutionHost local;
+	local.custom_icon = {"text", "L"};
+	ExecutionHost remote;
+	remote.id = "remote";
+	remote.transport = "ssh";
+	remote.ssh_alias = "lab";
+	remote.custom_icon = png;
+	const std::vector<ExecutionHost> restored = uam::execution_hosts::Parse(uam::execution_hosts::Serialize({local, remote}));
+	UAM_ASSERT_EQ(restored.size(), std::size_t(2));
+	UAM_ASSERT(restored[0].custom_icon == local.custom_icon);
+	UAM_ASSERT(restored[1].custom_icon == png);
+}
+
+UAM_TEST(TemporarySideTerminalCleanupKeepsUnrelatedParentOwned)
+{
+	TempDir temp("uam-side-terminal-stop");
+	uam::AppState app;
+	uam::CliTerminalState parent;
+	std::unique_ptr<uam::CliTerminalState> side = std::make_unique<uam::CliTerminalState>();
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv{"/bin/sh", "-c", "sleep 30"};
+#endif
+	UAM_ASSERT(runtime.StartCliTerminalProcess(parent, temp.root, argv, &error));
+	UAM_ASSERT(runtime.StartCliTerminalProcess(*side, temp.root, argv, &error));
+	parent.running = true;
+	side->running = true;
+	side->frontend_chat_id = "side-chat";
+	app.cli_terminals.push_back(std::move(side));
+	uam::StopAndEraseCliTerminalForChat(app, "side-chat", false);
+	UAM_ASSERT(app.cli_terminals.empty());
+	UAM_ASSERT(!runtime.PollCliTerminalProcessExited(parent));
+	uam::StopCliTerminal(parent, true, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(!parent.running);
 }

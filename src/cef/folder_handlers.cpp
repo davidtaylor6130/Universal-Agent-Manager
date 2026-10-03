@@ -399,7 +399,9 @@ void UamQueryHandler::HandleBrowseFolderDirectory(CefRefPtr<CefBrowser> /*browse
 
 	std::string selected_path;
 	std::string error;
-	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(PlatformPathBrowseTarget::Directory, initial_path, &selected_path, &error))
+	if (!PlatformServicesFactory::Instance().file_dialog_service.BrowsePath(
+	    payload.value("application", false) ? PlatformPathBrowseTarget::File : PlatformPathBrowseTarget::Directory,
+	    initial_path, &selected_path, &error))
 	{
 		if (!error.empty())
 		{

@@ -1,3 +1,4 @@
+import type { CustomIcon } from './customIcon'
 import type { MemoryLevel } from './memory'
 
 export type ViewMode = 'chat' | 'cli'
@@ -7,6 +8,7 @@ export type ComputerUseBackend = 'auto' | 'provider' | 'uam'
 export type ComputerUseEffectiveBackend = 'provider' | 'uam'
 
 export interface ExecutionHost {
+  customIcon?: CustomIcon
   id: string
   label: string
   transport: 'local' | 'ssh'
@@ -67,6 +69,8 @@ export interface Session {
   folderId: string | null
   isPinned?: boolean
   providerId?: string
+  temporaryParentChatId?: string
+  sideCleanupRequested?: boolean
   parentChatId?: string
   branchRootChatId?: string
   branchFromMessageIndex?: number
@@ -111,6 +115,7 @@ export interface Session {
 }
 
 export interface Folder {
+  customIcon?: CustomIcon
   id: string
   name: string
   parentId: string | null
