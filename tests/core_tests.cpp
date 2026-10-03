@@ -18897,3 +18897,78 @@ int main(int argc, char** argv)
 
 	return 0;
 }
+
+UAM_TEST(ChatBranchingReattachesNativeParentsToOwnedWorktreeFamilies)
+{
+	for (const std::string& provider : {std::string("codex-cli"), std::string("gemini-cli"), std::string("opencode-cli"), std::string("claude-cli"), std::string("copilot-cli")})
+	{
+		TempDir temp("uam-native-parent-branch-family");
+		const fs::path project = temp.root / "project";
+		const fs::path worktree = temp.root / "worktree";
+		fs::create_directories(project);
+		fs::create_directories(worktree);
+		ChatSession owner;
+		owner.id = "chat-owner";
+		owner.provider_id = provider;
+		owner.workspace_directory = project.string();
+		owner.workspace_worktree_directory = worktree.string();
+		owner.native_session_id = "11111111-1111-4111-8111-111111111111";
+		owner.branch_root_chat_id = owner.id;
+		owner.messages.push_back({MessageRole::User, "Keep root transcript"});
+		ChatSession branch = owner;
+		branch.id = "chat-branch";
+		branch.native_session_id = "22222222-2222-4222-8222-222222222222";
+		branch.workspace_directory = worktree.string();
+		branch.workspace_worktree_directory.clear();
+		branch.parent_chat_id = owner.native_session_id;
+		branch.branch_root_chat_id = owner.native_session_id;
+		branch.branch_from_message_index = 2;
+		branch.messages.push_back({MessageRole::User, "Keep branch transcript"});
+		ChatSession sibling = branch;
+		sibling.id = "chat-sibling";
+		sibling.native_session_id = "33333333-3333-4333-8333-333333333333";
+		std::vector<ChatSession> chats{branch, owner, sibling};
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.size(), static_cast<std::size_t>(3));
+		for (const int index : {0, 2})
+		{
+			UAM_ASSERT_EQ(chats[index].parent_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_root_chat_id, owner.id);
+			UAM_ASSERT_EQ(chats[index].branch_from_message_index, 2);
+			UAM_ASSERT_EQ(chats[index].messages.size(), branch.messages.size());
+			UAM_ASSERT_EQ(chats[index].messages.front().content, branch.messages.front().content);
+			UAM_ASSERT_EQ(chats[index].messages.back().content, branch.messages.back().content);
+		}
+		ChatBranching::Normalize(chats);
+		UAM_ASSERT_EQ(chats.front().parent_chat_id, owner.id);
+		for (int isolation = 0; isolation < 4; ++isolation)
+		{
+			chats = {owner, branch};
+			if (isolation == 0) chats.back().workspace_directory = project.string();
+			if (isolation == 1) chats.back().execution_host_id = "other-host";
+			if (isolation == 2) chats.back().provider_id = "other-provider";
+			if (isolation == 3)
+			{
+				ChatSession ambiguous = owner;
+				ambiguous.id = "chat-other-owner";
+				chats.insert(chats.begin(), ambiguous);
+			}
+			ChatBranching::Normalize(chats);
+			UAM_ASSERT(chats.back().parent_chat_id.empty());
+			UAM_ASSERT_EQ(chats.back().branch_root_chat_id, branch.id);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, branch));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, sibling));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatHistorySyncService().LoadSidebarChats(app);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
+		for (const ChatSession& chat : app.chats)
+		{
+			UAM_ASSERT_EQ(chat.branch_root_chat_id, owner.id);
+			if (chat.id != owner.id) UAM_ASSERT_EQ(chat.parent_chat_id, owner.id);
+		}
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, branch.id)->messages.size(), branch.messages.size());
+	}
+}
