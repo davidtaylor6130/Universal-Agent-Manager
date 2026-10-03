@@ -179,14 +179,14 @@ namespace
 	}
 
 	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
-	                                           const std::string& folder_id)
+	                                           const std::unordered_set<std::string>& folder_ids)
 	{
 		DeletedChatsSelection selection;
 		selection.ids.reserve(app.chats.size());
 		std::vector<std::string> target_chat_ids;
 		for (const ChatSession& chat : app.chats)
 		{
-			if (ChatBelongsToFolder(chat, folder_id) && selection.ids.insert(chat.id).second)
+			if (folder_ids.contains(uam::strings::Trim(chat.folder_id)) && selection.ids.insert(chat.id).second)
 				target_chat_ids.push_back(chat.id);
 		}
 		ExpandDependentChatIds(app, target_chat_ids, selection.ids);
@@ -260,7 +260,7 @@ namespace
 	struct DeletionIntent
 	{
 		std::vector<std::string> chat_ids;
-		std::string folder_id;
+		std::vector<std::string> folder_ids;
 	};
 
 	std::filesystem::path DeletionIntentPath(const std::filesystem::path& data_root)
@@ -280,24 +280,43 @@ namespace
 		const auto complete = parsed.find("complete");
 		const auto chat_ids = parsed.find("chatIds");
 		const auto folder_id = parsed.find("folderId");
+		const auto folder_ids = parsed.find("folderIds");
 		if (!parsed.is_object() || version == parsed.end() || !version->is_number_integer() ||
-		    *version != 1 || complete == parsed.end() || !complete->is_boolean() ||
+		    (*version != 1 && *version != 2) || complete == parsed.end() || !complete->is_boolean() ||
 		    !complete->get<bool>() || chat_ids == parsed.end() || !chat_ids->is_array() ||
-		    (folder_id != parsed.end() && !folder_id->is_string()))
+		    (folder_id != parsed.end() && !folder_id->is_string()) ||
+		    (folder_ids != parsed.end() && !folder_ids->is_array()) ||
+		    (*version == 2 && folder_ids == parsed.end()))
 		{
 			return false;
 		}
 
 		DeletionIntent decoded;
+		std::unordered_set<std::string> seen_chat_ids;
 		for (const nlohmann::json& value : *chat_ids)
 		{
 			if (!value.is_string()) return false;
 			const std::string id = uam::strings::Trim(value.get_ref<const std::string&>());
-			if (!uam::chat_ids::IsSafeStorageChatId(id) || std::ranges::find(decoded.chat_ids, id) != decoded.chat_ids.end()) return false;
+			if (!uam::chat_ids::IsSafeStorageChatId(id) || !seen_chat_ids.insert(id).second) return false;
 			decoded.chat_ids.push_back(id);
 		}
-		if (folder_id != parsed.end()) decoded.folder_id = uam::strings::Trim(folder_id->get_ref<const std::string&>());
-		if (decoded.chat_ids.empty() && decoded.folder_id.empty()) return false;
+		if (folder_ids != parsed.end())
+		{
+			std::unordered_set<std::string> seen;
+			for (const nlohmann::json& value : *folder_ids)
+			{
+				if (!value.is_string()) return false;
+				const std::string id = uam::strings::Trim(value.get_ref<const std::string&>());
+				if (id.empty() || !seen.insert(id).second) return false;
+				decoded.folder_ids.push_back(id);
+			}
+		}
+		else if (folder_id != parsed.end())
+		{
+			const std::string id = uam::strings::Trim(folder_id->get_ref<const std::string&>());
+			if (!id.empty()) decoded.folder_ids.push_back(id);
+		}
+		if (decoded.chat_ids.empty() && decoded.folder_ids.empty()) return false;
 		intent = std::move(decoded);
 		return true;
 	}
@@ -313,7 +332,7 @@ namespace
 		return false;
 	}
 
-	bool BeginDeletionTransaction(const uam::AppState& app, const std::vector<ChatSession>& deleted_chats, std::string_view folder_id)
+	bool BeginDeletionTransaction(const uam::AppState& app, const std::vector<ChatSession>& deleted_chats, const std::vector<std::string>& folder_ids)
 	{
 		const std::filesystem::path intent_path = DeletionIntentPath(app.data_root);
 		const std::filesystem::path staging_root = DeletionStagingRoot(app.data_root);
@@ -330,12 +349,12 @@ namespace
 		{
 			if (!ChatRepository::SaveChat(staging_root, chat)) return false;
 		}
-		if (!folder_id.empty() && !ChatFolderStore::Save(staging_root, app.folders)) return false;
+		if (!folder_ids.empty() && !ChatFolderStore::Save(staging_root, app.folders)) return false;
 
 		nlohmann::json encoded = {
-		    {"version", 1},
+		    {"version", 2},
 		    {"complete", true},
-		    {"folderId", std::string(folder_id)},
+		    {"folderIds", folder_ids},
 		    {"chatIds", nlohmann::json::array()},
 		};
 		for (const ChatSession& chat : deleted_chats) encoded["chatIds"].push_back(chat.id);
@@ -350,15 +369,15 @@ namespace
 	std::vector<ChatSession> DeletedChatSnapshots(const std::filesystem::path& data_root, const DeletionIntent& intent, const std::vector<ChatSession>& current_chats)
 	{
 		std::vector<ChatSession> staged = ChatRepository::LoadLocalChats(DeletionStagingRoot(data_root));
+		std::unordered_map<std::string, const ChatSession*> snapshot_by_id;
+		for (const ChatSession& chat : current_chats) snapshot_by_id.emplace(chat.id, &chat);
+		for (const ChatSession& chat : staged) snapshot_by_id[chat.id] = &chat;
 		std::vector<ChatSession> result;
+		result.reserve(intent.chat_ids.size());
 		for (const std::string& id : intent.chat_ids)
 		{
-			const ChatSession* snapshot = nullptr;
-			if (const auto found = std::ranges::find_if(staged, [&](const ChatSession& chat) { return chat.id == id; }); found != staged.end()) snapshot = &*found;
-			if (snapshot == nullptr)
-			{
-				if (const auto found = std::ranges::find_if(current_chats, [&](const ChatSession& chat) { return chat.id == id; }); found != current_chats.end()) snapshot = &*found;
-			}
+			const auto found = snapshot_by_id.find(id);
+			const ChatSession* snapshot = found == snapshot_by_id.end() ? nullptr : found->second;
 			if (snapshot != nullptr) result.push_back(*snapshot);
 			else
 			{
@@ -395,24 +414,32 @@ namespace
 	{
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		next_chats = app.chats;
-		for (const std::string& id : intent.chat_ids) ChatBranching::ReparentChildrenAfterDelete(next_chats, id);
+		ChatBranching::ReparentChildrenAfterDeletes(next_chats, deleted_ids);
 		std::erase_if(next_chats, [&](const ChatSession& chat) { return deleted_ids.contains(chat.id); });
 		ChatBranching::Normalize(next_chats);
 		next_folders = app.folders;
-		if (!intent.folder_id.empty())
+		if (!intent.folder_ids.empty())
 		{
-			std::erase_if(next_folders, [&](const ChatFolder& folder) { return uam::strings::TrimmedEquals(folder.id, intent.folder_id); });
+			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
+			std::erase_if(next_folders, [&](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
 		}
 		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
 		std::vector<std::string> added_tombstones;
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones)) return false;
 
+		// Only branch metadata can change on surviving chats. Avoid rewriting unrelated history.
+		std::unordered_map<std::string, const ChatSession*> original_by_id;
+		for (const ChatSession& chat : app.chats) original_by_id.emplace(chat.id, &chat);
 		for (const ChatSession& chat : next_chats)
 		{
+			const ChatSession& original = *original_by_id.at(chat.id);
+			if (chat.parent_chat_id == original.parent_chat_id &&
+			    chat.branch_root_chat_id == original.branch_root_chat_id &&
+			    chat.branch_from_message_index == original.branch_from_message_index) continue;
 			if (!ChatRepository::SaveChat(app.data_root, chat)) return false;
 		}
 
-		if (!intent.folder_id.empty())
+		if (!intent.folder_ids.empty())
 		{
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) return false;
 		}
@@ -429,13 +456,15 @@ namespace
 			DeleteNativeHistoryForChatIfNeeded(app, chat, &error);
 			native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
 		}
-		if (!intent.folder_id.empty())
+		if (!intent.folder_ids.empty())
 		{
 			const std::vector<ChatFolder> staged_folders = ChatFolderStore::Load(DeletionStagingRoot(app.data_root));
-			if (const auto folder = std::ranges::find_if(staged_folders, [&](const ChatFolder& value) { return uam::strings::TrimmedEquals(value.id, intent.folder_id); }); folder != staged_folders.end())
+			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
+			for (const ChatFolder& folder : staged_folders)
 			{
+				if (!folder_ids.contains(uam::strings::Trim(folder.id))) continue;
 				std::error_code error;
-				ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, *folder, &error);
+				ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error);
 				native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
 			}
 		}
@@ -445,7 +474,7 @@ namespace
 
 	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved, bool native_cleanup_failed)
 	{
-		std::string status_line = "Folder deleted. Deleted " + std::to_string(deleted_chat_count) + " chat(s).";
+		std::string status_line = "Workspace deletion complete. Deleted " + std::to_string(deleted_chat_count) + " chat(s).";
 
 		if (!settings_saved)
 		{
@@ -1294,22 +1323,46 @@ bool RemoveChatById(uam::AppState& app, const std::string& chat_id)
 
 bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 {
-	const std::string target_folder_id = uam::strings::Trim(folder_id);
-	if (target_folder_id.empty())
+	return DeleteFoldersByIds(app, {folder_id});
+}
+
+bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& folder_ids)
+{
+	std::unordered_set<std::string> target_folder_ids;
+	for (const std::string& requested_id : folder_ids)
+	{
+		const std::string id = uam::strings::Trim(requested_id);
+		if (id.empty())
+		{
+			app.status_line = "Folder id is required.";
+			return false;
+		}
+		target_folder_ids.insert(id);
+	}
+	if (target_folder_ids.empty())
 	{
 		app.status_line = "Folder id is required.";
 		return false;
 	}
-
-	const int folder_index = ChatDomainService().FindFolderIndexById(app, target_folder_id);
-
-	if (folder_index < 0)
+	std::unordered_set<std::string> existing_folder_ids;
+	for (const ChatFolder& folder : app.folders) existing_folder_ids.insert(uam::strings::Trim(folder.id));
+	for (const std::string& id : target_folder_ids)
 	{
-		app.status_line = "Folder no longer exists.";
-		return false;
+		if (!existing_folder_ids.contains(id))
+		{
+			app.status_line = "Folder no longer exists.";
+			return false;
+		}
 	}
-
-	DeletedChatsSelection deleted = CollectChatsInFolder(app, target_folder_id);
+	DeletedChatsSelection deleted = CollectChatsInFolder(app, target_folder_ids);
+	for (const std::string& id : deleted.ids)
+	{
+		if (app.worktree_operation_chat_ids.contains(id))
+		{
+			app.status_line = "Wait for the chat worktree operation to finish.";
+			return false;
+		}
+	}
 	if (HasActiveDependentAgentRun(app, deleted.ids))
 	{
 		app.status_line = "Wait for managed agent runs in this folder to finish or cancel them first.";
@@ -1344,7 +1397,8 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 		app.status_line = "Failed to prepare folder chat history for safe deletion.";
 		return false;
 	}
-	if (!BeginDeletionTransaction(app, deleted.chats, target_folder_id))
+	const std::vector<std::string> normalized_folder_ids(target_folder_ids.begin(), target_folder_ids.end());
+	if (!BeginDeletionTransaction(app, deleted.chats, normalized_folder_ids))
 	{
 		app.status_line = "Failed to create a durable folder deletion transaction.";
 		return false;
@@ -1353,7 +1407,7 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const int previous_selected_chat_index = app.selected_chat_index;
 	DeletionIntent intent;
-	intent.folder_id = target_folder_id;
+	intent.folder_ids = normalized_folder_ids;
 	intent.chat_ids.assign(deleted.ids.begin(), deleted.ids.end());
 	std::ranges::sort(intent.chat_ids);
 	std::vector<ChatSession> next_chats;
@@ -1365,7 +1419,7 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 		app.chats = std::move(next_chats);
 		ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id,
 		                          previous_selected_chat_index, !deleted.chats.empty());
-		if (uam::strings::TrimmedEquals(app.new_chat_folder_id, target_folder_id))
+		if (target_folder_ids.contains(uam::strings::Trim(app.new_chat_folder_id)))
 			app.new_chat_folder_id.clear();
 		app.folders = std::move(next_folders);
 		(void)PersistenceCoordinator().SaveSettings(app);
@@ -1376,14 +1430,13 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 	app.chats = std::move(next_chats);
 	ApplyDeletedChatsToUiState(app, deleted.ids, selected_chat_id, previous_selected_chat_index, !deleted.chats.empty());
 
-	if (uam::strings::TrimmedEquals(app.new_chat_folder_id, target_folder_id))
+	if (target_folder_ids.contains(uam::strings::Trim(app.new_chat_folder_id)))
 	{
 		app.new_chat_folder_id.clear();
 	}
 
-	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
-
 	app.folders = std::move(next_folders);
+	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
 
 	app.status_line = StatusAfterFolderDelete(deleted_chats.size(), settings_saved, native_cleanup_failed);
 	return true;

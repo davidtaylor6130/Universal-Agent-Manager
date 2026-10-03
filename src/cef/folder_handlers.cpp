@@ -17,6 +17,7 @@
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -225,6 +226,36 @@ void UamQueryHandler::HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nl
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto ids = payload.find("folderIds");
+	if (ids == payload.end() || !ids->is_array() || ids->empty() ||
+	    !std::ranges::all_of(*ids, [](const nlohmann::json& id) { return id.is_string(); }))
+	{
+		cb->Failure(400, "Workspace ids are required.");
+		return;
+	}
+	const std::unordered_set<std::string> before_chat_ids = [&]()
+	{
+		std::unordered_set<std::string> result;
+		for (const ChatSession& chat : m_app.chats) result.insert(chat.id);
+		return result;
+	}();
+	if (!DeleteFoldersByIds(m_app, ids->get<std::vector<std::string>>()))
+	{
+		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
+		return;
+	}
+	std::unordered_set<std::string> remaining_ids;
+	for (const ChatSession& chat : m_app.chats) remaining_ids.insert(chat.id);
+	nlohmann::json deleted_ids = nlohmann::json::array();
+	for (const std::string& id : before_chat_ids)
+		if (!remaining_ids.contains(id)) deleted_ids.push_back(id);
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
+	cb->Success(nlohmann::json{{"deletedChatIds", deleted_ids}, {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}}.dump());
 }
 
 void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

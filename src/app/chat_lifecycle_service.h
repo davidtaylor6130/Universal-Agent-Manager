@@ -64,6 +64,8 @@ namespace uam
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id);
 bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_ids);
 bool DeleteFolderById(uam::AppState& app, const std::string& folder_id);
+/// <summary>Preflights all selected workspaces and deletes them in one recoverable transaction.</summary>
+bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& folder_ids);
 bool CreateFolder(uam::AppState& app, const std::string& title, const std::string& directory,
                   std::string* created_folder_id = nullptr,
                   const std::string& execution_host_id = "local");

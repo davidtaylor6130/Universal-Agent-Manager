@@ -41,7 +41,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	const std::string chat_id = payload.value("chatId", "");
 	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession";
 	if ((!is_runtime_stop && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
-	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "rescanFolderChats")))
+	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "deleteFolders" || action == "rescanFolderChats")))
 	{
 		cb->Failure(409, "Wait for the chat worktree operation to finish.");
 		return true;
@@ -126,6 +126,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"createFolder", &UamQueryHandler::HandleCreateFolder},
 		{"renameFolder", &UamQueryHandler::HandleRenameFolder},
 		{"deleteFolder", &UamQueryHandler::HandleDeleteFolder},
+		{"deleteFolders", &UamQueryHandler::HandleDeleteFolders},
 		{"toggleFolder", &UamQueryHandler::HandleToggleFolder},
 		{"reorderFolders", &UamQueryHandler::HandleReorderFolders},
 		{"rescanFolderChats", &UamQueryHandler::HandleRescanFolderChats},
