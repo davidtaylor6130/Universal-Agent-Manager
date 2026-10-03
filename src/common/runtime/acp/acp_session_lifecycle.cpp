@@ -481,6 +481,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		return true;
 	}
+	if (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
+	{
+		return false;
+	}
 	const bool remote_stop_pending = session.remote_stop_pending || std::ranges::any_of(
 	    app.pending_acp_remote_stops,
 	    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat.id; });
@@ -602,6 +606,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	session.chat_id = chat.id;
 	session.provider_id = provider.id;
+	session.process_execution_host_id = chat.execution_host_id;
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? runtime.OnAcpValidateResumeId(chat) : std::string{};
@@ -1246,6 +1251,11 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
 	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	if (persisted != nullptr)
+	{
+		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
+			persisted->interaction_at = uam::time::LatestInteractionTimestamp(persisted->interaction_at, active->interaction_at);
+	}
 	if (persisted != nullptr && persisted->execution_host_id != uam::execution_hosts::kLocalHostId)
 	{
 		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
@@ -1364,6 +1374,7 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
 	session.pending_request_methods.erase(session.prompt_request_id);
 	if (session.processing && session.turn_serial > 0)

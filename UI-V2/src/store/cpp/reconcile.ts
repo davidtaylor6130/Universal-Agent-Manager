@@ -183,7 +183,8 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.createdAt.getTime() === next.createdAt.getTime() &&
     previous.updatedAt.getTime() === next.updatedAt.getTime() &&
     (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime() &&
-    previous.attentionRevision === next.attentionRevision
+    previous.attentionRevision === next.attentionRevision &&
+    previous.interactionAt?.getTime() === next.interactionAt?.getTime()
 }
 
 export function sessionFromCppChat(
@@ -242,6 +243,7 @@ export function sessionFromCppChat(
     messagesDigest: chat.messagesDigest ?? '',
     createdAt,
     updatedAt,
+    interactionAt: chat.interactionAt ? new Date(chat.interactionAt) : previous?.interactionAt ?? updatedAt,
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
   }

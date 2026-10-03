@@ -314,6 +314,8 @@ struct ChatSession
 	/// Changes only for explicit goal commands, invalidating older completions.
 	std::string goal_command_revision;
 	std::string goal_pending_continuation_id;
+	/// Persisted recency of user input and runtime state events, excluding stream traffic.
+	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
 	std::vector<Message> messages;

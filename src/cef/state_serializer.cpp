@@ -262,6 +262,7 @@ namespace uam
 			session_json["createdAt"] = session.created_at;
 			session_json["updatedAt"] = session.updated_at;
 			session_json["attentionRevision"] = session.attention_revision;
+			session_json["interactionAt"] = session.interaction_at;
 			session_json["lastOpenedAt"] = uam::strings::NonEmptyOrFallback(session.last_opened_at, session.updated_at);
 			session_json["messageCount"] = MessageCountForFrontend(session);
 			session_json["messagesDigest"] = MessageDigestForFingerprint(session);
