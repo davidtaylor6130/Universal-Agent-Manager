@@ -2,9 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.9.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.9.0")
+project(universal_agent_manager VERSION 4.11.0 LANGUAGES C CXX)
+set(UAM_PRODUCT_VERSION "4.11.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
+set(UAM_LOCAL_BUILD_VERSION "" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
+uam_local_build_presentation("${UAM_PRODUCT_VERSION}" "${UAM_LOCAL_BUILD_VERSION}" UAM_PRESENTATION_VERSION)
 
 option(UAM_ENABLE_COMPUTER_USE "Include UAM computer use and platform input/capture support." ON)
 option(UAM_ENABLE_SSH "Include SSH remote execution and bundled helpers." ON)
@@ -898,7 +901,7 @@ else()
   find_program(UAM_NPM_EXECUTABLE NAMES npm REQUIRED)
 endif()
 string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
-set(UAM_UI_BUILD_VERSION "${UAM_PRODUCT_VERSION}")
+set(UAM_UI_BUILD_VERSION "${UAM_PRESENTATION_VERSION}")
 if(UAM_UI_BUILD_VERSION STREQUAL "")
   set(UAM_UI_BUILD_VERSION "local")
 endif()
@@ -1092,10 +1095,10 @@ if(APPLE)
   if(UAM_MACOS_BUNDLE)
     set_target_properties(universal_agent_manager PROPERTIES
       MACOSX_BUNDLE_BUNDLE_NAME "Universal Agent Manager"
-      MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+      MACOSX_BUNDLE_BUNDLE_VERSION "${UAM_PRESENTATION_VERSION}"
       MACOSX_BUNDLE_GUI_IDENTIFIER "com.universalagentmanager.desktop"
       MACOSX_BUNDLE_ICON_FILE "app_icon.icns"
-      MACOSX_BUNDLE_SHORT_VERSION_STRING "${UAM_PRODUCT_VERSION}"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "${UAM_PRESENTATION_VERSION}"
       MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
     )
   endif()
@@ -1120,6 +1123,8 @@ if(UAM_BUILD_TESTS)
   endforeach()
 
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME uam_local_build_version
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
   foreach(parent_stop terminate kill)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")

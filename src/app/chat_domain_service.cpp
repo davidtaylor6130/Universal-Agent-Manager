@@ -12,6 +12,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/terminal_common.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -862,6 +863,8 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 {
 	ChatSession* chat = FindChatById(app, chat_id);
 	if (chat == nullptr) return;
+	if (const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id))
+		chat->interaction_at = uam::time::LatestInteractionTimestamp(chat->interaction_at, session->interaction_at);
 	chat->attention_revision = uam::chat_ids::NewChatId();
 	app.chats_with_unseen_updates.insert(chat_id);
 	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
@@ -884,6 +887,21 @@ bool ChatDomainService::AcknowledgeChatAttention(uam::AppState& app, const std::
 		return false;
 	}
 	app.chats_with_unseen_updates.erase(chat_id);
+	return true;
+}
+
+bool ChatDomainService::SetChatSettled(uam::AppState& app, const std::string& chat_id, const bool settled) const
+{
+	ChatSession* chat = FindChatById(app, chat_id);
+	if (chat == nullptr) return false;
+	const std::string previous = chat->settled_at;
+	chat->settled_at = settled ? uam::time::LatestInteractionTimestamp(uam::time::InteractionTimestampNow(), chat->interaction_at) : "";
+	if (chat->settled_at == previous) return true;
+	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+	{
+		chat->settled_at = previous;
+		return false;
+	}
 	return true;
 }
 

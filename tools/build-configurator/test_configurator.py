@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('configurator', Path(__file__).with_name('configurator.py'))
 module = importlib.util.module_from_spec(spec)
@@ -64,11 +64,38 @@ class BuildConfiguratorTests(unittest.TestCase):
     def test_build_failure_does_not_claim_artifact_or_launch(self):
         config = module.configuration({'source': str(self.source)})
         module.STATE.update(running=True, artifact='', output='')
-        with patch.object(module.subprocess, 'Popen', side_effect=OSError('fixture unavailable')):
+        with patch.object(module, 'reserve_local_build_version', return_value='4.9.0-alpha-18'), patch.object(module.subprocess, 'Popen', side_effect=OSError('fixture unavailable')):
             module.build(config)
         self.assertFalse(module.STATE['running'])
         self.assertEqual(module.STATE['artifact'], '')
         self.assertIn('fixture unavailable', module.STATE['message'])
+
+    def test_build_reserves_once_and_passes_the_same_version_to_configuration(self):
+        config = module.configuration({'source': str(self.source)})
+        destination = config[1]
+        artifact = module.artifact_path(destination)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.touch()
+        process = Mock(stdout=[], **{'wait.return_value': 0})
+        module.STATE.update(running=True, artifact='', output='', version='')
+        with patch.object(module, 'reserve_local_build_version', return_value='4.9.0-alpha-18') as reserve, patch.object(module.subprocess, 'Popen', return_value=process) as launch:
+            module.build(config)
+        reserve.assert_called_once_with(config[0])
+        self.assertEqual(launch.call_count, 3)
+        self.assertIn('-DUAM_LOCAL_BUILD_VERSION=4.9.0-alpha-18', launch.call_args_list[1].args[0])
+        self.assertEqual(module.STATE['version'], '4.9.0-alpha-18')
+        self.assertEqual(module.STATE['artifact'], str(artifact))
+        self.assertIn('4.9.0-alpha-18', (destination / 'configurator-build.log').read_text())
+
+    def test_version_reservation_failure_prevents_build_commands(self):
+        config = module.configuration({'source': str(self.source)})
+        module.STATE.update(running=True, artifact='', output='', version='')
+        with patch.object(module, 'reserve_local_build_version', side_effect=RuntimeError('Invalid local version counter')), patch.object(module.subprocess, 'Popen') as launch:
+            module.build(config)
+        launch.assert_not_called()
+        self.assertFalse(module.STATE['running'])
+        self.assertEqual(module.STATE['artifact'], '')
+        self.assertIn('Invalid local version counter', module.STATE['message'])
 
     def test_launch_uses_direct_artifact_and_its_own_data_folder(self):
         artifact = module.artifact_path(self.source / 'Builds/configured')

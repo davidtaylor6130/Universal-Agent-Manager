@@ -46,6 +46,7 @@ export interface ChatSearchFolderRow {
 export interface ChatSearchModel {
   isSearching: boolean
   pinnedSessionIds: string[]
+  /** Running and open chats in one list, newest activity first. */
   activeSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
@@ -58,6 +59,21 @@ export interface ChatSearchSessionGroups {
   pinnedSessionIds: string[]
   activeSessionIds: string[]
   unfolderedSessionIds: string[]
+}
+
+// ponytail: fixed window; promote to a setting if people want longer inboxes.
+export const ACTIVE_CHAT_AUTO_DONE_MS = 3 * 24 * 60 * 60 * 1000
+
+/** Unsettled = touched since the user last marked it done, and recently enough to still matter. */
+export function isUnsettledChat(updatedAtMs: number, settledAt: string | undefined, nowMs = Date.now()): boolean {
+  if (updatedAtMs < nowMs - ACTIVE_CHAT_AUTO_DONE_MS) return false
+  const settledMs = settledAt ? Date.parse(settledAt) : NaN
+  return Number.isNaN(settledMs) || updatedAtMs > settledMs
+}
+
+function mergeDisplayedStatus(a: DisplayedChatStatus, b: DisplayedChatStatus): DisplayedChatStatus {
+  const rank = (status: DisplayedChatStatus) => status?.type === 'attention' ? 3 : status?.type === 'processing' ? 2 : status ? 1 : 0
+  return rank(b) > rank(a) ? b : a
 }
 
 function hasActiveChatSearchFilters(filters?: ChatSearchFilters): boolean {
@@ -225,11 +241,19 @@ export function buildChatSearchSessionGroups(
   const pinnedSessionIds: string[] = []
   const activeSessionIds: string[] = []
   const unfolderedSessionIds: string[] = []
-  const activeRootIds = new Set(sortedSessions.flatMap((candidate) => {
-    const cli = filterContext.cliBindingBySessionId?.[candidate.id]
-    const acp = filterContext.acpBindingBySessionId?.[candidate.id]
-    return displayedChatStatus([cli], [acp]) ? [branchRootId(candidate)] : []
-  }))
+  // Sections follow structured runtimes only: a CLI terminal looks busy as soon as it
+  // launches, which would park idle CLI chats in Working. CLI chats still surface
+  // through recent activity.
+  const sessionStatus = (session: Session) => displayedChatStatus([], [filterContext.acpBindingBySessionId?.[session.id]])
+  const familyStatus = new Map<string, DisplayedChatStatus>()
+  const familyUpdatedMs = new Map<string, number>()
+  for (const candidate of sortedSessions) {
+    const rootId = branchRootId(candidate)
+    familyStatus.set(rootId, mergeDisplayedStatus(familyStatus.get(rootId) ?? null, sessionStatus(candidate)))
+    familyUpdatedMs.set(rootId, Math.max(familyUpdatedMs.get(rootId) ?? 0, sessionRecentTime(candidate)))
+  }
+  const nowMs = Date.now()
+  const returnedAtMs = new Map<string, number>()
 
   for (const session of sortedSessions) {
     const rootId = branchRootId(session)
@@ -237,14 +261,13 @@ export function buildChatSearchSessionGroups(
       continue
     }
 
-    const isActive = isSearching
-      ? displayedChatStatus(
-        [filterContext.cliBindingBySessionId?.[session.id]],
-        [filterContext.acpBindingBySessionId?.[session.id]],
-      ) !== null
-      : activeRootIds.has(rootId)
-    if (isActive) {
+    const status = isSearching ? sessionStatus(session) : familyStatus.get(rootId) ?? null
+    const updatedMs = isSearching ? sessionRecentTime(session) : familyUpdatedMs.get(rootId) ?? 0
+    // Marking done clears a stale "ready" too; only running turns and questions outrank it.
+    const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
+    if (status?.type === 'processing' || status?.type === 'attention' || unsettled || (status?.type === 'done' && !session.settledAt)) {
       activeSessionIds.push(session.id)
+      returnedAtMs.set(session.id, updatedMs)
     }
 
     if (session.isPinned) {
@@ -260,6 +283,9 @@ export function buildChatSearchSessionGroups(
     sessionIds.push(session.id)
     sessionIdsByFolderId.set(session.folderId, sessionIds)
   }
+
+  // One history: most recent activity on top, running chats included.
+  activeSessionIds.sort((a, b) => (returnedAtMs.get(b) ?? 0) - (returnedAtMs.get(a) ?? 0))
 
   return {
     isSearching,

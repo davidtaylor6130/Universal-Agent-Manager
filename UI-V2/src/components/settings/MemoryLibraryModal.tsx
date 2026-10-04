@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -16,6 +16,16 @@ const MEMORY_CATEGORIES = [
 const MEMORY_CONFIDENCE = ['high', 'medium', 'low'] as const
 
 const memoryFolderLabel = (folder: Folder, hosts: ExecutionHost[]) => (folder.executionHostId || 'local') === 'local' ? folder.name : `${folder.name} · ${hosts.find((host) => host.id === folder.executionHostId)?.label || folder.executionHostId}`
+/** "3 hours ago" / "12 Sept" — raw ISO stamps are hard to scan. */
+function formatObserved(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const minutes = Math.round((Date.now() - date.getTime()) / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  if (minutes < 60 * 24) return `${Math.round(minutes / 60)} h ago`
+  return date.toLocaleDateString([], { day: 'numeric', month: 'short', year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
+}
 
 const memoryCategoryLabel = (category: string) => ({
   'Failures/AI_Failures': 'AI failures',
@@ -199,8 +209,15 @@ function buildMemoryLocationGroups(
 export interface MemoryLibraryHandle { requestLeave(next: () => void): void }
 
 export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: boolean }>(function MemoryLibraryModal({ embedded = false }, ref) {
-  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
-  const memoryLibraryEntries = useAppStore(useShallow((s) => s.memoryLibraryEntries))
+  const liveScope = useAppStore((s) => s.memoryLibraryScope)
+  const liveEntries = useAppStore(useShallow((s) => s.memoryLibraryEntries))
+  const overlayState = useOverlayState()
+  // Keep the last content on screen while the dialog animates closed.
+  const lastLibrary = useRef({ scope: liveScope, entries: liveEntries })
+  if (liveScope) lastLibrary.current = { scope: liveScope, entries: liveEntries }
+  const closing = !liveScope && overlayState === 'closed'
+  const memoryLibraryScope = closing ? lastLibrary.current.scope : liveScope
+  const memoryLibraryEntries = closing ? lastLibrary.current.entries : liveEntries
   const memoryLibraryLoading = useAppStore((s) => s.memoryLibraryLoading)
   const memoryLibraryError = useAppStore((s) => s.memoryLibraryError)
   const closeMemoryLibrary = useAppStore((s) => s.closeMemoryLibrary)
@@ -213,6 +230,12 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const folders = useAppStore(useShallow((s) => s.folders))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
+  // Strings (not tuples) so useShallow can tell when nothing changed.
+  const chatTitles = useAppStore(useShallow((s) => s.sessions.map((session) => `${session.id}\u0000${session.name}`)))
+  const chatTitleById = useMemo(() => new Map(chatTitles.map((entry) => {
+    const split = entry.indexOf('\u0000')
+    return [entry.slice(0, split), entry.slice(split + 1)] as const
+  })), [chatTitles])
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
@@ -378,7 +401,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   return (
     <div
       ref={libraryRef}
-      className={embedded ? "h-full min-h-0" : "fixed inset-0 z-50 flex items-center justify-center"}
+      className={embedded ? "h-full min-h-0" : "uam-overlay fixed inset-0 z-50 flex items-center justify-center"}
+      data-state={embedded ? undefined : overlayState}
       style={embedded ? undefined : { background: 'rgba(0,0,0,0.55)' }}
       onClick={(event) => {
         if (!embedded && event.target === event.currentTarget) requestClose()
@@ -421,7 +445,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           >
             {groupedEntries.length > 0 && (
               <nav aria-label="Memory locations" className="grid gap-1 min-w-0">
-                <div className="px-2 text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>Locations</div>
+                <div className="px-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>Locations</div>
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => {
                   const active = location.key === selectedLocation?.key
                   return (
@@ -467,7 +491,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 })}
                 {isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))) && (
                   <div className="mt-1">
-                    <div className="px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
+                    <div className="px-2 py-1 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
                       return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
@@ -541,42 +565,34 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 {selectedLocation.categories.map(({ category, entries }) => (
                           <section key={`${selectedLocation.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-3)' }}>
+                              <div className="text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>
                                 {memoryCategoryLabel(category)}
                               </div>
-                              <div className="text-xs rounded px-1.5 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
+                              <div className="text-[11px] tabular-nums rounded-full px-2 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)' }}>
                                 {entries.length}
                               </div>
                             </div>
-                            <div className="space-y-3">
+                            <div className="grid gap-2">
                               {entries.map((entry) => (
-                                <article
-                                  key={entry.id}
-                                  className="p-3 transition-colors duration-150 hover:bg-[var(--surface-up)]"
-                                  style={{ borderBottom: '1px solid var(--border)' }}
-                                >
-                                  <div className="flex items-start justify-between gap-4">
-                                    <div className="min-w-0">
-                                      <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>
-                                        {entry.title}
-                                      </div>
-                                      <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                                        {entry.scope} • {entry.confidence} confidence • {entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}
+                                <article key={entry.id} className="uam-memory-card">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{entry.title}</div>
+                                      <div className="mt-1 text-sm leading-6" style={{ color: 'var(--text-2)' }}>
+                                        {entry.preview || 'No preview available.'}
                                       </div>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                      <IconButton icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
-                                      <IconButton icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
+                                    <div className="uam-memory-card__actions flex items-center gap-1">
+                                      <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
+                                      <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
                                     </div>
                                   </div>
-
-                                  <div className="grid md:grid-cols-2 gap-2 mt-3 text-xs" style={{ color: 'var(--text-3)' }}>
-                                    <div>Source chat: {entry.sourceChatId || '—'}</div>
-                                    <div>Last observed: {entry.lastObserved || '—'}</div>
-                                  </div>
-
-                                  <div className="mt-3 text-sm leading-6" style={{ color: 'var(--text-2)' }}>
-                                    {entry.preview || 'No preview available.'}
+                                  <div className="uam-memory-card__meta">
+                                    <span className="uam-memory-chip" data-confidence={entry.confidence}>{entry.confidence} confidence</span>
+                                    <span>{entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}</span>
+                                    <span>{entry.scope}</span>
+                                    {entry.sourceChatId && <span title={`Source chat: ${entry.sourceChatId}`}>From “{chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}”</span>}
+                                    {entry.lastObserved && <span title={entry.lastObserved}>Seen {formatObserved(entry.lastObserved)}</span>}
                                   </div>
                                 </article>
                               ))}
@@ -589,8 +605,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         </div>
       </div>
 
-      {isAdding && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={event => { if(event.target === event.currentTarget) requestClose() }}>
-        <div role="dialog" aria-modal="true" aria-label="New memory" tabIndex={-1} className="rounded-xl p-5 space-y-3 w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)',boxShadow:'var(--elev-3)'}}>
+      {isAdding && <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={event => { if(event.target === event.currentTarget) requestClose() }}>
+        <div role="dialog" aria-modal="true" aria-label="New memory" tabIndex={-1} className="uam-form-dialog rounded-xl p-5 space-y-3 w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto mx-4">
           <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
 
 
@@ -629,7 +645,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       const value = event.currentTarget.value
                       setDraft((current) => ({ ...current, title: value }))
                     }}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                    className="uam-field"
                   />
                 </label>
 
@@ -642,7 +658,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       setDraft((current) => ({ ...current, memory: value }))
                     }}
                     rows={5}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
+                    className="uam-field uam-field--area"
                   />
                 </label>
 
@@ -655,7 +671,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       setDraft((current) => ({ ...current, evidence: value }))
                     }}
                     rows={3}
-                    style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', resize: 'vertical' }}
+                    className="uam-field uam-field--area"
                   />
                 </label>
 
@@ -677,7 +693,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         const value = event.currentTarget.value
                         setDraft((current) => ({ ...current, sourceChatId: value }))
                       }}
-                      style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
+                      className="uam-field"
                     />
                   </label>
                 </div>
@@ -694,7 +710,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 </Button>
         </div>
       </div>}
-      {pendingExit && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
+      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
         <div role="alertdialog" aria-modal="true" aria-label="Unsaved memory" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}}>
           <h3 className="text-sm font-semibold">Save this memory before leaving?</h3>
           {localError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{localError}</p>}
@@ -704,7 +720,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
       {pendingDelete && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center"
+          className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
           style={{ background: 'rgba(0,0,0,0.25)' }}
           onClick={(event) => {
             if (event.target === event.currentTarget) setPendingDeleteEntryId(null)
@@ -753,7 +769,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
       {pendingMassDeleteEntryIds && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center"
+          className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
           style={{ background: 'rgba(0,0,0,0.25)' }}
           onClick={(event) => {
             if (event.target === event.currentTarget) setPendingMassDeleteEntryIds(null)

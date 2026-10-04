@@ -329,6 +329,8 @@ struct ChatSession
 	std::string last_opened_at;
 	/// Nonempty until an explicit interaction acknowledges this exact update.
 	std::string attention_revision;
+	/// Set when the user marks the chat done in Active chats; newer activity reopens it.
+	std::string settled_at;
 	std::string last_stop_reason;
 	/// Changes only for explicit goal commands, invalidating older completions.
 	std::string goal_command_revision;

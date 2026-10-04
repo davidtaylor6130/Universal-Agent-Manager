@@ -1,26 +1,43 @@
-.tool-details-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: #0009; }
-.tool-details-dialog { display: flex; flex-direction: column; width: min(820px, 100%); height: min(680px, calc(100dvh - 40px)); min-height: 0; overflow: hidden; border: 1px solid var(--border-bright); border-radius: 8px; background: #000; color: #fff; font-size: 13px; }
-.tool-details-header { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.tool-details-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; max-height: 5em; overflow-y: auto; }
-.tool-details-header > :not(h2) { flex-shrink: 0; }
-.tool-details-tabs { display: flex; flex-shrink: 0; gap: 20px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.tool-details-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: rgb(0 0 0 / .5); }
+.tool-details-backdrop[data-state="closed"] { animation: uam-backdrop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+.tool-details-dialog { display: flex; flex-direction: column; width: min(820px, 100%); height: min(680px, calc(100dvh - 40px)); min-height: 0; overflow: hidden; border: 1px solid var(--border-bright); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13px; }
+.tool-details-backdrop[data-state="closed"] .tool-details-dialog { animation: uam-dialog-out var(--dur-exit) var(--ease) forwards; }
+.tool-details-header { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 14px 16px 12px; }
+.tool-details-heading { flex: 1; min-width: 0; }
+.tool-details-header h2 { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; max-height: 5em; overflow-y: auto; font-family: var(--font-mono); }
+.tool-details-subtitle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.tool-details-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; background: var(--surface-up); border: 1px solid var(--border); color: var(--text-2); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.tool-details-chip[data-status="completed"] { color: color-mix(in srgb, var(--success) 72%, var(--text)); background: var(--success-dim); border-color: transparent; }
+.tool-details-chip[data-status="failed"], .tool-details-chip[data-status="error"] { color: color-mix(in srgb, var(--error) 72%, var(--text)); background: var(--error-dim); border-color: transparent; }
+.tool-details-chip[data-status="in_progress"], .tool-details-chip[data-status="pending"] { color: color-mix(in srgb, var(--blue) 72%, var(--text)); background: var(--blue-dim); border-color: transparent; }
+.tool-details-header > :not(.tool-details-heading) { flex-shrink: 0; }
+.tool-details-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--surface-up); border: 1px solid var(--border); }
+.tool-details-tabs { display: flex; flex-shrink: 0; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border); }
 .tool-details-dialog button { cursor: pointer; }
-.tool-details-dialog button:hover:not(:disabled) { background: #ffffff12; }
 .tool-details-dialog button:disabled { opacity: .4; cursor: default; }
-.tool-details-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-2); padding: 12px 0; font: inherit; }
-.tool-details-tabs button[aria-selected="true"] { color: #fff; border-bottom-color: #fff; }
-.tool-details-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.tool-details-panel--output { display: flex; flex-direction: column; overflow: hidden; }
-.tool-details-panel--output > div { flex-shrink: 0; padding: 8px 16px; }
-.tool-details-dialog .uam-tool-modal__output { flex: 1; min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; border: 0; border-radius: 0; margin: 0; padding: 16px; background: #000; color: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.7; }
-.tool-details-follow { align-self: flex-end; margin: 8px 16px; padding: 4px 8px; }
+.tool-details-tabs button { position: relative; border: 0; background: transparent; color: var(--text-2); padding: 9px 10px 11px; font: inherit; font-weight: 500; border-radius: 6px 6px 0 0; transition: color var(--dur-fast) var(--ease); }
+.tool-details-tabs button:hover { color: var(--text); }
+.tool-details-tabs button::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); transform: scaleX(0); transition: transform var(--dur-base) var(--ease-out-soft); }
+.tool-details-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tool-details-tabs button[aria-selected="true"]::after { transform: scaleX(1); }
+.tool-details-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; animation: uam-reveal-in var(--dur-base) var(--ease-out-soft) backwards; }
+.tool-details-panel--output { display: flex; flex-direction: column; overflow: hidden; padding: 12px; gap: 8px; }
+.tool-details-panel--output > div { flex-shrink: 0; }
+.tool-details-dialog .uam-tool-modal__output { flex: 1; min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; border: 0; border-radius: 0; margin: 0; padding: 16px; background: var(--bg); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.7; }
+.tool-details-dialog .uam-tool-modal__output:empty::before { content: 'No output captured.'; color: var(--text-3); font-family: var(--font-sans); }
+.tool-details-follow { align-self: flex-end; padding: 4px 10px; border: 1px solid var(--border-bright); border-radius: 999px; background: var(--surface-up); color: var(--text-2); }
+.tool-details-follow[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .tool-details-meta, .tool-details-transcript { padding: 16px; }
-.tool-details-meta dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 16px; margin: 0 0 16px; }
-.tool-details-meta dt { color: var(--text-2); }
-.tool-details-meta dd { margin: 0; overflow-wrap: anywhere; }
-.tool-details-meta button { padding: 8px; border: 1px solid var(--border-bright); border-radius: 4px; }
+.tool-details-meta dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0; margin: 0 0 16px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+.tool-details-meta dt, .tool-details-meta dd { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.tool-details-meta dt:last-of-type, .tool-details-meta dd:last-of-type { border-bottom: 0; }
+.tool-details-meta dt { color: var(--text-2); background: var(--surface-up); }
+.tool-details-meta dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
+.tool-details-meta button { padding: 7px 12px; border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface-up); color: var(--text); }
 .tool-details-transcript { overflow-wrap: anywhere; }
-.tool-details-dialog :focus-visible { outline: 2px solid var(--accent, #fff); outline-offset: -2px; }
+.tool-details-dialog :focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .tool-details-dialog:focus { outline: none; }
-.tool-details-dialog svg { animation: none; }
 @media (max-width: 600px) { .tool-details-backdrop { padding: 8px; } .tool-details-dialog { height: calc(100dvh - 16px); } }
+.tool-details-dialog svg { animation: none; }
+
+.tool-details-dialog button:hover:not(:disabled) { background: var(--surface-high); }

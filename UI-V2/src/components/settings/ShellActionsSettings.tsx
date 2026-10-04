@@ -113,27 +113,35 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
   const toolbar = <div className="flex items-center gap-2">
     {dirty && <StatusIndicator issues={['Unsaved shell action changes']} />}
-    <IconButton icon={<Plus size={16} />} label="Add shell action" disabled={applying} onClick={() => setActions(current => [newAction(), ...current])} />
-    <IconButton icon={<Save size={16} />} label="Save shell actions" variant="solid" disabled={applying || !dirty} onClick={() => void apply()} />
+    <Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => setActions(current => [newAction(), ...current])}>Add action</Button>
+    <Button size="sm" variant="primary" leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty} onClick={() => void apply()}>Save</Button>
   </div>
 
   return (
     <div className="space-y-4">
       {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      {pendingExit && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
+      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
         <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if(!applying) setPendingExit(null) } }}>
           <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
           {error && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{error}</p>}
           <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if(await apply()) { const next=pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
         </div>
       </div>}
-      {newGroupActionId && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
+      {newGroupActionId && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
         <form role="dialog" aria-modal="true" aria-label="New shell action group" className="rounded-xl p-5 space-y-4 w-80" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key==='Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if(!parseGroupPath(newGroupName).length) return; update(newGroupActionId,{groupPath:parseGroupPath(newGroupName)}); setNewGroupActionId('') }}>
           <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16}/>} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
           <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="w-full rounded-md px-3 py-2 text-sm" style={{background:'var(--bg)',color:'var(--text)',border:'1px solid var(--border)'}} />
           <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
         </form>
       </div>}
+      {actions.length === 0 && (
+        <div className="uam-settings-empty">
+          <FolderTree size={22} aria-hidden />
+          <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>No shell actions yet</div>
+          <div className="text-xs">Add an action to start a chat from Finder or Explorer with a preset prompt.</div>
+          <Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => setActions(current => [newAction(), ...current])}>Add action</Button>
+        </div>
+      )}
       {actions.map((action) => {
         const providerId = action.providerId || defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID
         const provider = providers.find((candidate) => candidate.id === providerId) ?? providers[0]

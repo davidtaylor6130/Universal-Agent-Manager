@@ -25,10 +25,10 @@ describe('Custom icons', () => {
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
     act(() => root.render(<Harness />)); act(() => host.querySelector('button')!.click())
     const dialog = document.body.querySelector('[role="dialog"]')!
-    await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Reset')!.click())
+    await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Reset to default')!.click())
     expect(dialog.textContent).toContain('Icon could not be saved.')
     expect(save).toHaveBeenCalledWith('desktop-app', 'ref-1', null)
-    await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Reset')!.click())
+    await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Reset to default')!.click())
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     act(() => root.unmount()); host.remove(); useAppStore.setState({ setCustomIcon: previous })
   })

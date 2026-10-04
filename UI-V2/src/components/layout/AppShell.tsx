@@ -32,10 +32,11 @@ import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, Notice, StatusDot } from '../ui'
+import { Button, IconButton, Notice, Presence, StatusDot, usePresence } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
+import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 
 const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
@@ -170,7 +171,7 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed)
   const memoryActivity = useAppStore((s) => s.memoryActivity)
-  const hasMemories = memoryActivity.entryCount > 0
+  const memoryLibraryOpen = useAppStore((s) => Boolean(s.memoryLibraryScope))
   const hasActivity = memoryActivity.runningCount > 0 || memoryActivity.lastCreatedCount > 0
   const memoryTitle = formatMemoryTitle(memoryActivity.entryCount, memoryActivity.lastCreatedAt)
 
@@ -183,6 +184,7 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
         disabled={settingsOpen}
         style={settingsOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
         tooltipSide="right"
+        shortcut={shortcutLabel('sidebar')}
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <div className="uam-side-rail__spacer" />
@@ -193,7 +195,7 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
           label="Memory library"
           tooltip={memoryTitle}
           tooltipSide="right"
-          active={hasMemories}
+          active={memoryLibraryOpen}
           onClick={onOpenMemory}
         />
         {hasActivity && (
@@ -206,6 +208,7 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
         icon={<Settings2 size={17} />}
         label="Settings"
         tooltipSide="right"
+        shortcut={shortcutLabel('settings')}
         active={settingsOpen}
         onClick={onToggleSettings}
       />
@@ -214,6 +217,7 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
 }
 
 function NotificationsPanel({
+  closing = false,
   dismissedNotificationIds,
   remoteNotifications,
   collectionFailures,
@@ -221,6 +225,7 @@ function NotificationsPanel({
   onClose,
   onDismiss,
 }: {
+  closing?: boolean
   dismissedNotificationIds: ReadonlySet<string>
   remoteNotifications: RemoteConnectionNotification[]
   collectionFailures: CollectionMoveFailure[]
@@ -252,7 +257,7 @@ function NotificationsPanel({
     }] : []),
     ...(shellActionNotification ? [{
       id: shellActionNotificationId(shellActionNotification),
-      title: 'Finder / Explorer action',
+      title: `${FILE_MANAGER_NAME} action`,
       detail: shellActionNotification,
     }] : []),
     ...collectionFailures.map((failure) => ({ id: failure.id, title: 'Collection move failed', detail: failure.detail, failure })),
@@ -306,8 +311,9 @@ function NotificationsPanel({
     <aside
       aria-label="Notifications"
       data-testid="notifications-panel"
-      className="uam-side-panel-in uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
-      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
+      data-state={closing ? 'closed' : 'open'}
+      className="uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
+      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', '--panel-w': '360px' } as React.CSSProperties}
     >
       <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
@@ -398,7 +404,7 @@ function NotificationsPanel({
                     <div>{notification.failure.message}</div>
                   </div>
                 )}
-                <span className="break-all" style={{ color: 'var(--text-3)' }}>{notification.detail}</span>
+                <span style={{ color: 'var(--text-3)', overflowWrap: 'anywhere' }}>{notification.detail}</span>
               </Notice>
             ))}
           </div>
@@ -459,11 +465,11 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
           icon={<ArrowUpCircle size={17} />}
           label={updateCount > 0 ? `${updateCount} update${updateCount === 1 ? '' : 's'} available` : 'Check for updates'}
           tooltipSide="left"
-          active={updatesOpen || updateCount > 0}
+          active={updatesOpen}
           onClick={onToggleUpdates}
         />
         {runtimeUpdateCount > 0 && (
-          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[9px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
             {runtimeUpdateCount}
           </span>
         )}
@@ -655,6 +661,53 @@ export function AppShell() {
   const sidebarWouldStarveChat = !sidebarCollapsed && rightPanelWidth > 0 &&
     viewportWidth - ACTIVITY_RAILS_WIDTH - resizeHandlesWidth - sidebarWidthPx - rightPanelWidth < MIN_CHAT_WIDTH
 
+  const sidebarPresence = usePresence(!sidebarCollapsed && !sidebarWouldStarveChat)
+  const commitPresence = usePresence(commitPanelOpen)
+  const alertsPresence = usePresence(alertsOpen)
+  const updatesPresence = usePresence(updatesOpen)
+
+  const toggleSettings = () => {
+    if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
+    else setSettingsOpen(!isSettingsOpen)
+  }
+
+  const shortcutStateRef = useRef({ isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
+  shortcutStateRef.current = { isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const shortcut = matchShortcut(event)
+      if (!shortcut || event.defaultPrevented) return
+      // Modals own the keyboard while open.
+      if (document.querySelector('[aria-modal="true"]')) return
+      const state = shortcutStateRef.current
+      event.preventDefault()
+      const store = useAppStore.getState()
+      if (shortcut === 'newChat') {
+        store.setNewChatModalOpen(true)
+      } else if (shortcut === 'settings') {
+        state.toggleSettings()
+      } else if (shortcut === 'sidebar') {
+        if (!state.isSettingsOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
+      } else if (shortcut === 'search') {
+        if (state.isSettingsOpen) setSettingsOpen(false)
+        if (state.sidebarCollapsed) store.setSidebarCollapsed(false)
+        if (state.sidebarWouldStarveChat) {
+          store.setCommitPanelOpen(false)
+          setAlertsOpen(false)
+          setUpdatesOpen(false)
+        }
+        window.requestAnimationFrame(() => {
+          const input = document.querySelector<HTMLInputElement>('[data-chat-search-input]')
+          input?.focus()
+          input?.select()
+        })
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [setSettingsOpen])
+
   return (
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
@@ -663,10 +716,7 @@ export function AppShell() {
     >
       <LeftActivityRail
         settingsOpen={isSettingsOpen}
-        onToggleSettings={() => {
-          if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
-          else setSettingsOpen(!isSettingsOpen)
-        }}
+        onToggleSettings={toggleSettings}
         onOpenMemory={() => {
           if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
           else {
@@ -679,16 +729,17 @@ export function AppShell() {
       {/* Keep chat components mounted while Settings occupies the middle region. */}
       <div data-testid="chat-region" hidden={isSettingsOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen ? 'none' : 'flex'}}>
 
-      {!sidebarCollapsed && !sidebarWouldStarveChat && (
+      {sidebarPresence.mounted && (
         <>
           <aside
-            className="uam-side-panel-in uam-shell-panel uam-shell-panel--left flex h-full flex-col overflow-hidden"
+            className="uam-shell-panel uam-shell-panel--left flex h-full flex-col overflow-hidden"
             data-testid="chat-selector-panel"
-            style={{ width: sidebarWidthPx, flex: `0 0 ${sidebarWidthPx}px`, background: 'var(--sidebar-bg)' }}
+            data-state={sidebarPresence.closing ? 'closed' : 'open'}
+            style={{ width: sidebarWidthPx, flex: `0 0 ${sidebarWidthPx}px`, background: 'var(--sidebar-bg)', '--panel-w': `${sidebarWidthPx}px` } as React.CSSProperties}
           >
             <Sidebar />
           </aside>
-          <div
+          {!sidebarPresence.closing && <div
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize chat selector"
@@ -699,7 +750,7 @@ export function AppShell() {
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('sidebar', event)}
             onKeyDown={(event) => resizeFromKeyboard('sidebar', event)}
-          />
+          />}
         </>
       )}
 
@@ -709,9 +760,9 @@ export function AppShell() {
       </div>
       {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></main>}
 
-      {commitPanelOpen && (
+      {commitPresence.mounted && (
         <>
-          <div
+          {!commitPresence.closing && <div
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize Git/SVN commit panel"
@@ -722,11 +773,12 @@ export function AppShell() {
             className="uam-resize-handle"
             onMouseDown={(event) => startResize('commit', event)}
             onKeyDown={(event) => resizeFromKeyboard('commit', event)}
-          />
+          />}
           <aside
             className="uam-shell-panel uam-shell-panel--right flex h-full flex-col overflow-hidden"
             data-testid="commit-panel"
-            style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)' }}
+            data-state={commitPresence.closing ? 'closed' : 'open'}
+            style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)', '--panel-w': `${commitPanelWidthPx}px` } as React.CSSProperties}
           >
             <Suspense fallback={null}><VcsCommitPanel /></Suspense>
           </aside>
@@ -734,19 +786,28 @@ export function AppShell() {
       )}
 
       {!updatesOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
-        <div className="fixed bottom-4 right-14 z-40 max-w-sm bg-black p-3 text-white" style={{ border: '1px solid var(--border)' }} role="status">
-          <p className="text-sm">{updateMonitor.updates.length} updates available</p>
-          <div className="mt-2 flex flex-wrap gap-2">
+        <div className="uam-side-panel-in fixed bottom-4 right-14 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl p-3" style={{ background: 'var(--surface-up)', color: 'var(--text)', boxShadow: 'var(--elev-3)', border: '1px solid var(--border-bright)' }} role="status">
+          <div className="flex items-start gap-2.5">
+            <ArrowUpCircle size={18} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">{updateMonitor.updates.length} update{updateMonitor.updates.length === 1 ? '' : 's'} available</p>
+              <p className="mt-0.5 truncate text-xs" style={{ color: 'var(--text-2)' }} title={updateMonitor.updates.map((update) => update.name).join(', ')}>
+                {updateMonitor.updates.map((update) => `${update.name} ${update.latestVersion}`).join(' · ')}
+              </p>
+            </div>
+            <IconButton size="sm" icon={<X size={14} />} label="Remind me later" onClick={() => setPostponedUpdates(updateNoticeIdentity)} />
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <button type="button" className="text-xs underline-offset-2 hover:underline" style={{ color: 'var(--text-3)', background: 'none', border: 0, cursor: 'pointer' }} onClick={updateMonitor.dismissAll}>Skip these versions</button>
             <Button size="sm" variant="primary" onClick={() => setUpdatesOpen(true)}>Review updates</Button>
-            <Button size="sm" variant="ghost" onClick={() => setPostponedUpdates(updateNoticeIdentity)}>Later</Button>
-            <Button size="sm" variant="ghost" onClick={updateMonitor.dismissAll}>Don't remind for these versions</Button>
           </div>
         </div>
       )}
-      {updatesOpen && <UpdatesPanel monitor={updateMonitor} onClose={() => setUpdatesOpen(false)} />}
+      {updatesPresence.mounted && <UpdatesPanel monitor={updateMonitor} closing={updatesPresence.closing} onClose={() => setUpdatesOpen(false)} />}
 
-      {alertsOpen && (
+      {alertsPresence.mounted && (
         <NotificationsPanel
+          closing={alertsPresence.closing}
           dismissedNotificationIds={dismissedNotificationIds}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
           collectionFailures={collectionFailures}
@@ -794,16 +855,29 @@ export function AppShell() {
               <time dateTime={collectionToast.time}>{new Date(collectionToast.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
             </div>
             {collectionToast.message}
+            <button
+              type="button"
+              className="mt-1.5 block underline underline-offset-2"
+              style={{ color: 'var(--text-2)' }}
+              onClick={() => {
+                setCollectionToast(null)
+                setAlertsOpen(true)
+                setCommitPanelOpen(false)
+                setUpdatesOpen(false)
+              }}
+            >
+              View in notifications
+            </button>
           </div>
           <IconButton icon={<X size={13} />} size="sm" label="Dismiss collection notification" onClick={() => setCollectionToast(null)} />
         </div>
       )}
 
       {/* Modals */}
-      {isNewChatModalOpen && <Suspense fallback={null}><NewChatModal /></Suspense>}
-      {memoryLibraryScope && !isSettingsOpen && <Suspense fallback={null}><MemoryLibraryModal /></Suspense>}
-      {isMemoryScanModalOpen && <Suspense fallback={null}><MemoryScanModal /></Suspense>}
-      {isMarkdownStoreOpen && <Suspense fallback={null}><MarkdownStoreModal /></Suspense>}
+      <Presence open={isNewChatModalOpen}><Suspense fallback={null}><NewChatModal /></Suspense></Presence>
+      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></Presence>
+      <Presence open={isMemoryScanModalOpen}><Suspense fallback={null}><MemoryScanModal /></Suspense></Presence>
+      <Presence open={isMarkdownStoreOpen}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></Presence>
     </div>
   )
 }

@@ -79,7 +79,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.56)' }}
       onClick={(event) => { if (event.target === event.currentTarget) onCancel() }}
     >
@@ -151,7 +151,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                 {listing.parentDirectory && (
                   <button
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(listing.parentDirectory)}
                   >
@@ -163,7 +163,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                   <button
                     key={directory.path}
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(directory.path)}
                   >

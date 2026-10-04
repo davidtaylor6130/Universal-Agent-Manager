@@ -863,9 +863,7 @@ describe('FolderTree', () => {
     })
 
     expect(host.textContent).toContain('Active chats')
-    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')).toBeTruthy()
     expect(host.textContent!.indexOf('Active chats')).toBeLessThan(host.textContent!.indexOf('Pinned chats'))
-    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
     expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
     expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 done')
 
@@ -882,14 +880,14 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('uses the compact two-line Activity layout only for Active chats', () => {
+  it('uses the T3-style folder, status and host layout only for Active chats', () => {
     useAppStore.setState({
       sessions: [
         { ...makeSession(1), id: 'active', name: 'Build fixes', workspaceDirectory: '/workspaces/uam', updatedAt: now },
         { ...makeSession(2), id: 'pinned', name: 'Pinned chat', isPinned: true },
       ],
     })
-    act(() => useAppStore.getState().setCliBinding('active', { processing: true }))
+    act(() => useAppStore.setState({ acpBindingBySessionId: { active: { running: true, processing: true, lifecycleState: 'processing', processingStartedAtMs: null } as never } }))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -897,10 +895,13 @@ describe('FolderTree', () => {
 
     const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
     const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
-    expect(active?.className).toContain('min-h-[53px]')
-    expect(active?.textContent).toContain('Project · uam')
-    expect(active?.textContent).toContain('Running')
-    expect(active?.querySelectorAll('.session-status--processing')).toHaveLength(1)
+    expect(active?.className).toContain('py-2')
+    expect(active?.style.opacity).toBe('0.95')
+    expect(active?.querySelector('[role="status"]')?.textContent).toBe('Working')
+    expect(active?.textContent).toContain('Project')
+    expect(active?.textContent).toContain('Build fixes')
+    expect(active?.querySelector('[aria-label="Runs on This computer"], [aria-label^="Runs on"]')).toBeTruthy()
+    expect(active?.querySelector('button[aria-label^="Mark"]')).toBeNull()
     expect(pinned?.className).toContain('min-h-[26px]')
 
     act(() => root.unmount())
@@ -933,7 +934,6 @@ describe('FolderTree', () => {
     expect(host.querySelector('button[aria-label="Expand Active chats"]')?.getAttribute('aria-expanded')).toBe('false')
     expect(list?.hidden).toBe(true)
     expect(list?.hasAttribute('inert')).toBe(true)
-    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
     expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
     const strip = host.querySelector<HTMLButtonElement>('[data-testid="active-attention-strip"]')
     expect(strip?.textContent).toContain('1 chat needs attention')
@@ -1672,7 +1672,7 @@ describe('FolderTree', () => {
     HTMLElement.prototype.scrollIntoView = previousScrollIntoView
   })
 
-  it('uses icon-only confirm and cancel actions when naming a collection', async () => {
+  it('uses labelled confirm and cancel actions when naming a collection', async () => {
     const createResourceCollection = vi.fn(async (name: string) => ({ id: 'ideas', name, collapsed: false, references: [] }))
     useAppStore.setState({ createResourceCollection })
     const host = document.createElement('div')
@@ -1685,11 +1685,10 @@ describe('FolderTree', () => {
 
     const confirm = host.querySelector('button[aria-label="Create collection"]') as HTMLButtonElement
     const cancel = host.querySelector('button[aria-label="Cancel new collection"]') as HTMLButtonElement
-    expect(confirm.textContent).toBe('')
+    expect(confirm.textContent).toBe('Create')
     expect(confirm.disabled).toBe(true)
-    expect(confirm.style.background).toBe('var(--accent)')
-    expect(cancel.textContent).toBe('')
-    expect(cancel.style.color).toBe('var(--error)')
+    expect(confirm.className).toContain('uam-btn--primary')
+    expect(cancel.textContent).toBe('Cancel')
 
     act(() => cancel.click())
     expect(host.querySelector('input[aria-label="Collection name"]')).toBeNull()

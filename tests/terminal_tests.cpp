@@ -1,3 +1,4 @@
+#include "common/runtime/terminal/terminal_output_cursor.h"
 #include "test_harness.h"
 #include "app/runtime_activity.h"
 #include "app/chat_lifecycle_service.h"
@@ -1229,21 +1230,22 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	UAM_ASSERT_EQ(std::string(uam::CliTurnStateLabel(terminal)), std::string("idle"));
 	UAM_ASSERT(!terminal.generation_in_progress);
 	terminal.last_idle_confirmed_time_s = 59.0;
-	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	terminal.idle_interaction_started_time_s = 0.001;
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.001));
 	app.settings.cli_idle_timeout_seconds = 120;
-	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.001));
 	app.settings.cli_idle_timeout_seconds = 60;
-	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, std::string_view("xxchat-2yy").substr(2, 6), 120.0));
-	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-1", 120.0));
-	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "native-1", 120.0));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, std::string_view("xxchat-2yy").substr(2, 6), 120.001));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-1", 120.001));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "native-1", 120.001));
 
 	terminal.ui_attached = true;
 	terminal.ui_attachment_id = "replacement-view";
 	UAM_ASSERT(!uam::DetachCliTerminalUi(terminal, "old-view"));
 	UAM_ASSERT(!uam::DetachCliTerminalUi(terminal, ""));
-	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.001));
 	UAM_ASSERT(uam::DetachCliTerminalUi(terminal, "replacement-view"));
-	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.0));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "chat-2", 120.001));
 	UAM_ASSERT(uam::DetachCliTerminalUi(terminal, "replacement-view"));
 
 
@@ -3161,4 +3163,34 @@ UAM_TEST(CodexUnboundExistingChatImportsHydratedConversationAndCompactionSummary
 	UAM_ASSERT(chat.provider_handoff_context.find("Assistant: Recorded the saved fruit.") != std::string::npos);
 	UAM_ASSERT(chat.provider_handoff_context.find("Conversation summary: Saved conversation summary.") != std::string::npos);
 	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
+}
+
+UAM_TEST(TerminalOutputCursorRejectsExpiredAndFutureReads)
+{
+	UAM_ASSERT_EQ(*uam::ReadTerminalOutputAfter("abcdef", 20, 14), std::string_view("abcdef"));
+	UAM_ASSERT_EQ(*uam::ReadTerminalOutputAfter("abcdef", 20, 17), std::string_view("def"));
+	UAM_ASSERT(uam::ReadTerminalOutputAfter("abcdef", 20, 20)->empty());
+	UAM_ASSERT(!uam::ReadTerminalOutputAfter("abcdef", 20, 13));
+	UAM_ASSERT(!uam::ReadTerminalOutputAfter("abcdef", 20, 21));
+	// Independent observers can read the same bytes without consuming another view's output.
+	UAM_ASSERT_EQ(*uam::ReadTerminalOutputAfter("abcdef", 20, 17), std::string_view("def"));
+	const std::string bytes = "\xE2\x82\xAC\x1b[31m";
+	UAM_ASSERT_EQ(*uam::ReadTerminalOutputAfter(bytes, bytes.size(), 1), std::string_view(bytes).substr(1));
+}
+
+UAM_TEST(CliIdleGraceActivityAndBusyGuards)
+{
+	uam::AppState app;
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	terminal.frontend_chat_id = "owned";
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal.idle_interaction_started_time_s = 100;
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 159));
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 759));
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 760));
+	terminal.idle_interaction_started_time_s = 200;
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 760));
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Unknown;
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 9999));
 }

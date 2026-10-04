@@ -5,6 +5,8 @@ import {
   buildChatSearchIndex,
   buildChatSearchModel,
   tokenizeChatSearchQuery,
+  isUnsettledChat,
+  ACTIVE_CHAT_AUTO_DONE_MS,
 } from './chatSearch'
 
 const now = new Date('2026-01-01T00:00:00.000Z')
@@ -91,10 +93,41 @@ function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
       done: { readySinceLastSelect: true },
     } })
     expect(model.pinnedSessionIds).toEqual(['pinned'])
-    expect(model.activeSessionIds).toEqual(['done', 'pinned', 'running'])
+    expect(model.activeSessionIds.sort()).toEqual(['done', 'pinned', 'running'])
     expect(model.folderRows[0].sessionIds).toEqual(['done', 'idle', 'pinned', 'running'])
     expect(new Set(visibleSessionIds(model)).size).toBe(4)
   })
+
+it('lets Done clear stale ready chats and ignores CLI launch noise for Working', () => {
+  const folders = [makeFolder('general')]
+  const sessions = [
+    { ...makeSession('settled', 'Settled', 'general'), settledAt: '2030-01-01T00:00:00.000Z' },
+    makeSession('ready', 'Ready', 'general'),
+    makeSession('cli', 'CLI', 'general'),
+    { ...makeSession('asking', 'Asking', 'general'), settledAt: '2030-01-01T00:00:00.000Z' },
+  ]
+  const model = searchModel('', folders, sessions, undefined, {
+    acpBindingBySessionId: {
+      settled: { readySinceLastSelect: true },
+      ready: { readySinceLastSelect: true },
+      asking: { attentionKind: 'question' },
+    },
+    cliBindingBySessionId: { cli: { processing: true, lifecycleState: 'busy' } },
+  })
+  expect(model.activeSessionIds.sort()).toEqual(['asking', 'ready'])
+})
+
+describe('active chat settlement', () => {
+  const day = 24 * 60 * 60 * 1000
+  const nowMs = Date.parse('2026-01-10T00:00:00.000Z')
+  it('keeps recently touched chats active until marked done after their last update', () => {
+    const updated = nowMs - day
+    expect(isUnsettledChat(updated, undefined, nowMs)).toBe(true)
+    expect(isUnsettledChat(updated, new Date(updated + 1).toISOString(), nowMs)).toBe(false)
+    expect(isUnsettledChat(updated, new Date(updated - 1).toISOString(), nowMs)).toBe(true)
+    expect(isUnsettledChat(nowMs - ACTIVE_CHAT_AUTO_DONE_MS - 1, undefined, nowMs)).toBe(false)
+  })
+})
 
 describe('chatSearch', () => {
   it('keeps all chats and current folder expansion state with an empty query', () => {
@@ -385,7 +418,7 @@ describe('interaction recency', () => {
     expect(searchModel('', [], [a, b], undefined, context).activeSessionIds).toEqual(['a', 'b'])
   })
 
-  it('uses state event recency for branch families', () => {
+  it('uses state event recency for branch families and keeps equal events stable', () => {
     const a = { ...makeSession('a', 'A', null), interactionAt: new Date('2026-01-01T00:01:00Z') }
     const b = { ...makeSession('b', 'B', null), interactionAt: new Date('2026-01-01T00:02:00Z') }
     const branch = { ...makeSession('branch', 'Branch', null), branchRootChatId: 'a', interactionAt: new Date('2026-01-01T00:03:00Z') }

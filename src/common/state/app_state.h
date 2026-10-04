@@ -108,6 +108,7 @@ namespace uam
 		double last_ai_output_time_s = 0.0;
 		double last_polled_time_s = 0.0;
 		double last_idle_confirmed_time_s = 0.0;
+		double idle_interaction_started_time_s = 0.0;
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
 		double inactivity_interrupt_requested_time_s = 0.0;
@@ -118,6 +119,7 @@ namespace uam
 		CliTerminalTurnState turn_state = CliTerminalTurnState::Idle;
 		CliTerminalLifecycleState lifecycle_state = CliTerminalLifecycleState::Stopped;
 		std::string recent_output_bytes;
+		std::uint64_t output_cursor = 0;
 		std::string current_turn_output_bytes;
 		bool prompt_settle_required = false;
 		double prompt_settle_candidate_time_s = 0.0;
@@ -599,6 +601,7 @@ namespace uam
 		AcpPendingUserInputState pending_user_input;
 		double wait_started_time_s = 0.0;
 		double last_runtime_activity_time_s = 0.0;
+		double idle_interaction_started_time_s = 0.0;
 		bool wait_is_stale = false;
 		std::string wait_stale_reason;
 	};

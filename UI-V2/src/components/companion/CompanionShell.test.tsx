@@ -5,7 +5,7 @@ import { CompanionShell } from './CompanionShell'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 
-vi.mock('../../ipc/cefBridge', () => ({ sendToCEF: vi.fn() }))
+vi.mock('../../ipc/cefBridge', () => ({ sendToCEF: vi.fn(), isCefContext: () => true }))
 vi.mock('../../store/useAppStore', async () => {
   const { create } = await import('zustand')
   return { useAppStore: create(() => ({
@@ -13,6 +13,7 @@ vi.mock('../../store/useAppStore', async () => {
     loadFromCef: vi.fn(), loadSessionMessages: vi.fn(),
   })) }
 })
+vi.mock('../views/CLIView', () => ({ CLIView: () => <div>Live terminal</div> }))
 vi.mock('../views/ChatView', () => ({ ChatView: () => <div>Conversation</div> }))
 vi.mock('../sidebar/FolderTree', () => ({ FolderTree: () => <div>Workspace chats</div> }))
 vi.mock('../sidebar/SessionItem', () => ({
@@ -23,6 +24,7 @@ vi.mock('../sidebar/NewChatModal', () => ({ NewChatModal: ({ onCreated }: { onCr
 vi.mock('../ui', () => ({
   Button: ({ children, variant: _variant, size: _size, leadingIcon: _leadingIcon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; leadingIcon?: React.ReactNode }) => <button {...props}>{children}</button>,
   IconButton: ({ label, onClick }: { label: string; onClick: () => void }) => <button aria-label={label} onClick={onClick}>{label}</button>,
+  Presence: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <>{children}</> : null,
 }))
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -316,6 +318,13 @@ it('shows live conversation status and calls the pin API from the header', async
     await act(async () => root.render(<CompanionShell />))
     await act(async () => { host.querySelector('[data-session-id="phone-chat"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(host.querySelector('[aria-label="Agent running"]')).not.toBeNull()
+    const viewMenu = host.querySelector<HTMLSelectElement>('select[aria-label="Conversation view"]')!
+    expect(viewMenu.value).toBe('chat')
+    await act(async () => { viewMenu.value = 'cli'; viewMenu.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(host.textContent).toContain('Live terminal')
+    expect(useAppStore.getState().activeSessionId).toBe('phone-chat')
+    await act(async () => { viewMenu.value = 'chat'; viewMenu.dispatchEvent(new Event('change', { bubbles: true })) })
+    expect(host.textContent).toContain('Conversation')
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Pin chat')?.click() })
     expect(setSessionPinned).toHaveBeenCalledWith('phone-chat', true)
     await act(async () => { useAppStore.setState({ acpBindingBySessionId: {} }) })

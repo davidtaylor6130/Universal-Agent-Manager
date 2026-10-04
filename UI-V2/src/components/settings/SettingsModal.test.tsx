@@ -195,7 +195,7 @@ describe('SettingsModal memory settings', () => {
       }
     }
     const { host, root } = renderModal()
-    openDefaultsSection(host)
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
 
     await act(async () => {})
     expect(host.textContent).toContain('https://phone.example/companion')
@@ -212,7 +212,8 @@ describe('SettingsModal memory settings', () => {
     expect(copyToken).toBeTruthy()
     Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.resolve()) } })
     await act(async () => { copyToken?.click() })
-    expect(actions).toEqual(['getCompanionSettings', 'setCompanionEnabled', 'getCompanionToken'])
+    expect(actions).toEqual(['getCompanionSettings', 'setCompanionEnabled', 'getCompanionToken', 'writeClipboardText'])
+    expect(host.querySelector('button[aria-label="Copy token"]')?.textContent).toBe('Copied')
 
     act(() => root.unmount())
     host.remove()
@@ -710,7 +711,7 @@ describe('SettingsModal memory settings', () => {
     search('no-such-setting')
     expect(host.textContent).toContain('No settings found.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Clear settings search"]')!.click())
-    expect(host.querySelectorAll('nav button')).toHaveLength(16)
+    expect(host.querySelectorAll('nav button')).toHaveLength(17)
     act(() => root.unmount())
     host.remove()
   })
@@ -768,6 +769,23 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('shows a matching local alpha version in About without changing the release version', () => {
+    const previous = useAppStore.getState()
+    useAppStore.setState({ appVersion: 'V4.11.0', uiBuildId: '4.11.0-alpha-1-Darwin-20261002T220000Z' })
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('button[aria-label="About"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('V4.11.0-alpha-1')
+    expect(useAppStore.getState().appVersion).toBe('V4.11.0')
+    act(() => useAppStore.setState({ uiBuildId: '4.9.0-alpha-18-Darwin-20261002T220000Z' }))
+    expect(host.textContent).not.toContain('alpha-18')
+    expect(host.textContent).toContain('V4.11.0')
+    act(() => useAppStore.setState({ uiBuildId: '4.11.0-Darwin-20261002T220000Z' }))
+    expect(host.textContent).not.toContain('alpha-')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ appVersion: previous.appVersion, uiBuildId: previous.uiBuildId })
+  })
+
   it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
 
@@ -778,7 +796,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Memory Store')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     act(() => {
       root.unmount()
@@ -966,10 +984,9 @@ describe('SettingsModal memory settings', () => {
     act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
-    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent === 'Model visibility')!
+    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
     expect(visibility).toBeTruthy()
-    const provider = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Show openai'))!
-    act(() => provider.querySelector<HTMLInputElement>('input')!.click())
+    act(() => visibility.querySelector<HTMLInputElement>('input[aria-label="Show openai"]')!.click())
     expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }))
     const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
     act(() => model.querySelector<HTMLInputElement>('input')!.click())
@@ -1075,7 +1092,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex chat defaults"]')?.click())
     expect(host.querySelector('[aria-label="Codex provider usage"]')).toBeNull()
     expect(refresh.closest('#codex-cli-defaults-panel')).toBeNull()
-    const advanced = host.querySelector('#codex-cli-defaults-panel details') as HTMLDetailsElement
+    const advanced = Array.from(host.querySelectorAll<HTMLDetailsElement>('#codex-cli-defaults-panel details')).find((details) => !details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
     expect(advanced.open).toBe(false)
     expect(advanced.textContent).toContain('Feature preference')
     expect(advanced.textContent).toContain('Architect + worker')
@@ -1238,7 +1255,7 @@ describe('SettingsModal memory settings', () => {
     openMemorySettingsSection(host)
 
     expect(host.querySelector('[aria-label="Memory Workers"]')).toBeTruthy()
-    expect(host.textContent).toContain('Gemini memory worker')
+    expect(host.textContent).toContain('Gemini chats')
     expect(host.textContent).toContain('Default')
     expect(host.textContent).not.toContain('CLI default')
     expect(host.textContent).not.toContain('Build and release information')
@@ -1247,7 +1264,7 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelector('[aria-label="Search memory library"]')).toBeTruthy()
     expect(host.textContent).not.toContain('Memory Backfill')
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     const aboutSectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('About')
@@ -1260,7 +1277,7 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
     expect(host.textContent).toContain(`V${packageVersion}`)
-    expect(host.textContent).not.toContain('Gemini memory worker')
+    expect(host.textContent).not.toContain('Gemini chats')
 
     act(() => {
       root.unmount()

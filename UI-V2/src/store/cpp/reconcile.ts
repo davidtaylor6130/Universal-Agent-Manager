@@ -14,6 +14,7 @@ import {
 } from '../../utils/providerMetadata'
 import {
   messageAttachments,
+  sanitizeTurnEvent,
   normalizeAcpApprovalMode,
   normalizeCommandSafetyTier,
   normalizeAcpModelId,
@@ -189,7 +190,8 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.updatedAt.getTime() === next.updatedAt.getTime() &&
     (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime() &&
     previous.attentionRevision === next.attentionRevision &&
-    previous.interactionAt?.getTime() === next.interactionAt?.getTime()
+    previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
+    previous.settledAt === next.settledAt
 }
 
 export function sessionFromCppChat(
@@ -255,6 +257,7 @@ export function sessionFromCppChat(
     interactionAt: chat.interactionAt ? new Date(chat.interactionAt) : previous?.interactionAt ?? updatedAt,
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
+    settledAt: chat.settledAt,
   }
 
   return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
@@ -487,7 +490,12 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.threadId === next.threadId &&
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
+    existing.idleCountdownStartsAtMs === next.idleCountdownStartsAtMs &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
     existing.processingStartedAtMs === next.processingStartedAtMs &&
@@ -531,6 +539,9 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
     existing.turnState === next.turnState &&
+    existing.idleCountdownStartsAtMs === next.idleCountdownStartsAtMs &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.active === next.active &&
@@ -553,6 +564,9 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
+    idleCountdownStartsAtMs: chat.cliTerminal.idleCountdownStartsAtMs,
+    idleShutdownAtMs: chat.cliTerminal.idleShutdownAtMs,
+    idleShutdownTimeoutSeconds: chat.cliTerminal.idleShutdownTimeoutSeconds,
     running,
     lifecycleState,
     turnState: lifecycleState === 'unknown' ? 'unknown' : processing ? 'busy' : 'idle',
@@ -586,6 +600,9 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     running,
     lifecycleState,
     processing: effectiveProcessing,
+    idleCountdownStartsAtMs: acp?.idleCountdownStartsAtMs,
+    idleShutdownAtMs: acp?.idleShutdownAtMs,
+    idleShutdownTimeoutSeconds: acp?.idleShutdownTimeoutSeconds,
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing
@@ -754,6 +771,11 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage) {
 export function buildMessageFromCpp(chatId: string, message: CppMessage, index: number): Message {
   const createdAtMillis = cppMessageCreatedAtMillis(message)
   const attachments = messageAttachments(message)
+  // Lazy history responses bypass the state sanitizer. Normalize omitted text here too.
+  const blocks = message.blocks?.flatMap((block) => {
+    const sanitized = sanitizeTurnEvent(block)
+    return sanitized ? [sanitized as MessageBlock] : []
+  })
   return {
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
@@ -765,7 +787,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     planSummary: message.planSummary ?? '',
     planEntries: message.planEntries?.length ? message.planEntries : undefined,
     toolCalls: message.toolCalls?.length ? message.toolCalls : undefined,
-    blocks: message.blocks?.length ? message.blocks : undefined,
+    blocks: blocks?.length ? blocks : undefined,
     attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
 		interrupted: Boolean(message.interrupted),

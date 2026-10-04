@@ -2,13 +2,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, useOverlayState } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
 import { normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
-import { Download, ExternalLink, FileInput, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronRight, Download, ExternalLink, FileInput, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
 const PROVIDER_OPTIONS = ['gemini-cli', 'codex-cli', 'claude-cli', 'opencode-cli', 'copilot-cli'].map((id) => ({
@@ -17,6 +17,7 @@ const PROVIDER_OPTIONS = ['gemini-cli', 'codex-cli', 'claude-cli', 'opencode-cli
 
 /** Skills uses the same store actions in Settings and in the standalone library. */
 export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } = {}) {
+  const overlayState = useOverlayState()
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const entries = useAppStore(useShallow((s) => s.markdownStoreEntries))
@@ -308,7 +309,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const resultsView = importResults.length > 0 && <div role="status" className="shrink-0 max-h-24 overflow-y-auto flex items-start gap-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}><div className="min-w-0 flex-1">{importResults.map((result, index) => <div key={`${result.sourcePath}-${index}`} style={{ color: result.status === 'error' ? 'var(--red)' : undefined }}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>
 
   return <>
-    <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'fixed inset-0 z-50 flex items-center justify-center p-4'} style={embedded ? undefined : { background: 'rgba(0,0,0,.55)' }}>
+    <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'uam-overlay fixed inset-0 z-50 flex items-center justify-center p-4'} data-state={embedded ? undefined : overlayState} style={embedded ? undefined : { background: 'rgba(0,0,0,.55)' }}>
       <div ref={libraryRef} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-hidden={childOpen || undefined} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)', ...(embedded ? {} : { border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }) }}>
         {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
         <div className={`shrink-0 flex flex-wrap items-center gap-2 py-3${embedded ? '' : ' px-5'}`} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -316,7 +317,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
             <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
             <input type="search" aria-label="Search Skills" autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: '8px 0', outline: 'none', boxShadow: 'none' }} />
           </label>
-          <select aria-label="Filter Skills" value={filter} onChange={(event) => setFilter(event.target.value)} className="text-xs" style={{ border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg)', color: 'var(--text)', padding: '7px 9px' }}>
+          <select aria-label="Filter Skills" value={filter} onChange={(event) => setFilter(event.target.value)} className="uam-field uam-field--select">
             <option value="all">All entries</option><option value="favorites">Pinned</option>
             {groups.map((group) => <option key={group} value={`group:${group}`}>Group: {group}</option>)}
             {sourceProviders.map((provider) => <option key={provider} value={`source:${provider}`}>Source: {provider}</option>)}
@@ -331,7 +332,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <div aria-label="Skill folders" className="min-h-0 overflow-y-auto">
             {loading ? <p role="status" className="text-sm">Loading Skills...</p> : filtered.length === 0 ? <p role="status" className="text-sm">{search.trim() || filter !== 'all' ? 'No entries match this view' : 'No skills yet'}</p> : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}
           </div>
-          <section aria-label="Skill preview" className="flex flex-col min-w-0 min-h-0 overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <section aria-label="Skill preview" className="uam-skill-preview flex flex-col min-w-0 min-h-0 overflow-hidden">
             {selected ? <>
               <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
                 <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{selected.title}</h3>
@@ -342,13 +343,13 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
                   <IconButton icon={<FolderOpen size={15} />} label="Reveal file" onClick={() => void runAction(() => revealEntry(selected), 'Could not reveal the skill file.')} />
                 </div>
               </div>
-              <div className="flex-1 min-h-0 overflow-auto p-3" style={{ overflowWrap: 'anywhere' }}><MarkdownContent content={selected.body ?? selected.preview} /></div>
-            </> : <p className="p-3 text-sm">Select a skill.</p>}
+              <div key={selected.filePath} className="uam-reveal flex-1 min-h-0 overflow-auto px-4 py-3" style={{ overflowWrap: 'anywhere' }}><MarkdownContent content={selected.body ?? selected.preview} /></div>
+            </> : <p className="m-auto p-6 text-sm" style={{ color: 'var(--text-3)' }}>Select a skill to preview it.</p>}
           </section>
         </div>
       </div>
     </div>
-    {childOpen && createPortal(<div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }}>
+    {childOpen && createPortal(<div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }}>
       <div ref={childDialogRef} role="dialog" aria-modal="true" aria-label={editing ? editing === 'new' ? 'Create skill' : 'Edit skill' : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'} tabIndex={-1} className={`flex flex-col max-h-[calc(100vh-2rem)] w-full ${editing || imports.length ? 'max-w-3xl' : 'max-w-xl'} min-h-0 overflow-y-auto rounded-xl p-4 gap-3`} style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--elev-3)' }}>
         {visibleError && <div role="alert" className="shrink-0 text-xs" style={{ color: 'var(--red)' }}>{visibleError}</div>}
         {editing ? <>
@@ -415,15 +416,14 @@ function SkillFolders({ entries, selectedPath, onSelect, onPin }: { entries: Mar
   }, [entries])
   function renderFolder(node: FolderNode): ReactNode {
     return <>
-      {Array.from(node.folders).sort(([a], [b]) => a.localeCompare(b)).map(([name, folder]) => <details key={name} open className="min-w-0">
-        <summary className="cursor-pointer py-1 text-sm truncate"><Folder size={14} className="inline mr-1.5" aria-hidden />{name}</summary>
-        <div className="ml-2 pl-2" style={{ borderLeft: '1px solid var(--border-bright)' }}>{renderFolder(folder)}</div>
+      {Array.from(node.folders).sort(([a], [b]) => a.localeCompare(b)).map(([name, folder]) => <details key={name} open className="uam-skill-folder min-w-0">
+        <summary className="uam-skill-folder__summary"><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden /><Folder size={14} aria-hidden style={{ color: 'var(--text-3)' }} /><span className="truncate">{name}</span><span className="uam-skill-folder__count">{folder.entries.length}</span></summary>
+        <div className="ml-3 pl-2" style={{ borderLeft: '1px solid var(--border)' }}>{renderFolder(folder)}</div>
       </details>)}
-      {node.entries.map((entry) => <div key={entry.filePath} className="relative flex min-w-0 items-center gap-1 py-1.5 pl-2 pr-1" style={{ borderLeft: `2px solid ${entry.filePath === selectedPath ? 'var(--accent)' : 'transparent'}`, background: entry.filePath === selectedPath ? 'var(--accent-dim)' : 'transparent' }}>
-        {entry.group?.trim() && <span aria-hidden className="absolute left-[-10px] top-1/2 w-2" style={{ borderTop: '1px solid var(--border-bright)' }} />}
+      {node.entries.map((entry) => <div key={entry.filePath} className="uam-skill-row" data-selected={entry.filePath === selectedPath}>
         <button type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, color: 'var(--text)', padding: 0 }}>
-          <div className="text-sm truncate">{[entry.title, entry.maker].filter(Boolean).join(' · ')}</div>
-          <div className="text-xs truncate" style={{ color: 'var(--text-2)' }}>{entry.review || entry.preview}</div>
+          <div className="flex min-w-0 items-baseline gap-1.5"><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</div>
+          <div className="text-xs truncate" style={{ color: 'var(--text-3)' }}>{[entry.maker, entry.review || entry.preview].filter(Boolean).join(' · ')}</div>
         </button>
         <IconButton size="sm" icon={<Pin size={14} fill={entry.favorite ? 'currentColor' : 'none'} />} active={Boolean(entry.favorite)} label={`${entry.favorite ? 'Unpin' : 'Pin'} ${entry.title}`} onClick={() => onPin(entry)} />
       </div>)}

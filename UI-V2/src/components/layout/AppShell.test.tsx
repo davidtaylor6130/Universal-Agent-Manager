@@ -20,6 +20,7 @@ vi.mock('./MainPanel', () => ({
 
 import { AppShell } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
+import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -97,6 +98,11 @@ describe('AppShell', () => {
 
     const button = host.querySelector('button[aria-label="2 updates available"]') as HTMLButtonElement
     expect(button).toBeTruthy()
+    const upgradeNotice = host.querySelector('[role="status"].uam-side-panel-in')
+    expect(upgradeNotice?.textContent).toContain('2 updates available')
+    expect(upgradeNotice?.textContent).toContain('0.130.0')
+    expect(upgradeNotice?.querySelector('button[aria-label="Remind me later"]')).toBeTruthy()
+    expect(upgradeNotice?.textContent).toContain('Skip these versions')
     expect(button.parentElement?.querySelector('span[aria-hidden]')?.textContent).toBe('1')
     act(() => button.click())
     expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
@@ -459,7 +465,7 @@ describe('AppShell', () => {
     act(() => root.render(<AppShell />))
 
     act(() => (host.querySelector('button[aria-label="2 alerts"]') as HTMLButtonElement).click())
-    act(() => (host.querySelector('button[aria-label="Dismiss Finder / Explorer action"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector(`button[aria-label="Dismiss ${FILE_MANAGER_NAME} action"]`) as HTMLButtonElement).click())
     expect(host.textContent).not.toContain('Shell actions applied successfully.')
     expect(useAppStore.getState().shellActionNotification).toBe('')
     expect(document.activeElement).toBe(host.querySelector('[data-notifications-heading]'))
@@ -693,13 +699,13 @@ describe('AppShell', () => {
       root.render(<AppShell />)
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('/tmp/chat-1')
+    expect(host.querySelector('[title="/tmp/chat-1"]')).toBeTruthy()
 
     await act(async () => {
       useAppStore.setState({ activeSessionId: 'chat-2' })
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('/tmp/chat-2')
+    expect(host.querySelector('[title="/tmp/chat-2"]')).toBeTruthy()
     expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-2', 'git', expect.any(Object))
 
     act(() => root.unmount())
@@ -742,10 +748,10 @@ describe('AppShell', () => {
     })
 
     expect(host.textContent).toContain('2 changed files')
-    expect(host.textContent).toContain('src/app.ts')
+    expect(host.querySelector('[title="src/app.ts"]')).toBeTruthy()
     expect(host.textContent).toContain('+12')
     expect(host.textContent).toContain('-3')
-    expect(host.textContent).toContain('assets/logo.png')
+    expect(host.querySelector('[title="assets/logo.png"]')).toBeTruthy()
     expect(host.textContent).toContain('BIN')
     expect(host.textContent).not.toContain('Diff')
     expect(host.textContent).not.toContain('No diff available')
@@ -815,10 +821,10 @@ describe('AppShell', () => {
     })
 
     expect(generateVcsCommitMessage).toHaveBeenCalledWith('chat-1', 'git', ['src/app.ts'])
-    expect((host.querySelector('input[placeholder="Summary"]') as HTMLInputElement).value).toBe('Update commit panel')
-    expect((host.querySelector('textarea[placeholder="Description"]') as HTMLTextAreaElement).value).toBe('- Refresh checklist file controls')
+    expect((host.querySelector('input[aria-label="Commit summary"]') as HTMLInputElement).value).toBe('Update commit panel')
+    expect((host.querySelector('textarea[aria-label="Commit description"]') as HTMLTextAreaElement).value).toBe('- Refresh checklist file controls')
 
-    const commitButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Commit selected files') as HTMLButtonElement
+    const commitButton = Array.from(host.querySelectorAll('button')).find((button) => /^Commit \d+ files?$/.test(button.textContent ?? '')) as HTMLButtonElement
     await act(async () => {
       commitButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
@@ -876,7 +882,7 @@ describe('AppShell', () => {
       useAppStore.setState({ activeSessionId: 'chat-2' })
       await Promise.resolve()
     })
-    const summary = host.querySelector('input[placeholder="Summary"]') as HTMLInputElement
+    const summary = host.querySelector('input[aria-label="Commit summary"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(summary, 'Second chat draft')
       summary.dispatchEvent(new Event('input', { bubbles: true }))
@@ -923,19 +929,19 @@ describe('AppShell', () => {
     await act(async () => { root.render(<AppShell />); await Promise.resolve() })
 
     act(() => (host.querySelector('button[aria-label="Select one.ts"]') as HTMLButtonElement).click())
-    const summary = host.querySelector('input[placeholder="Summary"]') as HTMLInputElement
+    const summary = host.querySelector('input[aria-label="Commit summary"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(summary, 'Commit chat one')
       summary.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Commit selected files') as HTMLButtonElement).click())
+    act(() => (Array.from(host.querySelectorAll('button')).find((button) => /^Commit \d+ files?$/.test(button.textContent ?? '')) as HTMLButtonElement).click())
     await act(async () => {
       useAppStore.setState({ activeSessionId: 'chat-2' })
       finishCommit({ ok: true, message: 'Git commit created.', error: '' })
       await Promise.resolve()
     })
 
-    expect(host.textContent).toContain('/tmp/two')
+    expect(host.querySelector('[title="/tmp/two"]')).toBeTruthy()
     expect(host.textContent).not.toContain('Git commit created.')
     expect(host.textContent).not.toContain('Committing…')
     act(() => root.unmount())
