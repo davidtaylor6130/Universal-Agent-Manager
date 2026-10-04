@@ -1,3 +1,6 @@
+#include "common/memory/extraction_receipts.h"
+#include "remote/runner_client.h"
+#include "common/config/execution_host_config.h"
 #include "app/memory_service.h"
 
 #include "app/chat_domain_service.h"
@@ -6,6 +9,7 @@
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/execution_host_config.h"
 #include "common/memory/memory_categories.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
@@ -235,9 +239,14 @@ namespace
 		return static_cast<int>(std::min(count, static_cast<std::size_t>(std::numeric_limits<int>::max())));
 	}
 
+	bool MemoryHostAvailable(const uam::AppState& app, const ChatSession& chat)
+	{
+		return uam::paths::IsControllerLocalWorkspace(chat) || uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) != nullptr;
+	}
+
 	bool MemoryScanEligible(const ChatSession& chat)
 	{
-		return uam::paths::IsControllerLocalWorkspace(chat) && !chat.imported_read_only &&
+		return !chat.imported_read_only &&
 		       MemoryEnabled(chat) && MessageCount(chat) > 0;
 	}
 
@@ -461,19 +470,6 @@ namespace
 		return uam::parse::IntOr(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start), 0);
 	}
 
-	std::vector<std::string> ExistingExtractionKeys(const std::string& text)
-	{
-		std::vector<std::string> keys;
-		constexpr std::string_view marker = "Extraction key: ";
-		for (std::size_t at = text.find(marker); at != std::string::npos; at = text.find(marker, at + marker.size()))
-		{
-			const std::size_t start = at + marker.size();
-			const std::size_t end = text.find_first_of("\r\n", start);
-			const std::string key = uam::strings::Trim(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
-			if (!key.empty() && !uam::ranges::Contains(keys, key)) keys.push_back(key);
-		}
-		return keys;
-	}
 
 	struct MemoryMarkdownFields
 	{
@@ -656,9 +652,9 @@ namespace
 		return last_match;
 	}
 
-	uam::ProviderWorkerInvocation BuildMemoryWorkerInvocation(const uam::AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out = nullptr)
+	uam::ProviderWorkerInvocation BuildMemoryWorkerInvocation(const uam::AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out = nullptr, bool remote_target = false)
 	{
-		return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, error_out);
+		return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, error_out, remote_target);
 	}
 
 	void SetError(std::string* error_out, const std::string& message)
@@ -710,7 +706,7 @@ namespace
 		if (!target.empty())
 		{
 			const std::string existing = uam::io::ReadTextFile(target);
-			extraction_keys = ExistingExtractionKeys(existing);
+			extraction_keys = uam::memory::ExistingExtractionKeys(existing);
 			if (!extraction_key.empty() && uam::ranges::Contains(extraction_keys, extraction_key)) return true;
 			count = ExistingCount(existing) + 1;
 		}
@@ -828,7 +824,7 @@ namespace
 
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		return !MemoryScanEligible(chat) ||
+		return !MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) ||
 		       !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) ||
 		       !MemoryRetryDue(app, chat.id, now);
 	}
@@ -840,6 +836,7 @@ namespace
 
 	bool CopilotWorkerVersionCheckPending(const uam::AppState& app, const ChatSession& chat)
 	{
+		if (!uam::paths::IsControllerLocalWorkspace(chat)) return false;
 		const ProviderProfile* provider = ProviderResolutionService().WorkerProviderForChat(app, chat);
 		if (provider == nullptr || !uam::provider_ids::IsCliProviderAliasOf(provider->id, uam::provider_ids::kCopilotCli))
 		{
@@ -964,6 +961,20 @@ namespace
 
 		RecordMemoryWorkerResult(app, task, kMemoryWorkerCompletedStatus);
 		std::string error;
+		if (task.remote_host)
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (host == nullptr || !uam::execution_hosts::SameConnection(*host, *task.remote_host) ||
+			    (chat.workspace_directory.empty() ? (uam::paths::FindWorkspaceFolderById(app, chat.folder_id) != nullptr ? uam::paths::FindWorkspaceFolderById(app, chat.folder_id)->directory : std::string{}) : chat.workspace_directory) != task.remote_workspace || task.extraction_state == nullptr || !task.extraction_state->remote_applied)
+			{
+				RecordMemoryFailure(app, task.chat_id, "The SSH workspace changed during the memory scan."); return false;
+			}
+			if (!SaveMemoryProgress(app, chat, task.message_count)) { RecordMemoryFailure(app, task.chat_id, "Memory scan could not save chat progress."); return false; }
+			app.memory_activity.last_created_count = task.extraction_state->remote_entry_count;
+			app.memory_last_status = task.extraction_state->remote_entry_count > 0 ? "Project memory updated." : "Memory worker found no durable memories.";
+			RecordMemorySuccess(app, task.chat_id);
+			return true;
+		}
 		if (MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, task.state->result.output, task.message_count, &error))
 		{
 			RecordMemorySuccess(app, task.chat_id);
@@ -1122,12 +1133,64 @@ namespace
 		return true;
 	}
 
+	ProcessExecutionResult ExecuteRemoteMemoryWorker(const ExecutionHost& host, const std::string& workspace,
+	    uam::ProviderWorkerInvocation& invocation, const ChatSession& chat, std::string_view provider_id,
+	    uam::AsyncMemoryExtractionState& extraction, std::stop_token stop_token)
+	{
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		ProcessExecutionResult result;
+		const std::string id = service.GenerateUuid();
+		fs::path directory;
+		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
+		const std::string previous_directory = invocation.isolated_working_directory ? uam::paths::Utf8PathString(*invocation.isolated_working_directory) : std::string{};
+		for (std::string& argument : invocation.argv)
+		{
+			if (!previous_directory.empty() && argument.size() > previous_directory.size() && argument.starts_with(previous_directory) &&
+			    (argument[previous_directory.size()] == '/' || argument[previous_directory.size()] == '\\'))
+			{
+				std::string relative = argument.substr(previous_directory.size() + 1);
+				const char separator = host.platform == "windows" ? '\\' : '/';
+				std::replace(relative.begin(), relative.end(), separator == '/' ? '\\' : '/', separator);
+				argument = uam::paths::Utf8PathString(directory) + separator + relative;
+			}
+		}
+		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input);
+		std::string cleanup_error;
+		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
+		if (!result.ok) return result;
+		bool tools = false;
+		const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(result.output, &tools);
+		if (tools || !parsed) { result.ok = false; result.error = tools ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object."; return result; }
+		for (const nlohmann::json& entry : (*parsed)["memories"])
+		{
+			if (stop_token.stop_requested()) { result.ok = false; result.canceled = true; result.error = "Memory scan canceled."; return result; }
+			if (!ShouldSaveWorkerMemoryEntry(entry, MemoryLevel(chat)) || uam::nlohmann_json::TrimmedStringValueOr(entry, "scope", "local") != "local") continue;
+			MemoryLibraryStore::Draft draft;
+			draft.category = MemoryEntryCategory(entry); draft.title = MemoryEntryLine(entry, "title", 160);
+			draft.memory = MemoryEntryLine(entry, "memory", 1400); draft.evidence = MemoryEntryLine(entry, "evidence", 900);
+			draft.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); draft.source_chat_id = chat.id;
+			draft.extraction_key = chat.id + ":" + std::to_string(MessageCount(chat));
+			if (uam::sensitive::LooksSensitiveText(draft.title + "\n" + draft.memory + "\n" + draft.evidence)) continue;
+			MemoryLibraryStore::Entry created;
+			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), draft, created, &result.error)) { result.ok = false; return result; }
+			++extraction.remote_entry_count;
+		}
+		extraction.remote_applied = true;
+		return result;
+	}
+
 	bool StartWorkerTask(uam::AppState& app, const ChatSession& chat, const fs::path& workspace_root, int start_message_index = -1)
 	{
+		std::optional<ExecutionHost> remote_host;
+		std::string remote_workspace;
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
-			app.memory_last_status = "Target-side memory workers are not supported for remote chats yet.";
-			return false;
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+			remote_workspace = !chat.workspace_directory.empty() ? chat.workspace_directory : folder != nullptr ? folder->directory : std::string{};
+			if (host == nullptr || remote_workspace.empty()) { app.memory_last_status = "The memory scan's SSH workspace is unavailable."; return false; }
+			remote_host = *host;
 		}
 		if (chat.imported_read_only)
 		{
@@ -1143,7 +1206,7 @@ namespace
 		}
 
 		std::string compatibility_error;
-		uam::ProviderWorkerInvocation invocation = BuildMemoryWorkerInvocation(app, *worker_provider, {}, worker.model_id, &compatibility_error);
+		uam::ProviderWorkerInvocation invocation = BuildMemoryWorkerInvocation(app, *worker_provider, {}, worker.model_id, &compatibility_error, remote_host.has_value());
 		if (invocation.Empty())
 		{
 			app.memory_last_status = uam::strings::NonEmptyOrFallback(compatibility_error, "Memory worker command is empty.");
@@ -1159,7 +1222,9 @@ namespace
 		task.source_persisted_messages_digest = chat.persisted_messages_digest;
 		task.scan_start_message_index = start_message_index;
 		task.workspace_root = workspace_root;
-		if (ProviderRuntime::UsesNativeOverlayHistory(*worker_provider))
+		task.remote_host = remote_host;
+		task.remote_workspace = remote_workspace;
+		if (!remote_host && ProviderRuntime::UsesNativeOverlayHistory(*worker_provider))
 		{
 			ChatSession worker_chat = chat;
 			worker_chat.provider_id = worker_provider->id;
@@ -1177,7 +1242,7 @@ namespace
 		const fs::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
 		auto extraction_state = task.extraction_state;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, extraction_state, invocation = std::move(invocation), cwd, data_root = app.data_root, chat_snapshot = chat, start_message_index](std::stop_token stop_token) mutable
+		    [state, extraction_state, invocation = std::move(invocation), cwd, data_root = app.data_root, chat_snapshot = chat, start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
 		    {
 			    ChatSession worker_chat = std::move(chat_snapshot);
 			    if (!worker_chat.messages_loaded)
@@ -1200,7 +1265,12 @@ namespace
 				    return;
 			    }
 			    invocation.standard_input = BuildWorkerPrompt(worker_chat, start_message_index);
-			    state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
+			    if (remote_host)
+			    {
+				    invocation.standard_input = "This is an SSH project memory scan. Return only local project memories.\n" + invocation.standard_input;
+				    state->result = ExecuteRemoteMemoryWorker(*remote_host, remote_workspace, invocation, worker_chat, state->provider_id, *extraction_state, stop_token);
+			    }
+			    else state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
 			    state->completed.store(true, std::memory_order_release);
 		    });
 
@@ -1410,7 +1480,7 @@ bool MemoryService::EnsureMemoryLayout(const fs::path& root)
 
 std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt)
 {
-	if (!MemoryEnabled(chat) || app.settings.memory_recall_budget_bytes <= 0)
+	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId || !MemoryEnabled(chat) || app.settings.memory_recall_budget_bytes <= 0)
 	{
 		return "";
 	}
@@ -1568,7 +1638,7 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!MemoryScanEligible(chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
 		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
@@ -1613,7 +1683,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!MemoryScanEligible(chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -1703,7 +1773,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 					chat.persisted_messages_digest = task.extraction_state->hydrated_messages_digest;
 				}
 			}
-			if (!MemoryScanEligible(chat))
+			if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat))
 			{
 				RecordMemorySuccess(app, chat.id);
 				app.memory_last_status = kMemoryScanStoppedStatus;
@@ -1766,7 +1836,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 
 			ChatSession& chat = *chat_ptr;
-			if (QueuedMemoryWorkNoLongerEligible(queued, chat))
+			if (QueuedMemoryWorkNoLongerEligible(queued, chat) || !MemoryHostAvailable(app, chat))
 			{
 				RecordMemorySuccess(app, chat.id);
 				app.memory_last_status = kMemoryScanStoppedStatus;

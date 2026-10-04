@@ -9,6 +9,7 @@
 #include "app/provider_worker_command.h"
 
 #include "common/chat/chat_branching.h"
+#include "common/chat/conversation_handoff.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/native_chat_identity.h"
@@ -632,6 +633,8 @@ namespace
 		return true;
 	}
 
+
+
 	std::string CodexMessageText(const nlohmann::json& payload)
 	{
 		const auto content_it = payload.find("content");
@@ -812,7 +815,8 @@ namespace
 					    return true;
 				    }
 				    std::string content = CodexMessageText(payload);
-				    if (content.empty() || (role == "user" && uam::IsCodexSyntheticUserMessage(content)))
+				    if (role == "user") content = uam::CodexVisibleUserMessage(content);
+				    if (content.empty())
 				    {
 					    return true;
 				    }
@@ -1025,6 +1029,11 @@ namespace
 
 		native.title = local.title;
 		native.folder_id = local.folder_id;
+		native.native_session_reset_pending = local.native_session_reset_pending;
+		native.provider_handoff_context = local.provider_handoff_context;
+		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.remote_recovery_enabled = local.remote_recovery_enabled;
+		native.remote_recovery_state = local.remote_recovery_state;
 		native.pinned = local.pinned;
 		native.linked_files = local.linked_files;
 		native.parent_chat_id = local.parent_chat_id;
@@ -1049,6 +1058,9 @@ namespace
 		native.reasoning_effort = local.reasoning_effort;
 		native.service_tier = local.service_tier;
 		native.service_tier_explicit = local.service_tier_explicit;
+		native.provider_handoff_context = local.provider_handoff_context;
+		native.provider_handoff_session_id = local.provider_handoff_session_id;
+		native.provider_handoff_cli_contexts = local.provider_handoff_cli_contexts;
 		native.small_model_mode = local.small_model_mode;
 		native.extra_flags = local.extra_flags;
 		native.memory_enabled = local.memory_enabled;
@@ -1061,6 +1073,10 @@ namespace
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{
 			native.last_opened_at = local.last_opened_at;
+			native.attention_revision = local.attention_revision;
+			native.last_stop_reason = local.last_stop_reason;
+			native.goal_command_revision = local.goal_command_revision;
+			native.goal_pending_continuation_id = local.goal_pending_continuation_id;
 		}
 	}
 
@@ -2252,6 +2268,9 @@ try
 		}
 		const nlohmann::json& info = entry["info"];
 		const std::string role = info.value("role", "");
+		const bool compaction_summary = role == "assistant" && info.value("summary", false);
+		if (role == "user" && std::ranges::any_of(entry["parts"], [](const nlohmann::json& part)
+		    { return part.is_object() && part.value("type", "") == "compaction"; })) continue;
 		Message message;
 		if (role == "user") message.role = MessageRole::User;
 		else if (role == "assistant") message.role = MessageRole::Assistant;
@@ -2334,7 +2353,15 @@ try
 				        part.value("filename", ""), part.value("name", "file")) + "]");
 			}
 		}
-		if (message.interrupted || !message.content.empty() || !message.thoughts.empty() || !message.tool_calls.empty())
+		if (compaction_summary)
+		{
+			std::string summary = std::move(message.content);
+			message.content.clear();
+			message.thoughts.clear();
+			message.blocks = {{"context_compaction", std::move(summary), "", info.value("id", "")}};
+			message.tool_calls.clear();
+		}
+		if (compaction_summary || message.interrupted || !message.content.empty() || !message.thoughts.empty() || !message.tool_calls.empty())
 			result.messages.push_back(std::move(message));
 	}
 	result.success = true;
@@ -2725,7 +2752,7 @@ try
 							AppendTranscriptText(text, part["text"].get<std::string>());
 					}
 				}
-				if (!uam::IsCodexSyntheticUserMessage(text)) AppendTranscriptText(user_message.content, text);
+				AppendTranscriptText(user_message.content, uam::CodexVisibleUserMessage(text));
 			}
 			else if (type == "agentMessage" && item.contains("text") &&
 			         item["text"].is_string())
@@ -3253,8 +3280,37 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	}
 	if (current_host != uam::execution_hosts::kLocalHostId)
 	{
-		app.status_line = "Moving remote chats between workspace directories is not supported yet.";
-		return false;
+		if (ChatNeedsTranscriptPreserved(app, chat) || uam::ChatHasActiveCliTerminal(app, chat.id))
+		{
+			app.status_line = "Stop the chat before moving its workspace.";
+			return false;
+		}
+		for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)
+		{
+			if (session != nullptr && session->chat_id == chat.id && session->running)
+			{
+				app.status_line = "Stop the chat before moving its workspace.";
+				return false;
+			}
+		}
+		ChatSession moved_chat = chat;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, moved_chat)) return false;
+		std::string error;
+		if (!uam::chat::BuildConversationHandoff(moved_chat, moved_chat.provider_handoff_context, &error))
+		{
+			app.status_line = error;
+			return false;
+		}
+		moved_chat.folder_id = target_folder_id;
+		moved_chat.workspace_directory = new_folder->directory;
+		moved_chat.native_session_id.clear();
+		moved_chat.native_session_reset_pending = true;
+		moved_chat.provider_handoff_session_id.clear();
+		moved_chat.updated_at = uam::time::TimestampNow();
+		if (!ChatRepository::SaveChat(app.data_root, moved_chat)) return false;
+		chat = std::move(moved_chat);
+		app.resolved_native_sessions_by_chat_id.erase(chat.id);
+		return true;
 	}
 
 	const ChatSession original_chat = chat;
@@ -3674,6 +3730,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					loaded_raw_match->provider_id = source_provider_id;
 				}
 				loaded_raw_match->native_session_id = target_native_session_id;
+				loaded_raw_match->native_session_reset_pending = false;
 				loaded_raw_match->messages = imported_chat.messages;
 				loaded_raw_match->messages_loaded = imported_chat.messages_loaded;
 				loaded_raw_match->updated_at = imported_chat.updated_at;
@@ -3691,6 +3748,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					resolved_only_match->provider_id = source_provider_id;
 				}
 				resolved_only_match->native_session_id = target_native_session_id;
+				resolved_only_match->native_session_reset_pending = false;
 				resolved_only_match->messages = imported_chat.messages;
 				resolved_only_match->messages_loaded = imported_chat.messages_loaded;
 				resolved_only_match->updated_at = imported_chat.updated_at;
@@ -3708,6 +3766,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 					existing->provider_id = source_provider_id;
 				}
 				existing->native_session_id = target_native_session_id;
+				existing->native_session_reset_pending = false;
 				existing->messages = imported_chat.messages;
 				existing->messages_loaded = imported_chat.messages_loaded;
 				existing->updated_at = imported_chat.updated_at;
@@ -3761,6 +3820,7 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 				existing->provider_id = source_provider_id;
 			}
 			existing->native_session_id = target_native_session_id;
+				existing->native_session_reset_pending = false;
 			existing->updated_at = uam::time::TimestampNow();
 			app.resolved_native_sessions_by_chat_id[existing->id] = target_native_session_id;
 			return existing;
@@ -3788,6 +3848,7 @@ std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::
 		if (inferred_session_id && PersistLocalDraftNativeSessionLink(app, local_chat, *inferred_session_id))
 		{
 			local_chat.native_session_id = *inferred_session_id;
+			local_chat.native_session_reset_pending = false;
 		}
 	}
 

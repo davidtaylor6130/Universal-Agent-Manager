@@ -1,3 +1,5 @@
+#include "common/config/build_features.h"
+#include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
 
 #include "common/config/execution_host_config.h"
@@ -135,9 +137,11 @@ namespace uam::remote
 		Disconnect();
 	}
 
-	bool RunnerClient::Connect(std::string* error_out)
+	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token)
 	try
 	{
+		if (stop_token.stop_requested()) return false;
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "SSH remote execution is disabled in this build."; return false; }
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())
 		{
@@ -165,7 +169,7 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 		              {"nonce", nonce}},
-		             response, &error) || response.value("nonce", "") != nonce ||
+		             response, &error, [stop_token] { return stop_token.stop_requested(); }) || response.value("nonce", "") != nonce ||
 		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
 		    (!m_expectedVersion.empty() &&
 		     response.value("runnerVersion", "") != m_expectedVersion) ||
@@ -182,7 +186,12 @@ namespace uam::remote
 			return false;
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		m_contextRead = response["capabilities"].value("contextRead", false);
+		m_projectMemory = response["capabilities"].value("projectMemory", false);
+		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
+		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
+		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
 		return true;
@@ -351,7 +360,7 @@ namespace uam::remote
 
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
-	    int timeout_ms, std::stop_token stop_token)
+	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input)
 	{
 		ProcessExecutionResult result;
 		const std::chrono::steady_clock::time_point deadline = timeout_ms < 0
@@ -390,7 +399,16 @@ namespace uam::remote
 		if (started)
 		{
 			result.error.clear();
-			if (!interrupted() && CloseProcessInput(session_id, &result.error))
+			bool input_written = true;
+			for (std::size_t offset = 0; offset < standard_input.size() && input_written; offset += 32768)
+			{
+				const std::string delivery = session_id + ":stdin:" + std::to_string(offset);
+				const std::string_view chunk = standard_input.substr(offset, 32768);
+				input_written = !interrupted() && WriteProcess(session_id, chunk, &result.error, delivery);
+				if (!input_written && !m_connected && !interrupted() && Connect(&result.error, stop_token))
+					input_written = WriteProcess(session_id, chunk, &result.error, delivery);
+			}
+			if (input_written && !interrupted() && CloseProcessInput(session_id, &result.error))
 			{
 				while (!interrupted())
 				{
@@ -476,9 +494,9 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::OpenChannel(const std::string& channel_id, std::string* error_out,
-	                               bool attach_if_exists, std::int64_t lease_ms)
+	                               bool attach_if_exists, std::int64_t lease_ms, std::stop_token stop_token)
 	{
-		if (!Connect(error_out)) return false;
+		if (!Connect(error_out, stop_token)) return false;
 		if (lease_ms != 0 && !m_leasedChannelTake)
 		{
 			if (error_out != nullptr) *error_out = "The remote runner does not support leased channel handoff.";
@@ -486,7 +504,7 @@ namespace uam::remote
 		}
 		nlohmann::json response;
 		if (!Request({{"type", "channel.open"}, {"channelId", channel_id},
-		              {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}}, response, error_out)) return false;
+		              {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}}, response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
 		if (m_expectedProtocolVersion >= 3)
 		{
 			const nlohmann::json& result = response["result"];
@@ -530,7 +548,7 @@ namespace uam::remote
 
 	bool RunnerClient::WriteChannel(const std::string& channel_id,
 	                                std::string_view direction, std::string_view bytes,
-	                                std::string* error_out)
+	                                std::string* error_out, std::stop_token stop_token)
 	{
 		const std::string sequence_key = ChannelCursorKey(channel_id, direction);
 		nlohmann::json request = {{"type", "channel.write"}, {"channelId", channel_id},
@@ -539,9 +557,9 @@ namespace uam::remote
 		const std::uint64_t sequence = m_channelWriteSequences[sequence_key] + 1;
 		if (m_expectedProtocolVersion >= 3) request["writeSequence"] = sequence;
 		nlohmann::json response;
-		bool written = Request(request, response, error_out);
-		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out))
-			written = Request(std::move(request), response, error_out);
+		bool written = Request(request, response, error_out, [stop_token] { return stop_token.stop_requested(); });
+		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out, stop_token))
+			written = Request(std::move(request), response, error_out, [stop_token] { return stop_token.stop_requested(); });
 		if (written) m_channelWriteSequences[sequence_key] = sequence;
 		return written;
 	}
@@ -596,25 +614,26 @@ namespace uam::remote
 		return true;
 	}
 
-	bool RunnerClient::CloseChannel(const std::string& channel_id, std::string* error_out)
+	bool RunnerClient::CloseChannel(const std::string& channel_id, std::string* error_out, std::stop_token stop_token)
 	{
 		nlohmann::json response;
 		return Request({{"type", "channel.close"}, {"channelId", channel_id}}, response,
-		               error_out);
+		               error_out, [stop_token] { return stop_token.stop_requested(); });
 	}
 
 	bool RunnerClient::UploadFile(const std::string& upload_id,
 	                              const std::filesystem::path& remote_path,
-	                              std::string_view bytes, std::string* error_out)
+	                              std::string_view bytes, std::string* error_out, std::stop_token stop_token)
 	{
-		if (!Connect(error_out)) return false;
+		if (!Connect(error_out, stop_token)) return false;
 		const auto abort = [&]
 		{
+			if (stop_token.stop_requested()) return;
 			nlohmann::json ignored;
-			if (!m_connected) (void)Connect(nullptr);
+			if (!m_connected) (void)Connect(nullptr, stop_token);
 			if (m_connected)
 				(void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored,
-				              nullptr);
+				              nullptr, [stop_token] { return stop_token.stop_requested(); });
 		};
 		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
 		uam::hashing::UpdateFnv1a64(
@@ -623,7 +642,7 @@ namespace uam::remote
 		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id},
 		              {"path", uam::paths::Utf8PathString(remote_path)}, {"size", bytes.size()},
 		              {"digest", uam::hashing::Hex64Padded(digest)}},
-		             response, error_out))
+		             response, error_out, [stop_token] { return stop_token.stop_requested(); }))
 		{
 			abort();
 			return false;
@@ -632,19 +651,31 @@ namespace uam::remote
 		{
 			const std::string_view chunk = bytes.substr(offset, 256 * 1024);
 			if (!Request({{"type", "file.write"}, {"uploadId", upload_id},
-			              {"dataBase64", uam::base64::Encode(chunk)}}, response, error_out))
+			              {"dataBase64", uam::base64::Encode(chunk)}}, response, error_out, [stop_token] { return stop_token.stop_requested(); }))
 			{
 				abort();
 				return false;
 			}
 		}
 		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response,
-		             error_out))
+		             error_out, [stop_token] { return stop_token.stop_requested(); }))
 		{
 			abort();
 			return false;
 		}
 		return true;
+	}
+
+	bool RunnerClient::PrepareProviderContext(const std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
+	{
+		nlohmann::json response;
+		return Request({{"type", "context.prepare"}, {"directory", uam::paths::Utf8PathString(directory)}}, response, error_out, [stop_token] { return stop_token.stop_requested(); });
+	}
+
+	bool RunnerClient::RemoveProviderContext(const std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
+	{
+		nlohmann::json response;
+		return Request({{"type", "context.remove"}, {"directory", uam::paths::Utf8PathString(directory)}}, response, error_out, [stop_token] { return stop_token.stop_requested(); });
 	}
 
 	bool RunnerClient::RemoveFile(const std::string& request_id,
@@ -666,6 +697,116 @@ namespace uam::remote
 		                {"sourcePath", uam::paths::Utf8PathString(source_path)},
 		                {"targetPath", uam::paths::Utf8PathString(target_path)}, {"overwrite", overwrite}},
 		               response, error_out);
+	}
+
+	bool RunnerClient::ConfigureStartup(bool enabled, std::string* error_out, std::stop_token stop_token)
+	{
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_runnerStartup)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to configure login startup.";
+			return false;
+		}
+		nlohmann::json response;
+		return Request({{"type", "startup.configure"}, {"enabled", enabled}}, response, error_out,
+		    [stop_token]() { return stop_token.stop_requested(); }) && response.value("result", nlohmann::json::object()).value("enabled", !enabled) == enabled;
+	}
+
+	bool RunnerClient::PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
+	{
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_isolatedTextWorkers) { if (error_out != nullptr) *error_out = "Update this host's runner to run isolated memory workers."; return false; }
+		nlohmann::json response;
+		if (!Request({{"type", "worker.prepare"}, {"workerId", id}, {"providerId", provider}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		if (!response["result"].contains("directory") || !response["result"]["directory"].is_string()) { if (error_out != nullptr) *error_out = "The runner returned an invalid text worker directory."; return false; }
+		directory = paths::PathFromUtf8(response["result"]["directory"].get<std::string>());
+		return uam::execution_hosts::IsAbsoluteRemotePath("linux", paths::Utf8PathString(directory)) || uam::execution_hosts::IsAbsoluteRemotePath("windows", paths::Utf8PathString(directory));
+	}
+	bool RunnerClient::RemoveTextWorker(std::string_view id, std::string* error_out)
+	{
+		nlohmann::json response;
+		return Request({{"type", "worker.remove"}, {"workerId", id}}, response, error_out);
+	}
+
+	bool RunnerClient::ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out)
+	{
+		entries.clear();
+		if (!m_connected && !Connect(error_out)) return false;
+		if (!m_projectMemory) { if (error_out != nullptr) *error_out = "Update this host's runner to manage project memory."; return false; }
+		nlohmann::json response;
+		if (!Request({{"type", "memory.list"}, {"workspace", paths::Utf8PathString(workspace)}}, response, error_out)) return false;
+		const nlohmann::json& result = response["result"];
+		if (!result.is_object() || !result.contains("entries") || !result["entries"].is_array() || result["entries"].size() > 200) { if (error_out != nullptr) *error_out = "The runner returned invalid project memory."; return false; }
+		for (const nlohmann::json& value : result["entries"])
+		{
+			MemoryLibraryStore::Entry entry;
+			if (!DecodeMemoryEntry(value, entry)) { if (error_out != nullptr) *error_out = "The runner returned an invalid memory entry."; entries.clear(); return false; }
+			entries.push_back(std::move(entry));
+		}
+		return true;
+	}
+
+	bool RunnerClient::CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out)
+	{
+		if (!m_connected && !Connect(error_out)) return false;
+		if (!m_projectMemory) { if (error_out != nullptr) *error_out = "Update this host's runner to manage project memory."; return false; }
+		nlohmann::json response;
+		const nlohmann::json value = {{"category", draft.category}, {"title", draft.title}, {"memory", draft.memory}, {"evidence", draft.evidence}, {"confidence", draft.confidence}, {"sourceChatId", draft.source_chat_id}, {"extractionKey", draft.extraction_key}};
+		if (!Request({{"type", "memory.create"}, {"workspace", paths::Utf8PathString(workspace)}, {"draft", value}}, response, error_out)) return false;
+		if (!response["result"].contains("entry") || !DecodeMemoryEntry(response["result"]["entry"], created)) { if (error_out != nullptr) *error_out = "The runner returned an invalid created memory entry."; return false; }
+		return true;
+	}
+
+	bool RunnerClient::DeleteMemoryEntry(const std::filesystem::path& workspace, std::string_view id, std::string* error_out)
+	{
+		if (!m_connected && !Connect(error_out)) return false;
+		if (!m_projectMemory) { if (error_out != nullptr) *error_out = "Update this host's runner to manage project memory."; return false; }
+		nlohmann::json response;
+		return Request({{"type", "memory.delete"}, {"workspace", paths::Utf8PathString(workspace)}, {"entryId", id}}, response, error_out);
+	}
+
+	bool RunnerClient::ReadProjectMemory(const std::filesystem::path& workspace, int budget, std::string& text,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		text.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_contextRead)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to read remote project memory.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}},
+		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 65536)
+		{
+			if (error_out != nullptr) *error_out = "The remote runner returned invalid memory text.";
+			return false;
+		}
+		text = response["result"]["text"].get<std::string>();
+		return true;
+	}
+
+	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		text.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_contextRead)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to read remote context files.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "context.read"}, {"path", uam::paths::Utf8PathString(remote_path)}},
+		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 256 * 1024)
+		{
+			if (error_out != nullptr) *error_out = "The remote runner returned invalid context text.";
+			return false;
+		}
+		text = response["result"]["text"].get<std::string>();
+		return true;
 	}
 
 	bool RunnerClient::ListDirectories(const std::filesystem::path& remote_path,
@@ -805,15 +946,22 @@ namespace uam::remote
 		return acknowledged;
 	}
 
-	bool RunnerClient::StopProcess(const std::string& session_id, std::string* error_out)
+	bool RunnerClient::StopProcess(const std::string& session_id, std::string* error_out, bool graceful, std::string* outcome_out)
 	{
 		if (!Connect(error_out)) return false;
-		nlohmann::json request = {{"type", "process.stop"}, {"sessionId", session_id}};
+		if (outcome_out != nullptr) *outcome_out = "unknown";
+		nlohmann::json request = {{"type", "process.stop"}, {"sessionId", session_id}, {"graceful", graceful}};
 		if (!AddProcessControlToken(request, session_id, error_out)) return false;
 		nlohmann::json response;
 		bool stopped = Request(request, response, error_out);
 		if (!stopped && !m_connected && Connect(error_out))
 			stopped = Request(std::move(request), response, error_out);
+		if (stopped && outcome_out != nullptr)
+		{
+			const nlohmann::json result = response.value("result", nlohmann::json::object());
+			const std::string outcome = result.is_object() && result.contains("stopOutcome") && result["stopOutcome"].is_string() ? result["stopOutcome"].get<std::string>() : "unknown";
+			if (outcome == "graceful" || outcome == "forced" || outcome == "failed") *outcome_out = outcome;
+		}
 		return stopped;
 	}
 
@@ -846,6 +994,11 @@ namespace uam::remote
 		m_received.clear();
 		m_connected = false;
 		m_directoryBrowsing = false;
+		m_contextRead = false;
+		m_projectMemory = false;
+		m_isolatedTextWorkers = false;
+		m_runnerStartup = false;
 		m_leasedChannelTake = false;
+		m_providerNativeContext = false;
 	}
 }

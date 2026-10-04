@@ -431,6 +431,7 @@ namespace
 		SetPositiveNumber(obj, kMessageEstimatedCostUsdField, msg.estimated_cost_usd);
 		SetPositiveNumber(obj, kMessageTimeToFirstTokenMsField, static_cast<double>(msg.time_to_first_token_ms));
 		SetPositiveNumber(obj, kMessageProcessingTimeMsField, static_cast<double>(msg.processing_time_ms));
+		uam::json::SetString(obj, "stop_reason", msg.stop_reason);
 		if (msg.interrupted)
 		{
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
@@ -553,6 +554,7 @@ namespace
 		msg.time_to_first_token_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageTimeToFirstTokenMsField));
 		msg.processing_time_ms = NonNegativeIntFieldOrZero(obj.Find(kMessageProcessingTimeMsField));
 		msg.interrupted = JsonBoolOrDefault(obj.Find(kMessageInterruptedField), false);
+		msg.stop_reason = JsonStringOrEmpty(obj.Find("stop_reason"));
 		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
 		msg.continues_turn = JsonBoolOrDefault(obj.Find(kMessageContinuesTurnField), false);
 		msg.acp_prompt_not_sent = JsonBoolOrDefault(obj.Find("acp_prompt_not_sent"), false);
@@ -770,7 +772,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.stop_reason == rhs.stop_reason && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -910,6 +912,9 @@ namespace
 	{
 		if (lhs.approval_mode != rhs.approval_mode || lhs.uam_agent_id != rhs.uam_agent_id ||
 		    lhs.last_prompt_agent_definition_hash != rhs.last_prompt_agent_definition_hash ||
+	    lhs.provider_handoff_context != rhs.provider_handoff_context ||
+	    lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
+	    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts ||
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
@@ -929,7 +934,12 @@ namespace
 		       lhs.remote_turn_reconnect_pending == rhs.remote_turn_reconnect_pending &&
 		       lhs.remote_process_exists == rhs.remote_process_exists &&
 		       lhs.remote_stop_cleanup_pending == rhs.remote_stop_cleanup_pending &&
+		       lhs.native_session_reset_pending == rhs.native_session_reset_pending &&
+		       lhs.provider_handoff_context == rhs.provider_handoff_context &&
+		       lhs.provider_handoff_session_id == rhs.provider_handoff_session_id &&
 		       lhs.remote_restart_pending == rhs.remote_restart_pending &&
+		       lhs.remote_recovery_enabled == rhs.remote_recovery_enabled &&
+		       lhs.remote_recovery_state == rhs.remote_recovery_state &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -962,7 +972,10 @@ namespace
 
 	bool ChatScalarFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		return lhs.interaction_at == rhs.interaction_at && ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
+		return lhs.interaction_at == rhs.interaction_at && lhs.attention_revision == rhs.attention_revision && lhs.last_stop_reason == rhs.last_stop_reason &&
+		       lhs.goal_command_revision == rhs.goal_command_revision &&
+		       lhs.goal_pending_continuation_id == rhs.goal_pending_continuation_id &&
+		       ChatIdentityFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatBranchFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatDisplayFieldsEquivalentForRecovery(lhs, rhs) &&
 		       ChatWorkspaceFieldsEquivalentForRecovery(lhs, rhs) &&
@@ -1051,6 +1064,11 @@ namespace
 		    chat.remote_turn_reconnect_pending);
 		chat.remote_stop_cleanup_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteStopCleanupPendingField), false);
+		chat.native_session_reset_pending = JsonBoolOrDefault(root.Find("native_session_reset_pending"), false);
+		chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
+		chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+		chat.remote_recovery_enabled = JsonBoolOrDefault(root.Find("remote_recovery_enabled"), false);
+		chat.remote_recovery_state = JsonStringOrEmpty(root.Find("remote_recovery_state"));
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -1190,6 +1208,10 @@ namespace
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
+		chat.attention_revision = JsonStringOrEmpty(root.Find("attention_revision"));
+		chat.last_stop_reason = JsonStringOrEmpty(root.Find("last_stop_reason"));
+		chat.goal_command_revision = JsonStringOrEmpty(root.Find("goal_command_revision"));
+		chat.goal_pending_continuation_id = JsonStringOrEmpty(root.Find("goal_pending_continuation_id"));
 		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.pinned = JsonBoolOrDefault(root.Find(kChatPinnedField), false);
 		chat.linked_files = JsonStringArrayOrEmpty(root.Find(kChatLinkedFilesField));
@@ -1228,6 +1250,17 @@ namespace
 		chat.approval_mode = JsonStringOrEmpty(root.Find(kChatApprovalModeField));
 		chat.uam_agent_id = uam::strings::NonEmptyOrFallback(JsonStringOrEmpty(root.Find(kChatUamAgentIdField)), "build");
 		chat.last_prompt_agent_definition_hash = JsonStringOrEmpty(root.Find(kChatLastPromptAgentDefinitionHashField));
+	chat.provider_handoff_context = JsonStringOrEmpty(root.Find("provider_handoff_context"));
+	chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
+	if (const JsonValue* contexts = uam::json::ArrayOrNull(root.Find("provider_handoff_cli_contexts")))
+	{
+		for (const JsonValue& context : contexts->array_value)
+		{
+			const std::string host = JsonStringOrEmpty(context.Find("host"));
+			const std::string directory = JsonStringOrEmpty(context.Find("directory"));
+			if (!host.empty() && !directory.empty()) chat.provider_handoff_cli_contexts.push_back({host, directory, JsonStringOrEmpty(context.Find("connection"))});
+		}
+	}
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
 		chat.goal_owner_chat_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
@@ -1566,6 +1599,11 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	                   chat.remote_process_exists);
 	uam::json::SetBool(root, kChatRemoteStopCleanupPendingField,
 	                   chat.remote_stop_cleanup_pending);
+	uam::json::SetBool(root, "native_session_reset_pending", chat.native_session_reset_pending);
+	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
+	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	uam::json::SetBool(root, "remote_recovery_enabled", chat.remote_recovery_enabled);
+	uam::json::SetString(root, "remote_recovery_state", chat.remote_recovery_state);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -1658,6 +1696,10 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(root, "attention_revision", chat.attention_revision);
+	uam::json::SetString(root, "last_stop_reason", chat.last_stop_reason);
+	uam::json::SetString(root, "goal_command_revision", chat.goal_command_revision);
+	uam::json::SetString(root, "goal_pending_continuation_id", chat.goal_pending_continuation_id);
 	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetBool(root, kChatPinnedField, chat.pinned);
 	uam::json::SetValue(root, kChatLinkedFilesField, StringArrayToJson(chat.linked_files));
@@ -1671,6 +1713,18 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
 	uam::json::SetString(root, kChatUamAgentIdField, uam::strings::NonEmptyOrFallback(chat.uam_agent_id, "build"));
 	uam::json::SetString(root, kChatLastPromptAgentDefinitionHashField, chat.last_prompt_agent_definition_hash);
+	uam::json::SetString(root, "provider_handoff_context", chat.provider_handoff_context);
+	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
+	JsonValue contexts = uam::json::Array();
+	for (const ProviderHandoffCliContext& location : chat.provider_handoff_cli_contexts)
+	{
+		JsonValue context = uam::json::Object();
+		uam::json::SetString(context, "host", location.execution_host_id);
+		uam::json::SetString(context, "directory", location.directory);
+		uam::json::SetString(context, "connection", location.connection_identity);
+		uam::json::PushValue(contexts, std::move(context));
+	}
+	uam::json::SetValue(root, "provider_handoff_cli_contexts", std::move(contexts));
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
@@ -1899,6 +1953,7 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	}
 	uam::json::SetString(*summary, kChatLastOpenedAtField,
 	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
 	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
@@ -2060,6 +2115,8 @@ namespace
 		hydrated.interaction_at = summary.interaction_at;
 		if (summary.last_opened_at > hydrated.last_opened_at)
 			hydrated.last_opened_at = summary.last_opened_at;
+		hydrated.attention_revision = summary.attention_revision;
+		hydrated.last_stop_reason = summary.last_stop_reason;
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
@@ -2074,6 +2131,9 @@ namespace
 		hydrated.approval_mode = summary.approval_mode;
 		hydrated.uam_agent_id = summary.uam_agent_id;
 		hydrated.last_prompt_agent_definition_hash = summary.last_prompt_agent_definition_hash;
+		hydrated.provider_handoff_context = summary.provider_handoff_context;
+		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
@@ -2083,6 +2143,11 @@ namespace
 		hydrated.remote_process_exists = summary.remote_process_exists;
 		hydrated.remote_stop_cleanup_pending = summary.remote_stop_cleanup_pending;
 		hydrated.remote_restart_pending = summary.remote_restart_pending;
+		hydrated.native_session_reset_pending = summary.native_session_reset_pending;
+		hydrated.provider_handoff_context = summary.provider_handoff_context;
+		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
+		hydrated.remote_recovery_enabled = summary.remote_recovery_enabled;
+		hydrated.remote_recovery_state = summary.remote_recovery_state;
 		hydrated.remote_process_control_token = summary.remote_process_control_token;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
@@ -2102,6 +2167,8 @@ namespace
 		hydrated.acp_dispatched_queued_prompt_count =
 		    summary.acp_dispatched_queued_prompt_count;
 		hydrated.active_goal_id = summary.active_goal_id;
+		hydrated.goal_command_revision = summary.goal_command_revision;
+		hydrated.goal_pending_continuation_id = summary.goal_pending_continuation_id;
 		hydrated.goals = summary.goals;
 		hydrated.command_safety_tier = summary.command_safety_tier;
 		hydrated.computer_use_enabled = summary.computer_use_enabled;
@@ -2134,6 +2201,7 @@ namespace
 		if (summary.chat && summary.chat->id == chat.id)
 		{
 			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
+			chat.attention_revision = summary.chat->attention_revision;
 			chat.interaction_at = summary.chat->interaction_at;
 		}
 	}

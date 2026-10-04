@@ -1,3 +1,4 @@
+import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
@@ -12,7 +13,7 @@ import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT
 import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
-import { PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
@@ -466,6 +467,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
+  if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
+    return <CompactionSeparator summary={message.blocks[0].text} />
+  }
   const isUserMessage = message.role === 'user'
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
     ? sessionParentChatId
@@ -540,7 +544,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           workingMode={workingMode}
         />
       )}
-      {!isUserMessage && message.interrupted && <div className="conversation-interrupted">Response interrupted</div>}
+      {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
+        <div className="conversation-interrupted">{stoppedResponseLabel(message.stopReason, message.interrupted)}</div>}
 		</MessageFrame>
 		</>
   )
@@ -684,8 +689,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setSessionCommandSafetyTier = useAppStore((s) => s.setSessionCommandSafetyTier)
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
-  const computerUseMode = Boolean(session.computerUseEnabled)
+  const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
   const setSessionSmallModelMode = useAppStore((s) => s.setSessionSmallModelMode)
   const configuredApprovalMode = useAppStore((s) => s.sessions.find((candidate) => candidate.id === session.id)?.approvalMode)
@@ -1941,7 +1947,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
-        { id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) },
+        ...(COMPUTER_USE_ENABLED ? [{ id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) }] : []),
         {
           id: 'memory',
           label: '/memory',
@@ -2208,7 +2214,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }
 
   return (
-    <div className="relative h-full flex overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="relative h-full flex overflow-hidden"
+      onPointerDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      onKeyDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      style={{ background: 'var(--bg)' }}>
       {providerHandoffTarget && (
         <ProviderHandoffDialog
           sourceName={currentProviderName}
@@ -2348,6 +2363,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           key={`turn-${turnSerial}-assistant`}
                           startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2409,6 +2425,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           key={`turn-${turnSerial}-after-user-content`}
                           startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                             tools={acp?.toolCalls ?? []}
                             planSummary={acp?.planSummary ?? ''}
@@ -2464,6 +2481,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     key={`turn-${turnSerial}-fallback-content`}
                     startedAt={turnClockStart}
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
                       tools={acp?.toolCalls ?? []}
                       planSummary={acp?.planSummary ?? ''}
@@ -2564,6 +2582,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
 			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
+            onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
+              () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
+            )}
+            turnRunning={Boolean(acp?.processing || cli?.processing)}
             resumePending={goalSubmitting}
             onRemove={handleRemoveGoal}
             onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
@@ -2645,6 +2667,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 Claude structured mode cannot surface interactive permission or user-input prompts, and model discovery is limited to the active model. Use the CLI fallback when a turn needs interaction.
               </Notice>
             )}
+            {acp && !acp.running && !currentAcpError && acp.lastStopReason &&
+              !messages.some((message) => message.stopReason === acp.lastStopReason) && (
+                <div role="status" className="conversation-interrupted">
+                  {stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')}
+                </div>
+              )}
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 role="alert"
@@ -3089,6 +3117,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
                           This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
+                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <label className="mt-2 flex items-center gap-2">
+                            <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
+                              void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
+                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
+                              })
+                            }} />
+                            Recover this chat after host restart
+                          </label>
+                          {(!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled') && <div className="mt-1">Enable runner startup in SSH host settings first.</div>}
+                          {session.remoteRecoveryState === 'blocked' && <div className="mt-1" role="status">Recovery blocked. Review the last turn before retrying.</div>}
                         </div>
                       ) : (
                         <>

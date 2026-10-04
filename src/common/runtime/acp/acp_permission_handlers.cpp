@@ -415,7 +415,7 @@ void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& ch
 			AppendAcpDiagnostic(session, "permission", "queue_limit_exceeded",
 			                    pending.provider_request_method, pending.request_id_json,
 			                    false, 0, message);
-			QueueAcpProcessStop(app, session);
+			QueueAcpProcessStop(app, session, session.chat_id);
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 			session.running = false;
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);

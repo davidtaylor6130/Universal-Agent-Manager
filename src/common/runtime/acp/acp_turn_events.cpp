@@ -8,6 +8,28 @@
 namespace uam::acp_detail
 {
 
+void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity)
+{
+	for (AcpTurnEventState& event : session.turn_events)
+	{
+		if (event.type == "context_compaction" && !identity.empty() && event.request_id_json == identity)
+		{
+			if (!summary.empty()) event.text = summary;
+			SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			ScheduleChatSave(app, chat, 0.0);
+			return;
+		}
+	}
+	AcpTurnEventState event;
+	event.type = "context_compaction";
+	event.text = summary;
+	event.request_id_json = identity;
+	session.turn_events.push_back(std::move(event));
+	EnsureAssistantMessage(chat, session);
+	SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+	ScheduleChatSave(app, chat, 0.0);
+}
+
 bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<MessageBlock>& rhs)
 {
 	if (lhs.size() != rhs.size())
@@ -26,6 +48,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 
 bool PersistableTurnEvent(const AcpTurnEventState& event)
 {
+	if (event.type == "context_compaction") return true;
 	if (uam::acp_stream_types::IsTextTurnEventType(event.type))
 	{
 		return !event.text.empty();

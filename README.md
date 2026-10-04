@@ -169,6 +169,8 @@ There is no Linux desktop GUI build. RAG engines, local model engines, templates
 
 ## Build from source
 
+Open **Build UAM.command** on macOS or **Build UAM.bat** on Windows for the browser configurator. It checks prerequisites, selects providers and optional features, builds into a separate folder inside `Builds/`, and offers Launch after success. [Configurator instructions and feature flags](tools/build-configurator/README.md).
+
 Requirements:
 
 - CMake 3.20 or newer
@@ -243,6 +245,11 @@ cmake --build Builds --config Release --parallel 4
 ```
 
 The GitHub release workflow builds these helpers independently, verifies their reported version, and injects all three into each desktop package.
+
+On Windows, `./build.ps1` acquires the three matching `UAM-runner-<platform>-<architecture>.zip` release assets before configuring the app. Existing artifacts are reused only after their SHA-256, exact application version, protocol and source fingerprint pass validation. Releases publish these small archives separately from desktop packages. Local builds and CI use `scripts/acquire_remote_runners.ps1` and the same four-file contract.
+
+For an offline or unreleased source version, download that revision's three runner artifacts from CI. Put the runner, `uam-runner.sha256`, `uam-runner.version` and `uam-runner.manifest.json` files in each directory above, or provide the standalone ZIPs with `./build.ps1 -RemoteRunnerArchiveDirectory C:\UAM-helpers -Offline`. Acquisition fails before CMake and names the missing platform or mismatched version. It never substitutes an older helper.
+
 
 ## Tests and release gates
 

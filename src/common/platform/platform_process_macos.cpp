@@ -329,9 +329,11 @@ class MacProcessService final : public IPlatformProcessService
 			SignalTerminalProcessGroup(child_pid, SIGKILL);
 		}
 		int status = 0;
-		(void)TerminateCapturedCommandProcess(child_pid, &status);
-		process.child_pid = -1;
-		StopParentDeathWatchdog(process.watchdog_pid);
+		if (TerminateCapturedCommandProcess(child_pid, &status))
+		{
+			process.child_pid = -1;
+			StopParentDeathWatchdog(process.watchdog_pid);
+		}
 	}
 
 	void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const override
@@ -362,6 +364,7 @@ class MacProcessService final : public IPlatformProcessService
 		}
 
 		int status = 0;
+		if (!CleanupExitedOwnedProcessGroup(process.child_pid)) return false;
 		const pid_t wait_result = waitpid(process.child_pid, &status, WNOHANG);
 		if (wait_result == 0)
 		{
@@ -504,6 +507,36 @@ class MacProcessService final : public IPlatformProcessService
 		}
 #else
 		(void)keep_awake;
+#endif
+	}
+
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	{
+#if defined(UAM_HEADLESS_RUNNER)
+		(void)argv;
+		if (error_out != nullptr) *error_out = "Opening a terminal is unavailable in the headless runner.";
+		return false;
+#else
+		std::error_code error;
+		const std::filesystem::path directory = std::filesystem::temp_directory_path(error) / ("uam-terminal-" + GenerateUuid());
+		if (argv.empty() || error || !std::filesystem::create_directory(directory, error))
+		{
+			if (error_out != nullptr) *error_out = "Could not create the private terminal launcher.";
+			return false;
+		}
+		std::filesystem::permissions(directory, std::filesystem::perms::owner_all, error);
+		const std::filesystem::path script = directory / "Open SSH workspace.command";
+		const std::string text = "#!/bin/sh\nrm -f -- \"$0\"; rmdir -- \"$(dirname -- \"$0\")\" 2>/dev/null\nexec " + uam::shell::JoinEscapedArgs(argv) + "\n";
+		if (error || !uam::io::WriteTextFile(script, text))
+		{
+			std::filesystem::remove_all(directory, error);
+			if (error_out != nullptr) *error_out = "Could not write the private terminal launcher.";
+			return false;
+		}
+		std::filesystem::permissions(script, std::filesystem::perms::owner_all, error);
+		if (!error && uam::platform::OpenPathWithApplication(script, "com.apple.Terminal", error_out)) return true;
+		std::filesystem::remove_all(directory, error);
+		return false;
 #endif
 	}
 

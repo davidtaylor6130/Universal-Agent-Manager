@@ -18,6 +18,8 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/terminal/terminal_native_identity.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
@@ -27,6 +29,11 @@ namespace uam
 
 	inline bool FailCliTerminalStart(CliTerminalState& terminal, CliTerminalLifecycleState failure_state, std::string error_message)
 	{
+		if (terminal.context_preparation != nullptr)
+		{
+			terminal.context_preparation->cancellation.request_stop();
+			terminal.context_preparation.reset();
+		}
 		if (failure_state == CliTerminalLifecycleState::Disabled)
 		{
 			MarkCliTerminalDisabled(terminal);
@@ -40,19 +47,19 @@ namespace uam
 		return false;
 	}
 
-	/// <summary>Bind a new remote Claude terminal before launch, or open the native picker for a legacy chat.</summary>
-	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
+	/// <summary>Bind a new Claude terminal before launch, or open the native picker for a legacy chat.</summary>
+	inline bool PrepareFreshClaudeTerminalArgv(AppState& app, ChatSession& chat,
 	    std::vector<std::string>& argv, std::string& error)
 	{
 		if (!chat.native_session_id.empty()) return true;
-		if (!chat.remote_claude_session_unstarted)
+		if (!chat.remote_claude_session_unstarted && !chat.native_session_reset_pending)
 		{
 			// Older chats may have launched before UAM recorded remote Claude IDs.
 			argv.push_back("--resume");
 			return true;
 		}
 
-		// Claude has no empty-session creation command. Save the ID before SSH
+		// Claude has no empty-session creation command. Save the ID before launch
 		// starts so every later launch can target the same conversation.
 		const std::string session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id.empty())
@@ -60,11 +67,14 @@ namespace uam
 			error = "Could not create a Claude session ID.";
 			return false;
 		}
+		const bool previous_reset_pending = chat.native_session_reset_pending;
 		chat.native_session_id = session_id;
+		chat.native_session_reset_pending = false;
 		chat.remote_claude_session_unstarted = false;
 		if (!ChatRepository::SaveChat(app.data_root, chat))
 		{
 			chat.native_session_id.clear();
+			chat.native_session_reset_pending = previous_reset_pending;
 			chat.remote_claude_session_unstarted = true;
 			error = "Could not save the Claude session ID. Retry when storage is available.";
 			return false;
@@ -74,9 +84,15 @@ namespace uam
 		return true;
 	}
 
+	inline bool PrepareRemoteClaudeTerminalArgv(AppState& app, ChatSession& chat,
+	    std::vector<std::string>& argv, std::string& error)
+	{
+		return PrepareFreshClaudeTerminalArgv(app, chat, argv, error);
+	}
+
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
-		StopCliTerminal(terminal);
+		if (terminal.context_preparation == nullptr) StopCliTerminal(terminal);
 		if (chat.imported_read_only)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
@@ -143,11 +159,11 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, "Active provider does not expose an interactive CLI command.");
 		}
-		if (remote && provider.id == uam::provider_ids::kClaudeCli &&
+		if (provider.id == uam::provider_ids::kClaudeCli &&
 		    ResolveProviderInteractiveResumeId(app, chat, provider).empty())
 		{
 			std::string error;
-			if (!PrepareRemoteClaudeTerminalArgv(app, chat, provider_argv, error))
+			if (!PrepareFreshClaudeTerminalArgv(app, chat, provider_argv, error))
 				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, error);
 		}
 		terminal.rows = ClampCliTerminalLaunchRows(rows);
@@ -181,6 +197,21 @@ namespace uam
 		terminal.last_polled_time_s = 0.0;
 		terminal.input_ready = false;
 		terminal.startup_time_s = launch_time_s;
+		terminal.native_identity_requires_owned_reply = terminal.attached_session_id.empty() &&
+		    (provider.id == provider_ids::kCodexCli || provider.id == provider_ids::kGeminiCli);
+		terminal.native_identity_command.clear();
+		terminal.native_identity_output.clear();
+		terminal.native_identity_deferred_input.clear();
+		terminal.native_identity_query_phase = 0;
+		terminal.native_identity_query_time_s = launch_time_s;
+		const std::string version_key = CliProviderVersionStateKey(provider.id, execution_host->id);
+		if (terminal.attached_session_id.empty())
+		{
+			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
+			if (version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked)
+				terminal.native_identity_command = NativeSessionStatusCommand(provider.id, version->second.installed_version);
+		}
+		if (!terminal.native_identity_command.empty()) terminal.native_identity_query_phase = 1;
 		MarkCliTerminalStopped(terminal);
 
 		const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
@@ -191,13 +222,26 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
 		    : runtime.BuildInteractiveEnvironment(provider);
+		std::string context_launch_channel;
+		if (!PrepareCliProviderHandoffAsync(app, terminal, chat, *execution_host, provider_argv, launch_environment, context_launch_channel, startup_error))
+		{
+			if (!startup_error.empty()) return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, startup_error);
+			terminal.should_launch = true;
+			return true;
+		}
+		launch_argv = provider_argv;
+		if (remote && provider.id == provider_ids::kCodexCli && !context_launch_channel.empty())
+		{
+			terminal.attached_session_id.clear();
+			terminal.native_identity_requires_owned_reply = true;
+		}
 		if (remote)
 		{
 			process_working_directory = uam::remote::PackagedRunnerPath().parent_path();
 			launch_argv = uam::remote::BuildRemoteTerminalSshArgv(
 			    execution_host->ssh_alias, execution_host->platform,
 			    execution_host->runner_version, workspace_root, provider_argv,
-			    execution_host->runner_directory);
+			    execution_host->runner_directory, context_launch_channel);
 			if (launch_argv.empty()) startup_error = "The remote terminal launch request is invalid.";
 		}
 		if (!startup_error.empty() ||

@@ -25,6 +25,7 @@ export function useUpdateMonitor() {
   const providers = useAppStore((state) => state.providers)
   const versionManager = useAppStore((state) => state.cliVersionManager)
   const executionHosts = useAppStore((state) => state.executionHosts)
+  const automaticProviderUpdates = useAppStore((state) => state.automaticProviderUpdates)
   const enabled = useAppStore((state) => state.updateChecksEnabled)
   const lastCheckedAt = useAppStore((state) => state.updateLastCheckedAt)
   const dismissedVersions = useAppStore((state) => state.dismissedUpdateVersions)
@@ -41,6 +42,7 @@ export function useUpdateMonitor() {
   const [remoteHelperUpdatingId, setRemoteHelperUpdatingId] = useState('')
   const autoCheckAttemptedRef = useRef(false)
   const checkingRef = useRef(false)
+  const autoInstallAttempts = useRef(new Set<string>())
 
   const checkNow = useCallback(async () => {
     if (checkingRef.current) return
@@ -50,6 +52,9 @@ export function useUpdateMonitor() {
     setChecking(true)
     setError('')
     try {
+      // Cache attempts too, so restarts do not repeatedly hit an unavailable/rate-limited service.
+      if (!await setUpdateSettings({ updateLastCheckedAt: new Date().toISOString() }))
+        throw new Error('Could not save the update check status.')
       const nextCatalog = await fetchLatestUpdateCatalog()
       setCatalog(nextCatalog)
       if (isCefContext()) {
@@ -160,6 +165,37 @@ export function useUpdateMonitor() {
     })
   }, [applyCliProviderVersion])
 
+  useEffect(() => {
+    if (!automaticProviderUpdates || !cefStateHydrated || checking) return
+    const targets: { providerId: string; version: string; executionHostId?: string }[] = []
+    for (const update of updates) {
+      if (!update.providerId || !update.installable || update.remoteHostId) continue
+      const state = providerStates.find((entry) => entry.providerId === update.providerId &&
+        (entry.executionHostId || 'local') === (update.executionHostId || 'local'))
+      if (!state || state.running || state.blockingChatIds?.length || state.checkError) continue
+      const attempt = JSON.stringify([update.id, update.latestVersion])
+      if (autoInstallAttempts.current.has(attempt)) continue
+      autoInstallAttempts.current.add(attempt)
+      // One automatic attempt per release. Failures remain available for manual retry.
+      targets.push({ providerId: update.providerId, version: update.latestVersion, ...(update.executionHostId ? { executionHostId: update.executionHostId } : {}) })
+    }
+    if (targets.length) void sendToCEF({ action: 'applyCliProviderVersions', payload: { targets } }).then((response) => {
+      if (!response.ok) setError(response.error || 'Automatic provider updates could not start. Retry manually in Updates.')
+    }, () => setError('Automatic provider updates could not start. Retry manually in Updates.'))
+  }, [automaticProviderUpdates, cefStateHydrated, checking, updates, providerStates, applyCliProviderVersion])
+
+  const stopSessionsAndUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
+    const response = await sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, executionHostId, stopSessions: true } })
+    return response
+  }, [])
+
+  const installProviderUpdates = useCallback(async (targets: { providerId: string; latestVersion: string; executionHostId?: string }[]) => {
+    const response = await sendToCEF({ action: 'applyCliProviderVersions', payload: {
+      targets: targets.map((target) => ({ providerId: target.providerId, version: target.latestVersion, ...(target.executionHostId ? { executionHostId: target.executionHostId } : {}) })),
+    } })
+    return response
+  }, [])
+
   const dismiss = useCallback((id: string, version: string) => {
     void setUpdateSettings({ dismissedUpdateVersions: { ...dismissedVersions, [id]: version } })
   }, [dismissedVersions, setUpdateSettings])
@@ -207,6 +243,10 @@ export function useUpdateMonitor() {
 
   return {
     updates,
+    automaticProviderUpdates,
+    setUpdateSettings,
+    stopSessionsAndUpdate,
+    installProviderUpdates,
     hasCatalog: catalog !== null,
     checking,
     error,

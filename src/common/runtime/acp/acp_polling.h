@@ -19,6 +19,7 @@ inline constexpr std::uint64_t kAcpOutputFloodBytesPerMinute = 256ull * 1024 * 1
 
 bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& line, CefRefPtr<CefBrowser> browser);
 bool AppendAcpStdoutChunk(AcpSessionState& session, std::string_view chunk);
+std::size_t ProcessBufferedAcpStdoutAfterStop(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines);
 std::size_t ProcessBufferedAcpStdoutForTests(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines);
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat);

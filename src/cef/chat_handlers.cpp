@@ -1,6 +1,7 @@
 #include "uam_query_handler.h"
 #include "uam_query_handler_async.h"
 #include "uam_query_handler_internal.h"
+#include "remote/runner_client.h"
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
@@ -825,4 +826,57 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 	cb->Success(nlohmann::json{
 	    {"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)},
 	    {"deletedChatIds", std::move(deleted_chat_ids)}}.dump());
+}
+
+void UamQueryHandler::HandleAcknowledgeChatAttention(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string revision = payload.value("attentionRevision", "");
+	if (!ChatDomainService().AcknowledgeChatAttention(m_app, chat_id, revision))
+	{
+		cb->Failure(500, "Could not save chat acknowledgement.");
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const std::string folder_id = payload.value("folderId", "");
+	const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+	const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
+	if (chat == nullptr || folder == nullptr) { cb->Failure(404, "The chat or destination workspace no longer exists."); return; }
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	if (host == nullptr || host->id == "local" || folder->execution_host_id != chat->execution_host_id)
+	{ cb->Failure(400, "Select a workspace on this chat's SSH host."); return; }
+	const ExecutionHost observed_host = *host;
+	const std::string original_workspace = chat->workspace_directory;
+	const std::string destination = folder->directory;
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [observed_host, destination]()
+	    {
+		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+		        uam::remote::SshBridgeArgv(observed_host.ssh_alias, observed_host.platform, observed_host.runner_version,
+		            observed_host.runner_directory, observed_host.runner_protocol_version), observed_host.runner_version, observed_host.runner_protocol_version);
+		    uam::remote::DirectoryListing listing;
+		    std::string error;
+		    return client.ListDirectories(uam::paths::PathFromUtf8(destination), listing, &error)
+		        ? uam::query_handler_async::AsyncSuccess({}) : uam::query_handler_async::AsyncFailure(502, error);
+	    },
+	    [this, browser, chat_id, folder_id, observed_host, original_workspace, destination](uam::query_handler_async::AsyncCefResult& result)
+	    {
+		    if (!result.ok) return;
+		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+		    const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
+		    const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, observed_host.id);
+		    if (current == nullptr || folder == nullptr || host == nullptr || current->workspace_directory != original_workspace ||
+		        current->execution_host_id != observed_host.id || folder->execution_host_id != observed_host.id ||
+		        folder->directory != destination || !uam::execution_hosts::SameConnection(*host, observed_host))
+		    { result = uam::query_handler_async::AsyncFailure(409, "The chat or workspace changed during remote validation."); return; }
+		    if (!ChatHistorySyncService().MoveChatToFolder(m_app, *current, folder_id))
+		    { result = uam::query_handler_async::AsyncFailure(409, m_app.status_line); return; }
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+	    });
 }

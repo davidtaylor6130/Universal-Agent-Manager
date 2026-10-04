@@ -4,6 +4,7 @@
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
@@ -48,6 +49,35 @@ namespace uam
 		ShuttingDown,
 	};
 
+	struct CliContextPreparation
+	{
+		std::atomic<bool> finished{false};
+		std::stop_source cancellation;
+		std::string baseline;
+		std::string chat_id;
+		std::vector<std::string> argv;
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		bool succeeded = false;
+	};
+
+	struct CliContextPreparationTask
+	{
+		std::shared_ptr<CliContextPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
+	struct CodexActivityStringCursor
+	{
+		bool discard_checkpoint_tail = false;
+		bool inside_string = false;
+		bool escaped = false;
+		bool compacting = false;
+		std::string token;
+		int token_expected_bytes = 0;
+	};
+
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::string terminal_id;
@@ -56,10 +86,18 @@ namespace uam
 		std::string attached_chat_id;
 		std::string attached_session_id;
 		std::vector<std::string> session_ids_before;
+		bool native_session_discovery_ambiguous = false;
+		bool native_identity_requires_owned_reply = false;
+		std::string native_identity_command;
+		std::string native_identity_output;
+		std::string native_identity_deferred_input;
+		int native_identity_query_phase = 0;
+		double native_identity_query_time_s = 0.0;
 		std::vector<std::string> linked_files_snapshot;
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;
 		bool should_launch = false;
+		std::shared_ptr<CliContextPreparation> context_preparation;
 		bool ui_attached = false;
 		std::string ui_attachment_id;
 		std::shared_ptr<std::stop_source> native_session_setup_cancel;
@@ -83,6 +121,19 @@ namespace uam
 		std::string current_turn_output_bytes;
 		bool prompt_settle_required = false;
 		double prompt_settle_candidate_time_s = 0.0;
+		// Transient cursor for the verified native Codex rollout, never persisted.
+		std::string native_activity_provider_id;
+		std::string codex_activity_session_id;
+		std::filesystem::path codex_activity_cwd;
+		std::filesystem::path codex_activity_rollout;
+		std::uintmax_t codex_activity_offset = 0;
+		std::string codex_activity_partial_line;
+		CodexActivityStringCursor codex_activity_string_cursor;
+		std::string codex_activity_turn_id;
+		bool codex_activity_discard_line = false;
+		bool codex_activity_awaiting_turn = false;
+		bool codex_activity_read_failed = false;
+		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
 		std::string pending_steer_prompt;
 		double pending_steer_started_time_s = 0.0;
@@ -344,8 +395,36 @@ namespace uam
 		std::string provider_turn_id;
 	};
 
+	/// <summary>Intent survives asynchronous remote shutdown through final settlement.</summary>
+	enum class AcpStopPurpose
+	{
+		Interrupt,
+		ProviderUpdate,
+		Timeout
+	};
+
+	struct RemoteContextPreparation
+	{
+		ExecutionHost host;
+		std::string workspace;
+		std::string prompt;
+		std::string context;
+		std::string error;
+		std::stop_source cancel;
+		std::atomic<bool> finished{false};
+	};
+	struct RemoteContextTask
+	{
+		std::shared_ptr<RemoteContextPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
+		AcpStopPurpose stop_purpose = AcpStopPurpose::Interrupt;
+		platform::ProcessStopOutcome stop_outcome = platform::ProcessStopOutcome::Unknown;
+		bool local_stop_pending = false;
+		std::string goal_command_revision;
 		std::string interaction_at;
 		std::string interaction_wait_request_id;
 		std::string chat_id;
@@ -415,6 +494,7 @@ namespace uam
 		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
+		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
 		// crash-looping provider cannot restart forever; cleared when a new user
@@ -535,6 +615,13 @@ namespace uam
 	struct AsyncAcpProcessStopTask
 	{
 		std::string chat_id;
+		std::string provider_id;
+		std::string execution_host_id = "local";
+		AcpStopPurpose purpose = AcpStopPurpose::Interrupt;
+		int turn_serial = 0;
+		std::shared_ptr<platform::ObservedProcessStopResult> result;
+		std::shared_ptr<platform::StdioProcessPlatformFields> owned_process;
+		bool result_consumed = false;
 		std::string native_writer_key;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
@@ -571,6 +658,8 @@ namespace uam
 		std::string hydrated_messages_digest;
 		bool low_signal_skip = false;
 		bool hydration_failed = false;
+		bool remote_applied = false;
+		int remote_entry_count = 0;
 	};
 
 	struct AsyncMemoryExtractionTask
@@ -584,6 +673,8 @@ namespace uam
 		std::string source_persisted_messages_digest;
 		int scan_start_message_index = -1;
 		std::filesystem::path workspace_root;
+		std::optional<ExecutionHost> remote_host;
+		std::string remote_workspace;
 		std::filesystem::path native_history_chats_dir;
 		std::vector<std::string> native_history_files_before;
 		std::shared_ptr<AsyncProcessTaskState> state;
@@ -693,6 +784,15 @@ namespace uam
 		std::string message;
 		std::string check_error;
 		std::string install_output;
+		bool verify_failed_install = false;
+	};
+
+	struct PendingCliUpdate
+	{
+		std::string provider_id;
+		std::string version;
+		ExecutionHost execution_host;
+		double deadline = 0;
 	};
 
 	struct PendingGoalIterationState
@@ -770,15 +870,20 @@ namespace uam
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
+		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;
+		std::unique_ptr<std::jthread> provider_context_cleanup_worker;
+		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
+		double provider_context_cleanup_not_before_s = 0.0;
+		std::vector<RemoteContextTask> remote_context_tasks;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;
 
 		std::unordered_map<std::string, std::string> resolved_native_sessions_by_chat_id;
 		AsyncCommandTask runtime_cli_version_check_task;
-		AsyncCommandTask runtime_cli_pin_task;
+		std::unordered_map<std::string, AsyncCommandTask> runtime_cli_install_tasks;
+		std::unordered_map<std::string, PendingCliUpdate> pending_cli_updates;
 		std::string runtime_cli_version_provider_id;
-		std::string runtime_cli_pin_provider_id;
 		std::deque<std::pair<std::string, std::string>> runtime_cli_version_check_queue;
 		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;

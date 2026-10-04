@@ -137,6 +137,7 @@ struct Message
 	int time_to_first_token_ms = 0;
 	int processing_time_ms = 0;
 	bool interrupted = false;
+	std::string stop_reason;
 	bool priority_steer = false;
 	std::string checkpoint_sha;
 	std::string checkpoint_parent_sha;
@@ -256,14 +257,23 @@ struct AgentRun
 /// <summary>
 /// Chat session metadata and message history.
 /// </summary>
+struct ProviderHandoffCliContext
+{
+	std::string execution_host_id;
+	std::string directory;
+	std::string connection_identity;
+	bool operator==(const ProviderHandoffCliContext&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string provider_id;
 	std::string native_session_id;
-	// Only chats created by a version that assigns remote Claude CLI IDs may
-	// create one on first launch. Older unbound chats may already have history.
+	bool native_session_reset_pending = false;
+	// New Claude chats may assign an owned CLI ID on first local or remote launch.
+	// Keep the persisted legacy field name; older unbound chats may already have history.
 	bool remote_claude_session_unstarted = false;
 	// Persisted only while a remote structured turn is active. A GUI restart uses
 	// this to reattach to the existing runner process without replaying the prompt.
@@ -276,6 +286,8 @@ struct ChatSession
 	// Persisted from a stop-then-restart request until the replacement prompt is
 	// durably delivered or the abandoned restart is cleaned up after relaunch.
 	bool remote_restart_pending = false;
+	bool remote_recovery_enabled = false;
+	std::string remote_recovery_state;
 	// Capability required to reattach to or control the helper-owned process.
 	std::string remote_process_control_token;
 	std::uintmax_t remote_delivered_stdout_cursor = 0;
@@ -311,6 +323,12 @@ struct ChatSession
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
+	/// Nonempty until an explicit interaction acknowledges this exact update.
+	std::string attention_revision;
+	std::string last_stop_reason;
+	/// Changes only for explicit goal commands, invalidating older completions.
+	std::string goal_command_revision;
+	std::string goal_pending_continuation_id;
 	/// Persisted recency of user input and runtime state events, excluding stream traffic.
 	std::string interaction_at;
 	bool pinned = false;
@@ -330,6 +348,11 @@ struct ChatSession
 	std::string uam_agent_id = "build";
 	// Provider and definition identity last dispatched as prompt context.
 	std::string last_prompt_agent_definition_hash;
+	/// <summary>Transcript snapshot carried to a new provider, bound after prompt delivery.</summary>
+	std::string provider_handoff_context;
+	std::string provider_handoff_session_id;
+	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
+	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
@@ -469,6 +492,9 @@ struct ExecutionHost
 	std::string last_seen_at;
 	std::string runner_directory;
 	int runner_protocol_version = 0;
+	std::string instruction_file;
+	bool startup_enabled = false;
+	std::string startup_status = "disabled";
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -509,6 +535,7 @@ struct AppSettings
 	int acp_setup_inactivity_timeout_seconds = 600;
 	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;
+	bool automatic_provider_updates = false;
 	std::string update_last_checked_at;
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;

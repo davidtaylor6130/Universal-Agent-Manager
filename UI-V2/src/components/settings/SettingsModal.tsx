@@ -1,3 +1,4 @@
+import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
@@ -159,7 +160,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
   { id: 'about', label: 'About', icon: Info },
-]
+].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED)) as SettingsSection[]
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'voice-input'] },
@@ -372,7 +373,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [settingsSearch, setSettingsSearch] = useState('')
   const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
-    const section = SETTINGS_SECTIONS.find(item => item.id === id)!
+    const section = SETTINGS_SECTIONS.find(item => item.id === id)
+    if (!section) return false
     const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id]}`.toLocaleLowerCase()
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
@@ -500,7 +502,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }))
   }
   const changeSection = (section: SettingsSectionId) => {
-    if (section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
@@ -589,6 +591,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemotePreview(null)
     setRemoteAlias('')
     setRemoteLabel('')
+  }
+
+  const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean) => {
+    if (remoteBusy) return
+    setRemoteBusy(true)
+    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled } })
+    setRemoteBusy(false)
+    setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
   }
 
   const removeRemoteHost = async (host: ExecutionHost) => {
@@ -1188,7 +1198,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusy(false)
   }
   useEffect(() => {
-    if (selectedSection === 'defaults') void loadCompanionSettings()
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'defaults') void loadCompanionSettings()
   }, [selectedSection])
   const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
     if (computerUseSaveInFlight.current) return
@@ -1234,9 +1244,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeProvider = providers.find((provider) => provider.id === activeSession?.providerId)
     const activeUamControlSupported = Boolean(
       activeSession
-      && (activeSession.executionHostId || 'local') === 'local'
       && activeProvider?.supportsStructured !== false
-      && ['gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+      && ['codex-app-server', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )
@@ -1330,7 +1339,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderSectionContent = () => {
-    if (selectedSection === 'computer-use') return renderComputerUse()
+    if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
         ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
@@ -1713,7 +1722,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             </div>
           </SectionCard>
-          {renderPhoneAccess()}
+          {MOBILE_COMPANION_ENABLED && renderPhoneAccess()}
         </div>
       )
     }
@@ -2040,7 +2049,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
-    if (selectedSection === 'remote-hosts') {
+    if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
       return (
         <div className="space-y-4">
@@ -2099,6 +2108,37 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
                     </div>
 					<div className="mt-1" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer" style={{ color: 'var(--text)' }}>Host options</summary>
+                      <form className="mt-3 grid gap-2" onSubmit={(event) => {
+                        event.preventDefault()
+                        const fields = new FormData(event.currentTarget)
+                        void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on')
+                      }}>
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" name="startupEnabled" defaultChecked={host.startupEnabled || false} />
+                          Start runner at login
+                        </label>
+                        <div style={{ color: 'var(--text-3)' }}>{host.startupStatus || 'disabled'} · Windows login or Linux systemd user session</div>
+                        <label className="grid gap-1">
+                          Host instruction file
+                          <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="px-2 py-1 font-mono outline-none" style={{ color: 'var(--text)', background: '#000', border: '1px solid var(--border)' }} />
+                        </label>
+                        <div style={{ color: 'var(--text-3)' }}>Read on this host before project context. Leave empty to skip.</div>
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={remoteBusy} onClick={(event) => {
+                            const form = event.currentTarget.closest('form')
+                            if (!form) return
+                            setRemoteBusy(true)
+                            void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile: String(new FormData(form).get('instructionFile') || '') } }).then((response) => {
+                              setRemoteBusy(false)
+                              setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+                            })
+                          }}>Check file</Button>
+                          <Button size="sm" type="submit" disabled={remoteBusy}>Save host options</Button>
+                        </div>
+                      </form>
+                    </details>
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />

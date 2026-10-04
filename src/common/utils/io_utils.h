@@ -20,14 +20,19 @@
 
 #if defined(_WIN32)
 #include <windows.h>
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#if defined(__APPLE__)
 #include <sys/stdio.h>
+#else
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 #else
-#error "io_utils.h is only supported on Windows and macOS."
+#error "io_utils.h is only supported on Windows, macOS and Linux."
 #endif
 
 namespace uam::io
@@ -395,7 +400,12 @@ namespace uam::io
 			close(fd);
 			return false;
 		}
-		if (fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0)
+#if defined(__APPLE__)
+		const bool synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
+#else
+		const bool synced = fsync(fd) == 0;
+#endif
+		if (!synced)
 		{
 			result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
 			close(fd);
@@ -457,7 +467,12 @@ namespace uam::io
 #else
 		if (destination_exists)
 		{
-			if (renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP) != 0)
+#if defined(__APPLE__)
+			const int swapped = renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP);
+#else
+			const long swapped = syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_EXCHANGE);
+#endif
+			if (swapped != 0)
 			{
 				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno);
 				RemoveAtomicTempNoThrow(temp_path);
@@ -475,7 +490,7 @@ namespace uam::io
 		{
 			return result;
 		}
-#if defined(__APPLE__)
+#if !defined(_WIN32)
 		if (sync_directory && !SyncAtomicWriteDirectory(parent, result))
 		{
 			return result;
@@ -496,7 +511,7 @@ namespace uam::io
 		{
 			if (!preserve_backup)
 			{
-#if defined(__APPLE__)
+#if !defined(_WIN32)
 				RemoveAtomicTempNoThrow(temp_path);
 #endif
 				result.success = true;

@@ -322,6 +322,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     appVersion: `V${packageVersion}`,
     runnerProtocolVersion: 0,
     updateChecksEnabled: true,
+    automaticProviderUpdates: false,
     updateLastCheckedAt: '',
     dismissedUpdateVersions: {} as Record<string, string>,
     memoryLastStatus: '',
@@ -343,6 +344,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     uamAgentCycleShortcut: 'shift+tab' as UamAgentCycleShortcut,
     uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
     statusLine: '',
+
+    acknowledgeChatAttention: async (id: string, revision: string) => {
+      const response = await sendToCEF({ action: 'acknowledgeChatAttention', payload: { chatId: id, attentionRevision: revision } })
+      return response.ok
+    },
 
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
@@ -1763,14 +1769,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setUpdateSettings: async (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
+    setUpdateSettings: async (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>): Promise<boolean> => {
       const previous = {
         updateChecksEnabled: get().updateChecksEnabled,
+        automaticProviderUpdates: get().automaticProviderUpdates,
         updateLastCheckedAt: get().updateLastCheckedAt,
         dismissedUpdateVersions: get().dismissedUpdateVersions,
       }
       const next = {
         updateChecksEnabled: settings.updateChecksEnabled ?? previous.updateChecksEnabled,
+        automaticProviderUpdates: settings.automaticProviderUpdates ?? previous.automaticProviderUpdates,
         updateLastCheckedAt: settings.updateLastCheckedAt ?? previous.updateLastCheckedAt,
         dismissedUpdateVersions: settings.dismissedUpdateVersions ?? previous.dismissedUpdateVersions,
       }
@@ -1782,6 +1790,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         action: 'setUpdateSettings',
         payload: {
           enabled: next.updateChecksEnabled,
+          automaticProviderUpdates: next.automaticProviderUpdates,
           lastCheckedAt: next.updateLastCheckedAt,
           dismissedVersions: next.dismissedUpdateVersions,
         },
@@ -2501,11 +2510,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    stopAcpSession: async (sessionId: string): Promise<boolean> => {
+    stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
-          payload: { chatId: sessionId },
+          payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
         return response.ok
       }

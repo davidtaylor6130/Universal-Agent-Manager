@@ -162,32 +162,17 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	const ChatSession previous_chat = *chat;
 	const bool stops_work = status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused;
 	if (stops_work && !EnsureGoalChatWritable(m_app, *chat, cb)) return;
-	std::string cancel_error;
-	bool work_changed = false;
-	if (stops_work &&
-	    !uam::GoalService::CancelGoalWork(m_app, chat_id, goal_id, &cancel_error,
-	                                     &work_changed))
-	{
-		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, uam::strings::NonEmptyOrFallback(cancel_error, "Failed to stop goal work."));
-		return;
-	}
+
 	if (!uam::GoalService::UpdateGoalStatus(m_app, chat_id, goal_id, status))
 	{
 		cb->Failure(404, "Goal not found in this chat.");
 		return;
 	}
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, !work_changed))
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb))
 	{
-		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	if (!cancel_error.empty())
-	{
-		cb->Failure(500, cancel_error);
-		return;
-	}
 
 	cb->Success("{}");
 }
@@ -250,12 +235,7 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	std::string mutation_warning;
 	if (goal_id.empty())
 	{
-		const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
-		const std::string active_goal_id = chat == nullptr ? std::string{} : chat->active_goal_id;
-		updated = chat != nullptr && (active_goal_id.empty() ||
-		          uam::GoalService::CancelGoalWork(m_app, chat_id, active_goal_id,
-		                                           &mutation_warning, &work_changed)) &&
-		          uam::GoalService::ClearActiveGoal(m_app, chat_id);
+		updated = uam::GoalService::ClearActiveGoal(m_app, chat_id);
 	}
 	else
 	{
@@ -301,7 +281,7 @@ void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nloh
 		return;
 	}
 	if (!EnsureGoalChatWritable(m_app, *chat, cb)) return;
-	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error))
+	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error, payload.value("restart", false)))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to resume goal."));

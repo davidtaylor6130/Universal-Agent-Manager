@@ -18,6 +18,9 @@ export interface ExecutionHost {
   lastSeenAt: string
   runnerDirectory?: string
   runnerProtocolVersion?: number
+  instructionFile?: string
+  startupEnabled?: boolean
+  startupStatus?: string
 }
 
 export interface RemoteDirectoryEntry {
@@ -57,6 +60,8 @@ export interface ComputerUseState {
 export interface Session {
   id: string
   executionHostId?: string
+  remoteRecoveryEnabled?: boolean
+  remoteRecoveryState?: string
   name: string
   viewMode: ViewMode
   folderId: string | null
@@ -102,6 +107,7 @@ export interface Session {
   updatedAt: Date
   interactionAt?: Date
   lastOpenedAt?: Date
+  attentionRevision?: string
 }
 
 export interface Folder {

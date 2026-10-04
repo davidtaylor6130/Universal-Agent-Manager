@@ -3,7 +3,7 @@ import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, MenuSelect } from '../ui'
-import type { Folder } from '../../types/session'
+import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
 const MEMORY_CATEGORIES = [
@@ -14,6 +14,8 @@ const MEMORY_CATEGORIES = [
 ] as const
 
 const MEMORY_CONFIDENCE = ['high', 'medium', 'low'] as const
+
+const memoryFolderLabel = (folder: Folder, hosts: ExecutionHost[]) => (folder.executionHostId || 'local') === 'local' ? folder.name : `${folder.name} · ${hosts.find((host) => host.id === folder.executionHostId)?.label || folder.executionHostId}`
 
 const memoryCategoryLabel = (category: string) => ({
   'Failures/AI_Failures': 'AI failures',
@@ -120,13 +122,14 @@ function buildMemoryLocationGroups(
   entries: MemoryEntry[],
   scope: MemoryScope | null,
   folders: Folder[],
+  hosts: ExecutionHost[],
 ): MemoryLocationGroup[] {
   if (!scope) {
     return []
   }
 
-  const localFolders = folders.filter((folder) => (folder.executionHostId || 'local') === 'local')
-  const folderOrder = new Map(localFolders.map((folder, index) => [folder.id, index]))
+  const projectFolders = folders.filter((folder) => folder.directory.trim().length > 0)
+  const folderOrder = new Map(projectFolders.map((folder, index) => [folder.id, index]))
   const groups = new Map<string, {
     label: string
     rootPath: string
@@ -138,8 +141,8 @@ function buildMemoryLocationGroups(
     groups.set('global', { label: 'Global memory', rootPath: scope.scopeType === 'global' ? scope.rootPath : 'Global memory root', sortIndex: -1, entries: [] })
   }
   if (scope.scopeType === 'all') {
-    localFolders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
-      label: folder.name,
+    projectFolders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
+      label: memoryFolderLabel(folder, hosts),
       rootPath: `${folder.directory.replace(/[\\/]+$/, '')}/.UAM`,
       sortIndex: index,
       entries: [],
@@ -208,6 +211,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const openMemoryRoot = useAppStore((s) => s.openMemoryRoot)
   const revealMemoryEntry = useAppStore((s) => s.revealMemoryEntry)
   const folders = useAppStore(useShallow((s) => s.folders))
+  const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
@@ -293,8 +297,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   }, [memoryLibraryEntries, searchQuery])
 
   const groupedEntries = useMemo(
-    () => buildMemoryLocationGroups(filteredEntries, memoryLibraryScope, folders),
-    [filteredEntries, folders, memoryLibraryScope],
+    () => buildMemoryLocationGroups(filteredEntries, memoryLibraryScope, folders, executionHosts),
+    [filteredEntries, folders, memoryLibraryScope, executionHosts],
   )
 
   if (!memoryLibraryScope) {
@@ -313,8 +317,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const targetOptions = [
     { value: 'global', label: 'Global memory' },
     ...folders
-	  .filter((folder) => (folder.executionHostId || 'local') === 'local' && folder.directory.trim().length > 0)
-      .map((folder) => ({ value: `folder:${folder.id}`, label: folder.name })),
+	  .filter((folder) => folder.directory.trim().length > 0)
+      .map((folder) => ({ value: `folder:${folder.id}`, label: memoryFolderLabel(folder, executionHosts) })),
   ]
   const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: memoryCategoryLabel(category) }))
   const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidence }))

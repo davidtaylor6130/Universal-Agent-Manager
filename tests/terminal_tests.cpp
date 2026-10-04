@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/runtime_activity.h"
+#include "app/chat_lifecycle_service.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include "common/utils/command_line_words.h"
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_native_context.h"
 #include "remote/runner_client.h"
 #include "remote/runner_service_posix.h"
 
@@ -24,6 +26,77 @@ using namespace uam_test;
 
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[])
 {
+	if (argc == 4 && std::string_view(argv[1]) == "--uam-test-codex-native-context-probe")
+	{
+		const fs::path directory = uam::paths::PathFromUtf8(argv[2]);
+		std::vector<std::string> command{"codex", "--no-alt-screen"};
+		if (std::string_view(argv[3]) != "default") command.insert(command.end(), {"-p", argv[3]});
+		std::string error;
+		if (!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service,
+		    command, directory, {}, directory / "conversation.md", error))
+		{
+			std::cerr << error << std::endl;
+			return 1;
+		}
+		std::cout << command[2] << std::endl;
+		return 0;
+	}
+	if (argc >= 2 && (std::string_view(argv[1]) == "--uam-test-codex-context-config" || std::string_view(argv[1]) == "--uam-test-codex-context-stall" || std::string_view(argv[1]) == "--uam-test-codex-context-reject" || std::string_view(argv[1]) == "--uam-test-codex-context-invalid"))
+	{
+		if (std::find(argv, argv + argc, std::string_view("prompt-input")) != argv + argc)
+		{
+			nlohmann::json content = nlohmann::json::array();
+			if (std::find(argv, argv + argc, std::string_view("developer_instructions=\"\"")) == argv + argc)
+				content.push_back({{"type", "input_text"}, {"text", "Keep the synthetic profile instruction quince."}});
+			content.push_back({{"type", "input_text"}, {"text", "Native policy preserved."}});
+			std::cout << nlohmann::json::array({{{"role", "developer"}, {"content", content}}}).dump() << std::endl;
+			return 0;
+		}
+		std::string line;
+		while (std::getline(std::cin, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			if (std::string_view(argv[1]) == "--uam-test-codex-context-stall") continue;
+			if (!request.contains("id")) continue;
+			nlohmann::json result = nlohmann::json::object();
+			const std::string method = request.value("method", "");
+			if (method == "initialize" && !request["params"]["capabilities"].value("experimentalApi", false)) return 9;
+			if (method == "thread/start")
+			{
+				if ((uam::env::GetNonEmptyString("UAM_TEST_EXPECT_PROFILE").has_value() && !request["params"].contains("developerInstructions")) ||
+				    (request["params"].contains("developerInstructions") && request["params"]["developerInstructions"] != "Keep the synthetic profile instruction quince.")) return 12;
+				result["thread"]["id"] = std::string_view(argv[1]) == "--uam-test-codex-context-invalid" ? "invalid-id" : "11111111-2222-4333-8444-555555555555";
+			}
+			if (method == "thread/inject_items")
+			{
+				if (std::string_view(argv[1]) == "--uam-test-codex-context-reject")
+				{
+					std::cout << nlohmann::json{{"id", request["id"]}, {"error", {{"code", -32601}, {"message", "Unsupported import"}}}}.dump() << std::endl;
+					continue;
+				}
+				if (request["params"]["threadId"] != "11111111-2222-4333-8444-555555555555" ||
+				    request["params"]["items"][0]["role"] != "assistant" ||
+				    request["params"]["items"][0]["content"][0]["text"].get<std::string>().empty()) return 10;
+			}
+			else if (method != "initialize" && method != "thread/start") return 11;
+			std::cout << nlohmann::json{{"id", request["id"]}, {"result", result}}.dump() << std::endl;
+		}
+		return 0;
+	}
+	if (argc == 4 && std::string_view(argv[1]) == "--uam-test-native-status")
+	{
+		const bool codex = std::string_view(argv[2]) == uam::provider_ids::kCodexCli;
+		std::cout << (codex ? "OpenAI Codex (v0.159.2)\x1b]0;owned-fixture\a\n› Ask Codex to do anything\n" : "Type your message or @path/to/file\n") << std::flush;
+		std::string line;
+		while (std::getline(std::cin, line))
+		{
+			line = uam::strings::Trim(line);
+			if (line == (codex ? "/status" : "/stats session"))
+				std::cout << (codex ? "OpenAI Codex (v0.159.2)\n  Session: " : "Session Stats\nInteraction Summary\nSession ID: ") << argv[3] << "\nToken usage: 0 total\n" << std::flush;
+			else std::cout << "USER-INPUT:" << line << "\n" << std::flush;
+		}
+		return 0;
+	}
 	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-opencode-terminal")
 	{
 		std::string line;
@@ -424,7 +497,7 @@ UAM_TEST(OpenCodeTerminalLaunchPersistsTheSameSessionBeforeStarting)
 #endif
 }
 
-UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
+UAM_TEST(ClaudeCliReusesItsAssignedSessionLocallyAndRemotelyAndOffersLegacyPicker)
 {
 	TempDir temp("uam-remote-claude-session");
 	uam::AppState app;
@@ -433,7 +506,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 	UAM_ASSERT(chat.remote_claude_session_unstarted);
 	std::vector<std::string> first_argv{"claude"};
 	std::string error;
-	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, chat, first_argv, error));
+	UAM_ASSERT(uam::PrepareFreshClaudeTerminalArgv(app, chat, first_argv, error));
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(first_argv[first_argv.size() - 2], std::string("--session-id"));
 	UAM_ASSERT_EQ(first_argv.back(), chat.native_session_id);
@@ -451,7 +524,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 
 	ChatSession legacy;
 	std::vector<std::string> legacy_argv{"claude"};
-	UAM_ASSERT(uam::PrepareRemoteClaudeTerminalArgv(app, legacy, legacy_argv, error));
+	UAM_ASSERT(uam::PrepareFreshClaudeTerminalArgv(app, legacy, legacy_argv, error));
 	UAM_ASSERT_EQ(legacy_argv.back(), std::string("--resume"));
 	UAM_ASSERT(legacy.native_session_id.empty());
 
@@ -459,7 +532,7 @@ UAM_TEST(RemoteClaudeCliReusesItsAssignedSessionAndOffersLegacyPicker)
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "storage unavailable"));
 	ChatSession blocked = ChatDomainService().CreateNewChat("", uam::provider_ids::kClaudeCli);
 	std::vector<std::string> blocked_argv{"claude"};
-	UAM_ASSERT(!uam::PrepareRemoteClaudeTerminalArgv(app, blocked, blocked_argv, error));
+	UAM_ASSERT(!uam::PrepareFreshClaudeTerminalArgv(app, blocked, blocked_argv, error));
 	UAM_ASSERT(blocked.native_session_id.empty());
 	UAM_ASSERT(blocked.remote_claude_session_unstarted);
 	UAM_ASSERT_EQ(blocked_argv.size(), static_cast<std::size_t>(1));
@@ -721,6 +794,312 @@ UAM_TEST(GeminiPromptClassifierStripsAnsiAndDetectsPrompt)
 	UAM_ASSERT_EQ(stripped, std::string("hell!"));
 	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultGeminiProfile()).RecentOutputIndicatesInputPrompt(std::string_view("xx\xe2\x94\x82 > Type your message yy").substr(2, 23)));
 	UAM_ASSERT(!ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultGeminiProfile()).RecentOutputIndicatesInputPrompt("tool output is still streaming\nno prompt yet"));
+}
+
+UAM_TEST(CodexPromptClassifierRecognizesCurrentIdleComposerAndRejectsActiveTurn)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	const std::string idle = "\x1b[2K\r› Ask Codex to do anything\nGPT-6.1-Sol low · workspace · 100% context left";
+	UAM_ASSERT(runtime.RecentOutputIndicatesInputPrompt(idle));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt(idle + "\n• Working (5s • esc to interrupt)"));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt("• Working (5s • esc to interrupt)\n› Ask Codex to do anything\nGPT-6.1-Sol low"));
+	UAM_ASSERT(runtime.RecentOutputIndicatesInputPrompt("\x1b[2K\r› Send message\n? for shortcuts"));
+	UAM_ASSERT(!runtime.RecentOutputIndicatesInputPrompt("The answer mentions Ask Codex to do anything but has no composer marker."));
+#endif
+}
+
+UAM_TEST(CodexNativeActivityRequiresFreshMatchingCompleteRecord)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-activity");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n'
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"old\"}}\n";
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Unavailable);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"old\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"other\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << '\n' << "{\"type\":";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "\"response_item\"}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+	terminal.current_turn_output_bytes = "Working (5s • esc to interrupt)\n› Ask Codex to do anything";
+	uam::MarkCliTerminalTurnIdle(terminal);
+	UAM_ASSERT(uam::CliTerminalLifecycleIsIdleLive(terminal));
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Unavailable);
+}
+
+UAM_TEST(CodexNativeActivityRejectsUnverifiedIdentityAndFailedReads)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-identity");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	uam::MarkCliTerminalTurnBusy(terminal);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, true) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, "invalid", temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root / "other", false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(terminal.codex_activity_rollout.empty());
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	fs::remove(rollout);
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	std::ofstream(rollout) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	uam::MarkCliTerminalStopped(terminal);
+	UAM_ASSERT(terminal.codex_activity_rollout.empty());
+	UAM_ASSERT(terminal.codex_activity_session_id.empty());
+}
+
+UAM_TEST(CodexNativeActivityRejectsMalformedStartAfterCompletion)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& malformed : {
+	    std::string("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":123}}\n"),
+	    std::string("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"),
+	    std::string("invalid-json\n"), std::string(300000, 'x') + '\n'})
+	{
+		TempDir temp("codex-native-malformed");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		runtime.CheckpointInteractiveSubmission(terminal);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"first\"}}\n"
+		    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"first\"}}\n" << malformed;
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		for (int poll = 0; poll < 8; ++poll)
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	}
+}
+
+UAM_TEST(CodexNativeActivityBoundsReadsAndKeepsLaterTurnBusy)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-bounded");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	const std::uintmax_t before = terminal.codex_activity_offset;
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"turn_id\":\"first\"}}\n"
+	    << "{\"type\":\"response_item\",\"payload\":{\"text\":\"" << std::string(300000, 'x') << "\"}}\n"
+	    << "{\"type\":\"future_record\",\"payload\":false}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"turn_id\":\"first\"}}\n"
+	    << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"turn_id\":\"second\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	UAM_ASSERT(terminal.codex_activity_offset - before <= 65536);
+	for (int poll = 0; poll < 8; ++poll)
+	{
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+	}
+	UAM_ASSERT_EQ(terminal.codex_activity_turn_id, std::string("second"));
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"turn_id\":\"second\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+}
+
+UAM_TEST(CodexNativeActivityReadsOversizedCompletionAndRejectsInvalidSuffixes)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& scenario : {"valid", "stale", "bad-escape", "bad-unicode", "bad-utf8", "bad-control", "bad-suffix"})
+	{
+		TempDir temp("codex-large-completion");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		runtime.CheckpointInteractiveSubmission(terminal);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		// Reorder metadata after the text. Split the closing string and completion across polls.
+		std::string completion = "{\"payload\":{\"last_agent_message\":\"" + std::string(300000, 'x') +
+		    "\\n\\t\\\"\\\\\\uD83D\\uDE00" + std::string("\xF0\x9F\x98\x80");
+		if (scenario == "valid") completion += "\\uD83D";
+		if (scenario == "bad-control") completion += '\t';
+		if (scenario == "bad-escape") completion += "\\q";
+		if (scenario == "bad-unicode") completion += "\\uD800x";
+		if (scenario == "bad-utf8") completion += std::string("\xF0\x80\x80\x80");
+		std::ofstream(rollout, std::ios::app) << completion;
+		for (int poll = 0; poll < 8; ++poll)
+		{
+			const std::uintmax_t before = terminal.codex_activity_offset;
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			UAM_ASSERT(terminal.codex_activity_offset - before <= 65536);
+			UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+			UAM_ASSERT(terminal.codex_activity_string_cursor.token.size() <= 12);
+		}
+		if (scenario == "valid")
+		{
+			std::ofstream(rollout, std::ios::app) << "\\uDE00" << std::string("\xF0\x9F");
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			std::ofstream(rollout, std::ios::app) << std::string("\x98\x80");
+		}
+		const std::string turn_id = scenario == "stale" ? "older" : "current";
+		std::ofstream(rollout, std::ios::app) << "\",\"turn_id\":\"" << turn_id << "\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}"
+		    << (scenario == "bad-suffix" ? "garbage\n" : "\n");
+		const ProviderTerminalActivity activity = runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		if (scenario == "valid") UAM_ASSERT(activity == ProviderTerminalActivity::Complete);
+		else UAM_ASSERT(activity == ProviderTerminalActivity::Busy);
+		if (scenario == "stale")
+		{
+			std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+		}
+	}
+}
+
+UAM_TEST(CodexNativeActivityReadsBothCopiesOfLargeCompletedAgentMessage)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-large-agent-item");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	runtime.CheckpointInteractiveSubmission(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+	const std::string reply(300000, 'x');
+	std::ofstream(rollout, std::ios::app) << nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "item_completed"},
+	    {"item", {{"type", "AgentMessage"}, {"content", nlohmann::json::array({{{"type", "Text"}, {"text", reply}}})}}}}}}.dump() << '\n';
+	for (int poll = 0; poll < 8; ++poll)
+	{
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		UAM_ASSERT(terminal.codex_activity_partial_line.size() <= 262144);
+	}
+	std::ofstream(rollout, std::ios::app) << nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "task_complete"},
+	    {"turn_id", "current"}, {"last_agent_message", reply}}}}.dump() << '\n';
+	ProviderTerminalActivity activity = ProviderTerminalActivity::Busy;
+	for (int poll = 0; poll < 8; ++poll) activity = runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+	UAM_ASSERT(activity == ProviderTerminalActivity::Complete);
+}
+
+UAM_TEST(CodexNativeSubmissionCheckpointSkipsOnlyTheAbandonedRecordTail)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	for (const std::string& scenario : {"empty", "newline", "partial-completion"})
+	{
+		TempDir temp("codex-checkpoint-tail");
+		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+		const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+		fs::create_directories(temp.root / "sessions");
+		const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+		std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+		uam::CliTerminalState terminal;
+		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
+		if (scenario == "empty") std::ofstream(rollout, std::ios::trunc);
+		if (scenario == "partial-completion")
+		{
+			std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n"
+			    << "{\"payload\":{\"last_agent_message\":\"" << std::string(300000, 'x') << "\\uD83D";
+			for (int poll = 0; poll < 8; ++poll)
+				UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			UAM_ASSERT(terminal.codex_activity_string_cursor.compacting);
+			UAM_ASSERT(!terminal.codex_activity_string_cursor.token.empty());
+		}
+		runtime.CheckpointInteractiveSubmission(terminal);
+		UAM_ASSERT(terminal.codex_activity_partial_line.empty());
+		UAM_ASSERT(terminal.codex_activity_string_cursor.token.empty());
+		UAM_ASSERT(!terminal.codex_activity_string_cursor.inside_string);
+		UAM_ASSERT(terminal.codex_activity_string_cursor.discard_checkpoint_tail == (scenario == "partial-completion"));
+		if (scenario == "partial-completion")
+		{
+			std::ofstream(rollout, std::ios::app) << "\\uDE00\",\"turn_id\":\"old\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}\n";
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		}
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"fresh\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"fresh\"}}\n";
+		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Complete);
+	}
+}
+
+UAM_TEST(CodexNativeCompletionClearsBusyDespiteStaleTerminalRedraws)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("codex-native-poll");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "native-completion";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.native_session_id = id;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.attached_session_id = id;
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv{"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	terminal.running = true;
+	uam::MarkCliTerminalTurnIdle(terminal);
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	UAM_ASSERT(uam::WriteToCliTerminal(terminal, "synthetic\r", 10));
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.current_turn_output_bytes = "Working (5s • esc to interrupt)\n› Ask Codex to do anything";
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"current\"}}\n";
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool busy_before_completion = uam::IsCliTerminalTurnBusy(terminal);
+	std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current\"}}\n";
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool idle_after_completion = uam::CliTerminalLifecycleIsIdleLive(terminal);
+	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(busy_before_completion);
+	UAM_ASSERT(idle_after_completion);
+#endif
 }
 
 UAM_TEST(CliInitialPromptCanSettleImmediately)
@@ -2150,4 +2529,537 @@ UAM_TEST(OpenCodeInteractiveFlagsPreserveSavedSessionRouting)
 	provider.id = uam::provider_ids::kCodexCli;
 	app.settings.provider_extra_flags = "--session ses_other";
 	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(provider).InteractiveConfigurationError(provider, app.settings).empty());
+}
+
+UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)
+{
+	TempDir temp("uam-provider-cli-context");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "handoff-chat";
+	chat.provider_handoff_context = "User: My favourite fruit is kumquat.\n\nAssistant: Recorded." + std::string(200000, 'x');
+	ExecutionHost host;
+	host.id = "local";
+	ScopedEnvVar opencode("OPENCODE_CONFIG_CONTENT", R"({"permission":{"edit":"deny"},"instructions":["existing.md"]})");
+	ScopedEnvVar copilot("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "existing-context");
+	const fs::path gemini_settings = temp.root / "original-system.json";
+	UAM_ASSERT(uam::io::WriteTextFile(gemini_settings, R"({"security":{"auth":{"selectedType":"oauth-personal"}},"context":{"fileName":["CUSTOM.md"]},"tools":{"approvalMode":"default"}})"));
+	ScopedEnvVar gemini("GEMINI_CLI_SYSTEM_SETTINGS_PATH", gemini_settings.string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini-home").string());
+	for (const std::string provider : {"codex-cli", "claude-cli", "copilot-cli", "gemini-cli", "opencode-cli"})
+	{
+		chat.provider_id = provider;
+		std::vector<std::string> argv{provider};
+		if (provider == "codex-cli") argv = {PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config"};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(channel.empty());
+		for (const std::string& argument : argv) UAM_ASSERT(argument.size() < 4096);
+		UAM_ASSERT_EQ(chat.provider_handoff_session_id, std::string{});
+		if (provider == "codex-cli")
+		{
+			UAM_ASSERT_EQ(argv[1], std::string("resume"));
+			UAM_ASSERT_EQ(argv[2], std::string("11111111-2222-4333-8444-555555555555"));
+		}
+		else if (provider == "claude-cli") UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
+		else if (provider == "copilot-cli") UAM_ASSERT(environment.back().second.ends_with(",existing-context"));
+		else if (provider == "opencode-cli")
+		{
+			const nlohmann::json configuration = nlohmann::json::parse(environment.back().second);
+			UAM_ASSERT_EQ(configuration["permission"]["edit"], nlohmann::json("deny"));
+			UAM_ASSERT_EQ(configuration["instructions"].front(), nlohmann::json("existing.md"));
+			UAM_ASSERT_EQ(configuration["instructions"].size(), std::size_t{2});
+		}
+		else if (provider == "gemini-cli")
+		{
+			std::ifstream input(environment.back().second);
+			const nlohmann::json configuration = nlohmann::json::parse(input);
+			UAM_ASSERT_EQ(configuration["security"]["auth"]["selectedType"], nlohmann::json("oauth-personal"));
+			UAM_ASSERT_EQ(configuration["tools"]["approvalMode"], nlohmann::json("default"));
+			UAM_ASSERT_EQ(configuration["context"]["fileName"].front(), nlohmann::json("CUSTOM.md"));
+			UAM_ASSERT(configuration["context"]["loadMemoryFromIncludeDirectories"].get<bool>());
+			UAM_ASSERT(fs::exists(fs::path(environment.back().second).parent_path() / "CUSTOM.md"));
+		}
+	}
+}
+
+UAM_TEST(CliViewHandoffWaitsForPriorStructuredProcessExit)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "pending-local-stop";
+	chat.provider_id = "codex-cli";
+	uam::AsyncAcpProcessStopTask stop;
+	stop.chat_id = chat.id;
+	stop.finished = std::make_shared<std::atomic<bool>>(false);
+	app.acp_process_stop_tasks.push_back(std::move(stop));
+	std::string error;
+	UAM_ASSERT(!PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
+	UAM_ASSERT(error.empty());
+	app.acp_process_stop_tasks.front().finished->store(true);
+	UAM_ASSERT(PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
+}
+
+UAM_TEST(ProviderContextCleanupPreservesUnrelatedFilesAndRejectsLinks)
+{
+	TempDir temp("uam-context-owned-cleanup");
+	const fs::path directory = temp.root / "owned";
+	std::string error;
+	UAM_ASSERT(uam::provider_native_context::PrepareOwnedContext(directory, error));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "conversation.md", "private prior conversation"));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "unrelated.txt", "preserve"));
+	UAM_ASSERT(uam::provider_native_context::RemoveOwnedContext(directory, false, error));
+	UAM_ASSERT(!fs::exists(directory / "conversation.md"));
+	UAM_ASSERT(fs::exists(directory / "unrelated.txt"));
+	UAM_ASSERT(uam::provider_native_context::RemoveOwnedContext(directory, false, error));
+#if !defined(_WIN32)
+	const fs::path external = temp.root / "external";
+	fs::create_directory(external);
+	fs::create_directory_symlink(external, temp.root / "runtime-context");
+	UAM_ASSERT(!uam::provider_native_context::PrepareOwnedContext(temp.root / "runtime-context" / "context", error));
+	UAM_ASSERT(!fs::exists(external / "context"));
+#endif
+}
+
+UAM_TEST(ProviderContextCleanupIntentSurvivesUnavailableHostWithoutBlockingChatDeletion)
+{
+	TempDir temp("uam-context-deferred-delete");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "deleted-remote-context";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_cli_contexts.push_back({"removed-host", "/workspace/.UAM/context/0123456789abcdef", "original-connection"});
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat));
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id).Failed() == false);
+	RetryCliProviderContextCleanup(app, 0.0);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+	UAM_ASSERT(pending.has_value());
+	UAM_ASSERT_EQ(pending->provider_handoff_cli_contexts, chat.provider_handoff_cli_contexts);
+	UAM_ASSERT(pending->messages.empty());
+	UAM_ASSERT(pending->provider_handoff_context.empty());
+}
+
+UAM_TEST(CliContextPreparationIsAsyncRejectsStaleAndCancelsWithoutJoiningUi)
+{
+	TempDir temp("uam-context-async");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "async-context";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_context = "User: Synthetic context.";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-stall"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500));
+	UAM_ASSERT(terminal.context_preparation != nullptr);
+	const std::shared_ptr<uam::CliContextPreparation> first = terminal.context_preparation;
+	chat.provider_id = "claude-cli";
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("changed") != std::string::npos);
+	UAM_ASSERT(first->cancellation.stop_requested());
+	UAM_ASSERT(terminal.context_preparation == nullptr);
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(first->finished.load());
+	chat.provider_id = "codex-cli";
+	error.clear();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	const std::shared_ptr<uam::CliContextPreparation> second = terminal.context_preparation;
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	const std::chrono::steady_clock::time_point close = std::chrono::steady_clock::now();
+	StopCliTerminal(terminal);
+	UAM_ASSERT(std::chrono::steady_clock::now() - close < std::chrono::milliseconds(500));
+	UAM_ASSERT(second->cancellation.stop_requested());
+	app.cli_context_preparation_tasks.back().worker->join();
+	UAM_ASSERT(std::chrono::steady_clock::now() - close < std::chrono::seconds(2));
+	UAM_ASSERT(!second->succeeded);
+	UAM_ASSERT(!terminal.running);
+	error.clear();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	chat.workspace_directory = temp.root.string();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("changed") != std::string::npos);
+	app.cli_context_preparation_tasks.back().worker->join();
+}
+
+UAM_TEST(CliContextPreparationFailureNeverFallsBackWithoutContext)
+{
+	TempDir temp("uam-context-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "failed-context";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_context = "User: Synthetic context.";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{(temp.root / "missing-provider").string()};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT(terminal.context_preparation == nullptr);
+}
+
+UAM_TEST(CodexCliProfileContextRetainsNativeInstructionsWithoutCopyingPolicy)
+{
+	TempDir temp("uam-codex-profile-context");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "profile-context";
+	chat.provider_id = "codex-cli";
+	chat.provider_handoff_context = "User: Synthetic prior history.";
+	ExecutionHost host;
+	host.id = "local";
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config", "-p", "synthetic"};
+	std::vector<std::pair<std::string, std::string>> environment{{"UAM_TEST_EXPECT_PROFILE", "1"}};
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(argv[1], std::string("resume"));
+	UAM_ASSERT_EQ(argv[argv.size() - 2], std::string("-p"));
+	UAM_ASSERT_EQ(argv.back(), std::string("synthetic"));
+}
+
+UAM_TEST(ConcurrentFreshCliSessionsNeverClaimAnotherWorkspaceSession)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cli-ownership");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	fs::create_directories(temp.root / "sessions");
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	const std::string first = "33333333-3333-4333-8333-333333333333";
+	const std::string second = "44444444-4444-4444-8444-444444444444";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl", nlohmann::json{{"id", first}}.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / ("rollout-" + first + ".jsonl"), nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", first}, {"cwd", workspace.string()}}}}.dump() + "\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const std::string id : {"fresh-first", "fresh-second"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = (id == "fresh-second" ? workspace / "." : workspace).string();
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+		terminal->frontend_chat_id = id;
+		terminal->attached_chat_id = id;
+		terminal->running = true;
+		terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		app.cli_terminals.push_back(std::move(terminal));
+	}
+	for (int index = 0; index < 2; ++index)
+	{
+		UAM_ASSERT(!DiscoverCliTerminalNativeSession(app, *app.cli_terminals[index]));
+		UAM_ASSERT(app.chats[index].native_session_id.empty());
+		UAM_ASSERT(app.cli_terminals[index]->native_session_discovery_ambiguous);
+		UAM_ASSERT(ChatHasBusyCliTerminal(app, app.chats[index].id));
+		std::string error;
+		UAM_ASSERT(!PrepareCliTerminalForAcpLaunch(app, app.chats[index].id, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(app.cli_terminals[index]->running);
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "session_index.jsonl", nlohmann::json{{"id", first}}.dump() + "\n" + nlohmann::json{{"id", second}}.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sessions" / ("rollout-" + second + ".jsonl"), nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", second}, {"cwd", workspace.string()}}}}.dump() + "\n"));
+	app.cli_terminals[1]->running = false;
+	std::string error;
+	UAM_ASSERT(!PrepareCliTerminalForAcpLaunch(app, app.chats[0].id, &error));
+	UAM_ASSERT(app.cli_terminals[0]->running);
+	UAM_ASSERT(app.cli_terminals[0]->native_session_discovery_ambiguous);
+	app.cli_terminals[0]->attached_session_id = first;
+	app.cli_terminals[1]->attached_session_id = second;
+	UAM_ASSERT(DiscoverCliTerminalNativeSession(app, *app.cli_terminals[0]));
+	UAM_ASSERT(DiscoverCliTerminalNativeSession(app, *app.cli_terminals[1]));
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, first);
+	UAM_ASSERT_EQ(app.chats[1].native_session_id, second);
+	app.cli_terminals[0]->running = false;
+	app.cli_terminals[1]->running = false;
+#endif
+}
+
+UAM_TEST(OwnedNativeStatusQueriesBindConcurrentProcessesAndExcludeUserInput)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-owned-status");
+	for (const std::string provider_id : {std::string(uam::provider_ids::kCodexCli), std::string(uam::provider_ids::kGeminiCli)})
+	{
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		const std::string ids[2]{"01a0f73c-df28-7dd3-8253-64f706aeeebb", "01a0f73c-df28-7dd3-8253-64f706aeeebc"};
+		for (int index = 0; index < 2; ++index)
+		{
+			ChatSession chat;
+			chat.id = "owned-" + provider_id + std::to_string(index);
+			chat.provider_id = provider_id;
+			chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+			terminal->frontend_chat_id = chat.id;
+			terminal->attached_chat_id = chat.id;
+			terminal->native_identity_command = provider_id == uam::provider_ids::kCodexCli ? "/status" : "/stats session";
+			terminal->native_identity_query_phase = 1;
+			terminal->native_identity_requires_owned_reply = true;
+			terminal->startup_time_s = uam::GetAppTimeSeconds();
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(*terminal, temp.root,
+			    {uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()), "--uam-test-native-status", provider_id, ids[index]}, &error));
+			terminal->running = true;
+			uam::MarkCliTerminalTurnIdle(*terminal);
+			app.cli_terminals.push_back(std::move(terminal));
+		}
+		const double deadline = uam::GetAppTimeSeconds() + 8.0;
+		bool queued_input = false;
+		while (uam::GetAppTimeSeconds() < deadline &&
+		       (app.cli_terminals[0]->attached_session_id.empty() || app.cli_terminals[1]->attached_session_id.empty()))
+		{
+			for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
+			{
+				char output[8192];
+				const std::ptrdiff_t read = PlatformServicesFactory::Instance().terminal_runtime.ReadCliTerminalOutput(*terminal, output, sizeof(output));
+				(void)uam::PollCliNativeIdentityQuery(app, *terminal, provider_id, read > 0 ? std::string_view(output, static_cast<std::size_t>(read)) : std::string_view(), uam::GetAppTimeSeconds());
+				if (terminal.get() == app.cli_terminals[0].get() && terminal->native_identity_query_phase == 2 && !queued_input)
+				{
+					UAM_ASSERT(uam::WriteToCliTerminal(*terminal, "user input\r", 11));
+					UAM_ASSERT_EQ(terminal->native_identity_deferred_input, std::string("user input\r"));
+					queued_input = true;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		const std::string first = app.cli_terminals[0]->attached_session_id;
+		const std::string second = app.cli_terminals[1]->attached_session_id;
+		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals) uam::StopCliTerminal(*terminal, false, uam::CliTerminalStopMode::FastExit);
+		UAM_ASSERT(queued_input);
+		UAM_ASSERT_EQ(first, ids[0]);
+		UAM_ASSERT_EQ(second, ids[1]);
+		UAM_ASSERT_EQ(app.chats[0].native_session_id, ids[0]);
+		UAM_ASSERT_EQ(app.chats[1].native_session_id, ids[1]);
+	}
+#endif
+}
+
+UAM_TEST(NativeStatusIdentityRequiresVersionAndCorrelatedPanel)
+{
+	const std::string id = "01a0f73c-df28-7dd3-8253-64f706aeeebb";
+	UAM_ASSERT(uam::NativeSessionStatusCommand(uam::provider_ids::kCodexCli, "0.159.1").empty());
+	UAM_ASSERT(uam::NativeSessionStatusCommand(uam::provider_ids::kGeminiCli, "0.38.0").empty());
+	UAM_ASSERT_EQ(uam::NativeSessionStatusCommand(uam::provider_ids::kCodexCli, "0.159.3"), std::string("/status"));
+	UAM_ASSERT_EQ(uam::NativeSessionStatusCommand(uam::provider_ids::kGeminiCli, "0.39.0"), std::string("/stats session"));
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "Assistant: Session: " + id).empty());
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kGeminiCli, "Assistant: Session ID: " + id).empty());
+	UAM_ASSERT_EQ(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "OpenAI Codex\nSession: \x1b[22m" + id + "\nToken usage: 0"), id);
+	UAM_ASSERT_EQ(uam::NativeStatusSessionId(uam::provider_ids::kGeminiCli, "Session Stats\nInteraction Summary\nSession ID: " + id + "\n"), id);
+	UAM_ASSERT(uam::NativeStatusSessionId(uam::provider_ids::kCodexCli, "OpenAI Codex\nSession: " + id + "\nSession: 01a0f73c-df28-7dd3-8253-64f706aeeebc\nToken usage: 0").empty());
+}
+
+UAM_TEST(BlankNativeCliViewDetachPreservesTheSameOwnedProcessAcrossRepeatedViews)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	chat.native_session_id = "01a0f73c-df28-7dd3-8253-64f706aeeebb";
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::CliTerminalState> owned = std::make_unique<uam::CliTerminalState>();
+	owned->frontend_chat_id = chat.id;
+	owned->attached_chat_id = chat.id;
+	owned->attached_session_id = chat.native_session_id;
+	owned->running = true;
+	owned->ui_attached = true;
+	owned->ui_attachment_id = "first-view";
+	uam::CliTerminalState* identity = owned.get();
+	app.cli_terminals.push_back(std::move(owned));
+	for (int index = 0; index < 3; ++index)
+	{
+		UAM_ASSERT(uam::DetachCliTerminalUi(*identity, identity->ui_attachment_id));
+		UAM_ASSERT(identity->running);
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT_EQ(identity->attached_session_id, chat.native_session_id);
+		UAM_ASSERT(&uam::EnsureCliTerminalForChat(app, app.chats.front()) == identity);
+		identity->ui_attached = true;
+		identity->ui_attachment_id = "next-view-" + std::to_string(index);
+	}
+	identity->running = false;
+}
+
+UAM_TEST(NativeIdentityQueryCancellationAndTimeoutNeverBindConversationOutput)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "native-query-timeout";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.native_identity_query_phase = 3;
+	terminal.native_identity_query_time_s = 1.0;
+	terminal.running = true;
+	const std::string pending_input(16384, 'x');
+	UAM_ASSERT(uam::WriteToCliTerminal(terminal, pending_input.data(), pending_input.size()));
+	UAM_ASSERT(!uam::WriteToCliTerminal(terminal, "overflow", 8));
+	UAM_ASSERT(!terminal.last_error.empty());
+	UAM_ASSERT(terminal.native_identity_deferred_input.empty());
+	UAM_ASSERT_EQ(terminal.native_identity_query_phase, 0);
+	terminal.native_identity_query_phase = 3;
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id, "", 12.0));
+	UAM_ASSERT_EQ(terminal.native_identity_query_phase, 0);
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id,
+	    "OpenAI Codex\nSession: 01a0f73c-df28-7dd3-8253-64f706aeeebb\nToken usage: 0", 13.0));
+	UAM_ASSERT(terminal.attached_session_id.empty());
+	terminal.native_identity_query_phase = 3;
+	terminal.native_identity_deferred_input = "cancelled user input\r";
+	terminal.running = false;
+	UAM_ASSERT(!uam::PollCliNativeIdentityQuery(app, terminal, chat.provider_id, "", 14.0));
+	UAM_ASSERT(terminal.native_identity_deferred_input.empty());
+	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b[1;1R"));
+	UAM_ASSERT(uam::IsNativeTerminalResponse("\x1b]10;rgb:ffff/ffff/ffff\x1b\\"));
+	UAM_ASSERT(!uam::IsNativeTerminalResponse("\x1b[1;1Ruser prompt"));
+}
+
+UAM_TEST(CodexNativeContextImportPersistsIdentityAndDoesNotReplayOnViewSwitch)
+{
+	TempDir temp("uam-codex-import-roundtrip");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "import-roundtrip";
+	chat.provider_id = "codex-cli";
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	chat.provider_handoff_context = "User: Actual prior conversation.\n\nAssistant: Saved response.";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config", "resume", chat.native_session_id};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
+	UAM_ASSERT_EQ(terminal.attached_session_id, chat.native_session_id);
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(reopened.has_value());
+	chat = *reopened;
+	argv = {(temp.root / "must-not-run").string()};
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(app.cli_context_preparation_tasks.size(), std::size_t{1});
+}
+
+UAM_TEST(CodexNativeContextImportRejectsUnsupportedApiAndInvalidIdentity)
+{
+	TempDir temp("uam-codex-import-reject");
+	const fs::path context = temp.root / "conversation.md";
+	UAM_ASSERT(uam::io::WriteTextFile(context, "User: Prior conversation."));
+	for (const std::string mode : {"--uam-test-codex-context-reject", "--uam-test-codex-context-invalid"})
+	{
+		std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), mode};
+		const std::vector<std::string> original = argv;
+		std::string error;
+		UAM_ASSERT(!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service, argv, temp.root, {}, context, error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(argv, original);
+	}
+}
+
+UAM_TEST(CodexImportedRemoteIdentityWaitsForOwnedReplyInsteadOfSavedBlankThread)
+{
+	TempDir temp("uam-codex-remote-import-id");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+	ChatSession chat;
+	chat.id = "remote-import";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "remote-fixture";
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	chat.provider_handoff_context = "User: Prior context.";
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.native_identity_requires_owned_reply = true;
+	UAM_ASSERT(!uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT(terminal.native_session_discovery_ambiguous);
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, chat.native_session_id);
+	terminal.attached_session_id = "11111111-2222-4333-8444-555555555555";
+	UAM_ASSERT(uam::DiscoverCliTerminalNativeSession(app, terminal));
+	UAM_ASSERT_EQ(app.chats[0].native_session_id, terminal.attached_session_id);
+	UAM_ASSERT_EQ(app.chats[0].provider_handoff_session_id, terminal.attached_session_id);
+}
+
+UAM_TEST(CodexNativeContextImportRefusesBlankAndOversizeHistoryBeforeStartingProvider)
+{
+	TempDir temp("uam-codex-import-bounds");
+	const fs::path context = temp.root / "conversation.md";
+	for (const std::string& contents : {std::string{}, std::string(4 * 1024 * 1024 + 1, 'x')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(context, contents));
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::string error;
+		UAM_ASSERT(!uam::provider_native_context::ImportCodexContext(PlatformServicesFactory::Instance().process_service, argv, temp.root, {}, context, error));
+		UAM_ASSERT(error.find("4 MiB") != std::string::npos);
+	}
+}
+
+UAM_TEST(CodexUnboundExistingChatImportsHydratedConversationAndCompactionSummary)
+{
+	TempDir temp("uam-codex-existing-import");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "existing-import";
+	chat.provider_id = "codex-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "The actual saved fruit is kumquat.";
+	chat.messages.push_back(user);
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Recorded the saved fruit.";
+	assistant.blocks.push_back({"context_compaction", "Saved conversation summary.", "", "compact-1"});
+	chat.messages.push_back(assistant);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	chat.messages.clear();
+	chat.messages_loaded = false;
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.empty());
+	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(chat.provider_handoff_context.find("User: The actual saved fruit is kumquat.") != std::string::npos);
+	UAM_ASSERT(chat.provider_handoff_context.find("Assistant: Recorded the saved fruit.") != std::string::npos);
+	UAM_ASSERT(chat.provider_handoff_context.find("Conversation summary: Saved conversation summary.") != std::string::npos);
+	UAM_ASSERT_EQ(chat.provider_handoff_session_id, chat.native_session_id);
 }

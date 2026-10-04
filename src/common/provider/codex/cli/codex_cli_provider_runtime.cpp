@@ -4,6 +4,7 @@
 #include "common/config/approval_modes.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_session_index.h"
+#include "common/provider/codex/cli/codex_terminal_activity.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/codex_options.h"
@@ -101,7 +102,7 @@ nlohmann::json BuildModelListRequest(int request_id, const std::string& cursor =
 }
 
 constexpr auto kCodexPromptMarkers = std::to_array<std::string_view>({"\xE2\x80\xBA", "> "});
-constexpr auto kCodexPromptCueTexts = std::to_array<std::string_view>({"Send", "message", "for shortcuts"});
+constexpr auto kCodexPromptCueTexts = std::to_array<std::string_view>({"Send", "message", "for shortcuts", "Ask Codex to do anything"});
 }
 
 namespace uam::acp_detail
@@ -137,6 +138,19 @@ bool SendDeferredCodexInterruptIfReady(AppState& app, AcpSessionState& session, 
 
 } // namespace uam::acp_detail
 
+ProviderTerminalActivity CodexCliProviderRuntime::PollInteractiveActivity(uam::CliTerminalState& terminal,
+    std::string_view session_id, const std::filesystem::path& cwd, bool ambiguous) const
+{
+	return uam::PollCodexTerminalActivity(terminal, session_id, cwd, ambiguous);
+}
+
+void CodexCliProviderRuntime::CheckpointInteractiveSubmission(uam::CliTerminalState& terminal) const
+{
+	if (!terminal.codex_activity_cwd.empty() && terminal.codex_activity_rollout.empty())
+		(void)PollInteractiveActivity(terminal, uam::CliTerminalAttachedSessionId(terminal), terminal.codex_activity_cwd, terminal.native_session_discovery_ambiguous);
+	uam::CheckpointCodexTerminalSubmission(terminal);
+}
+
 bool CodexCliProviderRuntime::RecentOutputIndicatesInputPrompt(std::string_view recent_output) const
 {
 	const std::string stripped = uam::RecentTerminalPromptScanText(recent_output);
@@ -145,7 +159,9 @@ bool CodexCliProviderRuntime::RecentOutputIndicatesInputPrompt(std::string_view 
 		return false;
 	}
 
-	return uam::strings::ContainsAny(stripped, kCodexPromptMarkers) && uam::strings::ContainsAny(stripped, kCodexPromptCueTexts);
+	// Codex keeps its empty composer visible while a turn is running.
+	return !uam::strings::Contains(stripped, "esc to interrupt") &&
+	    uam::strings::ContainsAny(stripped, kCodexPromptMarkers) && uam::strings::ContainsAny(stripped, kCodexPromptCueTexts);
 }
 
 const ProviderCliPolicy* CodexCliProviderRuntime::CliVersionPolicy() const
@@ -228,9 +244,9 @@ std::vector<std::string> CodexCliProviderRuntime::SnapshotInteractiveSessionIds(
 	return uam::codex::ReadSessionIndexIds();
 }
 
-std::string CodexCliProviderRuntime::DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace) const
+std::string CodexCliProviderRuntime::DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace, bool* ambiguous_out) const
 {
-	return uam::codex::PickNewSessionId(before, workspace);
+	return uam::codex::PickNewSessionId(before, workspace, uam::codex::CodexHomePath(), ambiguous_out);
 }
 
 

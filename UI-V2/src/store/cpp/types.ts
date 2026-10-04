@@ -9,7 +9,7 @@ import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
-export type CliLifecycleState = 'disabled' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
+export type CliLifecycleState = 'disabled' | 'starting' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
 export type AcpLifecycleState =
   | 'stopped'
   | 'starting'
@@ -43,6 +43,7 @@ export interface CppMessage {
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
+  stopReason?: string
 	acpPromptNotSent?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
@@ -64,6 +65,8 @@ export interface ChatAttachmentInput {
 export interface CppChat {
   id: string
   executionHostId?: string
+  remoteRecoveryEnabled?: boolean
+  remoteRecoveryState?: string
   title: string
   folderId: string
   pinned?: boolean
@@ -106,6 +109,7 @@ export interface CppChat {
   updatedAt: string
   interactionAt?: string
   lastOpenedAt?: string
+  attentionRevision?: string
   messageCount?: number
   messagesDigest?: string
   messages?: CppMessage[]
@@ -138,6 +142,7 @@ export interface CppGoal {
   lastBlocker?: string
 	lastBlockerKind?: string
   lastDiagnostic?: string
+  pendingContinuation?: boolean
   completedItems?: string[]
   remainingItems?: string[]
   currentStep?: string
@@ -230,6 +235,7 @@ export interface AcpConfigOption {
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
@@ -361,6 +367,7 @@ export interface AcpProviderUsage {
 }
 
 export interface CppAcpSession {
+  lastStopReason?: string
   sessionId?: string
   providerId?: string
 	/** Exact UAM execution path: provider-native config/plugin or UAM prompt injection. */
@@ -508,6 +515,7 @@ export interface CliVersionOption {
 
 export interface CliVersionProviderState {
   providerId: string
+  blockingChatIds?: string[]
   executionHostId?: string
   executionHostName?: string
   installedVersion: string
@@ -557,6 +565,7 @@ export interface CppSettings {
   acpSetupInactivityTimeoutSeconds?: number
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
@@ -744,6 +753,7 @@ export interface CliBinding {
 }
 
 export interface AcpBinding {
+  lastStopReason?: string
   sessionId: string
   providerId: string
   protocolKind: string

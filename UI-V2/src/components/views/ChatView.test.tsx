@@ -222,6 +222,46 @@ describe('ChatView', () => {
     })
   })
 
+  it('retains the observed idle timeout status after native reconciliation', () => {
+    useAppStore.setState((state) => ({
+      messages: { 'chat-1': [] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped', lastError: '', lastStopReason: 'timeout' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.textContent).toContain('Stopped after timeout')
+    expect(host.textContent).not.toContain('Response interrupted')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('requires pointer or keyboard interaction to acknowledge the current completion', () => {
+    const original = useAppStore.getState().acknowledgeChatAttention
+    const acknowledge = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({ acknowledgeChatAttention: acknowledge,
+      sessions: state.sessions.map((session) => ({ ...session, attentionRevision: 'completion-one' })) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(acknowledge).not.toHaveBeenCalled()
+    act(() => host.firstElementChild?.dispatchEvent(new Event('pointerdown', { bubbles: true })))
+    expect(acknowledge).toHaveBeenLastCalledWith('chat-1', 'completion-one')
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, attentionRevision: 'completion-two' })) })))
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => host.firstElementChild?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(acknowledge).toHaveBeenLastCalledWith('chat-1', 'completion-two')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ acknowledgeChatAttention: original })
+  })
+
   it('shows scoped chat hydration errors with a retry action', () => {
     const retry = vi.fn(() => Promise.resolve(true))
     useAppStore.setState({
@@ -6012,7 +6052,7 @@ describe('ChatView', () => {
 
     const menu = openWorkspaceActions(host)
     expect(menu?.textContent).toContain('This directory lives on the remote computer')
-    expect(menu?.querySelector('[role="menuitem"]')).toBeNull()
+    expect(menu?.querySelector('[role="menuitem"]')?.textContent).toContain('Open terminal')
     expect(menu?.textContent).not.toContain('Open workspace')
     expect(menu?.textContent).not.toContain('Create worktree')
 

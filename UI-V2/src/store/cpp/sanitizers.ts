@@ -261,7 +261,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'assistant_text' || type === 'thought') {
+  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction') {
     return {
       type,
       text: stringOr(value.text),
@@ -713,6 +713,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,
     lastError: isString(value.lastError) ? value.lastError : undefined,
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
+    lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
       ? value.diagnostics.flatMap((entry) => {
@@ -805,6 +806,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
 		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
+    pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
     remainingItems: Array.isArray(value.remainingItems) ? value.remainingItems.filter(isString) : undefined,
     currentStep: isString(value.currentStep) ? value.currentStep : undefined,
@@ -842,6 +844,8 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
   return {
     id,
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
+    remoteRecoveryEnabled: booleanOr(value.remoteRecoveryEnabled, false),
+    remoteRecoveryState: stringOr(value.remoteRecoveryState),
     title: stringOr(value.title, 'Untitled'),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
@@ -901,6 +905,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     updatedAt: stringOr(value.updatedAt),
     interactionAt: isString(value.interactionAt) ? value.interactionAt : undefined,
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
+    attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
     messageCount: finiteNumberOr(value.messageCount, 0),
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
@@ -1146,6 +1151,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
     message: stringOr(value.message),
     checkError: stringOr(value.checkError),
     running: booleanOr(value.running),
+    blockingChatIds: Array.isArray(value.blockingChatIds) ? value.blockingChatIds.filter((id): id is string => typeof id === 'string') : [],
     installMethod: normalizedInstallMethod,
     lastInstallStatus: normalizedLastInstallStatus,
     lastCommand: stringOr(value.lastCommand),
@@ -1403,6 +1409,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
+      automaticProviderUpdates: false,
       updateLastCheckedAt: '',
       dismissedUpdateVersions: {},
       memoryLastStatus: '',
@@ -1504,6 +1511,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         lastSeenAt: stringOr(entry.lastSeenAt),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
+        instructionFile: stringOr(entry.instructionFile),
+        startupEnabled: booleanOr(entry.startupEnabled, false),
+        startupStatus: stringOr(entry.startupStatus, 'disabled'),
       })
     }
   }
@@ -1524,6 +1534,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
+    automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
     updateLastCheckedAt: stringOr(value.updateLastCheckedAt),
     dismissedUpdateVersions,
     memoryLastStatus: stringOr(value.memoryLastStatus),

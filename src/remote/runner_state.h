@@ -28,6 +28,7 @@ namespace uam::remote
 		RunnerState& operator=(const RunnerState&) = delete;
 
 		nlohmann::json HandleProcessRequest(const nlohmann::json& request);
+		nlohmann::json HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version);
 		bool HasManagedProcesses();
 
 		// Kept public only so the translation unit's drain helpers stay small; it is
@@ -104,6 +105,14 @@ namespace uam::remote
 	  private:
 		void SweepExpiredTransientProcesses();
 		std::mutex m_stateMutex;
+		std::mutex m_memoryMutex;
+		struct TextWorker
+		{
+			std::filesystem::path directory;
+			std::string provider_id;
+			std::int64_t expires_at_ms = 0;
+		};
+		std::unordered_map<std::string, TextWorker> m_textWorkers;
 		std::filesystem::path m_spoolDirectory;
 		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;

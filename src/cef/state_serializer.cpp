@@ -101,7 +101,7 @@ namespace uam
 
 		bool ChatHasUnseenUpdate(const AppState& app, const ChatSession& chat)
 		{
-			return app.chats_with_unseen_updates.contains(chat.id);
+			return !ChatDomainService().AttentionRevision(app, chat).empty();
 		}
 
 		std::string ResolvedAcpSessionIdForChat(const AppState& app, const ChatSession& chat)
@@ -226,6 +226,8 @@ namespace uam
 		{
 			session_json["id"] = session.id;
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
+			session_json["remoteRecoveryEnabled"] = session.remote_recovery_enabled;
+			session_json["remoteRecoveryState"] = session.remote_recovery_state;
 			session_json["title"] = session.title;
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
@@ -261,6 +263,7 @@ namespace uam
 			AddWorkspaceIsolationFields(session_json, session);
 			session_json["createdAt"] = session.created_at;
 			session_json["updatedAt"] = session.updated_at;
+			session_json["attentionRevision"] = session.attention_revision;
 			session_json["interactionAt"] = session.interaction_at;
 			session_json["lastOpenedAt"] = uam::strings::NonEmptyOrFallback(session.last_opened_at, session.updated_at);
 			session_json["messageCount"] = MessageCountForFrontend(session);
@@ -387,6 +390,7 @@ namespace uam
 			message_json["createdAt"] = message.created_at;
 			if (!message.model_id.empty()) message_json["modelId"] = message.model_id;
 			if (message.interrupted) message_json["interrupted"] = true;
+			if (!message.stop_reason.empty()) message_json["stopReason"] = message.stop_reason;
 			if (message.acp_prompt_not_sent) message_json["acpPromptNotSent"] = true;
 			if (message.priority_steer) message_json["prioritySteer"] = true;
 			if (message.continues_turn) message_json["continuesTurn"] = true;
@@ -571,6 +575,7 @@ namespace uam
 					FingerprintHashBool(hash, attachment.copied);
 				}
 				FingerprintHashBool(hash, message.interrupted);
+				FingerprintHashString(hash, message.stop_reason);
 				FingerprintHashBool(hash, message.acp_prompt_not_sent);
 				FingerprintHashBool(hash, message.priority_steer);
 			}
@@ -941,6 +946,7 @@ namespace uam
 			acp_json["running"] = false;
 			acp_json["processing"] = false;
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
+			acp_json["lastStopReason"] = chat.last_stop_reason;
 			acp_json["attentionKind"] = nullptr;
 			acp_json["lifecycleState"] = "stopped";
 			acp_json["lastError"] = "";
@@ -988,6 +994,7 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing;
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
+			acp_json["lastStopReason"] = chat.last_stop_reason;
 			const std::optional<AcpPendingUserInputState> uam_control_approval =
 				UamControlService::PendingApprovalForChat(app, chat.id);
 			const std::string attention_kind =
@@ -1053,6 +1060,7 @@ namespace uam
 		{
 			nlohmann::json chat_json;
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
+			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, cache);
 			chat_json["computerUse"] = SerializeComputerUseState(app, chat);
@@ -1073,6 +1081,7 @@ namespace uam
 					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
 					goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+					goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
 					goal_json["completedItems"] = goal.completed_items;
 					goal_json["remainingItems"] = goal.remaining_items;
 					goal_json["currentStep"] = goal.current_step;
@@ -1210,9 +1219,8 @@ namespace uam
 			const bool check_running_for_provider = app.runtime_cli_version_check_task.running &&
 			                                        NormalizedCliVersionManagedProviderId(app.runtime_cli_version_provider_id) == provider_id &&
 			                                        app.runtime_cli_version_check_task.execution_host.id == execution_host.id;
-			const bool install_running_for_provider = app.runtime_cli_pin_task.running &&
-			                                          NormalizedCliVersionManagedProviderId(app.runtime_cli_pin_provider_id) == provider_id &&
-			                                          app.runtime_cli_pin_task.execution_host.id == execution_host.id;
+			const auto install = app.runtime_cli_install_tasks.find(CliProviderVersionStateKey(provider_id, execution_host.id));
+			const bool install_running_for_provider = install != app.runtime_cli_install_tasks.end() && install->second.running;
 			const auto state_it = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host.id));
 			const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end();
 			const CliProviderVersionState provider_state = has_provider_state ? state_it->second : CliProviderVersionState{};
@@ -1259,11 +1267,12 @@ namespace uam
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
 			provider_json["checkError"] = provider_state.check_error;
-			provider_json["running"] = check_running_for_provider || install_running_for_provider;
+			provider_json["running"] = check_running_for_provider || install_running_for_provider || app.pending_cli_updates.contains(CliProviderVersionStateKey(provider_id, execution_host.id));
+			provider_json["blockingChatIds"] = ProviderCliBlockingChatIds(app, provider_id, execution_host.id);
 			provider_json["installMethod"] = provider_state.install_method;
 			provider_json["lastInstallStatus"] = provider_state.last_install_status;
 			provider_json["lastCommand"] = install_running_for_provider
-			                                   ? app.runtime_cli_pin_task.command_preview
+			                                   ? install->second.command_preview
 			                                   : (check_running_for_provider ? app.runtime_cli_version_check_task.command_preview : provider_state.install_command);
 			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
 			return provider_json;
@@ -1425,6 +1434,7 @@ namespace uam
 			{
 				chat_json = SerializeFingerprintSession(app, chat, catalog_cache);
 			}
+			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
 			chats_arr.push_back(std::move(chat_json));
 		}
 		j["chats"] = std::move(chats_arr);
@@ -1529,6 +1539,7 @@ namespace uam
 				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
 				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
 				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+					goal_json["pendingContinuation"] = session.goal_pending_continuation_id == goal.id;
 				goal_json["completedItems"] = goal.completed_items;
 				goal_json["remainingItems"] = goal.remaining_items;
 				goal_json["currentStep"] = goal.current_step;

@@ -323,6 +323,8 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr) return false;
 
+	chat->goal_command_revision = GenerateGoalId();
+	chat->goal_pending_continuation_id.clear();
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 	if (status == GoalStatus::Complete)
@@ -413,13 +415,17 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		if (error_out != nullptr) *error_out = "Completed goals cannot be reactivated.";
 		return false;
 	}
-	if (!chat->active_goal_id.empty() && chat->active_goal_id != goal_id &&
-	    !CancelGoalWork(app, chat_id, chat->active_goal_id, error_out,
-	                    work_changed_out)) return false;
+
 	chat = FindChatMutable(app, chat_id);
 	matched_goal = FindGoalById(app, chat_id, goal_id);
 	if (chat == nullptr || matched_goal == nullptr) return false;
 
+	if (chat->active_goal_id != goal_id || matched_goal->status != GoalStatus::Active)
+	{
+		chat->goal_command_revision = GenerateGoalId();
+		const AcpSessionState* running = FindAcpSessionForChat(app, chat_id);
+		if (running != nullptr && AcpSessionHasActiveTurn(*running)) chat->goal_pending_continuation_id = goal_id;
+	}
 	const std::string updated_at = uam::time::TimestampNow();
 	for (auto& goal : chat->goals)
 	{
@@ -467,6 +473,8 @@ bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id)
 		}
 	}
 
+	chat->goal_command_revision = GenerateGoalId();
+	chat->goal_pending_continuation_id.clear();
 	chat->active_goal_id.clear();
 	chat->updated_at = updated_at;
 	MarkDirty(app, chat_id);
@@ -592,7 +600,27 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const st
 	auto it = std::find_if(chat->goals.begin(), chat->goals.end(),
 	                       [&goal_id](const Goal& goal) { return goal.id == goal_id; });
 	if (it == chat->goals.end()) return false;
-	if (!CancelGoalWork(app, chat_id, goal_id, error_out, work_changed_out)) return false;
+	std::vector<std::string> managed_roots;
+	for (const AgentRun& run : app.agent_runs)
+	{
+		if (run.root_chat_id != chat_id || run.goal_id != goal_id || run.status == "completed" ||
+		    run.status == "failed" || run.status == "cancelled" || run.status == "interrupted") continue;
+		const bool parent_in_goal = std::ranges::any_of(app.agent_runs, [&](const AgentRun& parent)
+		{
+			return parent.id == run.parent_run_id && parent.root_chat_id == chat_id && parent.goal_id == goal_id;
+		});
+		if (!parent_in_goal) managed_roots.push_back(run.id);
+	}
+	for (const std::string& run_id : managed_roots)
+	{
+		if (work_changed_out != nullptr) *work_changed_out = true;
+		if (!AgentRunScheduler::CancelTree(app, run_id, error_out)) return false;
+	}
+	chat = FindChatMutable(app, chat_id);
+	if (chat == nullptr) return false;
+	chat->goal_command_revision = GenerateGoalId();
+	chat->goal_pending_continuation_id.clear();
+	std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending) { return pending.owner_chat_id == chat_id && pending.goal_id == goal_id; });
 	chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr) return false;
 	it = std::find_if(chat->goals.begin(), chat->goals.end(),

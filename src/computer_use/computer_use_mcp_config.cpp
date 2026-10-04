@@ -1,3 +1,4 @@
+#include "common/config/build_features.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include "common/platform/platform_services.h"
@@ -57,7 +58,7 @@ namespace uam::computer_use
 
 	bool AvailableForChat(const ChatSession& chat)
 	{
-		return chat.execution_host_id.empty() || chat.execution_host_id == "local";
+		return UAM_ENABLE_COMPUTER_USE && (chat.execution_host_id.empty() || chat.execution_host_id == "local");
 	}
 
 	std::string EffectiveBackend(const ChatSession& chat)

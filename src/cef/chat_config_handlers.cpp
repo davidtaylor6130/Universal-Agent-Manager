@@ -854,7 +854,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 	if (*enabled && (provider == nullptr ||
 	                 !uam::UamControlService::SupportsStructuredProtocol(provider->structured_protocol)))
 	{
-		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Gemini CLI, OpenCode, and GitHub Copilot CLI.");
+		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Codex, Gemini CLI, OpenCode, and GitHub Copilot CLI.");
 		return;
 	}
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
@@ -1365,6 +1365,29 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetChatRemoteRecovery(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	ChatSession* chat = FindChatOrFail(m_app, payload.value("chatId", ""), cb, "Chat not found.");
+	if (chat == nullptr) return;
+	const bool enabled = payload.value("enabled", false);
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	if (host == nullptr || host->id == "local" || (enabled && (!host->startup_enabled || host->startup_status != "enabled")))
+	{
+		cb->Failure(409, "Enable runner startup on this SSH host before enabling chat recovery.");
+		return;
+	}
+	const bool previous = chat->remote_recovery_enabled;
+	chat->remote_recovery_enabled = enabled;
+	if (!ChatRepository::SaveChat(m_app.data_root, *chat))
+	{
+		chat->remote_recovery_enabled = previous;
+		cb->Failure(500, "Chat recovery could not be saved.");
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

@@ -329,9 +329,21 @@ namespace
 			const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
 			if (attachment_kind == attachment_frontend_fields::kDirectoryKind)
 			{
-				result.status = 400;
-				result.error = "Remote directory attachments are not supported; attach files instead.";
-				break;
+				const std::string path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+				if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, path))
+				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
+				uam::remote::DirectoryListing listing;
+				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) break;
+				MessageAttachment attachment;
+				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
+				if (attachment.id.empty()) attachment.id = AttachmentId();
+				attachment.name = SafeAttachmentName(uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kNameField}), "directory");
+				attachment.kind = attachment_kind;
+				attachment.path = listing.directory;
+				attachment.copied = false;
+				result.attachments.push_back(AttachmentToJson(attachment));
+				++index;
+				continue;
 			}
 			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(
 			    item, {attachment_fields::kPathField});
@@ -458,7 +470,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
-	const bool computer_use_mode = payload.value("computerUseMode", false) && chat->computer_use_enabled;
+	const bool computer_use_mode = UAM_ENABLE_COMPUTER_USE && payload.value("computerUseMode", false) && chat->computer_use_enabled;
 	const bool steer_now = payload.value("steerNow", false);
 	const bool sent = steer_now
 	                    ? uam::SteerAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode)
@@ -899,10 +911,11 @@ void UamQueryHandler::HandleResolveAcpUserInput(CefRefPtr<CefBrowser> browser, c
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	if (!uam::StopAcpSession(m_app, chat_id))
+	const uam::AcpStopPurpose purpose = payload.value("purpose", "interrupt") == "timeout" ? uam::AcpStopPurpose::Timeout : uam::AcpStopPurpose::Interrupt;
+	if (!uam::StopAcpSession(m_app, chat_id, purpose))
 	{
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
-		if (session != nullptr && session->remote_stop_pending)
+		if (session != nullptr && (session->local_stop_pending || session->remote_stop_pending))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");

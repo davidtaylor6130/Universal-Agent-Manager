@@ -1,6 +1,14 @@
+#include "common/provider/provider_text_worker.h"
+#include "remote/memory_protocol.h"
 #include "remote/runner_state.h"
+#include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
+#include "common/provider/provider_native_context.h"
+#include "remote/runner_startup.h"
+
+#include "common/memory/memory_categories.h"
+#include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
@@ -499,7 +507,7 @@ namespace uam::remote
 	{
 		SweepExpiredTransientProcesses();
 		std::scoped_lock lock(m_stateMutex);
-		return !m_processes.empty() || std::any_of(m_channels.begin(), m_channels.end(),
+		return !m_processes.empty() || !m_textWorkers.empty() || std::any_of(m_channels.begin(), m_channels.end(),
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
@@ -513,6 +521,16 @@ namespace uam::remote
 			{
 				return entry.second.expires_at_ms != 0 && now >= entry.second.expires_at_ms;
 			});
+			for (auto iterator = m_textWorkers.begin(); iterator != m_textWorkers.end();)
+			{
+				if (now >= iterator->second.expires_at_ms && !m_processes.contains(iterator->first))
+				{
+					std::error_code error;
+					std::filesystem::remove_all(iterator->second.directory, error);
+					iterator = m_textWorkers.erase(iterator);
+				}
+				else ++iterator;
+			}
 			for (auto iterator = m_processes.begin(); iterator != m_processes.end();)
 			{
 				const std::shared_ptr<Process>& process = iterator->second;
@@ -531,11 +549,230 @@ namespace uam::remote
 		for (const std::shared_ptr<Process>& process : expired) CleanupProcess(process);
 	}
 
+	nlohmann::json RunnerState::HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version)
+	{
+		if (!request.contains("enabled") || !request["enabled"].is_boolean())
+			return ProcessError(request, "invalid_request", "A runner startup boolean is required.");
+		const bool enabled = request["enabled"].get<bool>();
+		const std::filesystem::path executable = ProcessService().ResolveCurrentExecutablePath();
+		const std::optional<std::filesystem::path> home = env::GetUserHomePath();
+		if (!home || !executable.is_absolute()) return ProcessError(request, "startup_failed", "The runner user paths are unavailable.");
+		std::string error;
+#if defined(__linux__)
+		const std::filesystem::path socket = executable.parent_path().parent_path() / (RunnerEndpointName(runner_version) + ".sock");
+		if (!ConfigureLinuxRunnerStartup(ProcessService(), *home, executable, socket, enabled, error))
+			return ProcessError(request, "startup_failed", error);
+#elif defined(_WIN32)
+		if (!ConfigureWindowsRunnerStartup(executable, enabled, error)) return ProcessError(request, "startup_failed", error);
+#else
+		(void)runner_version; (void)enabled;
+		return ProcessError(request, "unsupported", "Runner login registration supports Linux systemd user sessions and Windows.");
+#endif
+		return ProcessSuccess(request, {{"enabled", enabled}, {"status", enabled ? "enabled" : "disabled"}});
+	}
+
 	nlohmann::json RunnerState::HandleProcessRequest(const nlohmann::json& request)
 	{
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+		if (type == "worker.prepare" || type == "worker.remove")
+		{
+			if (!request.contains("workerId") || !request["workerId"].is_string()) return ProcessError(request, "invalid_request", "A text worker identity is required.");
+			const std::string id = request["workerId"].get<std::string>();
+			if (id.size() < 16 || id.size() > 64 || !std::ranges::all_of(id, [](unsigned char ch) { return std::isalnum(ch) || ch == '-'; })) return ProcessError(request, "invalid_request", "The text worker identity is invalid.");
+			if (type == "worker.remove")
+			{
+				if (m_processes.contains(id)) return ProcessError(request, "worker_busy", "Stop and remove the owned text worker process before removing its files.");
+				const auto found = m_textWorkers.find(id);
+				if (found == m_textWorkers.end()) return ProcessSuccess(request, nlohmann::json::object());
+				std::error_code error;
+				std::filesystem::remove_all(found->second.directory, error);
+				if (error) return ProcessError(request, "cleanup_failed", "The owned text worker files could not be removed.");
+				m_textWorkers.erase(found);
+				return ProcessSuccess(request, nlohmann::json::object());
+			}
+			if (!request.contains("providerId") || !request["providerId"].is_string()) return ProcessError(request, "invalid_request", "A text worker provider is required.");
+			const std::string provider = request["providerId"].get<std::string>();
+			if (uam::provider_ids::NormalizeCliProviderAlias(provider).empty()) return ProcessError(request, "invalid_request", "The text worker provider is unsupported.");
+			if (m_textWorkers.contains(id))
+			{
+				const TextWorker& worker = m_textWorkers.at(id);
+				if (worker.provider_id != provider) return ProcessError(request, "worker_conflict", "This worker identity belongs to another provider.");
+				return ProcessSuccess(request, {{"directory", uam::paths::Utf8PathString(worker.directory)}});
+			}
+			if (m_spoolDirectory.empty() || m_textWorkers.size() >= 16) return ProcessError(request, "worker_unavailable", "A private text worker directory is unavailable.");
+			const std::filesystem::path directory = m_spoolDirectory / ("worker-" + id);
+			std::error_code error;
+			if (!std::filesystem::create_directory(directory, error) || error) return ProcessError(request, "worker_conflict", "The text worker directory already exists or cannot be created.");
+			std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, error);
+			ProviderProfile profile; profile.id = provider;
+			std::vector<std::string> arguments = {"cli", "run"};
+			if (error || !uam::provider_workers::ApplyWorkerIsolationPolicy(profile, directory, arguments))
+			{
+				std::filesystem::remove_all(directory, error);
+				return ProcessError(request, "worker_unavailable", "The private text worker safety policy could not be written.");
+			}
+			m_textWorkers.emplace(id, TextWorker{directory, provider, LeaseClockMilliseconds() + 150000});
+			return ProcessSuccess(request, {{"directory", uam::paths::Utf8PathString(directory)}});
+		}
+		if (type == "memory.list" || type == "memory.create" || type == "memory.delete")
+		{
+			state_lock.unlock();
+			std::lock_guard memory_lock(m_memoryMutex);
+			if (!request.contains("workspace") || !request["workspace"].is_string()) return ProcessError(request, "invalid_request", "An absolute workspace is required.");
+			const std::string workspace_text = request["workspace"].get<std::string>();
+			const std::filesystem::path workspace = uam::paths::PathFromUtf8(workspace_text);
+			if (!IsBoundedText(workspace_text, kMaxWorkingDirectoryBytes) || !workspace.is_absolute()) return ProcessError(request, "invalid_request", "An absolute bounded workspace is required.");
+			std::error_code ec;
+			if (!std::filesystem::is_directory(workspace, ec) || ec) return ProcessError(request, "not_found", "The remote workspace no longer exists.");
+			const std::filesystem::path root = workspace / ".UAM";
+			for (const std::string& category : uam::memory::SupportedCategories())
+			{
+				std::filesystem::path ancestor;
+				for (const std::filesystem::path& part : root / category)
+				{
+					ancestor /= part;
+					const std::filesystem::file_status status = std::filesystem::symlink_status(ancestor, ec);
+					if (ec == std::errc::no_such_file_or_directory) { ec.clear(); break; }
+					if (ec || std::filesystem::is_symlink(status)) return ProcessError(request, "unsafe_path", "Project memory cannot use linked or inaccessible directories.");
+				}
+			}
+			std::size_t file_count = 0;
+			for (const std::string& category : uam::memory::SupportedCategories())
+			{
+				const std::filesystem::path directory = root / category;
+				if (!std::filesystem::exists(directory, ec) && !ec) continue;
+				std::filesystem::directory_iterator iterator(directory, ec);
+				for (; !ec && iterator != std::filesystem::directory_iterator{}; iterator.increment(ec))
+				{
+					const std::filesystem::file_status status = iterator->symlink_status(ec);
+					if (ec || std::filesystem::is_symlink(status)) return ProcessError(request, "unsafe_path", "Project memory cannot contain linked files.");
+					if (iterator->path().extension() != ".md") continue;
+					if (!std::filesystem::is_regular_file(status) || ++file_count > 200 || iterator->file_size(ec) > 256 * 1024 || ec)
+						return ProcessError(request, "too_large", "Project memory must contain at most 200 regular bounded markdown files.");
+				}
+				if (ec) return ProcessError(request, "read_failed", "Project memory cannot be listed.");
+			}
+			MemoryLibraryStore::Scope scope;
+			scope.scope_type = "folder";
+			scope.root_path = root;
+			std::string error;
+			if (type == "memory.list")
+			{
+				const std::vector<MemoryLibraryStore::Entry> entries = MemoryLibraryStore::ListEntries(scope, &error);
+				if (!error.empty()) return ProcessError(request, "read_failed", error);
+				if (entries.size() > 200) return ProcessError(request, "too_large", "Project memory contains more than 200 entries.");
+				nlohmann::json values = nlohmann::json::array();
+				for (const MemoryLibraryStore::Entry& entry : entries) values.push_back(EncodeMemoryEntry(entry));
+				return ProcessSuccess(request, {{"entries", values}});
+			}
+			if (type == "memory.delete")
+			{
+				if (!request.contains("entryId") || !request["entryId"].is_string()) return ProcessError(request, "invalid_request", "A memory entry is required.");
+				const std::string id = request["entryId"].get<std::string>();
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(id);
+				if (id.size() > 256 || relative.is_absolute() || relative.has_root_name() || relative.extension() != ".md" ||
+				    !uam::memory::IsSupportedCategory(uam::paths::PortablePathString(relative.parent_path())) || relative.filename() == "..")
+					return ProcessError(request, "invalid_request", "The memory entry must belong to a supported project category.");
+				if (std::filesystem::is_symlink(std::filesystem::symlink_status(root / relative, ec)) || ec) return ProcessError(request, "unsafe_path", "The memory entry cannot be linked or inaccessible.");
+				return MemoryLibraryStore::DeleteEntry(scope, id, &error) ? ProcessSuccess(request, nlohmann::json::object()) : ProcessError(request, "write_failed", error);
+			}
+			if (!request.contains("draft") || !request["draft"].is_object()) return ProcessError(request, "invalid_request", "A memory draft is required.");
+			const nlohmann::json& value = request["draft"];
+			for (const char* field : {"category", "title", "memory", "evidence", "confidence", "sourceChatId"})
+				if (!value.contains(field) || !value[field].is_string() || value[field].get_ref<const std::string&>().size() > 8192) return ProcessError(request, "invalid_request", "The memory draft contains invalid text.");
+			MemoryLibraryStore::Draft draft;
+			draft.category = value["category"].get<std::string>(); draft.title = value["title"].get<std::string>();
+			draft.memory = value["memory"].get<std::string>(); draft.evidence = value["evidence"].get<std::string>();
+			draft.confidence = value["confidence"].get<std::string>(); draft.source_chat_id = value["sourceChatId"].get<std::string>();
+			if (value.contains("extractionKey"))
+			{
+				if (!value["extractionKey"].is_string() || value["extractionKey"].get_ref<const std::string&>().size() > 256) return ProcessError(request, "invalid_request", "The extraction receipt is invalid.");
+				draft.extraction_key = value["extractionKey"].get<std::string>();
+			}
+			MemoryLibraryStore::Entry created;
+			return MemoryLibraryStore::CreateEntry(scope, draft, &created, &error)
+			    ? ProcessSuccess(request, {{"entry", EncodeMemoryEntry(created)}}) : ProcessError(request, "write_failed", error);
+		}
+		if (type == "context.memory")
+		{
+			state_lock.unlock();
+			if (!request.contains("workspace") || !request["workspace"].is_string())
+				return ProcessError(request, "invalid_request", "An absolute workspace is required.");
+			const std::string workspace_text = request["workspace"].get<std::string>();
+			const std::filesystem::path workspace = uam::paths::PathFromUtf8(workspace_text);
+			if (!IsBoundedText(workspace_text, kMaxWorkingDirectoryBytes) || !workspace.is_absolute())
+				return ProcessError(request, "invalid_request", "An absolute bounded workspace is required.");
+			const int requested_budget = request.value("budget", 8192);
+			if (requested_budget < 512 || requested_budget > 65536)
+				return ProcessError(request, "invalid_request", "The memory budget must be between 512 and 65536 bytes.");
+			std::vector<std::filesystem::path> files;
+			for (const std::string& category : uam::memory::SupportedCategories())
+			{
+				const std::filesystem::path directory = workspace / ".UAM" / category;
+				std::error_code error;
+				if (!std::filesystem::exists(directory, error) && !error) continue;
+				if (error || !std::filesystem::is_directory(directory, error))
+					return ProcessError(request, "read_failed", "Remote project memory cannot be opened.");
+				std::filesystem::directory_iterator iterator(directory, error);
+				for (; !error && iterator != std::filesystem::directory_iterator{}; iterator.increment(error))
+				{
+					if (iterator->path().extension() != ".md") continue;
+					if (files.size() == 200) return ProcessError(request, "too_large", "Remote project memory contains more than 200 files.");
+					files.push_back(iterator->path());
+				}
+				if (error) return ProcessError(request, "read_failed", "Remote project memory cannot be listed.");
+			}
+			std::ranges::sort(files);
+			std::string text;
+			for (const std::filesystem::path& file : files)
+			{
+				const nlohmann::json response = HandleProcessRequest({{"id", request["id"]}, {"type", "context.read"}, {"path", uam::paths::Utf8PathString(file)}});
+				if (!response.value("ok", false)) return response;
+				std::string preview = response["result"].value("text", "");
+				const std::size_t memory_at = preview.find("## Memory");
+				if (memory_at != std::string::npos) preview.erase(0, memory_at + 9);
+				preview = uam::strings::SafeLine(preview, 320);
+				if (text.size() + preview.size() + 3 > static_cast<std::size_t>(requested_budget)) break;
+				if (!preview.empty()) text += "- " + preview + "\n";
+			}
+			return ProcessSuccess(request, {{"text", text}});
+		}
+		if (type == "context.read")
+		{
+			state_lock.unlock();
+			if (!request.contains("path") || !request["path"].is_string())
+				return ProcessError(request, "invalid_request", "An absolute context file path is required.");
+			const std::string path_text = request["path"].get<std::string>();
+			const std::filesystem::path path = uam::paths::PathFromUtf8(path_text);
+			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
+				return ProcessError(request, "invalid_request", "An absolute bounded context file path is required.");
+			std::error_code error;
+			std::filesystem::path ancestor;
+			for (const std::filesystem::path& part : path)
+			{
+				ancestor /= part;
+				if (std::filesystem::is_symlink(std::filesystem::symlink_status(ancestor, error)))
+					return ProcessError(request, "unsafe_path", "Context files cannot use symbolic links.");
+				if (error) return ProcessError(request, "read_failed", "The remote context file cannot be inspected.");
+			}
+			if (!std::filesystem::is_regular_file(path, error) || error)
+				return ProcessError(request, "not_found", "The remote context file does not exist or is not a regular file.");
+			const std::uintmax_t size = std::filesystem::file_size(path, error);
+			if (error || size > 256 * 1024)
+				return ProcessError(request, "too_large", "Context files must be at most 256 KiB.");
+			std::ifstream input(path, std::ios::binary);
+			std::string text(static_cast<std::size_t>(size), '\0');
+			if (!input || (size != 0 && !input.read(text.data(), static_cast<std::streamsize>(size))) || input.peek() != std::char_traits<char>::eof())
+				return ProcessError(request, "read_failed", "The remote context file could not be read consistently.");
+			if (text.find('\0') != std::string::npos)
+				return ProcessError(request, "invalid_text", "Context files must contain text without NUL bytes.");
+			try { (void)nlohmann::json(text).dump(); }
+			catch (const nlohmann::json::exception&)
+			{ return ProcessError(request, "invalid_text", "Context files must contain valid UTF-8 text."); }
+			return ProcessSuccess(request, {{"text", text}});
+		}
 		if (type == "directory.list")
 		{
 			state_lock.unlock();
@@ -598,6 +835,23 @@ namespace uam::remote
 			                                               : uam::paths::Utf8PathString(parent)},
 			                       {"directories", std::move(entries)},
 			                       {"truncated", truncated}});
+		}
+		if (type == "context.prepare" || type == "context.remove")
+		{
+			const std::string directory_text = request.value("directory", "");
+			const std::filesystem::path directory = uam::paths::PathFromUtf8(directory_text);
+			const std::string token = uam::paths::Utf8PathString(directory.filename());
+			if (!IsBoundedText(directory_text, kMaxWorkingDirectoryBytes) || !directory.is_absolute() || token.size() != 16 ||
+			    directory.parent_path().filename() != "context" || directory.parent_path().parent_path().filename() != ".UAM" ||
+			    !std::ranges::all_of(token, [](unsigned char c) { return std::isxdigit(c) != 0; }))
+				return ProcessError(request, "invalid_request", "The provider context directory is invalid.");
+			state_lock.unlock();
+			std::string error;
+			const bool completed = type == "context.prepare"
+			    ? uam::provider_native_context::PrepareOwnedContext(directory, error)
+			    : uam::provider_native_context::RemoveOwnedContext(directory, true, error);
+			if (!completed) return ProcessError(request, "context_cleanup_pending", error.empty() ? "Provider context storage is unavailable." : error);
+			return ProcessSuccess(request, nlohmann::json::object());
 		}
 		if (type.starts_with("file."))
 		{
@@ -1155,13 +1409,46 @@ namespace uam::remote
 
 		if (type == "process.stop")
 		{
+			process.drainer.request_stop();
+			if (process.drainer.joinable()) process.drainer.join();
+			std::string outcome = "forced";
+			int exit_code = -1;
 			{
 				std::scoped_lock lock(process.mutex);
-				ProcessService().TerminateStdioProcess(process.fields, true);
+				if (request.value("graceful", false))
+				{
+					platform::ObservedProcessStopResult result;
+					if (process.exited.load(std::memory_order_acquire))
+					{
+						result.exit_confirmed = true;
+						result.exit_code = process.exit_code.load(std::memory_order_acquire);
+						result.outcome = result.exit_code == 0 ? platform::ProcessStopOutcome::Graceful : platform::ProcessStopOutcome::Failed;
+					}
+					else result = platform::StopStdioProcessObserved(ProcessService(), process.fields);
+					exit_code = result.exit_code;
+					outcome = result.outcome == platform::ProcessStopOutcome::Graceful ? "graceful" :
+					          result.outcome == platform::ProcessStopOutcome::Forced ? "forced" : "failed";
+					// Preserve bytes drained during the exclusive stop operation in the native spool.
+					std::ofstream stdout_stream(process.stdout_spool, std::ios::binary | std::ios::app);
+					std::ofstream stderr_stream(process.stderr_spool, std::ios::binary | std::ios::app);
+					std::string output_error;
+					if (!AppendSpool(process.stdout_spool, stdout_stream, result.standard_output, process.stdout_base_cursor, process.stdout_offset, process.max_spool_bytes, output_error) ||
+					    !AppendSpool(process.stderr_spool, stderr_stream, result.standard_error, process.stderr_base_cursor, process.stderr_offset, process.max_spool_bytes, output_error))
+					{
+						process.spool_error = output_error;
+						outcome = "failed";
+					}
+					if (!result.exit_confirmed)
+					{
+						StartDrainer(process);
+						return ProcessError(request, "stop_unconfirmed", "Owned process shutdown could not be confirmed.");
+					}
+				}
+				else ProcessService().TerminateStdioProcess(process.fields, true);
 			}
 			process.exited.store(true, std::memory_order_release);
-			process.exit_code.store(-1, std::memory_order_release);
-			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}});
+			process.exit_code.store(exit_code, std::memory_order_release);
+			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}, {"stopOutcome", outcome}, {"exitCode", exit_code}});
 		}
 
 		if (type == "process.poll")

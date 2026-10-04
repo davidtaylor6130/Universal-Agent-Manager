@@ -11,6 +11,8 @@ namespace uam
 {
 
 /// Identifies provider-generated user events rather than human requests.
+/// Removes only complete generated policy wrappers, preserving authored and malformed text.
+std::string CodexVisibleUserMessage(std::string_view content);
 bool IsCodexSyntheticUserMessage(std::string_view content);
 bool IsInjectedChatTitle(std::string_view title);
 

@@ -75,6 +75,7 @@ export interface AppState {
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
   updateChecksEnabled: boolean
+  automaticProviderUpdates: boolean
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
@@ -136,6 +137,7 @@ export interface AppState {
   repositoryReviewBySessionId: Record<string, VcsCommitStatus>
 
   // Session actions
+  acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
@@ -163,7 +165,7 @@ export interface AppState {
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
-  setUpdateSettings: (settings: Partial<Pick<AppState, 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
+  setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'>) => Promise<boolean>
@@ -212,7 +214,7 @@ export interface AppState {
   updateGoalStatus: (chatId: string, goalId: string, status: GoalStatus) => Promise<MutationResult>
   updateGoalObjective: (chatId: string, goalId: string, objective: string) => Promise<MutationResult>
   removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
-  resumeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
+  resumeGoal: (chatId: string, goalId: string, restart?: boolean) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
   setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
@@ -267,7 +269,7 @@ export interface AppState {
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
-  stopAcpSession: (sessionId: string) => Promise<boolean>
+  stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
 
   // UI actions
   setTheme: (theme: StoredTheme) => void

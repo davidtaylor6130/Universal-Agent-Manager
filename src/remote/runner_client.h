@@ -2,6 +2,7 @@
 
 #include "common/platform/platform_state_fields.h"
 #include "remote/runner_protocol.h"
+#include "common/memory/memory_library_store.h"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -56,8 +57,11 @@ namespace uam::remote
 		RunnerClient(const RunnerClient&) = delete;
 		RunnerClient& operator=(const RunnerClient&) = delete;
 
-		bool Connect(std::string* error_out = nullptr);
+		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool IsConnected() const { return m_connected; }
+		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }
+		bool PrepareProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool RemoveProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool StartProcess(const std::string& session_id,
 		                  const std::filesystem::path& working_directory,
 		                  const std::vector<std::string>& argv,
@@ -69,7 +73,7 @@ namespace uam::remote
 		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,
-		    std::stop_token stop_token = {});
+		    std::stop_token stop_token = {}, std::string_view standard_input = {});
 		void SetProcessControlToken(const std::string& session_id,
 		                            std::string control_token);
 		bool WriteProcess(const std::string& session_id, std::string_view bytes,
@@ -84,24 +88,24 @@ namespace uam::remote
 		bool AcknowledgeProcessOutput(const std::string& session_id,
 		                              const ProcessPollResult& result,
 		                              std::string* error_out = nullptr);
-		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr);
+		bool StopProcess(const std::string& session_id, std::string* error_out = nullptr, bool graceful = false, std::string* outcome_out = nullptr);
 		bool RemoveProcess(const std::string& session_id, std::string* error_out = nullptr);
 		/// <summary>Leased handoffs require a fresh, never-reused UUID and attach_if_exists=false.</summary>
 		bool OpenChannel(const std::string& channel_id, std::string* error_out = nullptr,
-		                 bool attach_if_exists = true, std::int64_t lease_ms = 0);
+		                 bool attach_if_exists = true, std::int64_t lease_ms = 0, std::stop_token stop_token = {});
 		bool TakeChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr);
 		bool WriteChannel(const std::string& channel_id, std::string_view direction,
-		                  std::string_view bytes, std::string* error_out = nullptr);
+		                  std::string_view bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool PollChannel(const std::string& channel_id, std::string_view direction,
 		                 std::string& bytes, std::string* error_out = nullptr,
 		                 std::uintmax_t* cursor_out = nullptr);
 		bool AcknowledgeChannel(const std::string& channel_id, std::string_view direction,
 		                        std::uintmax_t cursor, std::string* error_out = nullptr);
-		bool CloseChannel(const std::string& channel_id, std::string* error_out = nullptr);
+		bool CloseChannel(const std::string& channel_id, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool UploadFile(const std::string& upload_id,
 		                const std::filesystem::path& remote_path,
-		                std::string_view bytes, std::string* error_out = nullptr);
+		                std::string_view bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
@@ -109,6 +113,16 @@ namespace uam::remote
 		              const std::filesystem::path& source_path,
 		              const std::filesystem::path& target_path, bool overwrite,
 		              std::string* error_out = nullptr);
+		bool ConfigureStartup(bool enabled, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool RemoveTextWorker(std::string_view id, std::string* error_out = nullptr);
+		bool ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out = nullptr);
+		bool CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out = nullptr);
+		bool DeleteMemoryEntry(const std::filesystem::path& workspace, std::string_view id, std::string* error_out = nullptr);
+		bool ReadProjectMemory(const std::filesystem::path& workspace, int budget, std::string& text,
+		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
+		                  std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);
@@ -135,7 +149,12 @@ namespace uam::remote
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
 		bool m_directoryBrowsing = false;
+		bool m_contextRead = false;
+		bool m_projectMemory = false;
+		bool m_isolatedTextWorkers = false;
+		bool m_runnerStartup = false;
 		bool m_leasedChannelTake = false;
+		bool m_providerNativeContext = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

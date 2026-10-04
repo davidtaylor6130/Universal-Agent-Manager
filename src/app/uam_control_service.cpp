@@ -772,7 +772,8 @@ namespace uam
 
 	bool UamControlService::SupportsStructuredProtocol(std::string_view protocol)
 	{
-		return protocol == uam::provider_profile_constants::kProtocolGeminiAcp ||
+		return protocol == uam::provider_profile_constants::kProtocolCodexAppServer ||
+		       protocol == uam::provider_profile_constants::kProtocolGeminiAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolOpenCodeAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolCopilotAcp;
 	}

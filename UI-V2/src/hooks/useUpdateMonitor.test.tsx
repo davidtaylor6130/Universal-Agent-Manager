@@ -70,7 +70,7 @@ describe('useUpdateMonitor', () => {
     }
   })
 
-  it.each(['close', 'failure'] as const)('sequences update-all through native completion and stops the remaining queue on %s', async (ending) => {
+  it.each(['close', 'failure'] as const)('admits independent bulk updates together and preserves their results on %s', async (ending) => {
     const previous = useAppStore.getState()
     const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '2.0.0', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' as const }
     const updates = ['alpha', 'beta', 'gamma'].map((executionHostId) => ({ id: executionHostId, providerId: provider.providerId, executionHostId, name: executionHostId, currentVersion: '1.0.0', latestVersion: '2.0.0', url: '', installable: true }))
@@ -81,9 +81,12 @@ describe('useUpdateMonitor', () => {
       useAppStore.setState({ cliVersionManager: { ...manager, remoteProviders: manager.remoteProviders!.map((entry) => entry.executionHostId === executionHostId ? { ...entry, ...changes } : entry) } })
     }
     window.cefQuery = ({ request, onSuccess }) => {
-      const { payload } = JSON.parse(request)
-      requests.push(payload.executionHostId)
-      push(payload.executionHostId, { status: 'installing', running: true, lastInstallStatus: 'running' })
+      const { action, payload } = JSON.parse(request)
+      expect(action).toBe('applyCliProviderVersions')
+      for (const target of payload.targets) {
+        requests.push(target.executionHostId)
+        push(target.executionHostId, { status: 'installing', running: true, lastInstallStatus: 'running' })
+      }
       onSuccess('{}')
     }
     function Panel() { return <UpdatesPanel monitor={{ ...useUpdateMonitor(), updates }} onClose={() => {}} /> }
@@ -92,24 +95,17 @@ describe('useUpdateMonitor', () => {
     try {
       await act(async () => root.render(<Panel />))
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Update everything"]')!.click())
-      expect(requests).toEqual(['alpha'])
-      await act(async () => push('beta', { installedVersion: '2.0.0' }))
-      expect(requests).toEqual(['alpha'])
-      await act(async () => push('alpha', { status: 'checking', running: true, lastInstallStatus: 'succeeded' }))
-      expect(requests).toEqual(['alpha'])
-      await act(async () => push('alpha', { status: 'verified', running: false, installedVersion: '2.0.0' }))
-      expect(requests).toEqual(['alpha', 'beta'])
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Update everything"]')!.disabled).toBe(true)
+      expect(requests).toEqual(['alpha', 'beta', 'gamma'])
+      await act(async () => push('alpha', { status: 'verified', running: false, installedVersion: '2.0.0', lastInstallStatus: 'succeeded' }))
       if (ending === 'close') {
-        // Closing cancels the remaining queue, without stopping or replaying the active install.
         await act(async () => root.render(null))
-        await act(async () => push('beta', { status: 'verified', running: false, installedVersion: '2.0.0' }))
+        await act(async () => push('beta', { status: 'verified', running: false, installedVersion: '2.0.0', lastInstallStatus: 'succeeded' }))
       } else {
-        await act(async () => push('beta', { status: 'verified', running: false, lastInstallStatus: 'failed' }))
-        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Updates stopped at beta')
-        expect(host.querySelector<HTMLButtonElement>('button[aria-label="Update everything"]')!.disabled).toBe(false)
+        await act(async () => push('beta', { status: 'verified', running: false, lastInstallStatus: 'failed', message: 'fixture failure' }))
+        expect(host.textContent).toContain('beta update failed')
+        expect(host.textContent).toContain('alpha update installed')
       }
-      expect(requests).toEqual(['alpha', 'beta'])
+      expect(requests).toEqual(['alpha', 'beta', 'gamma'])
     } finally {
       act(() => root.unmount())
       useAppStore.setState(previous, true)
@@ -319,6 +315,7 @@ describe('useUpdateMonitor', () => {
       }
     })
 
+    await act(async () => { await Promise.resolve() })
     expect(fetch).toHaveBeenCalledTimes(11)
     finishFetches.forEach((finish) => finish({ ok: true, json: async () => ({ version: '1.0.0' }) }))
     await act(async () => { await Promise.all(checks) })
@@ -356,4 +353,35 @@ describe('useUpdateMonitor', () => {
     act(() => root.unmount())
     useAppStore.setState({ setUpdateSettings: previousSettings })
   })
+})
+
+it('automatically installs only opted-in idle providers and defers running sessions without retry loops', async () => {
+  const previous = useAppStore.getState()
+  const originalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+  const entries = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => entries.set(key, value), removeItem: (key: string) => entries.delete(key) } })
+  const cache = window.localStorage.getItem('uam-update-catalog-v1')
+  window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ checkedAt: new Date().toISOString(), uam: { version: '4.9.0', url: '' }, providers: { 'codex-cli': { version: '2.0.0', url: '' } } }))
+  const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, blockingChatIds: ['active-chat'], lastCommand: '', lastOutput: '' }
+  useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: false, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [provider] } })
+  const requests: { action: string; payload: unknown }[] = []
+  window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  const root = createRoot(document.createElement('div'))
+  try {
+    await act(async () => root.render(<Probe />))
+    expect(requests).toEqual([])
+    await act(async () => useAppStore.setState({ automaticProviderUpdates: true }))
+    expect(requests).toEqual([])
+    await act(async () => useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, blockingChatIds: [] }] } }))
+    expect(requests).toEqual([expect.objectContaining({ action: 'applyCliProviderVersions', payload: { targets: [{ providerId: 'codex-cli', version: '2.0.0' }] } })])
+    await act(async () => useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, blockingChatIds: [], lastInstallStatus: 'failed' }] } }))
+    expect(requests).toHaveLength(1)
+  } finally {
+    await act(async () => root.unmount())
+    useAppStore.setState(previous, true)
+    if (cache) window.localStorage.setItem('uam-update-catalog-v1', cache)
+    else window.localStorage.removeItem('uam-update-catalog-v1')
+    if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
+    delete window.cefQuery
+  }
 })

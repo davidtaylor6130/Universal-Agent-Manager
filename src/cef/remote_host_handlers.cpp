@@ -111,7 +111,7 @@ namespace
 			return true;
 		return std::ranges::any_of(app.cli_terminals, [&](const auto& terminal)
 		{
-			return terminal != nullptr && (terminal->running || terminal->native_session_setup_cancel != nullptr) &&
+			return terminal != nullptr && (terminal->running || terminal->native_session_setup_cancel != nullptr || terminal->context_preparation != nullptr) &&
 			       (chat_uses_host(terminal->attached_chat_id) ||
 			        chat_uses_host(terminal->frontend_chat_id));
 		});
@@ -164,7 +164,13 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	}
 	const AppSettings previous = m_app.settings;
 	std::optional<ExecutionHost> previous_host;
-	if (collision != m_app.settings.execution_hosts.end()) previous_host = *collision;
+	if (collision != m_app.settings.execution_hosts.end())
+	{
+		previous_host = *collision;
+		host.instruction_file = collision->instruction_file;
+		host.startup_enabled = collision->startup_enabled;
+		host.startup_status = collision->startup_status;
+	}
 	uam::remote::BootstrapPlan plan;
 	if (!BuildPlan(host, plan, error))
 	{
@@ -193,12 +199,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	}
 	else
 		m_app.settings.execution_hosts.push_back(host);
-	if (!PersistenceCoordinator().SaveSettings(m_app))
-	{
-		m_app.settings = previous;
-		cb->Failure(500, "Failed to persist the remote host before setup.");
-		return;
-	}
+	// Install progress is transient. A competing controller must not change
+	// durable host metadata before the target-side transaction lock succeeds.
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::string install_nonce = plan.nonce;
 	g_remote_install_tokens[host.id] = install_nonce;
@@ -279,9 +281,11 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 			    uam::query_handler_async::AsyncCefResult outcome = response;
 			    const auto finalized = std::make_shared<bool>(false);
+			    const bool startup_needed = keep_new_runner && previous_host && previous_host->startup_enabled;
+			    const auto startup_confirmed = std::make_shared<std::optional<bool>>();
 			    const bool finalization_queued = uam::query_handler_async::RunAsyncCefQuery(
 			        m_asyncLifetime, cb,
-				[install_plan, result, keep_new_runner, outcome, finalized]() mutable
+				[install_plan, result, keep_new_runner, outcome, finalized, startup_needed, startup_confirmed]() mutable
 			        {
 				        std::string error;
 				        *finalized = uam::remote::FinalizeBootstrapPlan(
@@ -295,10 +299,18 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        outcome.error += " Remote helper rollback failed." +
 					            (error.empty() ? std::string{} : " " + error);
 				        }
+				        if (*finalized && startup_needed)
+				        {
+					        uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+					            uam::remote::SshBridgeArgv(install_plan->ssh_alias, result->platform, install_plan->version,
+					                install_plan->runner_directory, uam::remote::kRunnerProtocolVersion), install_plan->version, uam::remote::kRunnerProtocolVersion);
+					        *startup_confirmed = client.ConfigureStartup(true, &error);
+					        if (!**startup_confirmed) return uam::query_handler_async::AsyncSuccess({{"ok", true}, {"warning", "Helper installed. Save this host's options to confirm runner startup. " + error}});
+				        }
 				        return outcome;
 			        },
 				 [this, browser, host_id, install_nonce, restore_previous,
-			         restore_host, release_install, finalized](
+			         restore_host, release_install, finalized, startup_confirmed](
 			            uam::query_handler_async::AsyncCefResult& final_response)
 			        {
 				        const auto operation = g_remote_install_tokens.find(host_id);
@@ -313,6 +325,16 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        }
 					        if (!PersistenceCoordinator().SaveSettings(m_app))
 						        final_response.error += " The previous host status also could not be saved.";
+				        }
+				        if (!restore_previous && startup_confirmed->has_value())
+				        {
+					        const auto current = FindMutableHost(m_app.settings.execution_hosts, host_id);
+					        if (current != m_app.settings.execution_hosts.end()) current->startup_status = **startup_confirmed ? "enabled" : "error";
+					        if (!PersistenceCoordinator().SaveSettings(m_app))
+					        {
+						        if (current != m_app.settings.execution_hosts.end()) current->startup_status = "pending";
+						        final_response = uam::query_handler_async::AsyncFailure(500, "Helper installed, but startup confirmation could not be saved. Save this host's options again.");
+					        }
 				        }
 				        release_install();
 				        uam::PushStateUpdateIfChanged(browser, m_app);
@@ -360,6 +382,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		    else
 		    {
 			    found->runner_status = "ready";
+			    if (found->startup_enabled) found->startup_status = "pending";
 			    std::string version = uam::constants::kAppVersion;
 			    if (!version.empty() && (version.front() == 'V' || version.front() == 'v'))
 				    version.erase(version.begin());
@@ -395,6 +418,103 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		PersistenceCoordinator().SaveSettings(m_app);
 		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
+}
+
+void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, payload.value("id", ""));
+	const std::string path = uam::strings::Trim(payload.value("instructionFile", ""));
+	if (host == nullptr || host->id == "local" || !uam::execution_hosts::IsAbsoluteRemotePath(host->platform, path))
+	{ cb->Failure(400, "Use an absolute instruction file path on this SSH host."); return; }
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [host = *host, path]()
+	{
+		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		        host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		std::string text;
+		std::string error;
+		return client.ReadTextFile(uam::paths::PathFromUtf8(path), text, &error)
+		    ? uam::query_handler_async::AsyncSuccess({{"bytes", text.size()}})
+		    : uam::query_handler_async::AsyncFailure(502, error);
+	});
+}
+
+void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
+    const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string id = payload.value("id", "");
+	const auto host = FindMutableHost(m_app.settings.execution_hosts, id);
+	if (host == m_app.settings.execution_hosts.end() || id == "local")
+	{
+		cb->Failure(404, "The SSH host no longer exists.");
+		return;
+	}
+	ExecutionHost updated = *host;
+	updated.instruction_file = uam::strings::Trim(payload.value("instructionFile", host->instruction_file));
+	updated.startup_enabled = payload.value("startupEnabled", host->startup_enabled);
+	if (g_remote_install_tokens.contains(id) ||
+	    (updated.instruction_file != host->instruction_file && HostHasActiveRuntimeWork(m_app, id)))
+	{
+		cb->Failure(409, "Stop or finish this host's sessions before changing its instructions.");
+		return;
+	}
+	std::string error;
+	if (!uam::execution_hosts::NormalizeRemote(updated, &error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	const ExecutionHost observed = *host;
+	const bool configure_startup = updated.startup_enabled != observed.startup_enabled || updated.startup_enabled || observed.startup_status == "pending" || observed.startup_status == "error";
+	updated.startup_status = configure_startup ? "pending" : "disabled";
+	const AppSettings previous = m_app.settings;
+	*host = updated;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, "Host options could not be saved.");
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (!configure_startup) { cb->Success("{}"); return; }
+	const std::string token = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	g_remote_install_tokens[id] = token;
+	// Persist pending intent before changing the target. A lost UI callback remains recoverable by Save.
+	const bool queued = uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [updated]()
+	    {
+		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+		        uam::remote::SshBridgeArgv(updated.ssh_alias, updated.platform, updated.runner_version,
+		            updated.runner_directory, updated.runner_protocol_version), updated.runner_version, updated.runner_protocol_version);
+		    std::string error;
+		    return client.ConfigureStartup(updated.startup_enabled, &error)
+		        ? uam::query_handler_async::AsyncSuccess({}) : uam::query_handler_async::AsyncFailure(502, error);
+	    },
+	    [this, browser, observed, updated, token](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    const auto operation = g_remote_install_tokens.find(updated.id);
+		    if (operation == g_remote_install_tokens.end() || operation->second != token) return;
+		    g_remote_install_tokens.erase(operation);
+		    const auto current = FindMutableHost(m_app.settings.execution_hosts, updated.id);
+		    if (current == m_app.settings.execution_hosts.end() || *current != updated)
+		        { response = uam::query_handler_async::AsyncFailure(409, "The SSH host changed while its options were being saved. Save its options again to confirm startup."); return; }
+		    if (response.ok) current->startup_status = updated.startup_enabled ? "enabled" : "disabled";
+		    else { *current = observed; current->startup_status = "error"; }
+		    if (!PersistenceCoordinator().SaveSettings(m_app))
+		    {
+			    current->startup_status = "pending";
+			    response = uam::query_handler_async::AsyncFailure(500, "Startup changed on the host, but its confirmed status could not be saved. Save host options again to confirm it.");
+		    }
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+	    });
+	if (!queued)
+	{
+		g_remote_install_tokens.erase(id);
+		const auto current = FindMutableHost(m_app.settings.execution_hosts, id);
+		if (current != m_app.settings.execution_hosts.end()) current->startup_status = "error";
+		(void)PersistenceCoordinator().SaveSettings(m_app);
+	}
+
 }
 
 void UamQueryHandler::HandleRemoveRemoteHost(CefRefPtr<CefBrowser> browser,
