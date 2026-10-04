@@ -1406,7 +1406,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			queued.text = uam::strings::Trim(text);
-			if (queued.text.empty())
+			if (queued.text.empty() && attachments.empty())
 			{
 				if (error_out != nullptr)
 				{

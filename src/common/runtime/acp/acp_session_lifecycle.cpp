@@ -1181,6 +1181,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const int id = session.next_request_id++;
 	std::string method;
 	ChatSession prompt_chat = chat;
+	// Prompt attachments use the same effective root as staging and process launch.
+	prompt_chat.workspace_directory = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
 	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, context + prompt, prompt_chat, method);
 

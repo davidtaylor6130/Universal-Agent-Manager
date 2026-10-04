@@ -2110,7 +2110,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = [], steerNow = false): Promise<boolean> => {
       const prompt = text.trim()
-      if (!prompt) {
+      if (!prompt && attachments.length === 0) {
         return false
       }
       const actionErrorId = createRequestId('sendAcpPrompt')

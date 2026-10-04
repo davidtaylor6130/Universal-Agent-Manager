@@ -15279,7 +15279,7 @@ UAM_TEST(ClaudeThinkingErrorsAndInterruptKeepTranscriptAndSessionConsistent)
 	nlohmann::json structured_result = tool_result;
 	structured_result["message"]["content"][0]["content"] = structured;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), structured_result.dump()));
-	UAM_ASSERT_EQ(nlohmann::json::parse(session.tool_calls[0].content), structured);
+	UAM_ASSERT_EQ(session.tool_calls[0].content, std::string("Screenshot\n[Image]"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[{"type":"text","text":"Child response"}]}})"));
 	UAM_ASSERT(app.chats.front().messages[0].content.empty());
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Budget exceeded"]})"));

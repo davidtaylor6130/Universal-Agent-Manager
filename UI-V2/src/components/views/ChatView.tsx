@@ -1096,7 +1096,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
     const prompt = (promptOverride ?? draft).trim()
-    if (!providerSupported || session.importedReadOnly || !prompt || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -1438,7 +1438,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && !session.importedReadOnly && draft.trim().length > 0 && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    () => providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
     [providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
   )
   const dictationAvailable = isCefContext()
