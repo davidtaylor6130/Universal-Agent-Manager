@@ -1,3 +1,4 @@
+#include "core/chat_import_utils.h"
 #include "test_harness.h"
 #include "common/platform/file_explorer_application.h"
 #include "common/config/custom_icon.h"
@@ -17720,9 +17721,14 @@ UAM_TEST(ClaudeNativeDiscoveryFollowsLatestBranchAndSkipsCorruptSessions)
 UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	if (!GitAvailableForTests()) return;
 	TempDir temp("uam-opencode-history");
 	const fs::path workspace = temp.root / "workspace";
-	fs::create_directories(workspace);
+	const fs::path main_checkout = temp.root / "main";
+	fs::create_directories(main_checkout);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(main_checkout.string())));
+	UAM_ASSERT(RunGitForTest(main_checkout, "-c user.email=uam@example.test -c user.name=UAM commit --allow-empty -m initial"));
+	UAM_ASSERT(RunGitForTest(main_checkout, "worktree add --detach " + ShellQuoteForTest(workspace.string())));
 	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
 	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
 	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
@@ -17738,10 +17744,11 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; elif [ \"$2\" = ses_empty ]; then cat '" + (temp.root / "empty.json").string() + "'; else cat '" + (temp.root / "export.json").string() + "'; fi\n"));
 	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
 	profile.interactive_command = "/bin/sh '" + (temp.root / "fixture.sh").string() + "'";
-	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+	ChatFolder folder{"folder", "Workspace", main_checkout.string(), false};
 	const auto discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
 	if (!discovery.result.success) throw std::runtime_error(uam::strings::Join(discovery.result.errors, " "));
 	UAM_ASSERT(discovery.result.success);
+	UAM_ASSERT_EQ(discovery.chats.front().workspace_directory, workspace.string());
 	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(discovery.chats.front().messages.front().content, std::string("native question"));
 	UAM_ASSERT(!fs::exists(temp.root / "data"));
@@ -18404,6 +18411,158 @@ UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
 		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, session_id).has_value());
 	}
 #endif
+}
+
+UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-import-worktree-folders");
+	const fs::path repo = temp.root / "main checkout";
+	const fs::path worktree = temp.root / "linked checkout";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "-c user.email=uam@example.test -c user.name=UAM commit --allow-empty -m initial"));
+	UAM_ASSERT(RunGitForTest(repo, "worktree add --detach " + ShellQuoteForTest(worktree.string())));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), repo));
+	fs::create_directories(repo / "subfolder");
+	fs::create_directories(worktree / "subfolder");
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), repo / "subfolder"));
+	UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(worktree, temp.root / "other"));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(repo), repo));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "main-folder";
+	folder.title = "Main checkout";
+	folder.directory = repo.string();
+	app.folders.push_back(folder);
+	for (const std::string provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		ChatSession chat;
+		chat.id = "worktree-" + provider;
+		chat.provider_id = provider;
+		chat.workspace_directory = worktree.string();
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	}
+	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT_EQ(preview.groups.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(preview.groups.front().existing_folder_id, folder.id);
+	UAM_ASSERT_EQ(preview.groups.front().chat_ids.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT(uam::RebuildUnsortedWorkspaceFolders(app));
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.folder_id, folder.id);
+		UAM_ASSERT_EQ(chat.workspace_directory, worktree.string());
+		UAM_ASSERT(FolderDirectoryMatches(uam::paths::ResolveWorkspaceRootPath(app, chat), worktree));
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->workspace_directory, worktree.string());
+	}
+	for (ChatSession& chat : app.chats) chat.folder_id.clear();
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.folder_id, folder.id);
+		UAM_ASSERT_EQ(chat.workspace_directory, worktree.string());
+	}
+	for (ChatSession& chat : app.chats) chat.folder_id.clear();
+	app.folders.clear();
+	const auto create_preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT_EQ(create_preview.groups.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(FolderDirectoryMatches(create_preview.groups.front().directory, repo));
+	UAM_ASSERT(create_preview.groups.front().existing_folder_id.empty());
+	app.folders.push_back(folder);
+	ChatFolder explicit_folder = folder;
+	explicit_folder.id = "worktree-folder";
+	explicit_folder.directory = worktree.string();
+	app.folders.push_back(explicit_folder);
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree)->id, explicit_folder.id);
+	app.folders.back().execution_host_id = "remote";
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree)->id, folder.id);
+
+	ScopedEnvVar claude_env("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar copilot_env("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_env("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	const fs::path codex_home = temp.root / "codex";
+	fs::create_directories(codex_home / "sessions");
+	ScopedEnvVar codex_env("CODEX_HOME", codex_home.string());
+	const std::string id = "aaaaaaaa-1111-4111-8111-111111111111";
+	const nlohmann::json meta = {{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", worktree.string()}}}};
+	const nlohmann::json user = {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "worktree import"}}})}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(codex_home / "sessions" / "rollout.jsonl", meta.dump() + "\n" + user.dump() + "\n"));
+	app.folders.back().execution_host_id = "local";
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 0);
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, explicit_folder.id).imported_count, 1);
+	const auto imported = ChatRepository::LoadLocalChat(app.data_root, id);
+	UAM_ASSERT(imported.has_value());
+	UAM_ASSERT_EQ(imported->folder_id, explicit_folder.id);
+	UAM_ASSERT_EQ(imported->workspace_directory, worktree.string());
+	app.folders.pop_back();
+	app.data_root = temp.root / "main-import-data";
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
+	const auto main_import = ChatRepository::LoadLocalChat(app.data_root, id);
+	UAM_ASSERT(main_import.has_value());
+	UAM_ASSERT_EQ(main_import->folder_id, folder.id);
+	UAM_ASSERT_EQ(main_import->workspace_directory, worktree.string());
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	std::string encoded = worktree.string();
+	for (char& character : encoded)
+		if (!std::isalnum(static_cast<unsigned char>(character))) character = '-';
+	const fs::path claude_project = temp.root / "claude" / "projects" / encoded;
+	fs::create_directories(claude_project);
+	const nlohmann::json claude_user = {{"uuid", "user-1"}, {"type", "user"}, {"cwd", worktree.string()}, {"message", {{"role", "user"}, {"content", "Claude worktree"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(claude_project / "claude-session.jsonl", claude_user.dump() + "\n"));
+	const fs::path copilot_session = temp.root / "copilot" / "session-state" / "bbbbbbbb-1111-4111-8111-111111111111";
+	fs::create_directories(copilot_session);
+	UAM_ASSERT(uam::io::WriteTextFile(copilot_session / "workspace.yaml", "cwd: " + nlohmann::json(worktree.string()).dump() + "\n"));
+	const nlohmann::json copilot_user = {{"type", "user.message"}, {"data", {{"content", "Copilot worktree"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(copilot_session / "events.jsonl", copilot_user.dump() + "\n"));
+	const fs::path gemini_source = temp.root / "gemini" / "tmp" / "worktree-project";
+	fs::create_directories(gemini_source / "chats");
+	UAM_ASSERT(uam::io::WriteTextFile(gemini_source / ".project_root", worktree.string()));
+	const nlohmann::json gemini_chat = {{"sessionId", "gemini-worktree"}, {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Gemini worktree"}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(gemini_source / "chats" / "session.json", gemini_chat.dump()));
+	app.data_root = temp.root / "all-imports";
+	app.chats.clear();
+	const auto discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	if (!discovery.result.success) throw TestFailure(uam::strings::Join(discovery.result.errors, " "));
+	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, discovery, true).imported_count, 4);
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.folder_id, folder.id);
+		UAM_ASSERT_EQ(chat.workspace_directory, worktree.string());
+	}
+	app.data_root = temp.root / "batch-imports";
+	app.chats.clear();
+	auto pending = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(app, folder, pending).imported_count, 0);
+	UAM_ASSERT(pending.preparation.valid());
+	pending.preparation.wait();
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(app, folder, pending).imported_count, 4);
+	if (pending.publication_sync.valid()) pending.publication_sync.wait();
+	for (const ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT_EQ(chat.folder_id, folder.id);
+		UAM_ASSERT_EQ(chat.workspace_directory, worktree.string());
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(app.data_root, chat.id)->workspace_directory, worktree.string());
+	}
+#endif
+	const fs::path nested = worktree / "nested-repository";
+	fs::create_directories(nested);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(nested.string())));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(nested), nested));
+	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, fs::path{}) == nullptr);
+	// Broken metadata and missing main subfolders must retain the native location.
+	fs::remove_all(repo / "subfolder");
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), worktree / "subfolder"));
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / ".git", "gitdir: missing\n"));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), worktree));
 }
 
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
@@ -19508,25 +19667,31 @@ UAM_TEST(ConcurrentCapturedCommandsKeepPipeOutputIsolated)
 	const std::string first_command = "yes alpha-only | head -n 2000";
 	const std::string second_command = "yes beta-only | head -n 2000";
 #endif
-	ProcessExecutionResult first;
-	ProcessExecutionResult second;
-	std::jthread first_thread([&] { first = PlatformServicesFactory::Instance().process_service.ExecuteCommand(first_command, 5000); });
-	std::jthread second_thread([&] { second = PlatformServicesFactory::Instance().process_service.ExecuteCommand(second_command, 5000); });
-	first_thread.join();
-	second_thread.join();
-	UAM_ASSERT(first.ok);
-	UAM_ASSERT(second.ok);
-	UAM_ASSERT(first.output.find("alpha-only") != std::string::npos);
-	UAM_ASSERT(first.output.find("beta-only") == std::string::npos);
-	UAM_ASSERT(second.output.find("beta-only") != std::string::npos);
-	UAM_ASSERT(second.output.find("alpha-only") == std::string::npos);
+	// Repeat fast exits to exercise the race between the pipe peek and process-exit check.
+	for (int iteration = 0; iteration < 16; ++iteration)
+	{
+		ProcessExecutionResult first;
+		ProcessExecutionResult second;
+		std::jthread first_thread([&] { first = PlatformServicesFactory::Instance().process_service.ExecuteCommand(first_command, 5000); });
+		std::jthread second_thread([&] { second = PlatformServicesFactory::Instance().process_service.ExecuteCommand(second_command, 5000); });
+		first_thread.join();
+		second_thread.join();
+		UAM_ASSERT(first.ok);
+		UAM_ASSERT(second.ok);
+		UAM_ASSERT(first.output.find("alpha-only") != std::string::npos);
+		UAM_ASSERT(first.output.find("beta-only") == std::string::npos);
+		UAM_ASSERT(second.output.find("beta-only") != std::string::npos);
+		UAM_ASSERT(second.output.find("alpha-only") == std::string::npos);
+		UAM_ASSERT_EQ(std::ranges::count(first.output, '\n'), 2000);
+		UAM_ASSERT_EQ(std::ranges::count(second.output, '\n'), 2000);
 #if defined(_WIN32)
-	UAM_ASSERT_EQ(WaitForSingleObject(unlisted_inheritable_handle.Get(), 0), static_cast<DWORD>(WAIT_TIMEOUT));
-	UAM_ASSERT(first.output.find(":isolated") != std::string::npos);
-	UAM_ASSERT(first.output.find(":inherited") == std::string::npos);
-	UAM_ASSERT(second.output.find(":isolated") != std::string::npos);
-	UAM_ASSERT(second.output.find(":inherited") == std::string::npos);
+		UAM_ASSERT_EQ(WaitForSingleObject(unlisted_inheritable_handle.Get(), 0), static_cast<DWORD>(WAIT_TIMEOUT));
+		UAM_ASSERT(first.output.find(":isolated") != std::string::npos);
+		UAM_ASSERT(first.output.find(":inherited") == std::string::npos);
+		UAM_ASSERT(second.output.find(":isolated") != std::string::npos);
+		UAM_ASSERT(second.output.find(":inherited") == std::string::npos);
 #endif
+	}
 }
 
 #if defined(_WIN32)

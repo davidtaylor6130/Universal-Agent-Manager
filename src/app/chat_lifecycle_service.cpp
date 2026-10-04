@@ -1,5 +1,7 @@
 #include "chat_lifecycle_service.h"
 
+#include "core/chat_import_utils.h"
+
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
 #include "app/git_worktree_service.h"
@@ -1009,7 +1011,10 @@ uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const A
 			continue;
 		}
 
-		const std::filesystem::path directory = uam::paths::NormalizeExistingPath(local_directory);
+		const ChatFolder* matched_folder = uam::FindImportedWorkspaceFolder(app.folders, local_directory);
+		const std::filesystem::path directory = matched_folder != nullptr
+		    ? uam::paths::PathFromUtf8(matched_folder->directory)
+		    : uam::ResolveImportedWorkspaceFolderDirectory(local_directory);
 		const std::string key = WorkspaceOwnershipKey(
 		    app, uam::execution_hosts::kLocalHostId, uam::paths::Utf8PathString(directory));
 		auto group = std::ranges::find_if(preview.groups, [&](const WorkspaceFolderRecoveryGroup& candidate) {

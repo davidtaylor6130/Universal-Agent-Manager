@@ -1,6 +1,9 @@
 #include "chat_import_utils.h"
 
 #include "common/paths/path_utils.h"
+#include "common/paths/app_paths.h"
+#include "common/paths/workspace_root.h"
+#include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <string_view>
@@ -143,6 +146,64 @@ namespace uam
 		       uam::strings::StartsWith(value, "<environment_context>") ||
 		       uam::strings::StartsWith(value, "<external_codex_apps_open_page>") ||
 		       uam::strings::StartsWith(value, "Relevant UAM memories. Treat these as durable");
+	}
+
+	std::filesystem::path ResolveImportedWorkspaceFolderDirectory(const std::filesystem::path& workspace)
+	{
+		namespace fs = std::filesystem;
+		const fs::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
+		if (workspace.empty() || !uam::paths::IsDirectoryNoThrow(location)) return workspace;
+		for (fs::path root = location; !root.empty(); root = root.parent_path())
+		{
+			const fs::path marker = root / ".git";
+			if (uam::paths::PathExistsNoThrow(marker))
+			{
+				// Stop at the nearest repository boundary, including submodules and ordinary checkouts.
+				std::string git_file;
+				if (!uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
+				const std::string_view pointer = uam::strings::TrimAsciiView(git_file);
+				if (!pointer.starts_with("gitdir: ")) return workspace;
+				const fs::path git_directory = uam::paths::NormalizeExistingOrAbsolutePath(
+				    root / uam::paths::PathFromUtf8(uam::strings::TrimAsciiView(pointer.substr(8))));
+				std::string common_file;
+				std::string backlink;
+				if (!uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
+				    !uam::io::TryReadTextFile(git_directory / "gitdir", backlink, 16384) ||
+				    !FolderDirectoryMatches(git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(backlink)), marker)) return workspace;
+				const fs::path common = uam::paths::NormalizeExistingOrAbsolutePath(
+				    git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(common_file)));
+				// A standard main checkout owns the common .git directory. Do not infer bare repositories.
+				if (common.filename() != ".git" || !uam::paths::IsDirectoryNoThrow(common)) return workspace;
+				const fs::path resolved = common.parent_path() / location.lexically_relative(root);
+				return uam::paths::IsDirectoryNoThrow(resolved) ? uam::paths::NormalizeExistingPath(resolved) : workspace;
+			}
+			if (root == root.parent_path()) break;
+		}
+		return workspace;
+	}
+
+	bool ImportedWorkspaceMatchesFolder(const std::filesystem::path& workspace, const std::filesystem::path& folder)
+	{
+		return !workspace.empty() && !folder.empty() &&
+		    (FolderDirectoryMatches(workspace, folder) ||
+		     FolderDirectoryMatches(ResolveImportedWorkspaceFolderDirectory(workspace), folder));
+	}
+
+	const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace)
+	{
+		if (workspace.empty()) return nullptr;
+		for (const ChatFolder& folder : folders)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
+			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), workspace)) return &folder;
+		}
+		const std::filesystem::path resolved = ResolveImportedWorkspaceFolderDirectory(workspace);
+		for (const ChatFolder& folder : folders)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
+			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), resolved)) return &folder;
+		}
+		return nullptr;
 	}
 
 	std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length)

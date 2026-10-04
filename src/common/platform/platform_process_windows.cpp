@@ -388,7 +388,13 @@ class WindowsProcessService final : public IPlatformProcessService
 
 			if (process_finished && available == 0)
 			{
-				pipe_closed = true;
+				// The process may have written and exited after the initial peek. Check again
+				// after observing its exit so that its final output is drained before closing.
+				DWORD remaining = 0;
+				if (!PeekNamedPipe(stdout_read, nullptr, 0, nullptr, &remaining, nullptr) || remaining == 0)
+				{
+					pipe_closed = true;
+				}
 			}
 
 			if (process_finished && pipe_closed)

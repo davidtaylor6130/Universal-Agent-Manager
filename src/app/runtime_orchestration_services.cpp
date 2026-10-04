@@ -329,13 +329,6 @@ namespace
 		return FolderDirectoryMatches(NormalizeWorkspacePathForComparison(lhs), NormalizeWorkspacePathForComparison(rhs));
 	}
 
-	bool FolderMatchesWorkspaceRoot(const ChatFolder& folder, const fs::path& workspace_root)
-	{
-		const fs::path normalized_folder = NormalizeWorkspacePathForComparison(folder.directory);
-		const fs::path normalized_workspace = uam::paths::NormalizeExistingPath(workspace_root);
-		return !normalized_folder.empty() && FolderDirectoryMatches(normalized_folder, normalized_workspace);
-	}
-
 	std::string_view RecentChatTimestamp(const ChatSession& chat)
 	{
 		// Recency = last message activity (updated_at), not selection time. See issue #49.
@@ -605,15 +598,10 @@ namespace
 			return;
 		}
 
-		for (const ChatFolder& folder : app.folders)
+		if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(app.folders, workspace_root))
 		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) &&
-			    FolderMatchesWorkspaceRoot(folder, workspace_root))
-			{
-				native_chat.folder_id = folder.id;
-				native_chat.workspace_directory = folder.directory;
-				return;
-			}
+			native_chat.folder_id = folder->id;
+			if (FolderDirectoryMatches(workspace_root, uam::paths::PathFromUtf8(folder->directory))) native_chat.workspace_directory = folder->directory;
 		}
 	}
 
@@ -711,7 +699,7 @@ namespace
 					        uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "thread_source") == "subagent" ||
 					        (payload.contains("source") && payload["source"].is_object() && payload["source"].contains("subagent"));
 					    include = !chat.native_session_id.empty() && !cwd.empty() && (include_subagents || !is_subagent) &&
-					              (folder.directory.empty() || uam::codex::PathsMatch(cwd, folder.directory));
+					              (folder.directory.empty() || uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(cwd), uam::paths::PathFromUtf8(folder.directory)));
 					    if (!include)
 					    {
 						    return false;
@@ -882,19 +870,14 @@ namespace
 
 	std::string ResolvePersistedImportFolderIdForSource(uam::AppState& app, const ProviderChatSource& source, bool save = true)
 	{
-		for (const ChatFolder& folder : app.folders)
-		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) &&
-			    Utf8WorkspaceDirectoriesMatch(folder.directory, source.folder_directory))
-			{
-				return folder.id;
-			}
-		}
+		const fs::path workspace = uam::paths::PathFromUtf8(source.folder_directory);
+		if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(app.folders, workspace)) return folder->id;
+		const fs::path directory = uam::ResolveImportedWorkspaceFolderDirectory(workspace);
 
 		ChatFolder new_folder;
 		new_folder.id = "folder_" + std::to_string(app.folders.size()) + "_" + source.folder_title;
-		new_folder.title = source.folder_title;
-		new_folder.directory = source.folder_directory;
+		new_folder.title = FolderDirectoryMatches(directory, workspace) ? source.folder_title : uam::BuildFolderTitleFromProjectRoot(directory);
+		new_folder.directory = uam::paths::Utf8PathString(directory);
 		new_folder.collapsed = false;
 
 		app.folders.push_back(std::move(new_folder));
@@ -1621,6 +1604,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 			{
 				continue;
 			}
+			if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat->workspace_directory)); owner != nullptr && owner->id != folder.id) continue;
 			const std::unordered_map<std::string, std::string>::const_iterator name = session_names.find(chat->native_session_id);
 			if (name != session_names.end() && !uam::IsInjectedChatTitle(name->second)) chat->title = name->second;
 			++result.total_count;
@@ -1684,32 +1668,20 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 
 	{
 		chat.folder_id = folder.id;
-		if (!folder.directory.empty()) chat.workspace_directory = folder.directory;
 		discovery.chats.push_back(std::move(chat));
 	}
 #endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
-	if (!folder.directory.empty()) if (const auto tmp = AppPaths::ResolveGeminiProjectTmpDir(folder.directory))
+	const ProviderProfile gemini_profile = ProviderProfileStore::DefaultGeminiProfile();
+	const auto gemini_sources = ProviderRuntime::DiscoverChatSources(gemini_profile);
+	if (!gemini_sources.error.empty()) discovery.result.Fail(gemini_sources.error);
+	for (const auto& source : gemini_sources.sources)
 	{
-		const fs::path root = *tmp / "chats";
-		for (ChatSession& chat : LoadNativeSessionChats(root, ProviderProfileStore::DefaultGeminiProfile(), stop_token))
-		{
-			if (!NativeChatShouldBeImported(root, chat, "", false)) continue;
-			chat.folder_id = folder.id;
-			chat.workspace_directory = folder.directory;
-			discovery.chats.push_back(std::move(chat));
-		}
-	}
-#endif
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-	if (folder.directory.empty())
-	{
-		const ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
-		const auto sources = ProviderRuntime::DiscoverChatSources(profile);
-		if (!sources.error.empty()) discovery.result.Fail(sources.error);
-		for (const auto& source : sources.sources) for (ChatSession& chat : LoadNativeSessionChats(source.chats_dir, profile, stop_token))
+		if (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(source.folder_directory), uam::paths::PathFromUtf8(folder.directory))) continue;
+		for (ChatSession& chat : LoadNativeSessionChats(source.chats_dir, gemini_profile, stop_token))
 		{
 			if (!NativeChatShouldBeImported(source.chats_dir, chat, "", false)) continue;
+			chat.folder_id = folder.id;
 			chat.workspace_directory = source.folder_directory;
 			discovery.chats.push_back(std::move(chat));
 		}
@@ -1748,7 +1720,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			}
 			const std::string id = session["id"].get<std::string>();
 			if (!uam::execution_hosts::IsPortableId(id) || id.starts_with('-') ||
-			    (!folder.directory.empty() && !Utf8WorkspaceDirectoriesMatch(session["directory"].get<std::string>(), folder.directory))) continue;
+			    (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(session["directory"].get<std::string>()), uam::paths::PathFromUtf8(folder.directory)))) continue;
 			ChatSession chat;
 			chat.id = id;
 			chat.native_session_id = id;
@@ -1776,18 +1748,52 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	const std::optional<fs::path> configured_claude = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR");
 	const fs::path claude_root = configured_claude ? *configured_claude : uam::env::GetUserHomePath().value_or(fs::path{}) / ".claude";
-	std::string encoded = folder.directory;
-	for (char& character : encoded)
+	const auto encode_project = [](const std::string& directory)
 	{
-		if (!((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9'))) character = '-';
+		std::string encoded = directory;
+		for (char& character : encoded)
+			if (!((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9'))) character = '-';
+		return encoded;
+	};
+	const std::string encoded = encode_project(folder.directory);
+	std::unordered_set<std::string> project_names{encoded};
+	if (!folder.directory.empty())
+	{
+		const fs::path location = uam::paths::NormalizeExistingPath(uam::ResolveImportedWorkspaceFolderDirectory(uam::paths::PathFromUtf8(folder.directory)));
+		// Include registered linked checkouts without parsing unrelated Claude project histories.
+		for (fs::path root = location; !root.empty(); root = root.parent_path())
+		{
+			if (uam::paths::PathExistsNoThrow(root / ".git"))
+			{
+				std::error_code error;
+				const fs::path registrations = root / ".git" / "worktrees";
+				for (fs::directory_iterator it(registrations, error), end; !error && it != end; it.increment(error))
+				{
+					std::string pointer;
+					if (!uam::io::TryReadTextFile(it->path() / "gitdir", pointer, 16384)) continue;
+					const fs::path relative = location.lexically_relative(root);
+					const fs::path linked_root = uam::paths::PathFromUtf8(uam::strings::Trim(pointer)).parent_path();
+					const fs::path linked = relative == "." ? linked_root : linked_root / relative;
+					if (uam::ImportedWorkspaceMatchesFolder(linked, uam::paths::PathFromUtf8(folder.directory)))
+					{
+						project_names.insert(encode_project(uam::paths::Utf8PathString(linked.lexically_normal())));
+						const fs::path alias = uam::paths::PathFromUtf8(folder.directory) / linked.lexically_relative(location);
+						project_names.insert(encode_project(uam::paths::Utf8PathString(alias.lexically_normal())));
+					}
+				}
+				break;
+			}
+			if (root == root.parent_path()) break;
+		}
 	}
-	const fs::path project = folder.directory.empty() ? claude_root / "projects" : claude_root / "projects" / encoded;
+	const fs::path project = claude_root / "projects";
 	std::error_code claude_error;
 	if (fs::exists(project, claude_error) || claude_error)
 	{
 		for (fs::recursive_directory_iterator it(project, claude_error), end; !claude_error && !stop_token.stop_requested() && it != end; it.increment(claude_error))
 		{
-			if (it.depth() > (folder.directory.empty() ? 1 : 0)) { it.disable_recursion_pending(); continue; }
+			if (!folder.directory.empty() && it.depth() == 0 && !project_names.contains(it->path().filename().string())) { it.disable_recursion_pending(); continue; }
+			if (it.depth() > 1) { it.disable_recursion_pending(); continue; }
 			if (!uam::paths::IsRegularFileEntryNoThrow(*it) || it->path().extension() != ".jsonl") continue;
 			std::error_code size_error;
 			if (fs::file_size(it->path(), size_error) > 64 * 1024 * 1024 || size_error)
@@ -1811,7 +1817,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				const bool conversational = type == "user" || type == "assistant";
 				if (!record.contains("uuid") || !record["uuid"].is_string()) { if (conversational) malformed = true; return !malformed; }
 				if (conversational && (!record.contains("message") || !record["message"].is_object())) { malformed = true; return false; }
-				if (record.contains("cwd") && (!record["cwd"].is_string() || (!folder.directory.empty() && !Utf8WorkspaceDirectoriesMatch(record["cwd"].get<std::string>(), folder.directory)))) return true;
+				if (record.contains("cwd") && !record["cwd"].is_string()) return true;
 				const std::string uuid = record["uuid"].get<std::string>();
 				if (conversational || record.value("subtype", "") == "compact_boundary") leaf = uuid;
 				records[uuid] = record;
@@ -1836,9 +1842,10 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			chat.native_session_id = chat.id;
 			chat.provider_id = uam::provider_ids::kClaudeCli;
 			chat.folder_id = folder.id;
-			chat.workspace_directory = folder.directory;
-			if (chat.workspace_directory.empty()) for (const nlohmann::json& record : chain)
+			for (const nlohmann::json& record : chain)
 				if (record.contains("cwd") && record["cwd"].is_string()) { chat.workspace_directory = record["cwd"].get<std::string>(); break; }
+			if (chat.workspace_directory.empty() && it->path().parent_path().filename() == encoded) chat.workspace_directory = folder.directory;
+			if (chat.workspace_directory.empty() || (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(chat.workspace_directory), uam::paths::PathFromUtf8(folder.directory)))) continue;
 			std::unordered_set<std::string> summarized_boundaries;
 			for (const nlohmann::json& record : chain)
 				if (record.value("isCompactSummary", false) && record.contains("parentUuid") && record["parentUuid"].is_string()) summarized_boundaries.insert(record["parentUuid"].get<std::string>());
@@ -1940,6 +1947,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 	}
 	for (ChatSession& chat : discovery.chats)
 	{
+		if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
+		{
+			if (!folder.id.empty() && owner->id != folder.id) continue;
+			chat.folder_id = owner->id;
+		}
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		// An unsaved live transcript owns its tail. A later scan can refresh it after persistence.
 		const auto existing = import_index.existing_id_by_native_key.find(key);
@@ -2043,7 +2055,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			const auto current_identity = current_index.existing_id_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
 			if (current_identity != current_index.existing_id_by_native_key.end() && current_identity->second != candidate.chat.id) continue;
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, candidate.chat.folder_id);
-			if (destination == nullptr || !Utf8WorkspaceDirectoriesMatch(destination->directory, candidate.chat.workspace_directory)) continue;
+			if (destination == nullptr || !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(candidate.chat.workspace_directory), uam::paths::PathFromUtf8(destination->directory))) continue;
 			const ChatSession* live = ChatDomainService().FindChatById(app, candidate.chat.id);
 			if ((candidate.expected_live.has_value() != (live != nullptr)) ||
 			    (live != nullptr && (live->messages_loaded != candidate.expected_live->messages_loaded ||
@@ -2094,6 +2106,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 	{
 		ChatSession chat = std::move(discovery.chats.back());
 		discovery.chats.pop_back();
+		if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
+		{
+			if (!folder.id.empty() && owner->id != folder.id) continue;
+			chat.folder_id = owner->id;
+		}
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		const auto existing = index.existing_id_by_native_key.find(key);
 		if (index.tombstoned_native_keys.contains(key)) continue;
