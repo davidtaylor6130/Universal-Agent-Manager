@@ -1,5 +1,7 @@
 #include "chat_domain_service.h"
 
+#include "core/chat_import_utils.h"
+
 #include "app/goal_service.h"
 #include "app/git_worktree_service.h"
 #include "app/persistence_coordinator.h"
@@ -247,6 +249,15 @@ void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 		if (!chat.folder_id.empty() || uam::strings::IsBlank(chat.workspace_directory))
 		{
 			continue;
+		}
+
+		if (uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::ExpandTrimmedWorkspacePath(chat.workspace_directory)))
+			{
+				chat.folder_id = folder->id;
+				continue;
+			}
 		}
 
 		const std::string chat_key = uam::paths::WorkspaceOwnershipKey(

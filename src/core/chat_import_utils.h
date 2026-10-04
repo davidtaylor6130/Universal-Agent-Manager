@@ -22,4 +22,10 @@ std::string BuildFolderTitleFromProjectRoot(const std::filesystem::path& project
 bool ImportedProjectRootExists(const std::filesystem::path& project_root);
 std::filesystem::path ResolveImportedProjectRootOrFallback(const std::filesystem::path& project_root, const std::filesystem::path& fallback_root);
 
+/// <summary>Resolve linked worktrees to main-checkout folders for organisation; unavailable metadata retains the original location.</summary>
+std::filesystem::path ResolveImportedWorkspaceFolderDirectory(const std::filesystem::path& workspace);
+/// <summary>Find a local folder, giving explicit worktree folders priority over main-checkout aliases.</summary>
+const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace);
+bool ImportedWorkspaceMatchesFolder(const std::filesystem::path& workspace, const std::filesystem::path& folder);
+
 } // namespace uam

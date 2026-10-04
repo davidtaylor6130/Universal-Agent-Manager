@@ -106,7 +106,7 @@ namespace
 
 		const std::string workspace_directory = ReadCopilotWorkspaceDirectory(session_directory);
 		if (workspace_directory.empty() ||
-		    (!workspace_filter.empty() && !FolderDirectoryMatches(workspace_directory, workspace_filter)))
+		    (!workspace_filter.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(workspace_directory), workspace_filter)))
 		{
 			return std::nullopt;
 		}
