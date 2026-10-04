@@ -77,7 +77,7 @@ class LocalBuildVersionTests(unittest.TestCase):
         script = self.source / 'presentation.cmake'
         for version, expected in [('', '4.9.0'), ('4.9.0-alpha-18', '4.9.0-alpha-18'), ('4.10.0-alpha-18', None), ('4.9.0-alpha-0', None), ('4.9.0-alpha-018', None), ('4.9.0', None)]:
             with self.subTest(version=version):
-                script.write_text(f'include("{ALLOCATOR}")\nuam_local_build_presentation("4.9.0" "{version}" presentation)\nfile(WRITE "{self.source / "presentation.txt"}" "${{presentation}}")\n')
+                script.write_text(f'include("{ALLOCATOR.as_posix()}")\nuam_local_build_presentation("4.9.0" "{version}" presentation)\nfile(WRITE "{(self.source / "presentation.txt").as_posix()}" "${{presentation}}")\n')
                 result = subprocess.run(['cmake', '-P', str(script)], capture_output=True, text=True)
                 if expected is None:
                     self.assertNotEqual(result.returncode, 0)
