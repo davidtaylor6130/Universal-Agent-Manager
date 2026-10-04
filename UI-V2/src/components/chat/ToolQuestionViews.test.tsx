@@ -201,6 +201,47 @@ describe('production tool details', () => {
 })
 
 describe('production sequential questions', () => {
+    it('submits a text answer with Enter without submitting the surrounding composer form', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const onComposerSubmit = vi.fn(event => event.preventDefault())
+        await render(<form onSubmit={onComposerSubmit}><UserInputInlineCard input={{ ...request, questions: [request.questions[1]] }} onResolve={onResolve} /></form>)
+        await enter('answer')
+        const key = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        await act(async () => { host.querySelector('.qr-text-answer input')!.dispatchEvent(key) })
+        expect(key.defaultPrevented).toBe(true)
+        expect(onComposerSubmit).not.toHaveBeenCalled()
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { secret: ['answer'] })
+    })
+
+    it('keeps two chat panels local and interactive without grabbing or trapping focus', async () => {
+        let finishFirst!: (accepted: boolean) => void
+        const firstResolve = vi.fn(() => new Promise<boolean>(done => { finishFirst = done }))
+        const secondResolve = vi.fn().mockResolvedValue(true)
+        const input = { ...request, questions: [{ ...request.questions[0], isMultiple: true }] }
+        await render(<><input aria-label="Other chat composer" /><div data-chat="first"><UserInputInlineCard input={input} onResolve={firstResolve} /></div>
+            <div data-chat="second"><UserInputInlineCard input={{ ...input, requestId: 'request-2' }} onResolve={secondResolve} /></div></>)
+        const composer = host.querySelector<HTMLInputElement>('input[aria-label="Other chat composer"]')!
+        composer.focus()
+        await render(<><input aria-label="Other chat composer" /><div data-chat="first"><UserInputInlineCard input={input} onResolve={firstResolve} /></div>
+            <div data-chat="second"><UserInputInlineCard input={{ ...input, requestId: 'request-2' }} onResolve={secondResolve} /></div></>)
+        expect(document.activeElement).toBe(composer)
+        expect(host.querySelectorAll('.qr-panel')).toHaveLength(2)
+        expect(document.querySelector('[aria-modal="true"]')).toBeNull()
+        const first = host.querySelector('[data-chat="first"]')!
+        const second = host.querySelector('[data-chat="second"]')!
+        await act(async () => { first.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click() })
+        expect(second.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false)
+        await act(async () => { second.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1].click() })
+        await act(async () => { Array.from(first.querySelectorAll('button')).find(item => item.textContent === 'Submit answers')!.click() })
+        expect(firstResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Focused'] })
+        expect(secondResolve).not.toHaveBeenCalled()
+        composer.focus()
+        await act(async () => { finishFirst(true) })
+        expect(document.activeElement).toBe(composer)
+        await act(async () => { Array.from(second.querySelectorAll('button')).find(item => item.textContent === 'Submit answers')!.click() })
+        expect(secondResolve).toHaveBeenCalledExactlyOnceWith('request-2', { scope: ['Broad'] })
+    })
+
     it('retains multiple choices and custom text through dismissal and navigation, then submits an array', async () => {
         const onResolve = vi.fn().mockResolvedValue(true)
         const input = sanitizePendingUserInput({ ...request, questions: [{ ...request.questions[0], isMultiple: true }, request.questions[1]] })!
@@ -212,7 +253,7 @@ describe('production sequential questions', () => {
         await act(async () => { choices()[1].click() })
         await enter('  Custom check  ')
         expect(Array.from(choices(), item => item.checked)).toEqual([true, true, true])
-        await click('Close questions')
+        await click('Collapse questions')
         await click('Answer questions')
         expect(Array.from(choices(), item => item.checked)).toEqual([true, true, true])
         await click('Next')
@@ -273,7 +314,7 @@ describe('production sequential questions', () => {
         await click('Back')
         expect(document.querySelector<HTMLInputElement>('.qr-text-answer input')?.value).toBe('  custom scope  ')
         expect(document.querySelector<HTMLInputElement>('input[type="radio"]')?.checked).toBe(true)
-        await click('Close questions')
+        await click('Collapse questions')
         expect(document.activeElement).toBe(button('Answer questions'))
         await click('Answer questions')
         await click('Next')
@@ -288,7 +329,7 @@ describe('production sequential questions', () => {
         await click('Retry submission')
         expect(onResolve).toHaveBeenCalledTimes(2)
         await act(async () => resolve(true))
-        expect(document.querySelector('[role="dialog"]')).toBeNull()
+        expect(document.querySelector('.qr-question')).toBeNull()
         expect(button('Answers submitted').disabled).toBe(true)
     })
 
@@ -315,7 +356,7 @@ describe('production sequential questions', () => {
         await enter('secret')
         await click('Submit answers')
         expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not submit')
-        await click('Close questions')
+        await click('Collapse questions')
         await click('Answer questions')
         expect(document.querySelector<HTMLInputElement>('.qr-text-answer input')?.value).toBe('secret')
         await click('Cancel turn')

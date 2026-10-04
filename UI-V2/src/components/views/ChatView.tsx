@@ -13,7 +13,7 @@ import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexPr
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
-import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
+import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
@@ -2307,7 +2307,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                             waitSeconds={acp?.waitSeconds}
                             onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
                             onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                            onResolveUserInput={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                           onCancelTurn={() => void cancelAcpTurn(session.id)}
                           onStopRuntime={() => void stopAcpSession(session.id)}
                           sourceChatId={session.id}
@@ -2369,7 +2368,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                             waitSeconds={acp?.waitSeconds}
                             onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
                             onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                            onResolveUserInput={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                           onCancelTurn={() => void cancelAcpTurn(session.id)}
                           onStopRuntime={() => void stopAcpSession(session.id)}
                           sourceChatId={session.id}
@@ -2425,7 +2423,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       waitSeconds={acp?.waitSeconds}
                       onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
                       onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                      onResolveUserInput={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                     onCancelTurn={() => void cancelAcpTurn(session.id)}
                     onStopRuntime={() => void stopAcpSession(session.id)}
                     sourceChatId={session.id}
@@ -2795,6 +2792,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </div>
               </div>
+            )}
+            {pendingUserInput && !session.importedReadOnly && (
+              <UserInputInlineCard
+                key={`${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}`}
+                input={pendingUserInput}
+                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+                waitIsStale={acp?.waitIsStale}
+                waitStaleReason={acp?.waitStaleReason}
+                waitSeconds={acp?.waitSeconds}
+                onCancelTurn={() => void cancelAcpTurn(session.id)}
+                onStopRuntime={() => void stopAcpSession(session.id)}
+              />
             )}
             <div
               className="uam-composer-surface"

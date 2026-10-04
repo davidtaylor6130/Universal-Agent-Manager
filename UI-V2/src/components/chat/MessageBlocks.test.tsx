@@ -62,7 +62,7 @@ describe('working transcript', () => {
         kind: 'commandExecution', status: 'pending', content: 'npm test',
         options: [{ id: 'allow', name: 'Allow', kind: 'decision' }] }}
       pendingUserInput={null} onSelectTool={() => undefined}
-      onResolvePermission={() => Promise.resolve(true)} onResolveUserInput={() => Promise.resolve(true)}
+      onResolvePermission={() => Promise.resolve(true)}
       onCancelTurn={() => undefined} onStopRuntime={() => undefined} />))
     expect(host.textContent).toContain('Run command')
     expect(host.textContent).toContain('Allow')
@@ -95,7 +95,7 @@ describe('working transcript', () => {
         pendingUserInput={null}
         onSelectTool={vi.fn()}
         onResolvePermission={vi.fn()}
-        onResolveUserInput={vi.fn()}
+
         onCancelTurn={vi.fn()}
         onStopRuntime={vi.fn()}
         workingMode={workingMode}
@@ -112,7 +112,7 @@ describe('working transcript', () => {
     const events = [{ type: 'assistant_text' as const, text: 'Before the command.' }, { type: 'tool_call' as const, toolCallId: 'tool-1' }]
     act(() => root.render(<TurnTimelineContent events={events} tools={tools} interrupted workingMode="compact"
       pendingPermission={null} pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={vi.fn()}
-      onResolveUserInput={vi.fn()} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
+      onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
     expect(host.textContent!.indexOf('Before the command.')).toBeLessThan(host.textContent!.indexOf('/bin/zsh'))
     expect(host.textContent!.indexOf('/bin/zsh')).toBeLessThan(host.textContent!.indexOf('Response interrupted'))
     act(() => root.render(<PersistedMessageContent message={{ id: 'ordered', sessionId: 'chat-1', role: 'assistant',
@@ -143,7 +143,7 @@ describe('working transcript', () => {
         { type: 'assistant_text', text: 'After the command.' }, { type: 'assistant_text', text: '   ' }]}
       tools={tools} active={active} workingMode={workingMode}
       pendingPermission={{ requestId: 'permission-1', toolCallId: 'tool-1', title: 'Allow this command?', kind: 'shell', status: 'pending', content: '', options: [{ id: 'allow', name: 'Allow once', kind: 'allow_once' }] }}
-      pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={vi.fn()} onResolveUserInput={vi.fn()}
+      pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={vi.fn()}
       onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
     render(true)
     expect(host.textContent).toContain('/bin/zsh')
@@ -275,7 +275,7 @@ describe('working transcript', () => {
       active={stage !== 'done'} workingMode="compact" pendingPermission={stage === 'waiting' ? {
         requestId: 'permission-1', toolCallId: 'tool-1', title: 'Allow this command?', kind: 'shell', status: 'pending', content: '', options: [],
       } : null} pendingUserInput={null}
-      onSelectTool={onSelectTool} onResolvePermission={vi.fn()} onResolveUserInput={vi.fn()} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
+      onSelectTool={onSelectTool} onResolvePermission={vi.fn()} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
     render('thought')
     expect(host.querySelectorAll('[data-processing-step="true"]')).toHaveLength(1)
     expect(host.querySelector('[data-processing-step="true"]')?.textContent).toContain('Thoughts')
@@ -373,7 +373,7 @@ describe('working transcript', () => {
         pendingUserInput={null}
         onSelectTool={vi.fn()}
         onResolvePermission={vi.fn()}
-        onResolveUserInput={vi.fn()}
+
         onCancelTurn={vi.fn()}
         onStopRuntime={vi.fn()}
         active
