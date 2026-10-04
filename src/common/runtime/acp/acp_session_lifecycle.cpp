@@ -610,6 +610,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const bool recovering_remote_process = session.recovering_remote_process;
 	const bool was_processing = session.processing;
 	const std::string pending_prompt = session.queued_prompt;
+	const int turn_first_user_message_index = session.turn_first_user_message_index;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int current_assistant_message_index = session.current_assistant_message_index;
 	const int turn_assistant_message_index = session.turn_assistant_message_index;
@@ -648,6 +649,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.processing = was_processing;
 		session.recovering_remote_turn = recovering_remote_turn;
 		session.recovering_remote_process = recovering_remote_process;
+		session.turn_first_user_message_index = turn_first_user_message_index;
 		session.turn_user_message_index = turn_user_message_index;
 		session.current_assistant_message_index = current_assistant_message_index;
 		session.turn_assistant_message_index = turn_assistant_message_index;
