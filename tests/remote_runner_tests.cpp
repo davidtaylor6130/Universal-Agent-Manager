@@ -1182,13 +1182,16 @@ value=sys.argv[1]
 if "-EncodedCommand " in value:
  try: value=base64.b64decode(value.rsplit(" ",1)[1]).decode("utf-16-le")
  except Exception: pass
+if "-Command " in value:
+ match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",value)
+ if match: value=base64.b64decode(match.group(1)).decode()
 match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
   while IFS= read -r request; do
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
-    case "$last" in *-EncodedCommand*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
+    case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
     printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
@@ -1272,13 +1275,16 @@ value=sys.argv[1]
 if "-EncodedCommand " in value:
  try: value=base64.b64decode(value.rsplit(" ",1)[1]).decode("utf-16-le")
  except Exception: pass
+if "-Command " in value:
+ match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",value)
+ if match: value=base64.b64decode(match.group(1)).decode()
 match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
   while IFS= read -r request; do
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
-    case "$last" in *-EncodedCommand*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
+    case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
     printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
@@ -1346,13 +1352,16 @@ value=sys.argv[1]
 if "-EncodedCommand " in value:
  try: value=base64.b64decode(value.rsplit(" ",1)[1]).decode("utf-16-le")
  except Exception: pass
+if "-Command " in value:
+ match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",value)
+ if match: value=base64.b64decode(match.group(1)).decode()
 match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
   while IFS= read -r request; do
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
-    case "$last" in *-EncodedCommand*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
+    case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
     printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
@@ -1393,6 +1402,28 @@ esac
 	UAM_ASSERT(commands.find("mkdir -p") == std::string::npos);
 }
 
+UAM_TEST(WindowsBootstrapLockFitsOpenSshCommandLimit)
+{
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "windows-lab";
+	plan.version = std::string(64, 'v');
+	plan.nonce = std::string(64, 'n');
+	plan.runner_directory = std::string(240, 'd');
+	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "windows");
+	UAM_ASSERT(!argv.empty());
+	UAM_ASSERT(argv.back().size() < 8000);
+	const std::string marker = "FromBase64String('";
+	const std::size_t start = argv.back().find(marker) + marker.size();
+	const std::size_t end = argv.back().find("'", start);
+	std::string script;
+	UAM_ASSERT(uam::base64::Decode(argv.back().substr(start, end - start), script));
+	UAM_ASSERT(script.find("UAM_INSTALL_LOCK_READY:" + plan.nonce) != std::string::npos);
+	UAM_ASSERT(script.find("install.release-" + plan.nonce) != std::string::npos);
+	UAM_ASSERT(script.find("[Console]::WriteLine('UAM_INSTALL_LOCK_READY:") != std::string::npos);
+	UAM_ASSERT(script.find("finally { try { $installed=Join-Path") != std::string::npos);
+	UAM_ASSERT(script.find("powershell.exe") == std::string::npos);
+}
+
 UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
 {
 	TempDir temp("uam-runner-windows-bootstrap");
@@ -1409,17 +1440,15 @@ value=sys.argv[1]
 if "-EncodedCommand " in value:
  try: value=base64.b64decode(value.rsplit(" ",1)[1]).decode("utf-16-le")
  except Exception: pass
+if "-Command " in value:
+ match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",value)
+ if match: value=base64.b64decode(match.group(1)).decode()
 match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
-  printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
-  while IFS= read -r request; do
-    command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
-    case "$last" in *-EncodedCommand*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
-    output=$("$0" "$command" 2>&1); status=$?
-    encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
-  done
+  printf 'UAM_INSTALL_LOCK_READY:%s\r\n' "$lock_token"
+  # Windows guard cannot exchange live PowerShell stdin requests.
+  while IFS= read -r request; do exit 7; done
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
