@@ -19667,25 +19667,31 @@ UAM_TEST(ConcurrentCapturedCommandsKeepPipeOutputIsolated)
 	const std::string first_command = "yes alpha-only | head -n 2000";
 	const std::string second_command = "yes beta-only | head -n 2000";
 #endif
-	ProcessExecutionResult first;
-	ProcessExecutionResult second;
-	std::jthread first_thread([&] { first = PlatformServicesFactory::Instance().process_service.ExecuteCommand(first_command, 5000); });
-	std::jthread second_thread([&] { second = PlatformServicesFactory::Instance().process_service.ExecuteCommand(second_command, 5000); });
-	first_thread.join();
-	second_thread.join();
-	UAM_ASSERT(first.ok);
-	UAM_ASSERT(second.ok);
-	UAM_ASSERT(first.output.find("alpha-only") != std::string::npos);
-	UAM_ASSERT(first.output.find("beta-only") == std::string::npos);
-	UAM_ASSERT(second.output.find("beta-only") != std::string::npos);
-	UAM_ASSERT(second.output.find("alpha-only") == std::string::npos);
+	// Repeat fast exits to exercise the race between the pipe peek and process-exit check.
+	for (int iteration = 0; iteration < 16; ++iteration)
+	{
+		ProcessExecutionResult first;
+		ProcessExecutionResult second;
+		std::jthread first_thread([&] { first = PlatformServicesFactory::Instance().process_service.ExecuteCommand(first_command, 5000); });
+		std::jthread second_thread([&] { second = PlatformServicesFactory::Instance().process_service.ExecuteCommand(second_command, 5000); });
+		first_thread.join();
+		second_thread.join();
+		UAM_ASSERT(first.ok);
+		UAM_ASSERT(second.ok);
+		UAM_ASSERT(first.output.find("alpha-only") != std::string::npos);
+		UAM_ASSERT(first.output.find("beta-only") == std::string::npos);
+		UAM_ASSERT(second.output.find("beta-only") != std::string::npos);
+		UAM_ASSERT(second.output.find("alpha-only") == std::string::npos);
+		UAM_ASSERT_EQ(std::ranges::count(first.output, '\n'), 2000);
+		UAM_ASSERT_EQ(std::ranges::count(second.output, '\n'), 2000);
 #if defined(_WIN32)
-	UAM_ASSERT_EQ(WaitForSingleObject(unlisted_inheritable_handle.Get(), 0), static_cast<DWORD>(WAIT_TIMEOUT));
-	UAM_ASSERT(first.output.find(":isolated") != std::string::npos);
-	UAM_ASSERT(first.output.find(":inherited") == std::string::npos);
-	UAM_ASSERT(second.output.find(":isolated") != std::string::npos);
-	UAM_ASSERT(second.output.find(":inherited") == std::string::npos);
+		UAM_ASSERT_EQ(WaitForSingleObject(unlisted_inheritable_handle.Get(), 0), static_cast<DWORD>(WAIT_TIMEOUT));
+		UAM_ASSERT(first.output.find(":isolated") != std::string::npos);
+		UAM_ASSERT(first.output.find(":inherited") == std::string::npos);
+		UAM_ASSERT(second.output.find(":isolated") != std::string::npos);
+		UAM_ASSERT(second.output.find(":inherited") == std::string::npos);
 #endif
+	}
 }
 
 #if defined(_WIN32)
