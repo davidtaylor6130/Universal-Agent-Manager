@@ -769,6 +769,23 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('shows a matching local alpha version in About without changing the release version', () => {
+    const previous = useAppStore.getState()
+    useAppStore.setState({ appVersion: 'V4.11.0', uiBuildId: '4.11.0-alpha-1-Darwin-20261002T220000Z' })
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('button[aria-label="About"]') as HTMLButtonElement).click())
+    expect(host.textContent).toContain('V4.11.0-alpha-1')
+    expect(useAppStore.getState().appVersion).toBe('V4.11.0')
+    act(() => useAppStore.setState({ uiBuildId: '4.9.0-alpha-18-Darwin-20261002T220000Z' }))
+    expect(host.textContent).not.toContain('alpha-18')
+    expect(host.textContent).toContain('V4.11.0')
+    act(() => useAppStore.setState({ uiBuildId: '4.11.0-Darwin-20261002T220000Z' }))
+    expect(host.textContent).not.toContain('alpha-')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ appVersion: previous.appVersion, uiBuildId: previous.uiBuildId })
+  })
+
   it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
 

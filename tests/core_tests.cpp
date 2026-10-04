@@ -19954,7 +19954,7 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	UAM_ASSERT(service.StartProviderVersionCheck(app, uam::provider_ids::kCopilotCli, true, "local", &check_error));
 	UAM_ASSERT(check_error.empty());
 	// The asynchronous PowerShell/npm/CIM probe has a 30-second production budget.
-	const auto check_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
+	const std::chrono::steady_clock::time_point check_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
 	while (!app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli].checked &&
 	       std::chrono::steady_clock::now() < check_deadline)
 	{

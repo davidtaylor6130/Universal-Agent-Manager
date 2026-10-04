@@ -5,6 +5,8 @@ import { AttachmentList, PersistedMessageContent, ThinkingBlock, TurnTimelineCon
 import { ToolCallModal } from './ToolCallViews'
 import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
+import { buildMessageFromCpp } from '../../store/cpp/reconcile'
+import type { CppMessage } from '../../store/cpp/types'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -870,6 +872,25 @@ describe('working transcript', () => {
 
 
 describe('persisted context compaction', () => {
+  it('hydrates and renders a native compaction marker without summary text', async () => {
+    // Native history omits the text field when a compaction has no summary.
+    const message = buildMessageFromCpp('chat', {
+      role: 'assistant', content: '', createdAt: '2026-10-03T00:00:00Z',
+      blocks: [{ type: 'context_compaction', requestId: 'compact-no-summary' }],
+    } as CppMessage, 0)
+    expect(message.blocks?.[0]).toMatchObject({ type: 'context_compaction', text: '', requestId: 'compact-no-summary' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<PersistedMessageContent message={message} workingMode="compact" onSelectTool={vi.fn()} />))
+      expect(host.querySelector('details.context-compaction')?.textContent).toContain('The provider did not include a summary.')
+    } finally {
+      await act(async () => root.unmount())
+      host.remove()
+    }
+  })
+
   it('renders a collapsed clickable separator with the provider summary', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

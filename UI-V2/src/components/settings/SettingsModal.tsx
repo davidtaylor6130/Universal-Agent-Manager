@@ -347,6 +347,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
+  const uiBuildId = useAppStore((s) => s.uiBuildId)
+  const localVersion = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
+  const displayedVersion = localVersion?.startsWith(`${appVersion.replace(/^v/i, '')}-alpha-`) ? `V${localVersion}` : appVersion
   const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
   const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
   const collapsibleWorkSections = useAppStore((s) => s.collapsibleWorkSections)
@@ -2781,7 +2784,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </div>
             <div className="flex justify-between gap-3">
               <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>{appVersion}</span>
+              <span style={{ color: 'var(--text)' }}>{displayedVersion}</span>
             </div>
           </div>
         </SectionCard>
