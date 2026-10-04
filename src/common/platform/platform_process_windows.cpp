@@ -54,7 +54,9 @@ namespace uam::platform_windows_impl
 					m_attributes = nullptr;
 					return false;
 				}
-				if (!UpdateProcThreadAttribute(m_attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, const_cast<HANDLE*>(inherited_handles.data()), inherited_handles.size() * sizeof(HANDLE), nullptr, nullptr))
+				// Windows retains this buffer until the attribute list is destroyed.
+				m_inherited_handles = inherited_handles;
+				if (!UpdateProcThreadAttribute(m_attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, m_inherited_handles.data(), m_inherited_handles.size() * sizeof(HANDLE), nullptr, nullptr))
 				{
 					if (error_out != nullptr)
 					{
@@ -76,6 +78,7 @@ namespace uam::platform_windows_impl
 
 		  private:
 			LPPROC_THREAD_ATTRIBUTE_LIST m_attributes = nullptr;
+			std::vector<HANDLE> m_inherited_handles;
 		};
 
 		HANDLE CreatePreloadedStdinFile(std::string_view input, std::string* error_out)
