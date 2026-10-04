@@ -18733,7 +18733,7 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	app.chats.clear();
 	const auto discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
 	if (!discovery.result.success) throw TestFailure(uam::strings::Join(discovery.result.errors, " "));
-	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(discovery.chats.size() + discovery.codex_rollouts.size(), static_cast<std::size_t>(4));
 	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, discovery, true).imported_count, 4);
 	for (const ChatSession& chat : app.chats)
 	{
