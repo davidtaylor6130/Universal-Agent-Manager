@@ -273,6 +273,7 @@ export interface AcpUserInputOption {
 }
 
 export interface AcpUserInputQuestion {
+  isMultiple?: boolean
   id: string
   header: string
   question: string

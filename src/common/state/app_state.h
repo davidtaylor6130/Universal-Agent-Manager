@@ -340,6 +340,7 @@ namespace uam
 		std::string header;
 		std::string question;
 		bool is_other = false;
+		bool is_multiple = false;
 		bool is_secret = false;
 		std::vector<AcpUserInputOptionState> options;
 	};

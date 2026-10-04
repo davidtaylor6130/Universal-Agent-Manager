@@ -78,3 +78,8 @@
 .qr-error { color: var(--red, #ff8585); }
 .qr-warning { border-bottom: 1px solid var(--qr-border); margin-bottom: 16px; }
 @media (max-width: 480px) { .qr-footer { flex-wrap: wrap; padding: 12px 16px; } .qr-actions { margin-left: auto; } .qr-body { padding: 16px; } }
+
+.qr-multiple legend { margin-bottom: 8px; }
+.qr-multiple-hint { margin: 0 0 16px; }
+.qr-multiple .qr-option input { position: static; width: 16px; height: 16px; margin: 0; clip-path: none; overflow: visible; accent-color: var(--accent); flex-shrink: 0; }
+.qr-multiple .qr-selected { display: none; }

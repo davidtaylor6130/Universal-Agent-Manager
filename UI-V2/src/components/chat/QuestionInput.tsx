@@ -14,13 +14,22 @@ type Props = {
     onCancelTurn?: () => void
     onStopRuntime?: () => void
 }
-type Draft = { choice: number | 'other' | null; text: string }
+type Draft = { choice: number | 'other' | null; selections?: Array<number | 'other'>; text: string }
 type Question = AcpPendingUserInput['questions'][number]
 
 function answerFor(question: Question, draft?: Draft)
 {
-    if (!draft) return ''
-    return (typeof draft.choice === 'number' ? question.options[draft.choice]?.label ?? '' : draft.text).trim()
+    if (!draft) return []
+    if (question.isMultiple)
+    {
+        const selections = draft.selections ?? []
+        if (selections.includes('other') && !draft.text.trim()) return []
+        const answers = question.options.flatMap((option, index) => selections.includes(index) ? [option.label] : [])
+        if (selections.includes('other') || question.options.length === 0) answers.push(draft.text.trim())
+        return answers.filter(answer => answer.trim())
+    }
+    const answer = (typeof draft.choice === 'number' ? question.options[draft.choice]?.label ?? '' : draft.text).trim()
+    return answer ? [answer] : []
 }
 
 /** Key the draft owner by request, while closing only unmounts the dialog. */
@@ -49,13 +58,13 @@ function QuestionRequest({ input, onResolve, ...wait }: Props)
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
     const close = () => { setOpen(false); triggerRef.current?.focus() }
-    const complete = input.questions.length > 0 && input.questions.every(question => answerFor(question, drafts[question.id]))
+    const complete = input.questions.length > 0 && input.questions.every(question => answerFor(question, drafts[question.id]).length > 0)
     const submit = async () => {
         if (!pending || !complete || submittingRef.current) return
         submittingRef.current = true
         setSubmitting(true)
         setError('')
-        const answers: AcpUserInputAnswers = Object.fromEntries(input.questions.map(question => [question.id, [answerFor(question, drafts[question.id])]]))
+        const answers: AcpUserInputAnswers = Object.fromEntries(input.questions.map(question => [question.id, answerFor(question, drafts[question.id])]))
         let resolved = false
         try {
             resolved = await onResolve(input.requestId, answers)
@@ -93,8 +102,18 @@ function QuestionDialog({ input, drafts, step, onDraft, onStep, onClose, onSubmi
     const question = input.questions[step]
     const draft = drafts[question?.id] ?? { choice: null, text: '' }
     const choose = (choice: Draft['choice']) => {
-        onDraft(question.id, { ...draft, choice })
-        if (choice === 'other') textRef.current?.focus()
+        if (question.isMultiple && choice !== null)
+        {
+            const selections = draft.selections ?? []
+            const selected = selections.includes(choice)
+            onDraft(question.id, { ...draft, selections: selected ? selections.filter(item => item !== choice) : [...selections, choice] })
+            if (choice === 'other' && !selected) textRef.current?.focus()
+        }
+        else
+        {
+            onDraft(question.id, { ...draft, choice })
+            if (choice === 'other') textRef.current?.focus()
+        }
     }
     useEffect(() => { headingRef.current?.focus() }, [step])
     return createPortal(<div className="question-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -106,9 +125,9 @@ function QuestionDialog({ input, drafts, step, onDraft, onStep, onClose, onSubmi
             </header>
             <nav className="qr-progress" aria-label="Question progress">
                 {input.questions.map((item, index) => <button key={item.id} type="button" disabled={busy} aria-current={index === step ? 'step' : undefined} onClick={() => onStep(index)}>
-                    {answerFor(item, drafts[item.id]) ? <Check size={12} aria-hidden /> : <span>{index + 1}</span>}
+                    {answerFor(item, drafts[item.id]).length > 0 ? <Check size={12} aria-hidden /> : <span>{index + 1}</span>}
                     {item.header || `Question ${index + 1}`}
-                    <span className="qr-sr-only">{answerFor(item, drafts[item.id]) ? ', answered' : ', unanswered'}</span>
+                    <span className="qr-sr-only">{answerFor(item, drafts[item.id]).length > 0 ? ', answered' : ', unanswered'}</span>
                 </button>)}
             </nav>
             <div className="qr-body" aria-busy={busy}>
@@ -118,23 +137,24 @@ function QuestionDialog({ input, drafts, step, onDraft, onStep, onClose, onSubmi
                     {onCancelTurn && <button type="button" disabled={busy} onClick={onCancelTurn}>Cancel turn</button>}
                     {onStopRuntime && <button type="button" disabled={busy} onClick={onStopRuntime}>Stop runtime</button>}
                 </div>}
-                {question ? <fieldset key={question.id} className="qr-question" disabled={busy} onKeyDown={event => {
+                {question ? <fieldset key={question.id} className={`qr-question${question.isMultiple ? ' qr-multiple' : ''}`} disabled={busy} onKeyDown={event => {
                     if (event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return
-                    if (event.target instanceof HTMLInputElement && event.target.type !== 'radio') return
+                    if (event.target instanceof HTMLInputElement && !['radio', 'checkbox'].includes(event.target.type)) return
                     if (!/^[1-9]$/.test(event.key)) return
-                    const radio = event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="radio"]')[Number(event.key) - 1]
+                    const radio = event.currentTarget.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')[Number(event.key) - 1]
                     if (radio) { event.preventDefault(); radio.focus(); radio.click() }
                 }}>
                     <legend ref={headingRef} tabIndex={-1}>{question.question || question.header || 'Your answer'}</legend>
+                    {question.isMultiple && question.options.length > 0 && <p className="qr-multiple-hint">Select one or more.</p>}
                     {question.options.length > 0 && <div className="qr-options">
                         {question.options.map((option, index) => <label className="qr-option" key={`${index}-${option.label}`}>
-                            <input type="radio" name={`${id}-${question.id}`} checked={draft.choice === index} onChange={() => choose(index)} />
+                            <input type={question.isMultiple ? "checkbox" : "radio"} name={`${id}-${question.id}`} checked={question.isMultiple ? draft.selections?.includes(index) ?? false : draft.choice === index} onChange={() => choose(index)} />
                             <span className="qr-number" aria-hidden>{index + 1}</span>
                             <span className="qr-option-copy"><span>{option.label}</span>{option.description && <small>{option.description}</small>}</span>
                             <Check className="qr-selected" size={16} aria-hidden />
                         </label>)}
                         {question.isOther && <label className="qr-option qr-other">
-                            <input type="radio" name={`${id}-${question.id}`} checked={draft.choice === 'other'} onChange={() => choose('other')} />
+                            <input type={question.isMultiple ? "checkbox" : "radio"} name={`${id}-${question.id}`} checked={question.isMultiple ? draft.selections?.includes('other') ?? false : draft.choice === 'other'} onChange={() => choose('other')} />
                             <span className="qr-number" aria-hidden>{question.options.length + 1}</span><span className="qr-option-copy">Other</span><Check className="qr-selected" size={16} aria-hidden />
                         </label>}
                     </div>}
@@ -142,8 +162,8 @@ function QuestionDialog({ input, drafts, step, onDraft, onStep, onClose, onSubmi
                         <label htmlFor={`${id}-answer`}>{question.isSecret ? 'Secret answer' : question.options.length ? 'Write your own answer' : 'Your answer'}</label>
                         <input ref={textRef} id={`${id}-answer`} aria-label={question.question || question.header || question.id}
                             type={question.isSecret ? 'password' : 'text'} autoComplete="off" spellCheck={!question.isSecret} value={draft.text}
-                            onFocus={() => { if (question.options.length && draft.choice !== 'other') choose('other') }}
-                            onChange={event => onDraft(question.id, { choice: 'other', text: event.target.value })} />
+                            onFocus={() => { if (question.options.length && (question.isMultiple ? !draft.selections?.includes('other') : draft.choice !== 'other')) choose('other') }}
+                            onChange={event => onDraft(question.id, { ...draft, choice: 'other', selections: question.isMultiple ? [...(draft.selections ?? []).filter(item => item !== 'other'), 'other'] : draft.selections, text: event.target.value })} />
                     </div>}
                 </fieldset> : <p>No questions are available.</p>}
                 {error && <p role="alert" className="qr-error">{error}</p>}
@@ -152,7 +172,7 @@ function QuestionDialog({ input, drafts, step, onDraft, onStep, onClose, onSubmi
                 <span className="qr-status" role="status">{busy ? 'Submitting answers…' : `Question ${question ? step + 1 : 0} of ${input.questions.length}`}</span>
                 <div className="qr-actions">
                     <button type="button" disabled={step === 0 || busy} onClick={() => onStep(step - 1)}><ChevronLeft size={14} />Back</button>
-                    {step < input.questions.length - 1 ? <button type="button" className="qr-primary" disabled={busy || !answerFor(question, draft)} onClick={() => onStep(step + 1)}>Next<ChevronRight size={14} /></button>
+                    {step < input.questions.length - 1 ? <button type="button" className="qr-primary" disabled={busy || answerFor(question, draft).length === 0} onClick={() => onStep(step + 1)}>Next<ChevronRight size={14} /></button>
                         : <button type="button" className="qr-primary" disabled={busy || !complete} onClick={onSubmit}>{busy ? 'Submitting…' : error ? 'Retry submission' : 'Submit answers'}</button>}
                 </div>
             </footer>

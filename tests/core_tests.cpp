@@ -15071,6 +15071,7 @@ UAM_TEST(ClaudeControlHandshakeDiscoversModelsAndRoutesPermissionsAndQuestions)
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"question-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"ask-1","input":{"questions":[{"header":"Scope","question":"Which scope?","multiSelect":false,"options":[{"label":"Focused","description":"One change"}]}]}}})"));
 	UAM_ASSERT(session.waiting_for_user_input);
 	UAM_ASSERT_EQ(session.pending_user_input.questions.size(), std::size_t{1});
+	UAM_ASSERT(!session.pending_user_input.questions.front().is_multiple);
 	const nlohmann::json answer = runtime.OnAcpBuildUserInputResponse(session, {{"0", {"Focused"}}});
 	UAM_ASSERT_EQ(answer["response"]["request_id"], nlohmann::json("question-1"));
 	UAM_ASSERT_EQ(answer["response"]["response"]["updatedInput"]["answers"]["Which scope?"], nlohmann::json("Focused"));
@@ -15079,6 +15080,12 @@ UAM_TEST(ClaudeControlHandshakeDiscoversModelsAndRoutesPermissionsAndQuestions)
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_cancel_request","request_id":"question-1"})"));
 	UAM_ASSERT(!session.waiting_for_user_input);
 	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"question-multiple","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"ask-multiple","input":{"questions":[{"question":"Which checks?","multiSelect":true,"options":[{"label":"Focused"},{"label":"Build"}]}]}}})"));
+	UAM_ASSERT(session.pending_user_input.questions.front().is_multiple);
+	const nlohmann::json multiple_answer = runtime.OnAcpBuildUserInputResponse(session, {{"0", {"Focused", "Build", "Custom check"}}});
+	UAM_ASSERT_EQ(multiple_answer["response"]["response"]["updatedInput"]["answers"]["Which checks?"], nlohmann::json("Focused, Build, Custom check"));
+	UAM_ASSERT_EQ(multiple_answer["response"]["response"]["updatedInput"]["questions"][0]["multiSelect"], nlohmann::json(true));
+
 #endif
 }
 

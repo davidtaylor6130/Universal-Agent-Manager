@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
 import type { AcpPendingPermission, AcpPendingUserInput } from '../../store/useAppStore'
+import { sanitizePendingUserInput } from '../../store/cpp/sanitizers'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: Root
@@ -200,6 +201,49 @@ describe('production tool details', () => {
 })
 
 describe('production sequential questions', () => {
+    it('retains multiple choices and custom text through dismissal and navigation, then submits an array', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const input = sanitizePendingUserInput({ ...request, questions: [{ ...request.questions[0], isMultiple: true }, request.questions[1]] })!
+        await render(<UserInputInlineCard input={input} onResolve={onResolve} />)
+        const choices = () => document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+        expect(choices()).toHaveLength(3)
+        expect(button('Next').disabled).toBe(true)
+        await act(async () => { choices()[0].click() })
+        await act(async () => { choices()[1].click() })
+        await enter('  Custom check  ')
+        expect(Array.from(choices(), item => item.checked)).toEqual([true, true, true])
+        await click('Close questions')
+        await click('Answer questions')
+        expect(Array.from(choices(), item => item.checked)).toEqual([true, true, true])
+        await click('Next')
+        await enter('secret')
+        await click('Back')
+        expect(Array.from(choices(), item => item.checked)).toEqual([true, true, true])
+        await click('Next')
+        await click('Submit answers')
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Focused', 'Broad', 'Custom check'], secret: ['secret'] })
+    })
+
+    it('toggles multiple choices with number shortcuts and requires text when Other is selected', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        await render(<UserInputInlineCard input={{ ...request, questions: [{ ...request.questions[0], isMultiple: true }] }} onResolve={onResolve} />)
+        const press = async (key: string) => { await act(async () => {
+            document.querySelector('fieldset')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+        }) }
+        await press('1')
+        await press('2')
+        await press('1')
+        expect(Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'), item => item.checked)).toEqual([false, true, false])
+        await press('3')
+        expect(button('Submit answers').disabled).toBe(true)
+        await enter('  ')
+        expect(button('Submit answers').disabled).toBe(true)
+        await press('3')
+        expect(button('Submit answers').disabled).toBe(false)
+        await click('Submit answers')
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Broad'] })
+    })
+
     it('accepts a no-options free-text answer without inventing a default', async () => {
         const onResolve = vi.fn().mockResolvedValue(true)
         const input = { ...request, questions: [{ ...request.questions[1], id: 'note', header: 'Note', question: 'Any detail?', isSecret: false }] }

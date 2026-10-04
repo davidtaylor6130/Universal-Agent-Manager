@@ -73,6 +73,7 @@ namespace uam::acp_detail
 					question.header = JsonDiagnosticStringValue(item, "header");
 					question.question = JsonDiagnosticStringValue(item, "question");
 					question.is_other = true;
+					question.is_multiple = item.contains("multiSelect") && item["multiSelect"].is_boolean() && item["multiSelect"].get<bool>();
 					for (const nlohmann::json& option : JsonArrayValue(item, "options"))
 					{
 						if (!option.is_object())

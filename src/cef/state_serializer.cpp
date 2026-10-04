@@ -909,6 +909,7 @@ namespace uam
 			question_json["header"] = question.header;
 			question_json["question"] = question.question;
 			question_json["isOther"] = question.is_other;
+			question_json["isMultiple"] = question.is_multiple;
 			question_json["isSecret"] = question.is_secret;
 
 			nlohmann::json options = JsonArrayWithCapacity(question.options.size());

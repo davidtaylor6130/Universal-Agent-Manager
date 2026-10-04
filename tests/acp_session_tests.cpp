@@ -6059,6 +6059,8 @@ UAM_TEST(CodexAppServerUserInputRequestsSurfaceAndSerialize)
 	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].id, std::string("scope"));
 	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].options.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->pending_user_input.questions[0].options[0].label, std::string("Focused"));
+	UAM_ASSERT(!raw_session->pending_user_input.questions[0].is_multiple);
+	raw_session->pending_user_input.questions[1].is_multiple = true;
 	UAM_ASSERT(raw_session->pending_user_input.questions[1].is_other);
 	UAM_ASSERT_EQ(raw_session->turn_events.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->turn_events[0].type, std::string("user_input_request"));
@@ -6072,6 +6074,8 @@ UAM_TEST(CodexAppServerUserInputRequestsSurfaceAndSerialize)
 	UAM_ASSERT_EQ(pending.value("itemId", ""), std::string("input-1"));
 	UAM_ASSERT_EQ(pending["questions"][0].value("id", ""), std::string("scope"));
 	UAM_ASSERT_EQ(pending["questions"][0]["options"][0].value("label", ""), std::string("Focused"));
+	UAM_ASSERT_EQ(pending["questions"][0]["isMultiple"], nlohmann::json(false));
+	UAM_ASSERT_EQ(pending["questions"][1]["isMultiple"], nlohmann::json(true));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"turn-1"}})"));
 	UAM_ASSERT(!raw_session->processing);
