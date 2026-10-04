@@ -10547,6 +10547,103 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
 }
 
+UAM_TEST(AcpCompactionUsesSharedTimelineAcrossProviders)
+{
+	for (const std::string provider : {"opencode-cli", "gemini-cli", "copilot-cli"})
+	{
+		TempDir temp("uam-acp-compaction");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "compaction-chat";
+		chat.provider_id = provider;
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = provider;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& update)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+			    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+		};
+		const nlohmann::json initialize = ProviderRuntimeRegistry::ResolveById(provider).OnAcpBuildInitialize(session, 1);
+		UAM_ASSERT(initialize["params"]["clientCapabilities"]["session"]["compaction"].is_object());
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "in_progress"}});
+		send({{"sessionUpdate", "compaction_summary_chunk"}, {"compactionId", "first"}, {"content", {{"type", "text"}, {"text", "Keep "}}}});
+		send({{"sessionUpdate", "compaction_summary_chunk"}, {"compactionId", "first"}, {"content", {{"type", "text"}, {"text", "the workspace."}}}});
+		send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Ordinary reply."}}}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Keep the workspace."));
+		const nlohmann::json completed = {{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}, {"summary", nlohmann::json::array({{{"type", "text"}, {"text", "Authoritative summary."}}})}};
+		send(completed);
+		send(completed);
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Authoritative summary."));
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}, {"summary", nullptr}});
+		UAM_ASSERT(chat.messages.back().blocks.front().text.empty());
+		send(completed);
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "failed"}, {"status", "in_progress"}});
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "failed"}, {"status", "failed"}, {"error", "Provider failed"}});
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "cancelled"}, {"status", "cancelled"}});
+		send({{"sessionUpdate", "compaction_update"}, {"status", "completed"}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Ordinary reply."));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.back().blocks.front().text, std::string("Authoritative summary."));
+	}
+}
+
+UAM_TEST(OpenCodeCompactionMetadataKeepsParentAndChildBoundariesSeparate)
+{
+	TempDir temp("uam-opencode-compaction-marker");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "marker-chat";
+	chat.provider_id = "opencode-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.processing = true;
+	const auto send = [&](const nlohmann::json& metadata)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", {{"sessionUpdate", "session_info_update"}, {"_meta", metadata}}}}}}.dump()));
+	};
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "started"}}}});
+	UAM_ASSERT(chat.messages.empty());
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "completed"}}}});
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "completed"}}}});
+	send({{"opencode/compaction", {{"messageId", "child"}, {"status", "completed"}}}, {"opencode/child-session", {{"id", "child"}}}});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(chat.messages.back().content.empty());
+}
+
+UAM_TEST(ClaudeCompactionRetainsSharedSeparatorAndSummary)
+{
+	TempDir temp("uam-claude-compaction");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-compaction";
+	chat.provider_id = "claude-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	const nlohmann::json boundary = {{"type", "system"}, {"subtype", "compact_boundary"}, {"uuid", "boundary"}, {"summary", "Remember the workspace."}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Remember the workspace."));
+	UAM_ASSERT(chat.messages.back().content.empty());
+}
+
 UAM_TEST(CodexCompactionNotificationsDeduplicateEnrichAndPreserveDistinctEvents)
 {
 	TempDir temp("uam-codex-compaction");

@@ -9,9 +9,65 @@
 #include "common/runtime/acp/acp_stream_types.h"
 #include "common/runtime/acp/acp_tool_kinds.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/diagnostic_log.h"
 
 namespace uam::acp_detail
 {
+
+namespace
+{
+	/// <summary>Normalizes ACP compaction into the same saved timeline blocks as Codex.</summary>
+	bool HandleCompactionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat,
+	                            const nlohmann::json& update, const std::string& update_type)
+	{
+		const bool chunk = update_type == "compaction_summary_chunk";
+		const bool standard = chunk || update_type == "compaction_update";
+		const nlohmann::json metadata = JsonObjectValue(update, "_meta");
+		const nlohmann::json marker = JsonObjectValue(metadata, "opencode/compaction");
+		if (!standard && (update_type != "session_info_update" || !marker.is_object())) return false;
+		// Child compaction does not compact the parent conversation.
+		if (metadata.contains("opencode/child-session")) return true;
+		const std::string id = JsonDiagnosticStringValue(standard ? update : marker, standard ? "compactionId" : "messageId");
+		if (id.empty()) return true;
+		const std::string identity = "acp-compaction:" + id;
+		const std::string status = JsonDiagnosticStringValue(standard ? update : marker, "status");
+		if (!chunk && status.empty()) return true;
+		auto event = std::ranges::find_if(session.turn_events, [&](const AcpTurnEventState& candidate)
+		{
+			return (candidate.type == "context_compaction" || candidate.type == "context_compaction_pending") &&
+			       candidate.request_id_json == identity;
+		});
+		if (chunk)
+		{
+			if (event != session.turn_events.end() && event->type == "context_compaction_pending")
+				event->text += ContentTextFromJson(JsonObjectValue(update, "content"));
+			return true;
+		}
+		if (status == "failed" || status == "cancelled")
+		{
+			if (status == "failed")
+				uam::diagnostics::Write("[ACP] Compaction failed for " + session.provider_id + ": " +
+				    JsonDiagnosticStringValue(standard ? update : marker, "error"));
+			if (event != session.turn_events.end() && event->type == "context_compaction_pending") session.turn_events.erase(event);
+			return true;
+		}
+		if (event == session.turn_events.end())
+		{
+			// Reserve the start position without displaying a successful boundary prematurely.
+			session.turn_events.push_back({.type = "context_compaction_pending", .request_id_json = identity});
+			event = std::prev(session.turn_events.end());
+		}
+		if (standard && update.contains("summary")) event->text = ContentTextFromJson(update["summary"]);
+		if (status == "completed")
+		{
+			event->type = "context_compaction";
+			EnsureAssistantMessage(chat, session);
+			SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			ScheduleChatSave(app, chat, 0.0);
+		}
+		return true;
+	}
+}
 
 void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& params, CefRefPtr<CefBrowser> browser)
 {
@@ -94,6 +150,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 	{
 		return;
 	}
+	if (HandleCompactionUpdate(app, session, chat, update, update_type)) return;
 
 	if (update_type == uam::acp_stream_types::kSessionUpdateUserMessageChunk)
 	{
