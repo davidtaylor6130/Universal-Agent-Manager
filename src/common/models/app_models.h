@@ -336,6 +336,7 @@ struct ChatSession
 	std::string goal_command_revision;
 	std::string goal_pending_continuation_id;
 	/// Persisted recency of user input and runtime state events, excluding stream traffic.
+	/// Empty for imported history until its first UAM interaction.
 	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;

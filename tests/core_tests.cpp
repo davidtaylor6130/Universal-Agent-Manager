@@ -18864,6 +18864,7 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 	UAM_ASSERT_EQ(imported.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(imported.front().provider_id, std::string(uam::provider_ids::kCodexCli));
 	UAM_ASSERT_EQ(imported.front().native_session_id, matching_id);
+	UAM_ASSERT(imported.front().interaction_at.empty());
 	UAM_ASSERT_EQ(imported.front().folder_id, folder.id);
 	UAM_ASSERT_EQ(imported.front().workspace_directory, workspace_root.string());
 	UAM_ASSERT_EQ(imported.front().messages.size(), static_cast<std::size_t>(2));
@@ -21430,4 +21431,84 @@ UAM_TEST(VcsRepositoryContextReadsActualBranchWithoutChangedFileScan)
 	UAM_ASSERT(detached.available);
 	UAM_ASSERT(detached.branch_or_revision.empty());
 	UAM_ASSERT(detached.changed_files.empty());
+}
+
+UAM_TEST(ImportedHistoryRemainsWithoutInteractionAfterReloadAndHydration)
+{
+	TempDir temp("uam-imported-interaction");
+	ChatSession chat;
+	chat.id = "imported-unused";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-02T00:00:00.000Z";
+	chat.messages.push_back(Message{MessageRole::User, "External prompt"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->interaction_at.empty());
+	std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(summaries.front().interaction_at.empty());
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, summaries.front()));
+	UAM_ASSERT(summaries.front().interaction_at.empty());
+	chat.interaction_at = "2026-01-03T00:00:00.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.front().interaction_at, chat.interaction_at);
+}
+
+UAM_TEST(LegacyHistoryWithoutInteractionFieldRetainsRecencyFallback)
+{
+	TempDir temp("uam-legacy-interaction");
+	ChatSession chat;
+	chat.id = "legacy-interaction";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-02T00:00:00.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path path = AppPaths::UamChatFilePath(temp.root, chat.id);
+	nlohmann::json legacy = nlohmann::json::parse(ReadFile(path));
+	legacy.erase("interaction_at");
+	UAM_ASSERT(uam::io::WriteTextFile(path, legacy.dump()));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->interaction_at, chat.updated_at);
+}
+
+UAM_TEST(ImportedHistoryActivatesOnlyAfterUamInputAndPreservesInteractionOnRefresh)
+{
+	for (const std::string& provider_id : {std::string(uam::provider_ids::kGeminiCli), std::string(uam::provider_ids::kCodexCli), std::string(uam::provider_ids::kOpenCodeCli), std::string(uam::provider_ids::kClaudeCli), std::string(uam::provider_ids::kCopilotCli)})
+	{
+		TempDir temp("uam-imported-lifecycle");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession external;
+		external.id = "11111111-1111-4111-8111-111111111111";
+		external.native_session_id = external.id;
+		external.provider_id = provider_id;
+		external.workspace_directory = temp.root.string();
+		external.created_at = "2026-01-01T00:00:00.000Z";
+		external.updated_at = "2026-01-02T00:00:00.000Z";
+		external.messages.push_back(Message{MessageRole::User, "External input"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, external));
+		app.chats = ChatRepository::LoadLocalChats(app.data_root);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(app.chats.front().interaction_at.empty());
+		ChatDomainService().SelectChatById(app, external.id);
+		UAM_ASSERT(app.chats.front().interaction_at.empty());
+		std::vector<ChatSession> native_chats{external};
+		native_chats.front().updated_at = "2026-01-03T00:00:00.000Z";
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(app.chats.front().interaction_at.empty());
+		ChatDomainService().AddMessage(app.chats.front(), MessageRole::User, "Resume in UAM");
+		const std::string interaction = app.chats.front().interaction_at;
+		UAM_ASSERT(!interaction.empty());
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		app.chats = ChatRepository::LoadLocalChats(app.data_root);
+		UAM_ASSERT_EQ(app.chats.front().interaction_at, interaction);
+		native_chats = {external};
+		native_chats.front().updated_at = "2099-01-01T00:00:00.000Z";
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.chats.front().interaction_at, interaction);
+	}
 }
