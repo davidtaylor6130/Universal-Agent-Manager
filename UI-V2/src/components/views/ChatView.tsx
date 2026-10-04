@@ -616,6 +616,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const transcriptContentRef = useRef<HTMLDivElement>(null)
   // Composer floats over the transcript; its measured height pads the transcript end.
   const composerDockRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
@@ -785,25 +786,29 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     let lastHeight = -1
     const observer = new ResizeObserver(() => {
       const height = dock.offsetHeight
-      if (height === lastHeight) return
-      lastHeight = height
-      dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+      if (height !== lastHeight) {
+        lastHeight = height
+        dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+      }
       const el = scrollRef.current
       if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight
     })
     observer.observe(dock)
+    // Content and viewport changes also move the end, even when the dock height is unchanged.
+    if (transcriptContentRef.current) observer.observe(transcriptContentRef.current)
+    if (scrollRef.current) observer.observe(scrollRef.current)
     return () => observer.disconnect()
   }, [])
 
   const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Pause following immediately so a resize in this frame cannot override an upward scroll.
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
 	if (scrollFrameRef.current !== null) return
 	scrollFrameRef.current = window.requestAnimationFrame(() => {
 	  scrollFrameRef.current = null
-      const el = scrollRef.current
-      if (!el) return
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
-      isNearBottomRef.current = isNearBottom
-	  const showButton = !isNearBottom
+	  const showButton = !isNearBottomRef.current
 	  if (showScrollToBottomRef.current === showButton) return
 	  showScrollToBottomRef.current = showButton
 	  setShowScrollToBottom(showButton)
@@ -2191,7 +2196,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       <div className="relative flex-1 flex flex-col min-w-0">
         <div className="relative flex-1 min-h-0">
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-            <div className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
+            <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
                 <Notice
                   key={`chat-history:${session.id}:${chatHistoryError}`}
@@ -2485,10 +2490,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
-              <div ref={bottomRef} />
               </div>
               </SubAgentDisclosureProvider>
             </div>
+            {/* Follow the padded end so the latest output clears the floating composer. */}
+            <div ref={bottomRef} />
           </div>
           {showScrollToBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-10 flex justify-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 12px)' }}>

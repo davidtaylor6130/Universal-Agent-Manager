@@ -852,6 +852,106 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('follows streaming output at the padded end and leaves earlier reading in place', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
+    const content = transcript.querySelector('.uam-chat-content') as HTMLDivElement
+    const bottom = transcript.lastElementChild as HTMLDivElement
+    // The scroll target must include the composer clearance, rather than end inside it.
+    expect(bottom.previousElementSibling).toBe(content)
+    expect(content.style.paddingBottom).toBe('calc(var(--composer-dock-h, 0px) + 16px)')
+    const scrollIntoView = vi.fn()
+    bottom.scrollIntoView = scrollIntoView
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 800 },
+    })
+    const appendOutput = () => useAppStore.setState((state) => ({
+      messages: { ...state.messages, 'chat-1': state.messages['chat-1'].map((message) =>
+        message.role === 'assistant' ? { ...message, content: message.content + ' more output' } : message
+      ) },
+    }))
+    act(appendOutput)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' })
+    scrollIntoView.mockClear()
+
+    transcript.scrollTop = 100
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
+    act(appendOutput)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(transcript.scrollTop).toBe(100)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('preserves bottom following across dock, content and viewport resizing without pulling readers down', async () => {
+    let notifyResize = () => {}
+    const observe = vi.fn()
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { notifyResize = callback }
+      observe = observe
+      disconnect = disconnect
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const dock = host.querySelector('.uam-composer-dock') as HTMLDivElement
+    const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
+    const content = transcript.querySelector('.uam-chat-content') as HTMLDivElement
+    let dockHeight = 150
+    let scrollHeight = 1000
+    Object.defineProperty(dock, 'offsetHeight', { configurable: true, get: () => dockHeight })
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 800 },
+    })
+    expect(observe).toHaveBeenCalledWith(dock)
+    expect(observe).toHaveBeenCalledWith(content)
+    expect(observe).toHaveBeenCalledWith(transcript)
+    act(notifyResize)
+    expect(dock.parentElement?.style.getPropertyValue('--composer-dock-h')).toBe('150px')
+    expect(transcript.scrollTop).toBe(1000)
+
+    scrollHeight = 1200
+    act(notifyResize)
+    expect(transcript.scrollTop).toBe(1200)
+
+    transcript.scrollTop = 100
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      dockHeight = 250
+      notifyResize()
+      expect(transcript.scrollTop).toBe(100)
+      await new Promise(window.requestAnimationFrame)
+    })
+    expect(dock.parentElement?.style.getPropertyValue('--composer-dock-h')).toBe('250px')
+    expect(transcript.scrollTop).toBe(100)
+
+    transcript.scrollTop = 1000
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
+    dockHeight = 100
+    act(notifyResize)
+    expect(transcript.scrollTop).toBe(1200)
+    act(() => root.unmount())
+    expect(disconnect).toHaveBeenCalled()
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
   it('offers a jump to the latest message only while scrolled away from the bottom', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -862,7 +962,7 @@ describe('ChatView', () => {
     })
 
     const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
-    const bottom = transcript.querySelector('.uam-message-list')?.lastElementChild as HTMLDivElement
+    const bottom = transcript.lastElementChild as HTMLDivElement
     const scrollIntoView = vi.fn()
     bottom.scrollIntoView = scrollIntoView
     Object.defineProperties(transcript, {
