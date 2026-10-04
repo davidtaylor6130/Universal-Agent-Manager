@@ -29,7 +29,7 @@ cmake -S . -B Builds/minimal -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_ENABLE_COMPU
 cmake --build Builds/minimal --config Release --target universal_agent_manager
 ```
 
-The included CI workflow builds all eight feature combinations on macOS and Windows, checks compiled sources and packaged artifacts, then disables all features in the same output directory to catch stale artifacts. Configurator regressions run with `python3 tools/build-configurator/test_configurator.py`.
+The main CI workflow builds and tests the application with all optional features and all five providers enabled. The configurator workflow runs its focused unit tests without additional application builds. Configurator regressions run with `python3 tools/build-configurator/test_configurator.py`.
 
 Local configurator, `build.sh` and `build.ps1` builds reserve one `X.Y.Z-alpha-Q` version per requested build. Linked worktrees share a locked counter in the main checkout’s ignored `Builds/local-versions/` folder. The release version and remote runner protocol version stay unchanged. To reserve a version for separately packaged local artifacts without starting a build:
 

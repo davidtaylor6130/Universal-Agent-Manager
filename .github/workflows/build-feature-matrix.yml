@@ -1,4 +1,4 @@
-name: Optional build features
+name: Build configurator
 on:
   workflow_dispatch:
   pull_request:
@@ -23,52 +23,3 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/build-configurator/test_configurator.py
-  feature-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-        computer: ['ON', 'OFF']
-        ssh: ['ON', 'OFF']
-        mobile: ['ON', 'OFF']
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: UI-V2/package-lock.json
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: npm --prefix UI-V2 ci
-      - name: Initialize MSVC
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $finder = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
-          $installation = & $finder -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $setup = Join-Path $installation 'VC/Auxiliary/Build/vcvars64.bat'
-          $environment = & cmd.exe /d /s /c "call `"$setup`" >nul && set"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($line in $environment) { if ($line -match '^[^=]+=' ) { $line >> $env:GITHUB_ENV } }
-      - if: runner.os == 'Windows'
-        run: vcpkg install zlib:x64-windows-static
-      - name: Configure selected features
-        shell: pwsh
-        run: |
-          $flags = @('-DUAM_PACKAGE_REMOTE_RUNNERS=OFF', '-DCMAKE_BUILD_TYPE=Release', '-DUAM_ENABLE_COMPUTER_USE=${{ matrix.computer }}', '-DUAM_ENABLE_SSH=${{ matrix.ssh }}', '-DUAM_ENABLE_MOBILE_COMPANION=${{ matrix.mobile }}')
-          if ($IsWindows) { $flags += @("-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake", '-DVCPKG_TARGET_TRIPLET=x64-windows-static') }
-          cmake -S . -B Builds/features @flags
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - run: cmake --build Builds/features --config Release --target universal_agent_manager --parallel 2
-      - run: python tools/build-configurator/check_features.py Builds/features --artifacts
-      - name: Remove features in the same output directory
-        shell: pwsh
-        run: |
-          cmake -S . -B Builds/features -DUAM_ENABLE_COMPUTER_USE=OFF -DUAM_ENABLE_SSH=OFF -DUAM_ENABLE_MOBILE_COMPANION=OFF
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build Builds/features --config Release --target universal_agent_manager --parallel 2
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tools/build-configurator/check_features.py Builds/features --artifacts
