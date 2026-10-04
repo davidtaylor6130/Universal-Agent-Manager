@@ -1,6 +1,15 @@
 #include "common/platform/platform_application_macos.h"
 
 #import <AppKit/AppKit.h>
+#import <AVFoundation/AVFoundation.h>
+#import <Speech/Speech.h>
+
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "include/cef_application_mac.h"
 
@@ -43,6 +52,79 @@
 
 namespace uam::platform
 {
+	MacPrivacyPermissions GetMacPrivacyPermissions()
+	{
+		MacPrivacyPermissions result;
+		switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio])
+		{
+		case AVAuthorizationStatusAuthorized: result.microphone = "allowed"; break;
+		case AVAuthorizationStatusDenied: result.microphone = "denied"; break;
+		case AVAuthorizationStatusRestricted: result.microphone = "restricted"; break;
+		default: result.microphone = "not_requested"; break;
+		}
+		switch ([SFSpeechRecognizer authorizationStatus])
+		{
+		case SFSpeechRecognizerAuthorizationStatusAuthorized: result.speech_recognition = "allowed"; break;
+		case SFSpeechRecognizerAuthorizationStatusDenied: result.speech_recognition = "denied"; break;
+		case SFSpeechRecognizerAuthorizationStatusRestricted: result.speech_recognition = "restricted"; break;
+		default: result.speech_recognition = "not_requested"; break;
+		}
+		return result;
+	}
+
+	bool RequestMacPrivacyPermission(const std::string& permission)
+	{
+		if (permission == "localNetwork") RequestMacLocalNetworkAccess();
+		else if (permission == "microphone")
+			[AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL) {}];
+		else if (permission == "speechRecognition")
+			[SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus) {}];
+		else return false;
+		return true;
+	}
+
+	std::vector<std::string> MacLocalIpv4Addresses()
+	{
+		std::vector<std::string> addresses;
+		ifaddrs* pInterfaces = nullptr;
+		if (getifaddrs(&pInterfaces) != 0) return addresses;
+		for (const ifaddrs* pInterface = pInterfaces; pInterface != nullptr; pInterface = pInterface->ifa_next)
+		{
+			if (pInterface->ifa_addr == nullptr || pInterface->ifa_addr->sa_family != AF_INET ||
+			    (pInterface->ifa_flags & IFF_UP) == 0 || (pInterface->ifa_flags & IFF_LOOPBACK) != 0 ||
+			    (pInterface->ifa_flags & IFF_BROADCAST) == 0) continue;
+			const sockaddr_in* pAddress = reinterpret_cast<const sockaddr_in*>(pInterface->ifa_addr);
+			char text[INET_ADDRSTRLEN]{};
+			if (inet_ntop(AF_INET, &pAddress->sin_addr, text, sizeof(text)) != nullptr)
+				addresses.emplace_back(text);
+		}
+		freeifaddrs(pInterfaces);
+		return addresses;
+	}
+
+	void RequestMacLocalNetworkAccess()
+	{
+		// Apple TN3179: connecting UDP to a link-local address requests access
+		// without transmitting a packet. Listening for TCP alone does not prompt.
+		ifaddrs* pInterfaces = nullptr;
+		if (getifaddrs(&pInterfaces) != 0) return;
+		for (const ifaddrs* pInterface = pInterfaces; pInterface != nullptr; pInterface = pInterface->ifa_next)
+		{
+			if (pInterface->ifa_addr == nullptr || pInterface->ifa_addr->sa_family != AF_INET6 ||
+			    (pInterface->ifa_flags & IFF_UP) == 0 || (pInterface->ifa_flags & IFF_LOOPBACK) != 0 ||
+			    (pInterface->ifa_flags & IFF_BROADCAST) == 0) continue;
+			sockaddr_in6 address = *reinterpret_cast<const sockaddr_in6*>(pInterface->ifa_addr);
+			if (!IN6_IS_ADDR_LINKLOCAL(&address.sin6_addr)) continue;
+			address.sin6_port = htons(9);
+			address.sin6_scope_id = if_nametoindex(pInterface->ifa_name);
+			const int iSocket = socket(AF_INET6, SOCK_DGRAM, 0);
+			if (iSocket < 0) continue;
+			(void)connect(iSocket, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+			close(iSocket);
+		}
+		freeifaddrs(pInterfaces);
+	}
+
 	bool InitializeMacApplication()
 	{
 		[UamApplication sharedApplication];

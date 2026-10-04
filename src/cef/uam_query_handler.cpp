@@ -79,6 +79,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 
 	static constexpr Route kRoutes[] = {
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
+		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
+		{"requestAppPermission", &UamQueryHandler::HandleRequestAppPermission},
+		{"openAppPermissionSettings", &UamQueryHandler::HandleOpenAppPermissionSettings},
+		{"repairCompanionLanAddress", &UamQueryHandler::HandleRepairCompanionLanAddress},
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
 		{"setChatSettled", &UamQueryHandler::HandleSetChatSettled},

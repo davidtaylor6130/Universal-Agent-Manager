@@ -62,6 +62,14 @@ namespace uam::remote
 			       "-EncodedCommand " + uam::base64::Encode(utf16_le);
 		}
 
+		/// <summary>Keep the Windows OpenSSH command below cmd.exe's limit without consuming the transaction input stream.</summary>
+		std::string PowerShellUtf8Command(std::string_view script)
+		{
+			return "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+			       "-Command \"& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" +
+			       uam::base64::Encode(script) + "'))))\"";
+		}
+
 		bool RunStep(const BootstrapStep& step, std::string& output, std::string& diagnostic,
 		             std::string& error,
 		             std::stop_token stop_token)
@@ -158,9 +166,16 @@ namespace uam::remote
 		uam::platform::StdioProcessPlatformFields process;
 		std::mutex mutex;
 		bool released = false;
+		bool separate_commands = false;
+		std::vector<std::string> release_argv;
 
 		~BootstrapInstallLease()
 		{
+			if (separate_commands)
+			{
+				Release();
+				return;
+			}
 			// Losing the UI callback closes the guard's input. Its target-side
 			// finally/trap rolls back the unfinished transaction before unlocking.
 			std::lock_guard<std::mutex> guard(mutex);
@@ -187,6 +202,13 @@ namespace uam::remote
 		{
 			std::lock_guard<std::mutex> guard(mutex);
 			if (released || step.argv.empty()) { error = "The helper installation lock is unavailable."; return false; }
+			// Windows OpenSSH buffers PowerShell input until EOF. Keep the OS lock
+			// on its own connection and execute finite commands on separate connections.
+			if (separate_commands)
+			{
+				std::string diagnostic;
+				return RunStep(step, output, diagnostic, error, stop_token);
+			}
 			std::string command = step.argv.back();
 			if (command.starts_with("powershell.exe "))
 			{
@@ -249,6 +271,13 @@ namespace uam::remote
 		{
 			std::lock_guard<std::mutex> guard(mutex);
 			if (released) return;
+			if (!release_argv.empty() && !service.PollStdioProcessExited(process))
+			{
+				std::string output;
+				std::string diagnostic;
+				std::string error;
+				RunStep({"Release helper installation lock", release_argv, ""}, output, diagnostic, error, {});
+			}
 			service.CloseStdioProcessInput(process);
 			// Give the target guard time to finish its rollback before closing SSH.
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -259,7 +288,7 @@ namespace uam::remote
 		}
 	};
 
-	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner)
+	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner, bool wrap_powershell = true)
 	{
 		const std::string root = uam::execution_hosts::RunnerDirectory(
 		    platform, plan.runner_directory);
@@ -301,7 +330,7 @@ namespace uam::remote
 				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop } }; "
 				    "if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop }; "
 				    "Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue; ";
-				command = PowerShellCommand(script);
+				command = wrap_powershell ? PowerShellCommand(script) : script;
 			}
 		}
 		return command;
@@ -359,7 +388,7 @@ namespace uam::remote
 		if (!uam::execution_hosts::IsSafeSshAlias(plan.ssh_alias) || !IsToken(plan.version, 64) || !IsToken(plan.nonce, 64) ||
 		    !uam::execution_hosts::IsSafeRunnerDirectory(plan.runner_directory) || (platform != "linux" && platform != "windows")) return {};
 		const std::string root = uam::execution_hosts::RunnerDirectory(platform, plan.runner_directory);
-		const std::string rollback = BootstrapFinalizationCommand(plan, platform, false);
+		const std::string rollback = BootstrapFinalizationCommand(plan, platform, false, false);
 		std::string command;
 		if (platform == "linux")
 		{
@@ -402,17 +431,16 @@ namespace uam::remote
 			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force; & $installed start | Out-Null; "
 			    "if ($LASTEXITCODE -ne 0) { throw 'The previous runner could not restart.' } } else { Remove-Item -LiteralPath $installed -Force -ErrorAction SilentlyContinue }; "
 			    "Remove-Item -LiteralPath $marker,$backup -Force -ErrorAction SilentlyContinue }; Remove-Item -LiteralPath $journal -Force }; ";
-			command = PowerShellCommand("$ErrorActionPreference='Stop'; $root=Join-Path $HOME '" + root + "'; "
+			command = PowerShellUtf8Command("$ErrorActionPreference='Stop'; $root=Join-Path $HOME '" + root + "'; "
 			    "New-Item -ItemType Directory -Path $root -Force | Out-Null; $path=Join-Path $root 'install.lock'; "
 			    "if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'The helper lock cannot be a link.' }; "
 			    "try { $lock=[IO.File]::Open($path,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) } "
 			    "catch { throw 'The remote helper is busy with another installation.' }; "
-			    "try { " + recover + "'UAM_INSTALL_LOCK_READY:" + plan.nonce + "'; while ($null -ne ($line=[Console]::ReadLine())) { "
-			    "if ($line -cnotmatch '^[a-zA-Z0-9+/=]+$') { throw 'Invalid guarded transaction request.' }; "
-			    "$command=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line)); $global:LASTEXITCODE=0; "
-			    "try { $text=(& ([scriptblock]::Create($command)) 2>&1 | Out-String); $status=$LASTEXITCODE } "
-			    "catch { $text=$_.Exception.Message; $status=1 }; 'UAM_INSTALL_RESULT:'+ $status + ':' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text)) } } "
-			    "finally { try { " + rollback + " | Out-Null } finally { $lock.Dispose() } }");
+			    "try { " + recover + "[Console]::WriteLine('UAM_INSTALL_LOCK_READY:" + plan.nonce + "'); "
+			    "$release=Join-Path $root 'install.release-" + plan.nonce + "'; $deadline=[DateTime]::UtcNow.AddMinutes(10); "
+			    "while (-not (Test-Path -LiteralPath $release) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 } } "
+			    "finally { try { " + rollback + " } finally { $lock.Dispose(); "
+			    "Remove-Item -LiteralPath (Join-Path $root 'install.release-" + plan.nonce + "') -Force -ErrorAction SilentlyContinue } }");
 		}
 		return SshCommand(plan.ssh_alias, std::move(command));
 	}
@@ -428,6 +456,13 @@ namespace uam::remote
 			return {};
 		}
 		const std::shared_ptr<BootstrapInstallLease> lease = std::make_shared<BootstrapInstallLease>();
+		lease->separate_commands = platform == "windows";
+		if (lease->separate_commands)
+		{
+			const std::string root = uam::execution_hosts::RunnerDirectory(platform, plan.runner_directory);
+			lease->release_argv = SshCommand(plan.ssh_alias, PowerShellCommand(
+			    "New-Item -ItemType File -Force -Path (Join-Path $HOME '" + root + "/install.release-" + plan.nonce + "') | Out-Null"));
+		}
 		if (!lease->service.StartStdioProcess(lease->process, *cwd, argv, &error)) return {};
 		std::string output;
 		std::string diagnostic;
@@ -445,7 +480,7 @@ namespace uam::remote
 				if (count == -1) read_failed = true;
 				if (count > 0) (stderr_output ? diagnostic : output).append(buffer.data(), static_cast<std::size_t>(count));
 			}
-			if (output == ready) return lease;
+			if (output == ready || (platform == "windows" && output == ready.substr(0, ready.size() - 1) + "\r\n")) return lease;
 			int status = -1;
 			if (read_failed || output.size() + diagnostic.size() > 8192 || lease->service.PollStdioProcessExited(lease->process, &status) ||
 			    stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)

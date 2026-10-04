@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -522,7 +523,25 @@ class JsonParser
 	bool error_ = false;
 };
 
-void AppendJsonEscapedString(const std::string& value, std::string& out)
+class JsonSizeCounter
+{
+public:
+	explicit JsonSizeCounter(std::size_t max_bytes) : m_max_bytes(max_bytes) {}
+	void push_back(char) { Add(1); }
+	void operator+=(std::string_view text) { Add(text.size()); }
+	std::size_t size() const { return m_size; }
+private:
+	void Add(std::size_t bytes)
+	{
+		if (bytes > m_max_bytes - m_size) throw std::length_error("Chat JSON exceeds its serialized size limit.");
+		m_size += bytes;
+	}
+	std::size_t m_max_bytes;
+	std::size_t m_size = 0;
+};
+
+template<typename Output>
+void AppendJsonEscapedString(const std::string& value, Output& out)
 {
 	out.push_back('"');
 
@@ -555,9 +574,10 @@ void AppendJsonEscapedString(const std::string& value, std::string& out)
 
 			if (ch < 0x20)
 			{
-				std::ostringstream esc;
-				esc << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ch);
-				out += esc.str();
+				constexpr char kHex[] = "0123456789abcdef";
+				out += "\\u00";
+				out.push_back(kHex[ch >> 4]);
+				out.push_back(kHex[ch & 0x0f]);
 			}
 			else
 			{
@@ -571,7 +591,8 @@ void AppendJsonEscapedString(const std::string& value, std::string& out)
 	out.push_back('"');
 }
 
-void AppendJsonIndent(int depth, std::string& out)
+template<typename Output>
+void AppendJsonIndent(int depth, Output& out)
 {
 	for (int i = 0; i < depth; ++i)
 	{
@@ -579,7 +600,8 @@ void AppendJsonIndent(int depth, std::string& out)
 	}
 }
 
-void AppendJsonValue(const JsonValue& value, std::string& out, int depth)
+template<typename Output>
+void AppendJsonValue(const JsonValue& value, Output& out, int depth)
 {
 	switch (value.type)
 	{
@@ -760,6 +782,18 @@ std::optional<JsonValue> ParseJson(std::string_view text)
 std::string SerializeJson(const JsonValue& value)
 {
 	std::string out;
+	uam::json_runtime_detail::AppendJsonValue(value, out, 0);
+	out.push_back('\n');
+	return out;
+}
+
+std::string SerializeJson(const JsonValue& value, std::size_t max_bytes)
+{
+	uam::json_runtime_detail::JsonSizeCounter size(max_bytes);
+	uam::json_runtime_detail::AppendJsonValue(value, size, 0);
+	size.push_back('\n');
+	std::string out;
+	out.reserve(size.size());
 	uam::json_runtime_detail::AppendJsonValue(value, out, 0);
 	out.push_back('\n');
 	return out;

@@ -696,6 +696,7 @@ describe('SettingsModal memory settings', () => {
 
   it('finds settings by control terms without changing pages and clears empty results', () => {
     const { host, root } = renderModal()
+    const sectionCount = host.querySelectorAll('nav button').length
     const field = host.querySelector<HTMLInputElement>('[aria-label="Search settings"]')!
     const search = (value: string) => act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value)
@@ -711,7 +712,7 @@ describe('SettingsModal memory settings', () => {
     search('no-such-setting')
     expect(host.textContent).toContain('No settings found.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Clear settings search"]')!.click())
-    expect(host.querySelectorAll('nav button')).toHaveLength(17)
+    expect(host.querySelectorAll('nav button')).toHaveLength(sectionCount)
     act(() => root.unmount())
     host.remove()
   })

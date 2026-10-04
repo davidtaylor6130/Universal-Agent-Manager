@@ -4,12 +4,17 @@
 #include "app/persistence_coordinator.h"
 #include "app/theme_service.h"
 #include "cef/cef_push.h"
+#include "cef/companion_server.h"
 #include "common/config/editor_file_associations.h"
+#include "common/config/companion_network.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
+#if defined(__APPLE__)
+#include "common/platform/platform_application_macos.h"
+#endif
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -27,6 +32,7 @@
 #include "common/config/execution_host_config.h"
 
 #include <fstream>
+#include <ranges>
 #include <optional>
 #include <set>
 #include <unordered_set>
@@ -558,7 +564,16 @@ void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nl
 		cb->Success(nlohmann::json{{"configured", false}, {"enabled", false}, {"url", ""}, {"restartRequired", true}}.dump());
 		return;
 	}
-	cb->Success(CompanionSettingsResponse(config).dump());
+	nlohmann::json response = CompanionSettingsResponse(config);
+#if defined(__APPLE__)
+	response["localAddresses"] = uam::platform::MacLocalIpv4Addresses();
+#endif
+#if UAM_ENABLE_MOBILE_COMPANION
+	response["proxyRunning"] = m_companion && m_companion->IsProxyRunning();
+#else
+	response["proxyRunning"] = false;
+#endif
+	cb->Success(response.dump());
 }
 
 void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -582,6 +597,11 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlo
 		cb->Failure(500, "Failed to persist phone access settings.");
 		return;
 	}
+#if defined(__APPLE__)
+	if (*enabled && config.contains("origin") && config["origin"].is_string() &&
+	    !config["origin"].get_ref<const std::string&>().empty())
+		uam::platform::RequestMacLocalNetworkAccess();
+#endif
 	cb->Success(CompanionSettingsResponse(config).dump());
 }
 
@@ -645,4 +665,79 @@ void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> brows
 	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleGetAppPermissions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+#if defined(__APPLE__)
+	const uam::platform::MacPrivacyPermissions permissions = uam::platform::GetMacPrivacyPermissions();
+	cb->Success(nlohmann::json{{"platform", "macos"}, {"microphone", permissions.microphone},
+	    {"speechRecognition", permissions.speech_recognition}, {"localNetwork", "system_managed"}}.dump());
+#else
+	cb->Success(nlohmann::json{{"platform", "other"}, {"microphone", "system_managed"},
+	    {"speechRecognition", "unsupported"}, {"localNetwork", "system_managed"}}.dump());
+#endif
+}
+
+void UamQueryHandler::HandleRequestAppPermission(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string permission = uam::nlohmann_json::TrimmedStringValue(payload, {"permission"});
+#if defined(__APPLE__)
+	if (!uam::platform::RequestMacPrivacyPermission(permission)) { cb->Failure(400, "Unknown permission."); return; }
+	cb->Success("{}");
+#else
+	(void)permission;
+	cb->Failure(409, "Manage this permission in your operating system settings.");
+#endif
+}
+
+void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string permission = uam::nlohmann_json::TrimmedStringValue(payload, {"permission"});
+#if defined(__APPLE__)
+	std::string pane;
+	if (permission == "localNetwork") pane = "Privacy_LocalNetwork";
+	else if (permission == "microphone") pane = "Privacy_Microphone";
+	else if (permission == "speechRecognition") pane = "Privacy_SpeechRecognition";
+	else { cb->Failure(400, "Unknown permission."); return; }
+	std::string error;
+	if (!uam::platform::OpenExternalUrl("x-apple.systempreferences:com.apple.preference.security?" + pane, &error))
+	{ cb->Failure(500, error); return; }
+	cb->Success("{}");
+#else
+	(void)permission;
+	cb->Failure(409, "Open your operating system privacy settings.");
+#endif
+}
+
+void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+#if defined(__APPLE__)
+	const std::string address = uam::nlohmann_json::TrimmedStringValue(payload, {"address"});
+	const std::vector<std::string> addresses = uam::platform::MacLocalIpv4Addresses();
+	if (std::ranges::find(addresses, address) == addresses.end())
+	{ cb->Failure(409, "That network address is no longer available. Refresh and try again."); return; }
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("origin") || !config["origin"].is_string() ||
+	    !config.contains("proxy_config") || !config["proxy_config"].is_string())
+	{ cb->Failure(409, "Phone HTTPS configuration is unavailable."); return; }
+	std::string proxy_text;
+	const std::filesystem::path proxy_path = config["proxy_config"].get<std::string>();
+	if (!uam::io::TryReadTextFile(proxy_path, proxy_text)) { cb->Failure(500, "Cannot read phone HTTPS configuration."); return; }
+	nlohmann::json proxy = nlohmann::json::parse(proxy_text, nullptr, false);
+	if (!uam::companion::RepairLanAddress(config, proxy, address, addresses))
+	{ cb->Failure(409, "This phone HTTPS configuration requires manual network configuration."); return; }
+	if (!uam::io::WriteTextFileWithBackup(proxy_path, proxy.dump(2) + "\n"))
+	{ cb->Failure(500, "Cannot save phone HTTPS configuration."); return; }
+	if (!WriteCompanionConfig(m_app, config))
+	{
+		(void)uam::io::WriteTextFileWithBackup(proxy_path, proxy_text);
+		cb->Failure(500, "Cannot save phone URL. The proxy configuration was restored."); return;
+	}
+	uam::platform::RequestMacLocalNetworkAccess();
+	cb->Success(CompanionSettingsResponse(config).dump());
+#else
+	(void)payload;
+	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
+#endif
 }
