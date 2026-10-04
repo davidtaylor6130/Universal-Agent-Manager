@@ -1115,6 +1115,10 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)
+  target_include_directories(uam_ui_asset_snapshot_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_ui_asset_snapshot_tests PRIVATE nlohmann_json::nlohmann_json)
+  add_test(NAME uam_ui_asset_snapshot COMMAND uam_ui_asset_snapshot_tests)
   add_executable(uam_crash_supervisor_tests
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)

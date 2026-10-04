@@ -3,6 +3,7 @@
 #include "cef/cef_includes.h"
 #include "cef/uam_query_handler.h"
 #include "common/state/app_state.h"
+#include "cef/ui_asset_snapshot.h"
 
 #include <functional>
 #include <memory>
@@ -105,6 +106,13 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) override;
 	bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& target_url, cef_window_open_disposition_t target_disposition, bool user_gesture) override;
 
+	void OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus status, int error_code, const CefString& error_string) override;
+	bool OnRenderProcessUnresponsive(CefRefPtr<CefBrowser> browser, CefRefPtr<CefUnresponsiveProcessCallback> callback) override;
+	void OnRenderProcessResponsive(CefRefPtr<CefBrowser> browser) override;
+	/// <summary>Reloads only the interface; providers and their sessions remain in the browser process.</summary>
+	void ReloadInterface();
+	void SetNativeRecoveryCallback(std::function<void(bool)> callback) { m_nativeRecovery = std::move(callback); }
+
 	// CefLifeSpanHandler
 	bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id, const CefString& target_url, const CefString& target_frame_name, CefLifeSpanHandler::WindowOpenDisposition target_disposition, bool user_gesture, const CefPopupFeatures& popup_features, CefWindowInfo& window_info, CefRefPtr<CefClient>& client, CefBrowserSettings& settings, CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override;
 	void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -116,6 +124,7 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode error_code, const CefString& error_text, const CefString& failed_url) override;
 
 	// CefDisplayHandler
+	bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message, const CefString& source, int line) override;
 	void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) override;
 
 	// CefContextMenuHandler — clear all context menus so no browser chrome appears
@@ -139,6 +148,11 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 	std::unique_ptr<UamQueryHandler> m_queryHandler;
 	BrowserReadyCallback m_onReady;
 
+	std::function<void(bool)> m_nativeRecovery;
+	uam::cef::UiRecoveryBudget m_recoveryBudget;
+	bool m_rendererUnresponsive = false;
+	unsigned int m_recoveryGeneration = 0;
+	void RecoverInterface(unsigned int generation);
 	void EnsureMessageRouter();
 	bool IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const;
 	bool ShouldCancelNavigationToUrl(const std::string& target_url) const;

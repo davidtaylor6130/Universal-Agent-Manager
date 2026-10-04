@@ -25,6 +25,7 @@ function SvnLogo({ size = 17 }: { size?: number }) {
     </svg>
   )
 }
+import { InterfaceErrorBoundary } from '../shared/InterfaceErrorBoundary'
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { UpdatesPanel } from './UpdatesPanel'
@@ -758,7 +759,7 @@ export function AppShell() {
         <MainPanel />
       </main>
       </div>
-      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></main>}
+      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
 
       {commitPresence.mounted && (
         <>
@@ -780,7 +781,7 @@ export function AppShell() {
             data-state={commitPresence.closing ? 'closed' : 'open'}
             style={{ width: commitPanelWidthPx, flex: `0 0 ${commitPanelWidthPx}px`, background: 'var(--surface)', '--panel-w': `${commitPanelWidthPx}px` } as React.CSSProperties}
           >
-            <Suspense fallback={null}><VcsCommitPanel /></Suspense>
+            <InterfaceErrorBoundary panel onDismiss={() => setCommitPanelOpen(false)}><Suspense fallback={null}><VcsCommitPanel /></Suspense></InterfaceErrorBoundary>
           </aside>
         </>
       )}
@@ -874,10 +875,10 @@ export function AppShell() {
       )}
 
       {/* Modals */}
-      <Presence open={isNewChatModalOpen}><Suspense fallback={null}><NewChatModal /></Suspense></Presence>
-      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></Presence>
-      <Presence open={isMemoryScanModalOpen}><Suspense fallback={null}><MemoryScanModal /></Suspense></Presence>
-      <Presence open={isMarkdownStoreOpen}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></Presence>
+      <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>
+      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryLibrary()}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></InterfaceErrorBoundary></Presence>
+      <Presence open={isMemoryScanModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryScanModal()}><Suspense fallback={null}><MemoryScanModal /></Suspense></InterfaceErrorBoundary></Presence>
+      <Presence open={isMarkdownStoreOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMarkdownStore()}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></InterfaceErrorBoundary></Presence>
     </div>
   )
 }

@@ -10,6 +10,15 @@
   </head>
   <body>
     <div id="root"></div>
+    <section id="uam-startup-recovery" role="alert" aria-label="Interface recovery" style="background:#000;color:#fff;padding:24px;font:14px system-ui;position:fixed;inset:0;z-index:2147483647">
+      <h1 style="font-size:16px;margin:0 0 12px">The interface could not load.</h1>
+      <p>Reload the interface to try again.</p>
+      <p>Active sessions keep running. Unsaved drafts may be lost when reloading.</p>
+      <button class="uam-recovery-button" id="uam-reload-interface">Reload interface</button>
+      <p>Native recovery shortcut: Ctrl+Shift+R</p>
+    </section>
+    <link rel="stylesheet" href="/ui-recovery.css" />
+    <script src="/ui-recovery.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
