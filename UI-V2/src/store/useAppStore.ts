@@ -118,6 +118,7 @@ function deserializeState(
     markdownStoreDirectory: string
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
+    fileExplorerApplication: string
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     mcpServers: McpServerConfiguration[]
@@ -309,6 +310,7 @@ function deserializeState(
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
+    fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     mcpServers: cpp.settings.mcpServers ?? [],
@@ -496,6 +498,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     markdownStoreDirectory: patch.settings?.markdownStoreDirectory ?? current.markdownStoreDirectory,
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
+    fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
@@ -675,7 +678,8 @@ export const useAppStore = create<AppState>((set, get) => {
             markdownStoreDirectory: current.markdownStoreDirectory,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
-            defaultEditorPresetId: current.defaultEditorPresetId,
+            fileExplorerApplication: current.fileExplorerApplication,
+        defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             mcpServers: current.mcpServers,
             executionHosts: current.executionHosts,
@@ -987,6 +991,7 @@ export const useAppStore = create<AppState>((set, get) => {
         markdownStoreDirectory: current.markdownStoreDirectory,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
+        fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         mcpServers: current.mcpServers,

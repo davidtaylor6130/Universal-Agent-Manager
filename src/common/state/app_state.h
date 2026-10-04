@@ -623,6 +623,7 @@ namespace uam
 		std::shared_ptr<platform::StdioProcessPlatformFields> owned_process;
 		bool result_consumed = false;
 		std::string native_writer_key;
+		bool observe_exit = false;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};

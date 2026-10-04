@@ -93,6 +93,14 @@ namespace uam
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
 		if (terminal.context_preparation == nullptr) StopCliTerminal(terminal);
+		if (terminal.running)
+		{
+			terminal.last_error = "The previous terminal is still stopping.";
+			return false;
+		}
+		if (chat.side_cleanup_requested)
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
+			                            "This side chat is closing.");
 		if (chat.imported_read_only)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,

@@ -26,6 +26,26 @@ using namespace uam_test;
 
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[])
 {
+	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-side-codex-context")
+	{
+		std::string line;
+		while (std::getline(std::cin, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			if (!request.contains("id")) continue;
+			nlohmann::json result = nlohmann::json::object();
+			const std::string method = request.value("method", "");
+			if (method == "thread/start") result["thread"]["id"] = "11111111-2222-4333-8444-555555555555";
+			else if (method == "thread/inject_items")
+			{
+				const std::optional<std::string> captured = uam::env::GetNonEmptyString("UAM_TEST_SIDE_CONTEXT_CAPTURE");
+				if (!captured || !uam::io::WriteTextFile(*captured, request["params"].dump())) return 12;
+			}
+			else if (method != "initialize") return 11;
+			std::cout << nlohmann::json{{"id", request["id"]}, {"result", result}}.dump() << std::endl;
+		}
+		return 0;
+	}
 	if (argc == 4 && std::string_view(argv[1]) == "--uam-test-codex-native-context-probe")
 	{
 		const fs::path directory = uam::paths::PathFromUtf8(argv[2]);
@@ -2529,6 +2549,85 @@ UAM_TEST(OpenCodeInteractiveFlagsPreserveSavedSessionRouting)
 	provider.id = uam::provider_ids::kCodexCli;
 	app.settings.provider_extra_flags = "--session ses_other";
 	UAM_ASSERT(ProviderRuntimeRegistry::Resolve(provider).InteractiveConfigurationError(provider, app.settings).empty());
+}
+
+UAM_TEST(TemporarySideCliCarriesParentReferenceIntoItsFreshNativeSession)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-side-cli-context");
+	const fs::path capture = temp.root / "captured.json";
+	ScopedEnvVar captured("UAM_TEST_SIDE_CONTEXT_CAPTURE", capture.string());
+	ScopedEnvVar home("CODEX_HOME", (temp.root / "codex-home").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ProviderProfile provider = ProviderProfileStore::DefaultCodexProfile();
+	provider.output_mode = uam::provider_profile_constants::kOutputModeCli;
+	provider.interactive_command = ShellQuoteForTest(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string()) + " --uam-test-side-codex-context";
+	app.provider_profiles = {provider};
+	ChatSession parent = ChatDomainService().CreateNewChat("project", provider.id);
+	parent.workspace_directory = temp.root.string();
+	parent.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	ChatDomainService().AddMessage(parent, MessageRole::User, "Remember QA-SIDE-REFERENCE-6130.");
+	app.chats.push_back(parent);
+	std::string side_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+	ChatSession* side = ChatDomainService().FindChatById(app, side_id);
+	UAM_ASSERT(side != nullptr && side->native_session_id.empty());
+	uam::CliTerminalState terminal;
+	struct Cleanup { uam::CliTerminalState& terminal; ~Cleanup() { uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit); } } cleanup{terminal};
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!terminal.running && terminal.last_error.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::StartCliTerminalForChat(app, terminal, *side, 24, 80);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(terminal.running);
+	UAM_ASSERT(fs::exists(capture));
+	const nlohmann::json injected = nlohmann::json::parse(uam::io::ReadTextFile(capture));
+	UAM_ASSERT_EQ(injected["items"][0]["role"], nlohmann::json("assistant"));
+	UAM_ASSERT(uam::strings::Contains(injected["items"][0]["content"][0]["text"].get<std::string>(), "QA-SIDE-REFERENCE-6130"));
+	UAM_ASSERT_EQ(side->native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(terminal.attached_session_id, side->native_session_id);
+	UAM_ASSERT(side->native_session_id != parent.native_session_id);
+	UAM_ASSERT(side->messages.empty());
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, side_id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->native_session_id, side->native_session_id);
+	UAM_ASSERT_EQ(restored->provider_handoff_cli_contexts, side->provider_handoff_cli_contexts);
+	UAM_ASSERT_EQ(restored->provider_handoff_context, side->provider_handoff_context);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, parent.id)->native_session_id, parent.native_session_id);
+#endif
+}
+
+UAM_TEST(TemporarySideCleanupWaitsForCancelledContextWorker)
+{
+	TempDir temp("uam-side-context-cancel");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.workspace_directory = temp.root.string();
+	app.chats.push_back(parent);
+	std::string side_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+	const std::shared_ptr<uam::CliContextPreparation> state = std::make_shared<uam::CliContextPreparation>();
+	state->chat_id = side_id;
+	uam::CliContextPreparationTask task;
+	task.state = state;
+	app.cli_context_preparation_tasks.push_back(std::move(task));
+	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = side_id;
+	terminal->attached_chat_id = side_id;
+	terminal->context_preparation = state;
+	app.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(uam::RequestTemporarySideChatCleanup(app, side_id));
+	UAM_ASSERT(!uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(state->cancellation.stop_requested());
+	UAM_ASSERT(ChatDomainService().FindChatById(app, side_id) != nullptr);
+	state->finished.store(true);
+	ChatDomainService().FindChatById(app, side_id)->side_cleanup_retry_time_s = 0.0;
+	UAM_ASSERT(uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT(ChatDomainService().FindChatById(app, side_id) == nullptr);
+	UAM_ASSERT(ChatDomainService().FindChatById(app, parent.id) != nullptr);
 }
 
 UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)

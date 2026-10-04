@@ -1,4 +1,5 @@
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
@@ -1205,6 +1206,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	  .filter((attachment) => attachment.status === 'ready')
 	  .map(({ status, error, ...attachment }) => attachment)
 
+    if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     // Handle /goal command
     if (prompt.startsWith('/goal ')) {
       const submittedSessionId = session.id
@@ -1338,6 +1340,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
+  const sideBusyRef = useRef(false)
+  const navigateSide = async (dismiss = false) => {
+    if (sideBusyRef.current) return
+    sideBusyRef.current = true
+    try {
+      const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
+      if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
+      const id = dismiss ? response.data?.parentChatId : response.data?.chatId
+      if (id && useAppStore.getState().activeSessionId === session.id) { assignChatToPane(id, readChatGridLayout().activeLeafId); useAppStore.getState().setActiveSession(id) }
+    } finally { sideBusyRef.current = false }
+  }
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
@@ -1941,6 +1954,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
 
       const commands: SlashCommand[] = [
+        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
         ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
         ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
@@ -1975,7 +1989,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
+    [session.id, session.temporaryParentChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)

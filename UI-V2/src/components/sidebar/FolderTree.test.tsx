@@ -1036,7 +1036,7 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Pinned chats')
     expect(host.textContent).toContain('Chat 1')
 
-    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
     const pinButton = host.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
     expect(pinButton).toBeTruthy()
     const actions = pinButton?.closest<HTMLElement>('[data-testid^="session-actions-"]')

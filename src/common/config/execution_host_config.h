@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/config/custom_icon.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
@@ -208,6 +209,12 @@ namespace uam::execution_hosts
 	{
 		std::vector<ExecutionHost> normalized{LocalHost()};
 		std::unordered_set<std::string> ids{std::string(kLocalHostId)};
+		for (const ExecutionHost& host : hosts)
+			if (host.id == kLocalHostId && uam::icons::IsValid(host.custom_icon))
+			{
+				normalized.front().custom_icon = host.custom_icon;
+				break;
+			}
 		for (ExecutionHost host : hosts)
 		{
 			if (!NormalizeRemote(host) || !ids.insert(host.id).second) continue;
@@ -245,6 +252,7 @@ namespace uam::execution_hosts
 			    {"runnerProtocolVersion", host.runner_protocol_version},
 			    {"instructionFile", host.instruction_file},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
+			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
 			});
 		}
 		return result;
@@ -267,6 +275,7 @@ namespace uam::execution_hosts
 				    entry.value("runnerProtocolVersion", 0),
 				    entry.value("instructionFile", ""), entry.value("startupEnabled", false),
 				    entry.value("startupStatus", "disabled"),
+				    uam::icons::Parse(entry.value("customIcon", nlohmann::json(nullptr))),
 				});
 			}
 		}

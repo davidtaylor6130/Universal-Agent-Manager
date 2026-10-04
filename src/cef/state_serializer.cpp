@@ -1,4 +1,5 @@
 #include "cef/state_serializer.h"
+#include "common/config/custom_icon.h"
 
 #include "app/agent_definition_service.h"
 #include "app/chat_domain_service.h"
@@ -232,6 +233,8 @@ namespace uam
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
 			session_json["providerId"] = session.provider_id;
+			session_json["temporaryParentChatId"] = session.temporary_parent_chat_id;
+			session_json["sideCleanupRequested"] = session.side_cleanup_requested;
 			session_json["parentChatId"] = session.parent_chat_id;
 			session_json["branchRootChatId"] = uam::strings::NonEmptyOrFallback(session.branch_root_chat_id, session.id);
 			session_json["branchFromMessageIndex"] = session.branch_from_message_index;
@@ -1315,22 +1318,28 @@ namespace uam
 			};
 		}
 
-		nlohmann::json SerializeFoldersForFrontend(const std::vector<ChatFolder>& folders)
+		nlohmann::json SerializeFoldersForFrontend(const std::vector<ChatFolder>& folders, const std::filesystem::path& data_root)
 		{
 			nlohmann::json folders_json = JsonArrayWithCapacity(folders.size());
 			for (const ChatFolder& folder : folders)
 			{
-				folders_json.push_back(StateSerializer::SerializeFolder(folder));
+				nlohmann::json object = StateSerializer::SerializeFolder(folder);
+				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
+				folders_json.push_back(std::move(object));
 			}
 			return folders_json;
 		}
 
-		nlohmann::json SerializeResourceCollectionsForFrontend(const std::vector<ResourceCollection>& collections)
+		nlohmann::json SerializeResourceCollectionsForFrontend(const std::vector<ResourceCollection>& collections, const std::filesystem::path& data_root)
 		{
 			nlohmann::json collections_json = JsonArrayWithCapacity(collections.size());
 			for (const ResourceCollection& collection : collections)
 			{
-				collections_json.push_back(StateSerializer::SerializeResourceCollection(collection));
+				nlohmann::json object = StateSerializer::SerializeResourceCollection(collection);
+				uam::icons::AddFrontendAsset(object, data_root, collection.custom_icon);
+				for (std::size_t i = 0; i < collection.references.size(); ++i)
+					uam::icons::AddFrontendAsset(object["references"][i], data_root, collection.references[i].custom_icon);
+				collections_json.push_back(std::move(object));
 			}
 			return collections_json;
 		}
@@ -1407,8 +1416,8 @@ namespace uam
 		j["appVersion"] = uam::constants::kAppVersion;
 		j["runnerProtocolVersion"] = uam::remote::kRunnerProtocolVersion;
 
-		j["folders"] = SerializeFoldersForFrontend(app.folders);
-		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
+		j["folders"] = SerializeFoldersForFrontend(app.folders, app.data_root);
+		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
@@ -1450,6 +1459,11 @@ namespace uam
 		// Settings slice that the UI cares about
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+			for (nlohmann::json& host : j["settings"]["executionHosts"])
+			{
+				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));
+				if (configured != nullptr) uam::icons::AddFrontendAsset(host, app.data_root, configured->custom_icon);
+			}
 		}
 
 		return j;
@@ -1460,8 +1474,8 @@ namespace uam
 		CatalogSnapshotCache catalog_cache;
 		nlohmann::json j;
 
-		j["folders"] = SerializeFoldersForFrontend(app.folders);
-		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections);
+		j["folders"] = SerializeFoldersForFrontend(app.folders, app.data_root);
+		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
@@ -1506,6 +1520,11 @@ namespace uam
 
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeFingerprintSettingsFields(app.settings);
+			for (nlohmann::json& host : j["settings"]["executionHosts"])
+			{
+				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));
+				if (configured != nullptr) uam::icons::AddFrontendAsset(host, app.data_root, configured->custom_icon);
+			}
 		}
 
 		return j;
@@ -1665,6 +1684,7 @@ namespace uam
 		j["title"] = folder.title;
 		j["directory"] = folder.directory;
 		j["collapsed"] = folder.collapsed;
+		j["customIcon"] = uam::icons::Serialize(folder.custom_icon);
 		j["executionHostId"] = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(folder.execution_host_id), "local");
 		const std::filesystem::path directory = uam::paths::PathFromUtf8(folder.directory);
@@ -1683,6 +1703,7 @@ namespace uam
 		    {"type", reference.type},
 		    {"target", reference.target},
 		    {"label", reference.label},
+		    {"customIcon", uam::icons::Serialize(reference.custom_icon)},
 		};
 	}
 
@@ -1697,6 +1718,7 @@ namespace uam
 		    {"id", collection.id},
 		    {"name", collection.name},
 		    {"collapsed", collection.collapsed},
+		    {"customIcon", uam::icons::Serialize(collection.custom_icon)},
 		    {"references", std::move(references)},
 		};
 	}

@@ -9,8 +9,8 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
-#include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/io_utils.h"
@@ -24,6 +24,7 @@
 #include "remote/runner_client.h"
 #include "remote/runner_proxy.h"
 #include <nlohmann/json.hpp>
+
 
 #include <memory>
 #include <string>

@@ -1,3 +1,4 @@
+import { customIconsEqual } from '../../types/customIcon'
 // Equivalence checkers, binding builders, message reconciler, and request-clear
 // helpers. Extracted from useAppStore.ts (MO-1). Module-level mutable state
 // (pendingProviderChatDefaults, lastPushStatusUpdateAtMs) is exported for use
@@ -78,6 +79,7 @@ export function foldersEquivalent(previous: Folder, next: Folder): boolean {
   return previous.name === next.name &&
     previous.directory === next.directory &&
     previous.executionHostId === next.executionHostId &&
+    customIconsEqual(previous.customIcon, next.customIcon) &&
     previous.isExpanded === next.isExpanded &&
     previous.missing === next.missing
 }
@@ -89,6 +91,7 @@ export function folderFromCppFolder(folder: CppFolder, previous: Folder | undefi
     parentId: null,
     directory: folder.directory ?? '',
     executionHostId: folder.executionHostId || 'local',
+    customIcon: folder.customIcon,
     isExpanded: !folder.collapsed,
     missing: folder.missing,
     createdAt: previous?.createdAt ?? new Date(),
@@ -144,6 +147,8 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
+    (previous.temporaryParentChatId ?? '') === (next.temporaryParentChatId ?? '') &&
+    (previous.sideCleanupRequested ?? false) === (next.sideCleanupRequested ?? false) &&
     (previous.parentChatId ?? '') === (next.parentChatId ?? '') &&
     (previous.branchRootChatId ?? previous.id) === (next.branchRootChatId ?? next.id) &&
     (previous.branchFromMessageIndex ?? -1) === (next.branchFromMessageIndex ?? -1) &&
@@ -208,6 +213,8 @@ export function sessionFromCppChat(
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,
     providerId: normalizeProviderIdForVisibleProviders(chat.providerId, visibleProviders),
+    temporaryParentChatId: chat.temporaryParentChatId ?? '',
+    sideCleanupRequested: chat.sideCleanupRequested ?? false,
     parentChatId: chat.parentChatId ?? '',
     branchRootChatId: chat.branchRootChatId || chat.id,
     branchFromMessageIndex: chat.branchFromMessageIndex ?? -1,

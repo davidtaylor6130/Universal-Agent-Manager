@@ -204,7 +204,7 @@ export function buildChatSearchSessionGroups(
     const rootId = branchRootId(session)
     familyActivity.set(rootId, Math.max(familyActivity.get(rootId) ?? 0, sessionRecentTime(session)))
   }
-  const sortedSessions = [...sessions].sort((a, b) =>
+  const sortedSessions = sessions.filter((session) => !session.temporaryParentChatId).sort((a, b) =>
     (familyActivity.get(branchRootId(b)) ?? 0) - (familyActivity.get(branchRootId(a)) ?? 0) || compareSessionsByRecent(a, b)
   )
   const matchingSessionIds = new Set(

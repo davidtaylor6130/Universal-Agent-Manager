@@ -1,3 +1,4 @@
+import { sanitizeCustomIcon, type CustomIcon, type CustomIconInput, type CustomIconTarget } from '../../types/customIcon'
 import { createRequestId, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../../types/resourceCollection'
 import type { ZustandGet, ZustandSet } from '../storeTypes'
@@ -13,6 +14,32 @@ function nextLocalId(prefix: string) {
 export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet) {
   return {
     resourceCollections: [] as ResourceCollection[],
+
+    setCustomIcon: async (targetType: CustomIconTarget, targetId: string, icon: CustomIconInput): Promise<boolean> => {
+      if (icon?.type === 'text' && !sanitizeCustomIcon(icon)) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setCustomIcon', payload: { targetType, targetId, icon }, requestId: createRequestId('setCustomIcon') })
+        return response.ok
+      }
+      const customIcon: CustomIcon | undefined = icon === null ? undefined : icon.type === 'text' ? icon : {
+        type: 'png', value: `${crypto.randomUUID()}.png`, dataUrl: `data:image/png;base64,${icon.base64}`,
+      }
+      if (targetType === 'workspace') {
+        if (!get().folders.some((folder) => folder.id === targetId)) return false
+        set((state) => ({ folders: state.folders.map((folder) => folder.id === targetId ? { ...folder, customIcon } : folder) }))
+      } else if (targetType === 'host') {
+        if (!get().executionHosts.some((host) => host.id === targetId)) return false
+        set((state) => ({ executionHosts: state.executionHosts.map((host) => host.id === targetId ? { ...host, customIcon } : host) }))
+      } else {
+        const found = get().resourceCollections.some((collection) => targetType === 'collection' ? collection.id === targetId
+          : collection.references.some((reference) => reference.id === targetId && reference.type === 'desktop-app'))
+        if (!found) return false
+        set((state) => ({ resourceCollections: state.resourceCollections.map((collection) => targetType === 'collection'
+          ? collection.id === targetId ? { ...collection, customIcon } : collection
+          : { ...collection, references: collection.references.map((reference) => reference.id === targetId && reference.type === 'desktop-app' ? { ...reference, customIcon } : reference) }) }))
+      }
+      return true
+    },
 
     createResourceCollection: async (name: string): Promise<ResourceCollection | null> => {
       const normalized = name.trim()

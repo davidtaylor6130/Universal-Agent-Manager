@@ -870,7 +870,8 @@ namespace
 
 	bool ChatBranchFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.parent_chat_id != rhs.parent_chat_id || lhs.branch_root_chat_id != rhs.branch_root_chat_id)
+		if (lhs.temporary_parent_chat_id != rhs.temporary_parent_chat_id || lhs.provider_handoff_context != rhs.provider_handoff_context || lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
+		    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts || lhs.side_cleanup_requested != rhs.side_cleanup_requested || lhs.parent_chat_id != rhs.parent_chat_id || lhs.branch_root_chat_id != rhs.branch_root_chat_id)
 		{
 			return false;
 		}
@@ -1196,6 +1197,8 @@ namespace
 		chat.acp_dispatched_queued_prompt_count = std::min<std::uintmax_t>(
 		    NonNegativeUintmaxFieldOrZero(root.Find(kChatAcpDispatchedQueuedPromptCountField)),
 		    chat.acp_queued_prompts.size());
+		chat.temporary_parent_chat_id = JsonStringOrEmpty(root.Find("temporary_parent_chat_id"));
+		chat.side_cleanup_requested = JsonBoolOrDefault(root.Find("side_cleanup_requested"), false);
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
 		chat.branch_from_message_index = IntFieldAtLeastOrDefault(root.Find(kChatBranchFromMessageIndexField), -1, -1);
@@ -1681,6 +1684,8 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	                     static_cast<double>(std::min(
 	                         chat.acp_dispatched_queued_prompt_count,
 	                         chat.acp_queued_prompts.size())));
+	uam::json::SetString(root, "temporary_parent_chat_id", chat.temporary_parent_chat_id);
+	uam::json::SetBool(root, "side_cleanup_requested", chat.side_cleanup_requested);
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
 	uam::json::SetNumber(root, kChatBranchFromMessageIndexField, static_cast<double>(chat.branch_from_message_index));
@@ -2135,6 +2140,9 @@ namespace
 		hydrated.provider_handoff_session_id = summary.provider_handoff_session_id;
 		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
+		hydrated.temporary_parent_chat_id = summary.temporary_parent_chat_id;
+		hydrated.side_cleanup_requested = summary.side_cleanup_requested;
+		hydrated.side_cleanup_retry_time_s = summary.side_cleanup_retry_time_s;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;

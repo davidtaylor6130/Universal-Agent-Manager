@@ -1,3 +1,4 @@
+import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -830,6 +831,7 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   return {
     id,
     title: stringOr(value.title, 'Untitled'),
+    customIcon: sanitizeCustomIcon(value.customIcon),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
@@ -850,6 +852,8 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    temporaryParentChatId: isString(value.temporaryParentChatId) ? value.temporaryParentChatId : undefined,
+    sideCleanupRequested: booleanOr(value.sideCleanupRequested),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
     branchRootChatId: isString(value.branchRootChatId) ? value.branchRootChatId : undefined,
     branchFromMessageIndex: Math.trunc(finiteNumberOr(value.branchFromMessageIndex, -1)),
@@ -1419,6 +1423,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
+      fileExplorerApplication: '',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       mcpServers: [],
@@ -1491,6 +1496,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
   if (Array.isArray(value.executionHosts)) {
     for (const entry of value.executionHosts) {
       if (!isRecord(entry)) continue
+      if (entry.id === 'local') {
+        executionHosts[0].customIcon = sanitizeCustomIcon(entry.customIcon)
+        continue
+      }
       const id = stringOr(entry.id).trim()
       const sshAlias = stringOr(entry.sshAlias).trim()
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
@@ -1509,6 +1518,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         platform: stringOr(entry.platform),
         architecture: stringOr(entry.architecture),
         lastSeenAt: stringOr(entry.lastSeenAt),
+        customIcon: sanitizeCustomIcon(entry.customIcon),
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
         instructionFile: stringOr(entry.instructionFile),
@@ -1544,6 +1554,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
+    fileExplorerApplication: stringOr(value.fileExplorerApplication),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     mcpServers,
@@ -1715,10 +1726,10 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
           const type = stringOr(item.type).trim() as ResourceReferenceType
           const target = stringOr(item.target).trim()
           if (!referenceId || !target || !RESOURCE_REFERENCE_TYPES.has(type)) return []
-          return [{ id: referenceId, type, target, label: stringOr(item.label).trim() }]
+          return [{ id: referenceId, type, target, label: stringOr(item.label).trim(), customIcon: sanitizeCustomIcon(item.customIcon) }]
         })
       : []
-    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references }]
+    return [{ id, name, collapsed: booleanOr(entry.collapsed, false), references, customIcon: sanitizeCustomIcon(entry.customIcon) }]
   })
 }
 

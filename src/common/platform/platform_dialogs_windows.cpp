@@ -1,3 +1,4 @@
+#include "common/platform/file_explorer_application.h"
 #include "platform_services_windows_impl_internal.h"
 
 using namespace uam::platform_windows_impl;
@@ -18,7 +19,7 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 		return BrowsePathWithNativeDialogWindows(target, initial_path, selected_path_out, error_out);
 	}
 
-	bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr) const override
+	bool OpenFolderInFileManager(const std::filesystem::path& folder_path, std::string* error_out = nullptr, const std::filesystem::path& application_path = {}) const override
 	{
 		if (folder_path.empty())
 		{
@@ -27,6 +28,20 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 				*error_out = "Folder path is empty.";
 			}
 
+			return false;
+		}
+
+		if (!application_path.empty())
+		{
+			if (!uam::platform::IsFileExplorerApplication(uam::paths::Utf8PathString(application_path), true))
+			{
+				if (error_out != nullptr) *error_out = "Configured file explorer application is unavailable. Choose another application or reset to system default.";
+				return false;
+			}
+			const std::wstring argument = WideFromUtf8(QuoteWindowsArg(uam::paths::Utf8PathString(folder_path)));
+			const HINSTANCE result = ShellExecuteW(nullptr, L"open", application_path.c_str(), argument.c_str(), nullptr, SW_SHOWNORMAL);
+			if (reinterpret_cast<INT_PTR>(result) > 32) return true;
+			if (error_out != nullptr) *error_out = "Could not launch the configured file explorer application.";
 			return false;
 		}
 

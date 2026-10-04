@@ -8,6 +8,8 @@ import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLea
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const originalActions = { setActiveSession: useAppStore.getState().setActiveSession, setSessionPinned: useAppStore.getState().setSessionPinned }
+
 const now = new Date('2026-01-01T12:00:00.000Z')
 
 function makeSession(): Session {
@@ -80,6 +82,7 @@ describe('SessionItem status icons', () => {
       },
     })
     useAppStore.setState({
+      ...originalActions,
       folders: [],
       sessions: [makeSession()],
       activeSessionId: 'chat-2',
@@ -344,17 +347,53 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
-  it('keeps pinned state visible while its unpin action stays with row actions', () => {
+  it('keeps the persistent unpin button visible while retaining row actions', () => {
     act(() => useAppStore.setState({ sessions: [{ ...makeSession(), isPinned: true }] }))
     const { host, root } = renderSessionItem()
 
-    expect(host.querySelector('[role="img"][aria-label="Pinned"]')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
     const actions = host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')
     expect(actions?.querySelector('button[aria-label="Unpin chat"]')).toBeTruthy()
     expect(actions?.className).toContain('opacity-0')
     expect(actions?.className).toContain('group-hover:opacity-100')
     expect(actions?.className).toContain('group-focus-within:opacity-100')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('unpins from the persistent button without selecting or dragging its chat', () => {
+    const setSessionPinned = vi.fn(async () => true)
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ sessions: [{ ...makeSession(), isPinned: true }], setSessionPinned, setActiveSession })
+    const { host, root } = renderSessionItem()
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="Unpin Chat 1"]')!
+    expect(button.type).toBe('button')
+    expect(button.draggable).toBe(false)
+    const drag = new Event('dragstart', { bubbles: true, cancelable: true })
+    act(() => button.dispatchEvent(drag))
+    expect(drag.defaultPrevented).toBe(true)
+    act(() => button.click())
+    expect(setSessionPinned).toHaveBeenCalledWith('chat-1', false)
+    expect(setActiveSession).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each(['Enter', ' '])('keeps keyboard %s activation on the persistent unpin button', (key) => {
+    const setSessionPinned = vi.fn(async () => true)
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ sessions: [{ ...makeSession(), isPinned: true }], setSessionPinned, setActiveSession })
+    const { host, root } = renderSessionItem()
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="Unpin Chat 1"]')!
+    button.focus()
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+    act(() => button.dispatchEvent(event))
+    expect(event.defaultPrevented).toBe(false)
+    // jsdom does not synthesize the click that native buttons receive from Enter/Space.
+    act(() => button.click())
+    expect(setSessionPinned).toHaveBeenCalledWith('chat-1', false)
+    expect(setActiveSession).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()
   })
