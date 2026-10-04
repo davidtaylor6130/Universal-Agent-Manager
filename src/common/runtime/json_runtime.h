@@ -58,6 +58,8 @@ namespace uam::json
 
 std::optional<JsonValue> ParseJson(std::string_view text);
 std::string SerializeJson(const JsonValue& value);
+/// <summary>Checks the exact escaped output size before allocating; throws length_error when the limit is exceeded.</summary>
+std::string SerializeJson(const JsonValue& value, std::size_t max_bytes);
 std::string JsonStringOrEmpty(const JsonValue* value);
 std::string ExtractGeminiContentText(const JsonValue* value);
 double JsonNumberOrDefault(const JsonValue* value, double fallback);

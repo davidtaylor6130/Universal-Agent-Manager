@@ -364,7 +364,17 @@ namespace
 		if (!uam::paths::CreateDirectoriesNoThrow(staging_root)) return false;
 		for (const ChatSession& chat : deleted_chats)
 		{
-			if (!ChatRepository::SaveChat(staging_root, chat)) return false;
+			// Hydrate only the current rollback snapshot, then release its transcript.
+			if (chat.messages_loaded)
+			{
+				if (!ChatRepository::SaveChat(staging_root, chat)) return false;
+			}
+			else
+			{
+				ChatSession snapshot = chat;
+				if (!ChatRepository::HydrateChatMessages(app.data_root, snapshot) ||
+				    !ChatRepository::SaveChat(staging_root, snapshot)) return false;
+			}
 		}
 		if (!folder_ids.empty() && !ChatFolderStore::Save(staging_root, app.folders)) return false;
 
@@ -385,7 +395,7 @@ namespace
 
 	std::vector<ChatSession> DeletedChatSnapshots(const std::filesystem::path& data_root, const DeletionIntent& intent, const std::vector<ChatSession>& current_chats)
 	{
-		std::vector<ChatSession> staged = ChatRepository::LoadLocalChats(DeletionStagingRoot(data_root));
+		std::vector<ChatSession> staged = ChatRepository::LoadLocalChatSummaries(DeletionStagingRoot(data_root));
 		std::unordered_map<std::string, const ChatSession*> snapshot_by_id;
 		for (const ChatSession& chat : current_chats) snapshot_by_id.emplace(chat.id, &chat);
 		for (const ChatSession& chat : staged) snapshot_by_id[chat.id] = &chat;
@@ -1586,11 +1596,6 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 
 bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
-	if (!HydrateDeletedChatsForRollback(task.snapshot.data_root, task.snapshot.chats, task.deleted_ids))
-	{
-		task.snapshot.status_line = "Failed to prepare workspace history for safe deletion.";
-		return false;
-	}
 	if (!BeginDeletionTransaction(task.snapshot, task.snapshot.chats, task.folder_ids))
 	{
 		task.snapshot.status_line = "Failed to create a durable workspace deletion transaction.";

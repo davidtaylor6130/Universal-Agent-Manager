@@ -2,6 +2,7 @@
 #include "test_harness.h"
 #include "common/platform/file_explorer_application.h"
 #include "common/config/custom_icon.h"
+#include "common/config/companion_network.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "app/persistence_coordinator.h"
@@ -30,6 +31,73 @@
 #endif
 
 using namespace uam_test;
+
+UAM_TEST(CompanionLanRepairPreservesCredentialsAndRejectsCustomOrUnavailableAddresses)
+{
+	nlohmann::json config = {{"origin", "https://192.168.0.94:58950"}, {"token_file", "unchanged-token"}};
+	nlohmann::json proxy = {
+	    {"apps", {{"http", {{"listen", {"127.0.0.1:58950", "192.168.0.94:58950"}},
+	                       {"host", {"192.168.0.94"}}, {"upstream", "127.0.0.1:58949"}}},
+	              {"tls", {{"subjects", {"192.168.0.94"}}}}}},
+	    {"storage", {{"root", "certificate-storage"}}}};
+	const nlohmann::json original_config = config;
+	const nlohmann::json original_proxy = proxy;
+	for (const std::string& address : {"192.168.0.99", "8.8.8.8", "10.invalid", "172.32.1.1"})
+	{
+		UAM_ASSERT(!uam::companion::RepairLanAddress(config, proxy, address, {"192.168.0.61", "8.8.8.8", "10.invalid", "172.32.1.1"}));
+		UAM_ASSERT(config == original_config);
+		UAM_ASSERT(proxy == original_proxy);
+	}
+	nlohmann::json custom = original_config;
+	custom["origin"] = "https://uam.example.com:58950";
+	UAM_ASSERT(!uam::companion::RepairLanAddress(custom, proxy, "192.168.0.61", {"192.168.0.61"}));
+	UAM_ASSERT(uam::companion::RepairLanAddress(config, proxy, "192.168.0.61", {"192.168.0.61"}));
+	UAM_ASSERT_EQ(config["origin"].get<std::string>(), std::string("https://192.168.0.61:58950"));
+	UAM_ASSERT(config["token_file"] == original_config["token_file"]);
+	UAM_ASSERT(proxy["storage"] == original_proxy["storage"]);
+	UAM_ASSERT_EQ(proxy["apps"]["http"]["listen"][1].get<std::string>(), std::string("192.168.0.61:58950"));
+	UAM_ASSERT_EQ(proxy["apps"]["http"]["listen"][0].get<std::string>(), std::string("127.0.0.1:58950"));
+	UAM_ASSERT_EQ(proxy["apps"]["http"]["upstream"].get<std::string>(), std::string("127.0.0.1:58949"));
+	UAM_ASSERT_EQ(proxy["apps"]["tls"]["subjects"][0].get<std::string>(), std::string("192.168.0.61"));
+}
+
+UAM_TEST(BoundedJsonSerializationCountsEscapingAndFinalNewline)
+{
+	JsonValue root = uam::json::Object();
+	uam::json::SetString(root, "escaped\"key", std::string("\0\n\t\\\"", 5));
+	JsonValue items = uam::json::Array();
+	uam::json::PushValue(items, uam::json::Number(1.25));
+	uam::json::PushValue(items, uam::json::Bool(true));
+	uam::json::PushValue(items, JsonValue{});
+	uam::json::SetValue(root, "items", std::move(items));
+	const std::string expected = SerializeJson(root);
+	UAM_ASSERT_EQ(SerializeJson(root, expected.size()), expected);
+	for (const std::size_t limit : {std::size_t{0}, expected.size() - 1})
+	{
+		bool rejected = false;
+		try { (void)SerializeJson(root, limit); }
+		catch (const std::length_error&) { rejected = true; }
+		UAM_ASSERT(rejected);
+	}
+}
+
+UAM_TEST(OversizedChatSavePreservesExistingTranscript)
+{
+	TempDir temp("oversized-chat-save");
+	const fs::path& root = temp.root;
+	ChatSession chat;
+	chat.id = "oversized-chat";
+	chat.messages.push_back(Message{MessageRole::User, "Original transcript"});
+	UAM_ASSERT(ChatRepository::SaveChat(root, chat));
+	// Control bytes expand sixfold in JSON. Exercise the real save ceiling
+	// without allocating a 256 MiB serialized document.
+	chat.messages[0].content.assign(45U * 1024U * 1024U, '\0');
+	UAM_ASSERT(!ChatRepository::SaveChat(root, chat));
+	UAM_ASSERT(!ChatRepository::PrepareChatSave(root, chat));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages[0].content, std::string("Original transcript"));
+}
 
 UAM_TEST(AcpSteerKeepsExistingToolsInTheirOriginalMessage)
 {
@@ -16609,6 +16677,45 @@ UAM_TEST(WorkspaceDeletionBackgroundPhasesPreserveLiveChangesAndRecoverBeforeCom
 	UAM_ASSERT_EQ(ChatFolderStore::Load(temp.root).size(), static_cast<std::size_t>(1));
 }
 
+UAM_TEST(WorkspaceDeletionStagesUnloadedTranscriptsWithoutRetainingTheirBodies)
+{
+	TempDir temp("uam-delete-unloaded-batch");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.folders = {{"delete-a", "A", temp.root.string(), false}, {"delete-b", "B", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	for (int index = 0; index < 2; ++index)
+	{
+		ChatSession chat;
+		chat.id = "unloaded-" + std::to_string(index);
+		chat.folder_id = index == 0 ? "delete-a" : "delete-b";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.messages.push_back({MessageRole::User, std::string(4U * 1024U * 1024U, 'x')});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+		UAM_ASSERT(summary.has_value());
+		summary->title = "Latest local metadata";
+		app.chats.push_back(std::move(*summary));
+	}
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete-a", "delete-b"}, task));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	for (const ChatSession& chat : task.snapshot.chats)
+	{
+		UAM_ASSERT(!chat.messages_loaded);
+		UAM_ASSERT(chat.messages.empty());
+		const std::optional<ChatSession> staged = ChatRepository::LoadLocalChat(temp.root / ".deletion-transaction", chat.id, true);
+		UAM_ASSERT(staged.has_value());
+		UAM_ASSERT_EQ(staged->title, std::string("Latest local metadata"));
+		UAM_ASSERT_EQ(staged->messages.front().content.size(), std::size_t{4U * 1024U * 1024U});
+	}
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+}
+
 UAM_TEST(WorkspaceDeletionLargeBatchStagesAndCleansOutsideTheUiPhases)
 {
 	TempDir temp("uam-workspace-background-large");
@@ -17850,6 +17957,101 @@ UAM_TEST(CopilotEphemeralDiscoveryPopulatesFirstChatCatalog)
 		if (catalog.value("providerId", "") == ephemeral.provider_id && !catalog["availableModels"].empty()) visible = true;
 	UAM_ASSERT(visible);
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, ephemeral.id)));
+}
+
+UAM_TEST(CodexHistoryDiscoveryDefersBodiesAndBoundsChangedSources)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-bounded-discovery");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path sessions = temp.root / "codex" / "sessions";
+	fs::create_directories(workspace);
+	fs::create_directories(sessions);
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const std::string content(512 * 1024, 'x');
+	for (int index = 0; index < 32; ++index)
+	{
+		const std::string id = "11111111-1111-4111-8111-" + std::to_string(100000000000LL + index);
+		const std::string text = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}}}}.dump() + "\n" +
+		    nlohmann::json{{"type", "response_item"}, {"timestamp", "2026-01-01T00:00:01Z"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", content}}})}}}}.dump() + "\n";
+		UAM_ASSERT(uam::io::WriteTextFile(sessions / ("rollout-" + id + ".jsonl"), text));
+	}
+	const fs::path oversized = sessions / "oversized.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(oversized, "{}\n"));
+	fs::resize_file(oversized, 64ULL * 1024ULL * 1024ULL + 1);
+	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+	ChatHistorySyncService::LocalHistoryDiscovery discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	UAM_ASSERT(!discovery.result.success);
+	UAM_ASSERT(discovery.chats.empty());
+	UAM_ASSERT_EQ(discovery.codex_rollouts.size(), static_cast<std::size_t>(32));
+	for (const auto& source : discovery.codex_rollouts)
+	{
+		UAM_ASSERT(source.first.messages.empty());
+		UAM_ASSERT(!source.first.messages_loaded);
+	}
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.folders.push_back(folder);
+	app.worktree_operation_chat_ids.insert("deletion-in-progress");
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(app, folder, discovery).imported_count, 0);
+	UAM_ASSERT(!discovery.preparation.valid());
+	UAM_ASSERT_EQ(discovery.codex_rollouts.size(), std::size_t{32});
+	app.worktree_operation_chat_ids.clear();
+	const auto drain = [&](ChatHistorySyncService::LocalHistoryDiscovery& pending, bool expect_success)
+	{
+		int imported = 0;
+		bool failed = false;
+		while (pending.Pending())
+		{
+			const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(app, folder, pending);
+			failed = failed || !result.success;
+			imported += result.imported_count;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT_EQ(!failed, expect_success);
+		return imported;
+	};
+	UAM_ASSERT_EQ(drain(discovery, true), 32);
+	for (ChatSession& chat : app.chats)
+	{
+		UAM_ASSERT(chat.messages.empty());
+		UAM_ASSERT(!chat.messages_loaded);
+		UAM_ASSERT_EQ(chat.persisted_message_count, static_cast<std::size_t>(1));
+	}
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, content);
+	const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id));
+	ChatHistorySyncService::LocalHistoryDiscovery changed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+	for (const auto& source : changed.codex_rollouts) fs::resize_file(source.second, 64ULL * 1024ULL * 1024ULL + 1);
+	UAM_ASSERT_EQ(drain(changed, false), 0);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id)), saved);
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, content);
+	UAM_ASSERT_EQ(fs::file_size(oversized), 64ULL * 1024ULL * 1024ULL + 1);
+	ChatSession limit_chat;
+	limit_chat.native_session_id = "11111111-1111-4111-8111-999999999999";
+	limit_chat.provider_id = uam::provider_ids::kCodexCli;
+	limit_chat.workspace_directory = workspace.string();
+	const fs::path limit_file = sessions / ("rollout-" + limit_chat.native_session_id + ".jsonl");
+	const std::string metadata = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", limit_chat.native_session_id}, {"cwd", workspace.string()}}}}.dump() + "\n";
+	const std::string message = nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "bounded"}}})}}}}.dump() + "\n";
+	std::string transcript = metadata;
+	for (int index = 0; index < 10000; ++index) transcript += message;
+	UAM_ASSERT(uam::io::WriteTextFile(limit_file, transcript));
+	const std::optional<ChatSession> complete = ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat);
+	UAM_ASSERT(complete.has_value());
+	UAM_ASSERT_EQ(complete->messages.size(), static_cast<std::size_t>(10000));
+	UAM_ASSERT(uam::io::WriteTextFile(limit_file, transcript + message));
+	std::string limit_error;
+	UAM_ASSERT(!ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat, &limit_error));
+	UAM_ASSERT(!limit_error.empty());
+	ChatHistorySyncService::LocalHistoryDiscovery canceled;
+	canceled.codex_rollouts.emplace_back(ChatSession{}, oversized);
+	canceled.CancelPending();
+	UAM_ASSERT(!canceled.Pending());
+#endif
 }
 
 UAM_TEST(LocalHistoryImportBatchesLargeHistoriesAndRetainsRetryIdentity)

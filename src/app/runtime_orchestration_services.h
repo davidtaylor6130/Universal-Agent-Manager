@@ -87,6 +87,9 @@ class ChatHistorySyncService
 		std::optional<ChatSession> expected_live;
 		std::string expected_fingerprint;
 		std::shared_ptr<PreparedChatSave> files;
+		std::filesystem::path codex_rollout;
+		std::string error;
+		bool retain_messages = false;
 		bool skipped = false;
 	};
 	struct PreparedHistoryBatch
@@ -99,11 +102,12 @@ class ChatHistorySyncService
 	struct LocalHistoryDiscovery
 	{
 		std::vector<ChatSession> chats;
+		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
-		bool Pending() const { return !chats.empty() || preparation.valid() || publication_sync.valid(); }
+		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
 		void CancelPending();
 	};
 	/// Read provider transcripts without accessing live app state or writing local history.

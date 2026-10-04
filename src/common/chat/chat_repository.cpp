@@ -13,6 +13,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/runtime/json_runtime.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/parse_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -24,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -33,6 +35,8 @@ namespace
 	namespace fs = std::filesystem;
 	namespace attachment_fields = uam::message_attachment_json;
 	namespace attachment_persisted_fields = uam::message_attachment_json::persisted;
+	// Refuse oversized saves before allocating the output or changing existing files.
+	constexpr std::size_t kMaxChatJsonBytes = 256U * 1024U * 1024U;
 
 	constexpr std::string_view kLegacyProviderIdKey = "provider_id";
 	constexpr std::string_view kLegacyNativeSessionIdKey = "native_session_id";
@@ -1565,6 +1569,7 @@ namespace
 } // namespace
 
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint)
+try
 {
 	static std::mutex save_mutex;
 	std::unique_lock<std::mutex> lock(save_mutex, std::defer_lock);
@@ -1862,10 +1867,10 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		uam::json::SetBool(root, "validationMessagesLoaded", chat.messages_loaded);
 		uam::json::SetNumber(root, "validationPersistedCount", static_cast<double>(chat.persisted_message_count));
 		uam::json::SetString(root, "validationPersistedDigest", chat.persisted_messages_digest);
-		*fingerprint = SerializeJson(root);
+		*fingerprint = SerializeJson(root, kMaxChatJsonBytes);
 		return true;
 	}
-	const std::string json = SerializeJson(root);
+	const std::string json = SerializeJson(root, kMaxChatJsonBytes);
 	const auto matches_file = [](const fs::path& path, const std::string& content)
 	{
 		std::error_code error;
@@ -1881,7 +1886,7 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	                     persisted_messages_digest.empty() ? SummaryDigest(chat, persisted_message_count) : persisted_messages_digest);
 	uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(json.size()));
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
-	const std::string summary_json = SerializeJson(root);
+	const std::string summary_json = SerializeJson(root, kMaxChatJsonBytes);
 	if (prepared != nullptr)
 	{
 		if (!uam::paths::CreateDirectoriesNoThrow(summary_path.parent_path())) return false;
@@ -1908,6 +1913,12 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 		(void)uam::io::WriteTextFile(summary_path, summary_json);
 	}
 	return true;
+}
+
+catch (const std::length_error& error)
+{
+	uam::diagnostics::Write(std::string("Chat save rejected: ") + error.what());
+	return false;
 }
 
 PreparedChatSave::~PreparedChatSave()
