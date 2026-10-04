@@ -351,6 +351,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
+    setChatSettled: async (id: string, settled: boolean) => {
+      const response = await sendToCEF({ action: 'setChatSettled', payload: { chatId: id, settled } })
+      return response.ok
+    },
+
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
       if (get().activeSessionId === id) return
@@ -815,7 +820,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data ?? null
     },
 
-    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
+    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
@@ -823,6 +828,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             chatId: id,
             vcsType,
             includeLineStats: options.includeLineStats ?? true,
+            contextOnly: options.contextOnly ?? false,
             requestId: options.requestId,
             comparisonRef: options.comparisonRef,
           },

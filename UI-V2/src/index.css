@@ -19,7 +19,7 @@
   --border:          rgba(16, 24, 40, 0.09);
   --border-bright:   rgba(16, 24, 40, 0.15);
   --text:            #141820;
-  --text-2:          #596273;
+  --text-2:          #485163;
   --text-3:          #687285;
   --accent:          #ff6a00;
   --accent-dim:      rgba(255, 106, 0, 0.10);
@@ -72,8 +72,8 @@
   --border:          rgba(255, 255, 255, 0.08);
   --border-bright:   rgba(255, 255, 255, 0.14);
   --text:            #eef1f7;
-  --text-2:          #9aa4b6;
-  --text-3:          #8993a5;
+  --text-2:          #aeb7c7;
+  --text-3:          #838da0;
   --accent:          #ff6a00;
   --accent-dim:      rgba(255, 106, 0, 0.13);
   --accent-glow:     rgba(255, 106, 0, 0.22);
@@ -111,8 +111,8 @@
   --border:          rgba(226, 232, 240, 0.08);
   --border-bright:   rgba(226, 232, 240, 0.14);
   --text:            #f2f4f7;
-  --text-2:          #a6adbb;
-  --text-3:          #9099a8;
+  --text-2:          #b8bfcb;
+  --text-3:          #8a93a3;
   --accent:          #cf7538;
   --accent-dim:      rgba(207, 117, 56, 0.09);
   --accent-glow:     rgba(207, 117, 56, 0.15);
@@ -201,6 +201,14 @@
   --dur-fast: 120ms;
   --dur-base: 180ms;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+  /* iOS-like curves: a soft deceleration and a gentle overshoot for things that "land". */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --dur-enter: 240ms;
+  --dur-exit: 170ms;
+
+  /* One focus treatment everywhere: page-colored gap + accent ring. */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 60%, transparent);
 
 }
 
@@ -233,7 +241,7 @@
 
 .uam-goal-banner__details:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 
 .uam-chat-pane__header {
@@ -258,9 +266,92 @@
   margin-inline: auto;
 }
 
+/* Composer hovers over the transcript; messages scroll behind it. Only the
+   cards take clicks so text beside the composer stays selectable. */
+.uam-composer-dock {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 10;
+  pointer-events: none;
+  /* Own layer: scrolling the transcript underneath only recomposites, never repaints the composer. */
+  will-change: transform;
+}
+
+.uam-composer-dock > :not(form),
+.uam-composer-dock .uam-composer-region {
+  pointer-events: auto;
+}
+
 @keyframes uam-side-panel-in {
-  from { opacity: 0; transform: translateX(8px); }
+  from { opacity: 0; transform: translateX(12px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Motion system ───────────────────────────────────────────
+   Nothing should teleport: overlays fade + lift in and sink out,
+   menus grow from their anchor, disclosures open by height.
+   Keyframes never use fill-mode "both"/"forwards" on transforms, which
+   would leave a containing block that traps position:fixed children. */
+.uam-overlay--dim {
+  background: rgba(6, 8, 12, 0.46);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.uam-overlay:not([data-state="closed"]) { animation: uam-backdrop-in var(--dur-enter) var(--ease-out-soft); }
+.uam-overlay[data-state="closed"] { animation: uam-backdrop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+.uam-overlay:not([data-state="closed"]) > * { animation: uam-dialog-in var(--dur-enter) var(--ease-spring) backwards; }
+.uam-overlay[data-state="closed"] > * { animation: uam-dialog-out var(--dur-exit) var(--ease) forwards; }
+
+@keyframes uam-backdrop-in { from { opacity: 0; } }
+@keyframes uam-backdrop-out { to { opacity: 0; } }
+@keyframes uam-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.965); }
+}
+@keyframes uam-dialog-out {
+  to { opacity: 0; transform: translateY(6px) scale(0.98); }
+}
+
+/* Menus grow out of whatever opened them. */
+[data-viewport-menu] { animation: uam-menu-in 180ms var(--ease-out-soft) backwards; }
+[data-viewport-menu][data-menu-side="bottom"] { transform-origin: top center; }
+[data-viewport-menu][data-menu-side="top"] { transform-origin: bottom center; }
+[data-viewport-menu][data-menu-side="point"] { transform-origin: top left; }
+[data-viewport-menu][data-menu-side="left"] { transform-origin: center right; }
+[data-viewport-menu][data-menu-side="right"] { transform-origin: center left; }
+@keyframes uam-menu-in {
+  from { opacity: 0; transform: scale(0.95) translateY(-2px); }
+}
+
+/* Native <details> open and close smoothly instead of snapping. */
+:root { interpolate-size: allow-keywords; }
+details::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition: block-size var(--dur-base) var(--ease-out-soft), content-visibility var(--dur-base) allow-discrete;
+}
+details[open]::details-content { block-size: auto; }
+
+/* Inline forms and freshly inserted rows settle into place. */
+.uam-reveal { animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards; }
+@keyframes uam-reveal-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+/* Press feedback: controls give slightly under the finger/cursor. */
+.uam-btn:active:not(:disabled),
+.uam-iconbtn:active:not(:disabled),
+.uam-layout-button:active:not(:disabled),
+.uam-segment-button:active:not(:disabled),
+.uam-composer-action:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.uam-iconbtn,
+.uam-layout-button,
+.uam-segment-button {
+  transition-property: background, color, border-color, box-shadow, transform;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -411,11 +502,13 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-layout-button:focus-visible,
 .uam-segment-button:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 
+.uam-layout-button:disabled,
 .uam-segment-button:disabled {
   cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .uam-composer-action {
@@ -430,7 +523,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-composer-action:hover:not(:disabled) { filter: brightness(0.96); }
 .uam-composer-action:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 .uam-composer-action:disabled { cursor: not-allowed; }
 
@@ -474,7 +567,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 
   .uam-chat-pane[data-multi-pane="true"] .uam-chat-pane__workspace {
-    font-size: 9px;
+    font-size: 10px;
     line-height: 1.1;
   }
 
@@ -520,7 +613,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
     font-size: 10px;
   }
 
-  .uam-chat-pane[data-multi-pane="true"] .uam-message-frame__actions .uam-icon-button {
+  .uam-chat-pane[data-multi-pane="true"] .uam-message-frame__actions .uam-iconbtn {
     width: 26px;
     height: 26px;
   }
@@ -652,7 +745,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .uam-attachment-remove:hover { background: var(--error-dim); color: var(--error) !important; }
-.uam-attachment-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.uam-attachment-remove:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 .uam-choice-button {
   cursor: pointer;
@@ -664,17 +757,9 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-choice-button:hover:not(:disabled) { background: var(--surface-up) !important; }
 .uam-choice-button:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 .uam-choice-button:disabled { cursor: not-allowed; opacity: 0.55; }
-
-.uam-icon-button,
-.uam-primary-button,
-.uam-secondary-button {
-  font-family: inherit;
-  border: 0;
-  cursor: pointer;
-}
 
 .uam-tool-timeline {
   position: relative;
@@ -716,7 +801,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 
 .uam-tool-row__kind {
   color: var(--text-3);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -754,7 +839,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-thinking-row__kind {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -898,7 +983,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 .uam-tool-modal__output-label {
   margin: 0 0 5px 1px;
   color: var(--text-3);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1001,77 +1086,6 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   }
 }
 
-.uam-icon-button {
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-2);
-}
-
-.uam-icon-button:hover {
-  background: var(--surface-up);
-  color: var(--text);
-}
-
-.uam-icon-button--active {
-  background: var(--accent-dim);
-  color: var(--accent);
-}
-
-.uam-icon-button--accent {
-  color: var(--accent);
-}
-
-.uam-primary-button {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 13px;
-  border-radius: 7px;
-  background: var(--accent);
-  color: #ffffff;
-  font-weight: 600;
-  font-size: 12px;
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 24%, transparent);
-}
-
-.uam-primary-button:hover {
-  filter: brightness(0.96);
-}
-
-.uam-secondary-button {
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 12px;
-  border-radius: 7px;
-  border: 1px solid var(--border);
-  background: var(--surface-up);
-  color: var(--text-2);
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.uam-secondary-button:hover {
-  border-color: var(--border-bright);
-  color: var(--text);
-}
-
-.uam-secondary-button:disabled,
-.uam-primary-button:disabled,
-.uam-icon-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 pre,
 code,
 .prose-msg,
@@ -1089,24 +1103,29 @@ summary,
 
 /* ── Scrollbar ────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: var(--scroll-track);
 }
+/* 8px hit area, 4px visible thumb that thickens on hover. */
 ::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
-  border-radius: 3px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-bright);
+  background-clip: padding-box;
+  border-width: 1px;
 }
 
 /* ── Focus Ring ───────────────────────────────────────────── */
 :focus-visible {
-  outline: 1.5px solid var(--accent);
-  outline-offset: 1px;
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
 }
 
 /* ── Selection ────────────────────────────────────────────── */
@@ -1462,15 +1481,15 @@ summary,
               box-shadow var(--dur-fast) var(--ease),
               transform var(--dur-fast) var(--ease);
 }
+.uam-btn__label { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .uam-btn--sm { height: 26px; padding: 0 var(--sp-2); font-size: var(--fs-sm); }
 .uam-btn--md { height: 32px; padding: 0 var(--sp-3); font-size: var(--fs-base); }
 .uam-btn--lg { height: 38px; padding: 0 var(--sp-4); font-size: var(--fs-md); }
 .uam-btn--block { width: 100%; }
 .uam-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
-.uam-btn:active:not(:disabled) { transform: translateY(0.5px); }
 .uam-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .uam-btn--primary {
@@ -1504,6 +1523,16 @@ summary,
 .uam-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
 .uam-btn__spinner { opacity: 0.85; }
+.uam-btn__kbd {
+  margin-left: 2px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-normal);
+  opacity: 0.85;
+}
 
 /* ── IconButton ─────────────────────────────────────────────── */
 .uam-iconbtn {
@@ -1524,12 +1553,12 @@ summary,
 .uam-iconbtn:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-iconbtn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 .uam-iconbtn:disabled { opacity: 0.45; cursor: not-allowed; }
 .uam-iconbtn.is-active { background: var(--accent-dim); color: var(--accent); }
 .uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
-.uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+.uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: color-mix(in srgb, var(--error) 72%, var(--text)); }
 
 .uam-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; color: var(--text-2); }
 .uam-switch input { position: absolute; opacity: 0; pointer-events: none; }
@@ -1537,7 +1566,7 @@ summary,
 .uam-switch__thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-3); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform 160ms var(--ease), background 160ms var(--ease); }
 .uam-switch input:checked + .uam-switch__track { background: var(--accent); border-color: var(--accent); }
 .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: white; }
-.uam-switch input:focus-visible + .uam-switch__track { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-glow); }
+.uam-switch input:focus-visible + .uam-switch__track { box-shadow: var(--focus-ring); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
 .uam-computer-use-switch .uam-switch__track { background: color-mix(in srgb, var(--surface-high) 72%, transparent); backdrop-filter: blur(12px); }
@@ -1568,7 +1597,7 @@ summary,
 }
 .uam-menu-select__trigger:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--focus-ring);
 }
 .uam-menu-select__trigger:disabled { opacity: 0.55; cursor: not-allowed; }
 .uam-menu-select__chevron { flex: none; transition: transform var(--dur-fast) var(--ease); }
@@ -1671,7 +1700,557 @@ summary,
 .uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }
-.uam-search-field:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
+.uam-search-field:focus-within { outline:none; box-shadow:var(--focus-ring); }
 .uam-search-field input:focus-visible { outline:none; }
 .uam-iconbtn[aria-label^="Close"]:hover,
 .uam-iconbtn[aria-label^="Dismiss"]:hover { color:var(--red); background:color-mix(in srgb,var(--red) 12%,transparent); }
+
+/* ── ConfirmDialog ──────────────────────────────────────────── */
+.uam-confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  box-shadow: var(--elev-3);
+}
+.uam-confirm-dialog__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--error-dim);
+  color: var(--error);
+}
+.uam-menu-kbd {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* Primary buttons read as "not ready yet" when disabled, not as a dim orange. */
+.uam-btn--primary:disabled {
+  background: var(--surface-high);
+  border-color: var(--border);
+  color: var(--text-3);
+  opacity: 1;
+}
+
+.uam-spin { display: inline-block; }
+
+/* ── Commit panel ───────────────────────────────────────────── */
+.uam-commit-panel { background: var(--surface); }
+.uam-commit-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.uam-commit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.uam-commit-chip--branch { color: var(--text); font-family: var(--font-mono); font-size: 10.5px; }
+.uam-commit-chip--branch svg { color: var(--accent); flex-shrink: 0; }
+.uam-commit-notice {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.uam-commit-notice[data-tone="error"] { background: var(--error-dim); border-color: transparent; color: var(--error); }
+.uam-commit-list-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.uam-commit-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-bright);
+  background: transparent;
+  color: #fff;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-spring);
+}
+button.uam-commit-check { cursor: pointer; }
+.uam-commit-check[aria-checked="true"],
+.uam-commit-check[aria-checked="mixed"],
+.uam-commit-file[data-selected="true"] .uam-commit-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.uam-commit-check svg { animation: uam-check-pop 180ms var(--ease-spring); }
+@keyframes uam-check-pop { from { transform: scale(0.4); opacity: 0; } }
+.uam-commit-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 14px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-commit-file:hover { background: var(--sidebar-item-hover); }
+.uam-commit-file[data-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--text); }
+.uam-commit-file:focus-visible { outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+.uam-commit-file__name { color: var(--text); }
+.uam-commit-file__dir { margin-left: 6px; color: var(--text-3); font-size: 11px; }
+.uam-commit-file__stat { display: inline-flex; gap: 6px; flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; }
+.uam-commit-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-2);
+  background: var(--surface-high);
+}
+.uam-commit-status[data-code="M"] { color: color-mix(in srgb, var(--warning) 72%, var(--text)); background: var(--warning-dim); }
+.uam-commit-status[data-code="A"],
+.uam-commit-status[data-code="?"] { color: color-mix(in srgb, var(--success) 72%, var(--text)); background: var(--success-dim); }
+.uam-commit-status[data-code="D"] { color: color-mix(in srgb, var(--error) 72%, var(--text)); background: var(--error-dim); }
+.uam-commit-status[data-code="R"],
+.uam-commit-status[data-code="C"] { color: color-mix(in srgb, var(--blue) 72%, var(--text)); background: var(--blue-dim); }
+.uam-commit-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.uam-commit-empty svg { color: var(--success); opacity: 0.8; }
+.uam-commit-composer {
+  display: grid;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-up) 40%, var(--surface));
+}
+.uam-commit-message {
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.uam-commit-message:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: 0 0 0 3px var(--accent-dim); }
+
+/* ── Side panels grow and shrink instead of popping ─────────────
+   The panel animates its own width while its content keeps the final
+   width (clipped), so the chat area eases over rather than jumping. */
+.uam-shell-panel { animation: uam-panel-grow var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-shell-panel[data-state="closed"] { animation: uam-panel-shrink var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+.uam-shell-panel > * { width: 100%; min-width: var(--panel-w, auto); }
+.uam-shell-panel--right { align-items: flex-end; }
+@keyframes uam-panel-grow { from { width: 0; flex-basis: 0; opacity: 0; } }
+@keyframes uam-panel-shrink { to { width: 0; flex-basis: 0; opacity: 0; } }
+
+/* ── Inline forms (new workspace / collection) and text fields ── */
+.uam-field {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-bright);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.uam-field::placeholder { color: var(--text-3); }
+.uam-field:focus,
+.uam-field:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-bright));
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.uam-inline-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-bright);
+  background: var(--surface);
+  box-shadow: var(--elev-2);
+}
+.uam-inline-form__title { font-size: var(--fs-base); font-weight: var(--fw-semibold); color: var(--text); }
+.uam-inline-form__label { display: block; margin-bottom: 4px; font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-2); }
+.uam-inline-form__actions { display: flex; align-items: center; gap: 6px; }
+.uam-inline-form__hint { margin-right: auto; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-add-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.uam-add-link:hover { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-add-link:active { transform: scale(0.96); }
+.uam-add-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Icons passed as button children sit inline with the text. */
+.uam-btn__label { display: inline-flex; align-items: center; gap: 6px; }
+
+.uam-switch__text { display: grid; gap: 1px; }
+.uam-switch__label { color: var(--text); }
+.uam-switch__description { font-size: var(--fs-xs); color: var(--text-3); line-height: 1.4; }
+
+/* ── Settings groups ────────────────────────────────────────── */
+.uam-settings-group { margin-bottom: 24px; }
+.uam-settings-group__title {
+  margin: 0 0 8px 2px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.uam-settings-group__body {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.uam-settings-page { animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-settings-page--narrow > * { max-width: 800px; }
+
+/* ── Memory library ─────────────────────────────────────────── */
+.uam-memory-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-base) var(--ease-out-soft);
+  animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards;
+}
+.uam-memory-card:hover { border-color: var(--border-bright); background: color-mix(in srgb, var(--surface-up) 50%, var(--surface)); }
+.uam-memory-card__actions { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }
+.uam-memory-card:hover .uam-memory-card__actions,
+.uam-memory-card:focus-within .uam-memory-card__actions { opacity: 1; }
+.uam-memory-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.uam-memory-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+}
+.uam-memory-chip[data-confidence="high"] { background: var(--success-dim); color: color-mix(in srgb, var(--success) 72%, var(--text)); }
+.uam-memory-chip[data-confidence="medium"] { background: var(--warning-dim); color: color-mix(in srgb, var(--warning) 72%, var(--text)); }
+
+.uam-field--select { height: 34px; padding-right: 6px; cursor: pointer; }
+
+/* ── Skills store ───────────────────────────────────────────── */
+.uam-skill-folder__summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.uam-skill-folder__summary::-webkit-details-marker { display: none; }
+.uam-skill-folder__summary:hover { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-skill-folder__chevron { flex-shrink: 0; color: var(--text-3); transition: transform var(--dur-base) var(--ease-out-soft); }
+.uam-skill-folder[open] > .uam-skill-folder__summary .uam-skill-folder__chevron { transform: rotate(90deg); }
+.uam-skill-folder__count { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.uam-skill-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 1px 0;
+  padding: 6px 4px 6px 10px;
+  border-radius: var(--r-md);
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-skill-row:hover { background: var(--sidebar-item-hover); }
+.uam-skill-row[data-selected="true"] { background: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
+.uam-skill-row__command {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--accent);
+  opacity: 0.85;
+}
+.uam-skill-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.uam-field--area { height: auto; padding: 8px 9px; line-height: 1.5; resize: vertical; }
+.uam-form-dialog { background: var(--surface); border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
+.uam-form-dialog label { color: var(--text-2); font-weight: var(--fw-medium); }
+
+/* ── Composer "+" menu ──────────────────────────────────────── */
+.uam-composer-plus svg { transition: transform var(--dur-base) var(--ease-spring); }
+.uam-composer-plus[aria-expanded="true"] svg { transform: rotate(45deg); }
+.uam-cmenu {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  padding: 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--elev-3);
+}
+.uam-cmenu__section {
+  padding: 6px 8px 4px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.uam-cmenu__divider { height: 1px; margin: 6px 4px; background: var(--border); }
+.uam-cmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-cmenu__item:hover:not(:disabled),
+.uam-cmenu__item:focus-visible { background: var(--sidebar-item-hover); outline: none; }
+.uam-cmenu__item:disabled { opacity: 0.5; cursor: not-allowed; }
+.uam-cmenu__icon { flex: 0 0 18px; display: inline-flex; justify-content: center; color: var(--text-2); }
+.uam-cmenu__text { display: grid; min-width: 0; flex: 1; font-size: var(--fs-base); line-height: 1.3; }
+.uam-cmenu__text small { font-size: var(--fs-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-cmenu__trail { color: var(--text-3); }
+.uam-cmenu__pill {
+  flex-shrink: 0;
+  min-width: 30px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-high);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  text-align: center;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.uam-cmenu__pill[data-on="true"] { background: var(--accent); color: #fff; }
+.uam-cmenu__setting {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.uam-cmenu__setting--nested { padding-left: 36px; grid-template-columns: 90px minmax(0, 1fr); }
+.uam-cmenu__setting--nested > span { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-cmenu__setting .uam-menu-select__trigger { height: 28px; font-size: var(--fs-sm); }
+
+/* A settings row: text on the left, control on the right. */
+.uam-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.uam-settings-row + .uam-settings-row { padding-top: 14px; border-top: 1px solid var(--border); }
+
+/* ── Settings navigation ────────────────────────────────────── */
+.uam-settings-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px 7px 12px;
+  border-radius: var(--r-md);
+  text-align: left;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.uam-settings-nav-item svg { color: var(--text-3); transition: color var(--dur-fast) var(--ease); }
+.uam-settings-nav-item:hover { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-settings-nav-item[data-active="true"] { background: var(--accent-dim); color: var(--text); }
+.uam-settings-nav-item[data-active="true"] svg { color: var(--accent); }
+.uam-settings-nav-item[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: uam-reveal-in var(--dur-base) var(--ease-out-soft) backwards;
+}
+.uam-settings-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.uam-memory-worker-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+.uam-memory-worker-row + .uam-memory-worker-row { padding-top: 12px; border-top: 1px solid var(--border); }
+
+.uam-settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  border: 1px dashed var(--border-bright);
+  border-radius: var(--r-lg);
+  color: var(--text-3);
+  text-align: center;
+}
+.uam-settings-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Expandable rows in Settings (providers, editor groups). */
+.uam-disclosure-row { border-bottom: 1px solid var(--border); }
+.uam-disclosure-row:last-child { border-bottom: 0; }
+.uam-disclosure-row__header { display: flex; align-items: center; gap: 8px; min-height: 42px; }
+.uam-disclosure-row__toggle svg { transition: transform var(--dur-base) var(--ease-out-soft); }
+.uam-disclosure-row[data-expanded="true"] .uam-disclosure-row__toggle svg { transform: rotate(90deg); }
+.uam-disclosure-row__panel { padding: 4px 0 14px 34px; }
+
+/* Workspace / worktree tab docked on top of the composer */
+.uam-composer-workspace-tab {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  margin-left: 0;
+  padding: 2px 4px 2px 10px;
+  border-radius: 8px 8px 0 0;
+  background: var(--surface);
+  color: var(--text-2);
+}
+/* Tab and composer read as one piece: square the corner the tab sits on. */
+.uam-composer-workspace-tab + .uam-composer-surface { border-top-left-radius: 0 !important; }
+.uam-composer-workspace-tab__badge {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  background: var(--success-dim);
+  color: var(--green);
+}
+
+@keyframes uam-copy-pop { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); } }
+.uam-copy-pop { animation: uam-copy-pop 260ms var(--ease) both; }
+@media (prefers-reduced-motion: reduce) { .uam-copy-pop { animation: none; } }
+.uam-composer-side-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--accent-dim);
+  color: var(--text-2);
+}
+
+/* UAM checkbox: one style for every native checkbox instead of the OS default. */
+input[type="checkbox"] {
+  appearance: none;
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+input[type="checkbox"]::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  background: var(--bg);
+  clip-path: polygon(14% 44%, 0 59%, 40% 100%, 100% 22%, 86% 8%, 39% 70%);
+  transform: scale(0);
+  transition: transform var(--dur-fast) var(--ease);
+}
+input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+input[type="checkbox"]:checked::after { transform: scale(1); }
+input[type="checkbox"]:hover:not(:disabled) { border-color: var(--accent); }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }

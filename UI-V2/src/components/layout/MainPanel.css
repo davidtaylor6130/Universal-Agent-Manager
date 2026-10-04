@@ -1,6 +1,73 @@
 .uam-pane-glide {
-  animation: uam-pane-glide-in 200ms ease-out both;
+  animation: uam-pane-glide-in 200ms ease-out backwards;
 }
+
+/* Runtime pill: calm by default, only turns into a red "Stop" on hover. */
+.uam-runtime-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards;
+}
+.uam-runtime-pill[data-phase="live"] .uam-runtime-stop-icon,
+.uam-runtime-pill[data-phase="idle"] .uam-runtime-stop-icon { color: var(--success); }
+.uam-runtime-pill[data-phase="ending"] { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+.uam-runtime-pill[data-phase="busy"] { cursor: default; opacity: 0.75; }
+.uam-runtime-pill[data-phase="busy"] .uam-runtime-stop-icon { color: var(--blue); }
+.uam-runtime-pill:hover:not(:disabled),
+.uam-runtime-pill:focus-visible {
+  background: var(--error-dim);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--error);
+}
+.uam-runtime-pill:hover:not(:disabled) .uam-runtime-stop-icon,
+.uam-runtime-pill:focus-visible .uam-runtime-stop-icon { color: var(--error); }
+.uam-runtime-pill:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-runtime-pill:active:not(:disabled) { transform: scale(0.96); }
+
+/* Label cross-fades between the state ("2:48") and "Stop" on hover. */
+.uam-runtime-pill__label { display: inline-grid; }
+.uam-runtime-pill__label > * {
+  grid-area: 1 / 1;
+  text-align: center;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.uam-runtime-pill__stop { opacity: 0; transform: translateY(3px); font-weight: var(--fw-semibold); }
+.uam-runtime-pill:hover:not(:disabled) .uam-runtime-pill__state,
+.uam-runtime-pill:focus-visible .uam-runtime-pill__state { opacity: 0; transform: translateY(-3px); }
+.uam-runtime-pill:hover:not(:disabled) .uam-runtime-pill__stop,
+.uam-runtime-pill:focus-visible .uam-runtime-pill__stop { opacity: 1; transform: translateY(0); }
+
+.uam-runtime-stop-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.uam-runtime-stop-timer {
+  position: absolute;
+  inset: -2px;
+  width: 20px;
+  height: 20px;
+  transform: rotate(-90deg);
+}
+.uam-runtime-stop-timer circle { transition: stroke-dasharray 1s linear; }
+.uam-runtime-stop-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
+.uam-runtime-stop-icon:has(.uam-runtime-stop-timer) > svg.lucide { transform: scale(0.7); }
 
 @keyframes uam-pane-glide-in {
   from {

@@ -125,7 +125,7 @@ function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onC
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1100] flex items-center justify-center p-4"
+      className="uam-overlay fixed inset-0 z-[1100] flex items-center justify-center p-4"
       style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
       onMouseDown={() => { if (!saving) onClose() }}
     >
@@ -156,7 +156,7 @@ function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onC
         {error && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</div>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" disabled={saving} onClick={onClose} className="rounded-md px-3 py-1.5 text-sm" style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)' }}>Cancel</button>
-          <button type="submit" disabled={saving} className="rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: 'var(--accent)', border: 0, color: 'var(--accent-contrast)' }}>{saving ? 'Saving…' : 'Save'}</button>
+          <button type="submit" disabled={saving} className="rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: 'var(--accent)', border: 0, color: 'var(--bg)' }}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </form>
     </div>,

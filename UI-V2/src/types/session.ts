@@ -112,6 +112,8 @@ export interface Session {
   interactionAt?: Date
   lastOpenedAt?: Date
   attentionRevision?: string
+  /** ISO time the user marked this chat done in Active chats. */
+  settledAt?: string
 }
 
 export interface Folder {

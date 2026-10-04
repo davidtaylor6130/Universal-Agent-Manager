@@ -4,7 +4,7 @@ import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, me
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
-import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type VcsChangedFile, type VcsCommitStatus, type VcsType, type UamAgentCycleShortcut, type UamAgentSummary } from '../../store/useAppStore'
+import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type VcsChangedFile, type VcsCommitStatus, type UamAgentCycleShortcut, type UamAgentSummary } from '../../store/useAppStore'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
@@ -14,10 +14,11 @@ import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT
 import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal } from '../chat/ToolCallViews'
+import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -190,127 +191,6 @@ function setRepositoryReview(sessionId: string, review: VcsCommitStatus | null) 
   })
 }
 
-function RepositoryDiffDialog({
-  chatId,
-  file,
-  vcsType,
-  comparisonRef,
-  getDiff,
-  onClose,
-}: {
-  chatId: string
-  file: VcsChangedFile
-  vcsType: VcsType
-  comparisonRef?: string
-  getDiff: (chatId: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
-  onClose: () => void
-}) {
-  const dialogRef = useRef<HTMLElement>(null)
-  const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    return () => previouslyFocused?.focus?.()
-  }, [])
-
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onClose])
-
-  useEffect(() => {
-    if (file.binary) return
-    let cancelled = false
-    setDiff(null)
-    setError('')
-    void (comparisonRef ? getDiff(chatId, file.path, vcsType, comparisonRef) : getDiff(chatId, file.path, vcsType))
-      .then((nextDiff) => {
-        if (!cancelled) setDiff(nextDiff)
-      })
-      .catch((reason) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : 'Failed to load this diff.')
-      })
-    return () => { cancelled = true }
-  }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
-
-  const lines = diff?.split('\n') ?? []
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={onClose}
-    >
-      <section
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Changes in ${file.path}`}
-        tabIndex={-1}
-        className="flex h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg sm:h-auto sm:max-h-[88vh]"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="flex min-h-12 items-center gap-3 px-3 sm:px-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <FileText size={17} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold" title={file.path} style={{ color: 'var(--text)' }}>{file.path}</div>
-            <div className="flex gap-3 font-mono text-[11px]">
-              <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-              {!file.binary && <><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></>}
-            </div>
-          </div>
-          {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
-          <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
-        </header>
-        <div className="min-h-0 flex-1 overflow-auto" style={{ background: 'var(--bg)' }}>
-          {file.binary ? (
-            <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>Binary changes cannot be previewed.</div>
-          ) : error ? (
-            <div role="alert" className="m-4 rounded-md p-3 text-sm" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>
-          ) : diff === null ? (
-            <div role="status" className="p-6 text-center text-sm" style={{ color: 'var(--text-3)' }}>Loading file changes…</div>
-          ) : diff.length === 0 ? (
-            <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>No textual diff is available for this file.</div>
-          ) : (
-            <pre className="min-w-full w-max py-2 font-mono text-[11px] leading-5 sm:text-xs" aria-label={`Unified diff for ${file.path}`}>
-              {lines.map((line, index) => {
-                const added = line.startsWith('+') && !line.startsWith('+++')
-                const removed = line.startsWith('-') && !line.startsWith('---')
-                const hunk = line.startsWith('@@')
-                const header = line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')
-                return (
-                  <span
-                    key={`${index}-${line}`}
-                    className="block min-h-5 whitespace-pre px-3 sm:px-4"
-                    style={{
-                      color: added ? 'var(--green)' : removed ? 'var(--red)' : hunk ? 'var(--accent)' : header ? 'var(--text-2)' : 'var(--text)',
-                      background: added
-                        ? 'color-mix(in srgb, var(--green) 9%, transparent)'
-                        : removed
-                          ? 'color-mix(in srgb, var(--red) 9%, transparent)'
-                          : hunk
-                            ? 'var(--accent-dim)'
-                            : 'transparent',
-                    }}
-                  >
-                    {line || ' '}
-                  </span>
-                )
-              })}
-            </pre>
-          )}
-        </div>
-      </section>
-    </div>,
-    document.body
-  )
-}
 
 function ProviderHandoffDialog({
   sourceName,
@@ -354,7 +234,7 @@ function ProviderHandoffDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
+      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-4"
       style={{ background: 'rgba(0, 0, 0, 0.52)', backdropFilter: 'blur(3px)' }}
       onMouseDown={() => { if (!switching) onCancel() }}
     >
@@ -387,14 +267,14 @@ function ProviderHandoffDialog({
             </ul>
           </div>
           <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--amber)' }}>Reset for {targetName}</div>
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
             <ul className="list-disc space-y-1 pl-5">
               <li>Native session and provider-specific live tool state</li>
               <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
             </ul>
           </div>
           <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
-          {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--amber)', color: 'var(--amber)' }}>{blockedReason}</div>}
+          {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
           {error && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>}
         </div>
         <footer className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
@@ -736,6 +616,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Composer floats over the transcript; its measured height pads the transcript end.
+  const composerDockRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const scrollFrameRef = useRef<number | null>(null)
   const showScrollToBottomRef = useRef(false)
@@ -895,6 +777,23 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     acp?.lastError,
     repositoryChanges?.changedFiles.length,
   ])
+
+  useEffect(() => {
+    const dock = composerDockRef.current
+    if (!dock || typeof ResizeObserver === 'undefined') return
+    // Written as a CSS variable, not React state, so composer growth never re-renders the transcript.
+    let lastHeight = -1
+    const observer = new ResizeObserver(() => {
+      const height = dock.offsetHeight
+      if (height === lastHeight) return
+      lastHeight = height
+      dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+      const el = scrollRef.current
+      if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight
+    })
+    observer.observe(dock)
+    return () => observer.disconnect()
+  }, [])
 
   const handleScroll = useCallback(() => {
 	if (scrollFrameRef.current !== null) return
@@ -1207,6 +1106,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	  .map(({ status, error, ...attachment }) => attachment)
 
     if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
+    if ((prompt === '/side-return' || prompt === '/side-dismiss') && session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(prompt === '/side-return' ? 'return' : 'dismiss'); return }
     // Handle /goal command
     if (prompt.startsWith('/goal ')) {
       const submittedSessionId = session.id
@@ -1341,15 +1241,28 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
   const sideBusyRef = useRef(false)
-  const navigateSide = async (dismiss = false) => {
+  const [sideBusy, setSideBusy] = useState(false)
+  // A main chat keeps at most one live side chat; reopening it is a local switch,
+  // so it never re-copies the parent context through the backend.
+  const liveSideChatId = useAppStore((s) => session.temporaryParentChatId ? undefined : s.sessions.find((candidate) => candidate.temporaryParentChatId === session.id && !candidate.sideCleanupRequested)?.id)
+  const showChatInPane = (id: string) => {
+    if (useAppStore.getState().activeSessionId !== session.id) return
+    assignChatToPane(id, readChatGridLayout().activeLeafId)
+    useAppStore.getState().setActiveSession(id)
+  }
+  const navigateSide = async (action: 'open' | 'return' | 'dismiss' = 'open') => {
+    if (action === 'open' && liveSideChatId) { showChatInPane(liveSideChatId); return }
+    if (action === 'return') { if (session.temporaryParentChatId) showChatInPane(session.temporaryParentChatId); return }
     if (sideBusyRef.current) return
     sideBusyRef.current = true
+    setSideBusy(true)
     try {
+      const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
       if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
-      if (id && useAppStore.getState().activeSessionId === session.id) { assignChatToPane(id, readChatGridLayout().activeLeafId); useAppStore.getState().setActiveSession(id) }
-    } finally { sideBusyRef.current = false }
+      if (id) showChatInPane(id)
+    } finally { sideBusyRef.current = false; setSideBusy(false) }
   }
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
@@ -1954,7 +1867,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
 
       const commands: SlashCommand[] = [
-        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
+        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: liveSideChatId ? 'Resume the open side chat' : 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
+        ...(session.temporaryParentChatId && !isCompanionContext() ? [
+          { id: 'side-return', label: '/side-return', hint: 'Back to the main chat; this side chat stays open', icon: <CornerUpLeft size={15} />, run: () => void navigateSide('return') },
+          { id: 'side-dismiss', label: '/side-dismiss', hint: 'Close and discard this side chat', icon: <X size={15} />, run: () => void navigateSide('dismiss') },
+        ] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
         ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
         ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
@@ -1989,7 +1906,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return commands
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session.id, session.temporaryParentChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
+    [session.id, session.temporaryParentChatId, liveSideChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
@@ -2271,10 +2188,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           onClose={() => setSelectedRepositoryFile(null)}
         />
       )}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="relative flex-1 flex flex-col min-w-0">
         <div className="relative flex-1 min-h-0">
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-            <div className="uam-chat-content w-full py-4">
+            <div className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
                 <Notice
                   key={`chat-history:${session.id}:${chatHistoryError}`}
@@ -2577,7 +2494,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             </div>
           </div>
           {showScrollToBottom && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+            <div className="pointer-events-none absolute inset-x-0 z-10 flex justify-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 12px)' }}>
               <IconButton
                 icon={<ArrowDown size={16} />}
                 label="Scroll to bottom"
@@ -2590,6 +2507,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           )}
         </div>
 
+        <div ref={composerDockRef} className="uam-composer-dock">
         {displayedGoal && (
           <GoalBanner
             goal={displayedGoal}
@@ -2611,9 +2529,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         <form
           onSubmit={submit}
           className="flex-shrink-0"
-          style={{
-            background: 'color-mix(in srgb, var(--bg) 94%, var(--surface))',
-          }}
         >
             <div className="uam-chat-content uam-composer-region flex flex-col p-3">
             {confirmYolo && (
@@ -2794,6 +2709,96 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     />
                   </div>
                 ))}
+              </div>
+            )}
+            {!isCompanionContext() && (session.temporaryParentChatId || liveSideChatId) && (
+              <div className="uam-composer-side-strip" role="group" aria-label="Side chat">
+                <CornerUpRight size={12} aria-hidden style={{ color: 'var(--accent)' }} />
+                {session.temporaryParentChatId ? <>
+                  <span className="min-w-0 flex-1 truncate">Side chat · main chat context is reference only</span>
+                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={13} aria-hidden />} title="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')}>Return</Button>
+                  <Button size="sm" variant="ghost" leadingIcon={<X size={13} aria-hidden />} title="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')}>Dismiss</Button>
+                </> : <>
+                  <span className="min-w-0 flex-1 truncate">A side chat is open for this chat</span>
+                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                </>}
+              </div>
+            )}
+            {!isCompanionContext() && (
+              <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
+                <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
+                  <ComposerIcon name="folder" size={14} />
+                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
+                  {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
+                </span>
+                <div ref={workspaceMenuRef} className="relative shrink-0">
+                  <IconButton
+                    size="sm"
+                    disabled={!workspaceDirectory}
+                    onClick={() => {
+                      setWorkspaceMenuOpen((open) => !open)
+                      setModelOpen(false)
+                    }}
+                    icon={<ComposerIcon name="folder" size={14} />}
+                    label={workspaceDirectory ? 'Workspace actions' : 'Workspace not selected'}
+                    aria-haspopup="menu"
+                    aria-expanded={workspaceMenuOpen}
+                    aria-controls={workspaceMenuOpen ? workspaceMenuId : undefined}
+                    tooltipSide="bottom"
+                  />
+                  {workspaceMenuOpen && workspaceDirectory && (
+                    <ViewportMenu
+                      anchorRef={workspaceMenuRef}
+                      side="top"
+                      id={workspaceMenuId}
+                      role="menu"
+                      aria-label="Workspace actions"
+                      onRequestClose={() => setWorkspaceMenuOpen(false)}
+                      className="animate-fade-in"
+                      style={{ width: 240, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
+                    >
+                      <div className="truncate px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }} title={workspaceDirectory}>
+                        {workspaceDirectory}
+                      </div>
+                      {isGitWorktree && (
+                        <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
+                          Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
+                        </div>
+                      )}
+                      {remoteComputerUseDisabled ? (
+                        <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
+                          This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
+                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <label className="mt-2 flex items-center gap-2">
+                            <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
+                              void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
+                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
+                              })
+                            }} />
+                            Recover this chat after host restart
+                          </label>
+                          {(!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled') && <div className="mt-1">Enable runner startup in SSH host settings first.</div>}
+                          {session.remoteRecoveryState === 'blocked' && <div className="mt-1" role="status">Recovery blocked. Review the last turn before retrying.</div>}
+                        </div>
+                      ) : (
+                        <>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
+                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                          {!isGitWorktree ? (
+                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                          ) : (
+                            <>
+                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
+                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </ViewportMenu>
+                  )}
+                </div>
               </div>
             )}
             <div
@@ -2986,7 +2991,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onKeyDown={onComposerKeyDown}
               onPaste={onComposerPaste}
               rows={1}
-              placeholder={`Message ${currentProviderName}`}
+              placeholder={`Message ${currentProviderName} · / for commands`}
               disabled={submitting || dictationActive || session.importedReadOnly}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
@@ -3092,78 +3097,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onCancelTurn={() => void cancelAcpTurn(session.id)}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
-              workspaceControl={!isCompanionContext() && (
-                <>
-                <div ref={workspaceMenuRef} className="relative shrink-0">
-                  <IconButton
-                    size="sm"
-                    disabled={!workspaceDirectory}
-                    onClick={() => {
-                      setWorkspaceMenuOpen((open) => !open)
-                      setModelOpen(false)
-                    }}
-                    icon={<ComposerIcon name="folder" size={14} />}
-                    label={workspaceDirectory ? 'Workspace actions' : 'Workspace not selected'}
-                    aria-haspopup="menu"
-                    aria-expanded={workspaceMenuOpen}
-                    aria-controls={workspaceMenuOpen ? workspaceMenuId : undefined}
-                    tooltipSide="bottom"
-                  />
-                  {workspaceMenuOpen && workspaceDirectory && (
-                    <ViewportMenu
-                      anchorRef={workspaceMenuRef}
-                      side="top"
-                      id={workspaceMenuId}
-                      role="menu"
-                      aria-label="Workspace actions"
-                      onRequestClose={() => setWorkspaceMenuOpen(false)}
-                      className="animate-fade-in"
-                      style={{ width: 240, border: '1px solid var(--border-bright)', borderRadius: 8, background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 6 }}
-                    >
-                      <div className="truncate px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }} title={workspaceDirectory}>
-                        {workspaceDirectory}
-                      </div>
-                      {isGitWorktree && (
-                        <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
-                          Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
-                        </div>
-                      )}
-                      {remoteComputerUseDisabled ? (
-                        <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
-                          This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
-                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
-                          <label className="mt-2 flex items-center gap-2">
-                            <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
-                              void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
-                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
-                              })
-                            }} />
-                            Recover this chat after host restart
-                          </label>
-                          {(!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled') && <div className="mt-1">Enable runner startup in SSH host settings first.</div>}
-                          {session.remoteRecoveryState === 'blocked' && <div className="mt-1" role="status">Recovery blocked. Review the last turn before retrying.</div>}
-                        </div>
-                      ) : (
-                        <>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
-                          <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                          {!isGitWorktree ? (
-                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
-                          ) : (
-                            <>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
-                            </>
-                          )}
-                        </>
-                      )}
-                    </ViewportMenu>
-                  )}
-                </div>
-                </>
-              )}
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
@@ -3176,6 +3109,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             </div>
           </div>
         </form>
+        </div>
       </div>
     </div>
   )

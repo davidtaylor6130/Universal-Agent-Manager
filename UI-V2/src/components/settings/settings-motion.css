@@ -1,5 +1,5 @@
 .uam-settings-motion {
-  animation: uam-settings-enter 150ms ease-out both;
+  animation: uam-settings-enter 150ms ease-out backwards;
 }
 
 @keyframes uam-settings-enter {

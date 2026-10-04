@@ -140,6 +140,7 @@ export interface AppState {
 
   // Session actions
   acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
+  setChatSettled: (id: string, settled: boolean) => Promise<boolean>
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
@@ -204,7 +205,7 @@ export interface AppState {
   portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
   previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
-  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>

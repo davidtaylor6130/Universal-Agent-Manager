@@ -113,6 +113,7 @@ export interface CppChat {
   interactionAt?: string
   lastOpenedAt?: string
   attentionRevision?: string
+  settledAt?: string
   messageCount?: number
   messagesDigest?: string
   messages?: CppMessage[]

@@ -881,6 +881,19 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 	    });
 }
 
+void UamQueryHandler::HandleSetChatSettled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", "");
+	const bool settled = payload.contains("settled") && payload["settled"].is_boolean() ? payload["settled"].get<bool>() : true;
+	if (!ChatDomainService().SetChatSettled(m_app, chat_id, settled))
+	{
+		cb->Failure(500, "Could not save chat done state.");
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	std::string id;

@@ -1107,7 +1107,7 @@ describe('ChatView', () => {
     vi.useRealTimers()
   })
 
-  it('combines provider and model controls and folds workspace actions into the composer', () => {
+  it('combines provider and model controls and docks the folder icon, name and workspace actions above the composer', () => {
     useAppStore.setState((state) => ({
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -1126,7 +1126,12 @@ describe('ChatView', () => {
 
     expect(host.querySelector('.uam-workspace-row')).toBeNull()
     expect(host.querySelector('button[aria-label="Select provider"]')).toBeNull()
-    expect(host.querySelector('.uam-composer-toolbar button[aria-label="Workspace actions"]')).toBeTruthy()
+    const workspaceTab = host.querySelector('.uam-composer-workspace-tab')
+    expect(workspaceTab?.textContent).toContain('project')
+    expect(workspaceTab?.querySelector('svg')).toBeTruthy()
+    expect(workspaceTab?.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
+    expect(workspaceTab?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    expect(host.querySelector('.uam-composer-toolbar button[aria-label="Workspace actions"]')).toBeNull()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
     expect(selector).toBeTruthy()
@@ -1580,7 +1585,7 @@ describe('ChatView', () => {
     expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
 
     openComposerOptions(host)
-    expect(document.body.textContent).toContain('Goal token budget')
+    expect(document.body.textContent).toContain('Token budget')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
@@ -1996,7 +2001,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
     expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('Default')
-    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex')
+    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands')
 
     act(() => {
       root.unmount()

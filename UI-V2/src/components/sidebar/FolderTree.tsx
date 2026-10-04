@@ -7,7 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
-import { Button, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -105,6 +105,39 @@ function reorderCollectionFolderReferences(
   )
 }
 
+function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, action }: {
+  label: string
+  listId: string
+  expanded: boolean
+  onToggle: () => void
+  trailing?: ReactNode
+  /** Rendered beside the toggle, not inside it, so it can be its own button. */
+  action?: ReactNode
+}) {
+  const toggle = (
+    <button
+      type="button"
+      aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+      aria-expanded={expanded}
+      aria-controls={listId}
+      className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+      style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
+      onClick={onToggle}
+    >
+      <ChevronRight
+        size={13}
+        style={{ flexShrink: 0, transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        aria-hidden
+      />
+      <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
+        {label}
+      </span>
+      {trailing}
+    </button>
+  )
+  return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
+}
+
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
@@ -163,6 +196,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [deletingFolder, setDeletingFolder] = useState(false)
   const [activeCollapsed, setActiveCollapsed] = useState(false)
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
+  const [allChatsCollapsed, setAllChatsCollapsed] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(() => new Set())
   const folderSelectionAnchorRef = useRef<HTMLElement | null>(null)
@@ -289,6 +323,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   ].filter(Boolean).join(' · ')
   const activeExpanded = searchModel.isSearching || !activeCollapsed
   const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
+  const allChatsExpanded = searchModel.isSearching || !allChatsCollapsed
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -573,6 +608,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     }
   }
 
+  const cancelAddFolder = () => {
+    setNewFolderName('')
+    setNewFolderDirectory('')
+    setNewFolderExecutionHostId('local')
+    setAddingFolder(false)
+  }
+
   const chooseNewFolderDirectory = async () => {
     const host = executionHosts.find((candidate) => candidate.id === newFolderExecutionHostId)
     if (host?.transport === 'ssh') {
@@ -582,6 +624,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     const selectedPath = await browseFolderDirectory(newFolderDirectory)
     if (selectedPath) {
       setNewFolderDirectory(selectedPath)
+      setNewFolderName((name) => name.trim() ? name : selectedPath.split(/[\\/]/).filter(Boolean).pop() ?? '')
     }
   }
 
@@ -633,6 +676,28 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
     const target = rows[sourceIndex + direction]
     if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+  }
+
+  const renderActivitySessionItem = (id: string) => {
+    const activitySession = sessionsById.get(id)
+    const folder = folders.find((candidate) => candidate.id === activitySession?.folderId)
+    const hostId = folder?.executionHostId || 'local'
+    const host = executionHosts.find((candidate) => candidate.id === hostId)
+    return (
+      <SessionItem
+        key={id}
+        sessionId={id}
+        session={activitySession}
+        familySessionIds={familySessionIdsByRootId.get(id)}
+        selected={selectedSessionIds.has(id)}
+        activityLayout
+        activityFolderName={folder?.name}
+        activityFolderIcon={folder?.customIcon}
+        activityHostLabel={`Runs on ${host?.label || hostId}`}
+        activityHostRemote={hostId !== 'local'}
+        onSessionClick={handleSessionClick}
+      />
+    )
   }
 
   const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => {
@@ -732,41 +797,41 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
       {searchModel.activeSessionIds.length > 0 && (
         <div className="mb-0.5" data-testid="active-chats">
-          <button
-            type="button"
-            aria-label={`${activeExpanded ? 'Collapse' : 'Expand'} Active chats`}
-            aria-expanded={activeExpanded}
-            aria-controls="active-chat-list"
-            className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
-            onClick={() => setActiveCollapsed((collapsed) => !collapsed)}
-          >
-            <ChevronRight
-              size={13}
-              style={{ flexShrink: 0, transform: activeExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
-              aria-hidden
-            />
-            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
-              Active chats
-            </span>
-            {activeStatusSummary && (
+          <SidebarSectionHeader
+            label="Active chats"
+            listId="active-chat-list"
+            expanded={activeExpanded}
+            onToggle={() => setActiveCollapsed((collapsed) => !collapsed)}
+            action={!isCompanionContext() && (
+              <button
+                type="button"
+                aria-label="Mark all active chats done"
+                className="rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
+                style={{ background: 'var(--surface)', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
+                onClick={() => {
+                  const { setChatSettled } = useAppStore.getState()
+                  // Questions and approvals stay: they need an answer, not a dismissal.
+                  for (const id of searchModel.activeSessionIds) {
+                    if (!runtimeStatusBySessionId.get(id)?.startsWith('attention:')) void setChatSettled(id, true)
+                  }
+                }}
+              >
+                Clear all
+              </button>
+            )}
+            trailing={activeStatusSummary && (
               <span aria-label="Active chat status counts" className="ml-auto text-[10px]" title={activeStatusSummary}>
                 {activeStatusSummary}
               </span>
             )}
-          </button>
+          />
           <div
             id="active-chat-list"
             hidden={!activeExpanded}
             aria-hidden={!activeExpanded}
             {...(!activeExpanded ? { inert: '' } : {})}
           >
-            {searchModel.activeSessionIds.map((id) => {
-              const activeSession = sessionsById.get(id)
-              const project = folders.find((folder) => folder.id === activeSession?.folderId)?.name ?? 'Unsorted'
-              const workspace = activeSession?.workspaceDirectory?.trim().split(/[\\/]/).filter(Boolean).pop() || 'Local workspace'
-              return <SessionItem key={id} sessionId={id} session={activeSession} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} activityLayout activityContext={`${project} · ${workspace}`} onSessionClick={handleSessionClick} />
-            })}
+            {searchModel.activeSessionIds.map(renderActivitySessionItem)}
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
             <button
@@ -787,25 +852,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
       {searchModel.pinnedSessionIds.length > 0 && (
         <div className="mb-0.5" data-testid="pinned-chats">
-          <button
-            type="button"
-            aria-label={`${pinnedExpanded ? 'Collapse' : 'Expand'} Pinned chats`}
-            aria-expanded={pinnedExpanded}
-            aria-controls="pinned-chat-list"
-            className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
-            onClick={() => setPinnedCollapsed((collapsed) => !collapsed)}
-          >
-            <ChevronRight
-              size={13}
-              style={{ flexShrink: 0, transform: pinnedExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
-              aria-hidden
-            />
-            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10 }}>
-              Pinned chats
-            </span>
-            <span className="ml-auto text-[10px]">{searchModel.pinnedSessionIds.length}</span>
-          </button>
+          <SidebarSectionHeader
+            label="Pinned chats"
+            listId="pinned-chat-list"
+            expanded={pinnedExpanded}
+            onToggle={() => setPinnedCollapsed((collapsed) => !collapsed)}
+            trailing={<span className="ml-auto text-[10px]">{searchModel.pinnedSessionIds.length}</span>}
+          />
           <div
             id="pinned-chat-list"
             hidden={!pinnedExpanded}
@@ -819,16 +872,23 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0) && (
-        <div className="px-2.5 py-0" style={{ color: 'var(--text-3)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="text-xs font-medium tracking-wider uppercase" style={{ letterSpacing: '0.08em', fontSize: 10, whiteSpace: 'nowrap' }}>
-              All chats
-            </span>
-            <span style={{ height: 1, flex: 1, background: 'var(--border)' }} />
-          </div>
+      {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0 || searchModel.unfolderedSessionIds.length > 0) && (
+        <div data-testid="all-chats">
+          <SidebarSectionHeader
+            label="All chats"
+            listId="all-chat-list"
+            expanded={allChatsExpanded}
+            onToggle={() => setAllChatsCollapsed((collapsed) => !collapsed)}
+          />
         </div>
       )}
+
+      <div
+        id="all-chat-list"
+        hidden={!allChatsExpanded}
+        aria-hidden={!allChatsExpanded}
+        {...(!allChatsExpanded ? { inert: '' } : {})}
+      >
 
       {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
         <FolderCollection
@@ -939,6 +999,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
+      </div>
+
       {searchModel.isSearching && !searchModel.hasMatches && (
         <div className="mx-3 my-6 flex flex-col items-center gap-1 text-center animate-fade-in" style={{ color: 'var(--text-3)' }}>
           <SearchX size={22} strokeWidth={1.5} aria-hidden />
@@ -947,26 +1009,23 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {pendingBulkDeleteIds && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingBulkDeleteIds(null) }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${pendingBulkDeleteIds.length} selected chats`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete selected chats?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              {pendingBulkDeleteIds.length} chats will be permanently deleted. This cannot be undone.
-              {bulkDeleteFailed && <div className="mt-2" role="alert" style={{ color: 'var(--red)' }}>The chats could not be deleted. A chat may still be running.</div>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button size="sm" onClick={() => setPendingBulkDeleteIds(null)}>Cancel</Button>
-              <Button size="sm" variant="danger" onClick={() => {
-                void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
-                  if (deleted) clearBulkSelection()
-                  else setBulkDeleteFailed(true)
-                })
-              }}>Delete chats</Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={Boolean(pendingBulkDeleteIds)}
+        title="Delete selected chats?"
+        label={`Delete ${pendingBulkDeleteIds?.length ?? 0} selected chats`}
+        confirmLabel="Delete chats"
+        error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
+        onCancel={() => setPendingBulkDeleteIds(null)}
+        onConfirm={() => {
+          if (!pendingBulkDeleteIds) return
+          void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
+            if (deleted) clearBulkSelection()
+            else setBulkDeleteFailed(true)
+          })
+        }}
+      >
+        {pendingBulkDeleteIds?.length ?? 0} chats will be permanently deleted. This cannot be undone.
+      </ConfirmDialog>
 
       {recoveryDialogOpen && (
         <WorkspaceFolderRecoveryModal
@@ -994,16 +1053,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           </Notice>
         )}
         {addingFolder ? (
-          <div
-            className="rounded-md p-2 space-y-2"
-            style={{
-              background: 'var(--surface-up)',
-              border: '1px solid var(--border)',
-            }}
-          >
+          <div className="uam-inline-form uam-reveal" role="group" aria-label="New workspace">
+            <div className="uam-inline-form__title">New workspace</div>
             {executionHosts.length > 1 && (
               <div>
-                <label className="mb-1 block text-[11px] font-medium" style={{ color: 'var(--text-2)' }}>Runs on</label>
+                <label className="uam-inline-form__label">Runs on</label>
                 <MenuSelect
                   label="Workspace computer"
                   value={newFolderExecutionHostId}
@@ -1020,77 +1074,53 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 />
               </div>
             )}
-            <input
-              autoFocus
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitAddFolder()
-                if (e.key === 'Escape') {
-                  setNewFolderName('')
-                  setNewFolderDirectory('')
-                  setNewFolderExecutionHostId('local')
-                  setAddingFolder(false)
-                }
-              }}
-              placeholder="Folder name"
-              className="w-full rounded px-2 py-1 text-xs outline-none"
-              style={{
-                background: 'var(--surface)',
-                color: 'var(--text)',
-                border: '1px solid var(--border)',
-                fontFamily: 'inherit',
-              }}
-            />
-            <div className="flex items-center gap-2">
+            <div>
+              <label className="uam-inline-form__label" htmlFor="uam-new-workspace-directory">Folder</label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  id="uam-new-workspace-directory"
+                  autoFocus
+                  value={newFolderDirectory}
+                  onChange={(e) => setNewFolderDirectory(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitAddFolder()
+                    if (e.key === 'Escape') cancelAddFolder()
+                  }}
+                  placeholder={newFolderIsRemote ? 'Absolute directory on selected computer' : 'Workspace directory'}
+                  className="uam-field min-w-0 flex-1"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={newFolderIsRemote && (!newFolderExecutionHost || !isRemoteDirectoryBrowseAvailable(newFolderExecutionHost))}
+                  onClick={() => { void chooseNewFolderDirectory() }}
+                >
+                  Browse
+                </Button>
+              </div>
+            </div>
+            <div>
+              <label className="uam-inline-form__label" htmlFor="uam-new-workspace-name">Name</label>
               <input
-                value={newFolderDirectory}
-                onChange={(e) => setNewFolderDirectory(e.target.value)}
+                id="uam-new-workspace-name"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') commitAddFolder()
-                  if (e.key === 'Escape') {
-                    setNewFolderName('')
-                    setNewFolderDirectory('')
-                    setNewFolderExecutionHostId('local')
-                    setAddingFolder(false)
-                  }
+                  if (e.key === 'Escape') cancelAddFolder()
                 }}
-                placeholder={newFolderIsRemote ? 'Absolute directory on selected computer' : 'Workspace directory'}
-                className="w-full flex-1 rounded px-2 py-1 text-xs outline-none"
-                style={{
-                  background: 'var(--surface)',
-                  color: 'var(--text)',
-                  border: '1px solid var(--border)',
-                  fontFamily: 'inherit',
-                }}
+                placeholder="Folder name"
+                className="uam-field w-full"
               />
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={newFolderIsRemote && (!newFolderExecutionHost || !isRemoteDirectoryBrowseAvailable(newFolderExecutionHost))}
-                onClick={() => { void chooseNewFolderDirectory() }}
-              >
-                Browse
-              </Button>
             </div>
             {newFolderIsRemote && (
               <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
                 The path is interpreted only by {newFolderExecutionHost?.label}. Browse is read-only and requires a ready helper.
               </p>
             )}
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setNewFolderName('')
-                  setNewFolderDirectory('')
-                  setNewFolderExecutionHostId('local')
-                  setAddingFolder(false)
-                }}
-              >
-                Cancel
-              </Button>
+            <div className="uam-inline-form__actions">
+              <span className="uam-inline-form__hint">↵ create · esc cancel</span>
+              <Button variant="ghost" size="sm" onClick={cancelAddFolder}>Cancel</Button>
               <Button
                 variant="primary"
                 size="sm"
@@ -1102,7 +1132,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             </div>
           </div>
         ) : addingCollection ? (
-          <div className="flex items-center gap-1">
+          <div className="uam-inline-form uam-reveal" role="group" aria-label="New collection">
+            <div className="uam-inline-form__title">New collection</div>
             <input
               autoFocus
               aria-label="Collection name"
@@ -1113,41 +1144,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 if (event.key === 'Escape') { setNewCollectionName(''); setAddingCollection(false) }
               }}
               placeholder="Collection name"
-              className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
-              style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }}
+              className="uam-field w-full"
             />
-            <IconButton
-              icon={<Check size={14} />}
-              label="Create collection"
-              size="sm"
-              disabled={!newCollectionName.trim()}
-              onClick={commitAddCollection}
-              style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' }}
-            />
-            <IconButton
-              icon={<X size={14} />}
-              label="Cancel new collection"
-              variant="danger"
-              size="sm"
-              onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}
-              style={{ color: 'var(--error)' }}
-            />
+            <div className="uam-inline-form__actions">
+              <span className="uam-inline-form__hint">Groups workspaces together</span>
+              <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}>Cancel</Button>
+              <Button variant="primary" size="sm" aria-label="Create collection" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
+            </div>
           </div>
         ) : (
-          <div className="flex justify-center gap-4">
-            <button
-              onClick={() => { setActionError(''); setAddingFolder(true) }}
-              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
-              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
-            >
+          <div className="flex justify-center gap-1">
+            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
               <Plus size={14} aria-hidden />
               <span>New workspace</span>
             </button>
-            <button
-              onClick={() => { setActionError(''); setAddingCollection(true) }}
-              className="flex items-center gap-1.5 text-xs transition-colors duration-100"
-              style={{ color: 'var(--text-3)', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 0' }}
-            >
+            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
               <Plus size={14} aria-hidden />
               <span>New collection</span>
             </button>
@@ -1338,15 +1349,16 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
         </div>
       </div>
       {iconPicker.dialog}
-      {confirmingDelete && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget) setConfirmingDelete(false) }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${collection.name} collection`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete collection?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.</div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}><Button size="sm" onClick={() => setConfirmingDelete(false)}>Cancel</Button><Button size="sm" variant="danger" onClick={() => { setConfirmingDelete(false); void remove(collection.id) }}>Delete collection</Button></div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete collection?"
+        label={`Delete ${collection.name} collection`}
+        confirmLabel="Delete collection"
+        onCancel={() => setConfirmingDelete(false)}
+        onConfirm={() => { setConfirmingDelete(false); void remove(collection.id) }}
+      >
+        “{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.
+      </ConfirmDialog>
     </div>
   )
 }
@@ -1468,7 +1480,7 @@ function WorkspaceFolderRecoveryModal({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-fade-in"
+      className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.55)' }}
       onClick={(event) => { if (event.target === event.currentTarget && !applying) onCancel() }}
     >
@@ -1591,7 +1603,7 @@ function DeleteFolderModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !deleting) onCancel()

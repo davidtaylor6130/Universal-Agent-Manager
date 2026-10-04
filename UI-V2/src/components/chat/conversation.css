@@ -132,8 +132,11 @@
 
 .conversation-work__inline .conversation-work__reasoning .prose-msg { font-size: 12px; line-height: 1.55; color: var(--text-3); }
 
-.context-compaction { margin: 16px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.context-compaction > summary { padding: 8px; color: var(--text); text-align: center; font-size: 13px; cursor: pointer; }
-.context-compaction > summary:hover { background: var(--surface-up); }
+.context-compaction { margin: 16px 0; }
+.context-compaction > summary { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 6px; color: var(--text-3); font-size: 12px; cursor: pointer; list-style: none; }
+.context-compaction > summary::-webkit-details-marker { display: none; }
+.context-compaction > summary::before, .context-compaction > summary::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.context-compaction > summary:hover { color: var(--text-2); }
 .context-compaction > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.context-compaction > div { padding: 8px 0; }
+.context-compaction[open] > summary { color: var(--text-2); }
+.context-compaction > div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; color: var(--text-2); }

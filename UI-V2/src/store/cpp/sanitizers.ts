@@ -916,6 +916,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     interactionAt: isString(value.interactionAt) ? value.interactionAt : undefined,
     lastOpenedAt: isString(value.lastOpenedAt) ? value.lastOpenedAt : undefined,
     attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
+    settledAt: isString(value.settledAt) && value.settledAt ? value.settledAt : undefined,
     messageCount: finiteNumberOr(value.messageCount, 0),
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)

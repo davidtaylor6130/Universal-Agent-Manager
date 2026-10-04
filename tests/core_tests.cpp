@@ -8130,6 +8130,18 @@ UAM_TEST(ChatAttentionRequiresMatchingInteractionAndSurvivesRestart)
 	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT(uam::io::ReadTextFile(AppPaths::UamChatSummaryFilePath(app.data_root, chat.id)).find(first) != std::string::npos);
 	UAM_ASSERT_EQ(loaded->attention_revision, first);
+	UAM_ASSERT(domain.SetChatSettled(app, chat.id, true));
+	const std::string settled_at = app.chats.front().settled_at;
+	UAM_ASSERT(!settled_at.empty());
+	UAM_ASSERT(settled_at >= app.chats.front().interaction_at);
+	loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->settled_at, settled_at);
+	UAM_ASSERT_EQ(loaded->attention_revision, first);
+	UAM_ASSERT(domain.SetChatSettled(app, chat.id, false));
+	loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->settled_at.empty());
 	domain.MarkChatNeedsAttention(app, chat.id);
 	const std::string second = app.chats.front().attention_revision;
 	UAM_ASSERT(first != second);
@@ -8181,7 +8193,9 @@ UAM_TEST(MacOwnedProviderGroupIsCleanedBeforeExitedLeaderIsReaped)
 	while (!service.PollStdioProcessExited(owned) && std::chrono::steady_clock::now() < deadline)
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	UAM_ASSERT(owned.child_pid <= 0);
-	std::this_thread::sleep_for(std::chrono::milliseconds(600));
+	const auto unrelated_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!fs::exists(unrelated_marker) && std::chrono::steady_clock::now() < unrelated_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	service.StopStdioProcess(owned, true);
 	const bool unrelated_running = !service.PollStdioProcessExited(unrelated);
 	service.StopStdioProcess(unrelated, true);
@@ -20740,4 +20754,30 @@ UAM_TEST(TemporarySideTerminalCleanupKeepsUnrelatedParentOwned)
 	UAM_ASSERT(!runtime.PollCliTerminalProcessExited(parent));
 	uam::StopCliTerminal(parent, true, uam::CliTerminalStopMode::FastExit);
 	UAM_ASSERT(!parent.running);
+}
+
+UAM_TEST(VcsRepositoryContextReadsActualBranchWithoutChangedFileScan)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-vcs-context");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.workspace_directory = temp.root.string();
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " init -b context-one"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "untracked.txt", "untracked"));
+	const uam::VcsCommitStatus first = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false, {}, true);
+	UAM_ASSERT(first.available);
+	UAM_ASSERT_EQ(first.branch_or_revision, std::string("context-one"));
+	UAM_ASSERT(first.changed_files.empty());
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " symbolic-ref HEAD refs/heads/context-two"));
+	const uam::VcsCommitStatus second = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false, {}, true);
+	UAM_ASSERT_EQ(second.branch_or_revision, std::string("context-two"));
+	UAM_ASSERT(second.changed_files.empty());
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " -c user.name=UAM -c user.email=uam@example.invalid commit --allow-empty -m context"));
+	UAM_ASSERT(RunTestCommand("git -C " + ShellQuoteForTest(temp.root.string()) + " checkout --detach"));
+	const uam::VcsCommitStatus detached = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false, {}, true);
+	UAM_ASSERT(detached.available);
+	UAM_ASSERT(detached.branch_or_revision.empty());
+	UAM_ASSERT(detached.changed_files.empty());
 }

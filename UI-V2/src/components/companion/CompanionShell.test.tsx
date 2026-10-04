@@ -24,6 +24,7 @@ vi.mock('../sidebar/NewChatModal', () => ({ NewChatModal: ({ onCreated }: { onCr
 vi.mock('../ui', () => ({
   Button: ({ children, variant: _variant, size: _size, leadingIcon: _leadingIcon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; leadingIcon?: React.ReactNode }) => <button {...props}>{children}</button>,
   IconButton: ({ label, onClick }: { label: string; onClick: () => void }) => <button aria-label={label} onClick={onClick}>{label}</button>,
+  Presence: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <>{children}</> : null,
 }))
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true

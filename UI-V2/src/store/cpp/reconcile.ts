@@ -189,7 +189,8 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.updatedAt.getTime() === next.updatedAt.getTime() &&
     (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime() &&
     previous.attentionRevision === next.attentionRevision &&
-    previous.interactionAt?.getTime() === next.interactionAt?.getTime()
+    previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
+    previous.settledAt === next.settledAt
 }
 
 export function sessionFromCppChat(
@@ -255,6 +256,7 @@ export function sessionFromCppChat(
     interactionAt: chat.interactionAt ? new Date(chat.interactionAt) : previous?.interactionAt ?? updatedAt,
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
+    settledAt: chat.settledAt,
   }
 
   return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
@@ -491,6 +493,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
+    existing.idleShutdownAtMs === next.idleShutdownAtMs &&
+    existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.attentionKind === next.attentionKind &&
     existing.processingStartedAtMs === next.processingStartedAtMs &&

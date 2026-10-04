@@ -1211,11 +1211,12 @@ namespace
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
+		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.attention_revision = JsonStringOrEmpty(root.Find("attention_revision"));
+		chat.settled_at = JsonStringOrEmpty(root.Find("settled_at"));
 		chat.last_stop_reason = JsonStringOrEmpty(root.Find("last_stop_reason"));
 		chat.goal_command_revision = JsonStringOrEmpty(root.Find("goal_command_revision"));
 		chat.goal_pending_continuation_id = JsonStringOrEmpty(root.Find("goal_pending_continuation_id"));
-		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.pinned = JsonBoolOrDefault(root.Find(kChatPinnedField), false);
 		chat.linked_files = JsonStringArrayOrEmpty(root.Find(kChatLinkedFilesField));
 		chat.workspace_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceDirectoryField));
@@ -1701,11 +1702,12 @@ bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const 
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
+	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetString(root, "attention_revision", chat.attention_revision);
+	uam::json::SetString(root, "settled_at", chat.settled_at);
 	uam::json::SetString(root, "last_stop_reason", chat.last_stop_reason);
 	uam::json::SetString(root, "goal_command_revision", chat.goal_command_revision);
 	uam::json::SetString(root, "goal_pending_continuation_id", chat.goal_pending_continuation_id);
-	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetBool(root, kChatPinnedField, chat.pinned);
 	uam::json::SetValue(root, kChatLinkedFilesField, StringArrayToJson(chat.linked_files));
 	uam::json::SetString(root, kChatWorkspaceDirectoryField, chat.workspace_directory);
@@ -1958,8 +1960,9 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	}
 	uam::json::SetString(*summary, kChatLastOpenedAtField,
 	                     uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
-	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
 	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
+	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
+	uam::json::SetString(*summary, "settled_at", chat.settled_at);
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
 
@@ -2121,6 +2124,7 @@ namespace
 		if (summary.last_opened_at > hydrated.last_opened_at)
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.attention_revision = summary.attention_revision;
+		hydrated.settled_at = summary.settled_at;
 		hydrated.last_stop_reason = summary.last_stop_reason;
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
@@ -2211,6 +2215,7 @@ namespace
 			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
 			chat.attention_revision = summary.chat->attention_revision;
 			chat.interaction_at = summary.chat->interaction_at;
+			chat.settled_at = summary.chat->settled_at;
 		}
 	}
 

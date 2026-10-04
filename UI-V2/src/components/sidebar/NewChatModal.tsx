@@ -8,12 +8,13 @@ import { SelectionGrid } from '../shared/SelectionGrid'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
-import { Button, IconButton, MenuSelect, Notice } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
 export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
+  const overlayState = useOverlayState()
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
@@ -265,7 +266,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
+      data-state={overlayState}
       style={{ background: 'rgba(0,0,0,0.48)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose()

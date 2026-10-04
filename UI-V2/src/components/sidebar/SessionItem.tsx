@@ -4,11 +4,13 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
+  Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck, FolderGit2,
+  MessageCircleQuestion, ShieldQuestion,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
-import { Button, Tooltip, ViewportMenu } from '../ui'
+import { ConfirmDialog, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -19,7 +21,68 @@ import {
 } from '../../utils/chatGridStorage'
 import { providerShortName } from '../../utils/providerMetadata'
 import { CollectionMenuItems } from './CollectionMenuItems'
-import { displayedChatStatus } from './chatSearch'
+import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
+import { CustomIcon } from '../shared/CustomIcon'
+import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
+
+export function formatWorkingDuration(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return <span className="tabular-nums">{formatWorkingDuration(now - startedAtMs)}</span>
+}
+
+const branchCache = new Map<string, string>()
+
+/** Live git branch for an activity card; refetched only when the chat changes. */
+function useActivityBranch(sessionId: string | null, isolatedBranch: string | undefined, updatedAt: Date | undefined): string {
+  const key = sessionId ? `${sessionId}:${updatedAt?.getTime() ?? 0}` : ''
+  const [branch, setBranch] = useState(() => (sessionId && branchCache.get(sessionId)) || '')
+  useEffect(() => {
+    if (!sessionId || isolatedBranch || isCompanionContext()) return
+    let cancelled = false
+    void useAppStore.getState().getVcsCommitStatus(sessionId, 'git', { includeLineStats: false, contextOnly: true, requestId: `sidebar-branch:${key}` }).then((status) => {
+      const next = status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision || '' : ''
+      branchCache.set(sessionId, next)
+      if (!cancelled) setBranch(next)
+    })
+    return () => { cancelled = true }
+  }, [key, sessionId, isolatedBranch])
+  return isolatedBranch || branch
+}
+
+type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
+
+/** T3-style at-a-glance label for a card that is not running. */
+export function activityStatusLabel(status: DisplayedChatStatus): ActivityStatus | null {
+  if (status?.type === 'attention') {
+    if (status.kind === 'error') return { label: 'Failed', color: 'var(--red)', Icon: CircleAlert }
+    if (status.kind === 'permission' || status.kind === 'command' || status.kind === 'file') return { label: 'Approval', color: 'var(--yellow)', Icon: ShieldQuestion }
+    return { label: 'Input', color: 'var(--accent)', Icon: MessageCircleQuestion }
+  }
+  if (status?.type === 'done') return { label: 'Done', color: 'var(--success)', Icon: CircleCheck }
+  return null
+}
+
+export function formatActivityAge(date: Date | null | undefined, nowMs = Date.now()): string {
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const minutes = Math.max(0, Math.floor((nowMs - date.getTime()) / 60000))
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
 
 function formatSidebarTime(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) {
@@ -69,7 +132,11 @@ interface SessionItemProps {
   familySessionIds?: string[]
   selected?: boolean
   activityLayout?: boolean
-  activityContext?: string
+  /** Activity card context: workspace folder, its icon and the machine it runs on. */
+  activityFolderName?: string
+  activityFolderIcon?: CustomIconValue
+  activityHostLabel?: string
+  activityHostRemote?: boolean
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
@@ -98,7 +165,9 @@ export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
   }
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityContext, onSessionClick }: SessionItemProps) {
+const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
+
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -137,6 +206,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
     return displayedChatStatus(cliBindings, acpBindings)
   }))
+  const workingStartedAtMs = useAppStore((s) => {
+    if (!activityLayout) return null
+    const starts = familySessionIds.flatMap((id) => {
+      const binding = s.acpBindingBySessionId[id]
+      return binding?.processing && binding.processingStartedAtMs ? [binding.processingStartedAtMs] : []
+    })
+    return starts.length > 0 ? Math.min(...starts) : null
+  })
+  const setChatSettled = useAppStore((s) => s.setChatSettled)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const selectChat = () => {
     if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
@@ -186,6 +264,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
+  const activityBranch = useActivityBranch(activityLayout ? sessionId : null, session?.workspaceBranchName, session?.interactionAt ?? session?.updatedAt)
+  const activityWorktree = activityLayout ? session?.workspaceWorktreeDirectory?.trim() ?? '' : ''
+  const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
@@ -270,8 +351,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className={`relative flex ${activityLayout ? 'min-h-[53px] gap-2.5 px-3 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
+        className={`relative flex ${activityLayout ? 'gap-2 px-3 py-2' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
         style={{
+          // Running rows recede a touch so chats that need the user stand out.
+          opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,
           background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
           boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
         }}
@@ -289,6 +372,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             selectChat()
+          } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
+            event.preventDefault()
+            setDeleteError('')
+            setConfirmDelete(true)
           } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
             setEditing(true)
@@ -313,6 +400,71 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setMenuPos({ x: e.clientX, y: e.clientY })
         }}
       >
+        {activityLayout && !editing ? (
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
+              <CustomIcon icon={activityFolderIcon} fallback={<FolderIcon size={13} aria-hidden />} />
+              <span className="min-w-0 flex-1 truncate">{activityFolderName || 'Unsorted'}</span>
+              {lifecycleStatus?.type === 'processing' ? (
+                <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums" style={{ color: 'var(--info)' }}>
+                  <CircleDashed size={13} className="shrink-0" aria-hidden />
+                  <span role="status">Working</span>
+                  {workingStartedAtMs !== null && <span aria-hidden><WorkingDuration startedAtMs={workingStartedAtMs} /></span>}
+                </span>
+              ) : (
+                <>
+                  {activityStatus ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 font-medium group-hover:hidden group-focus-within:hidden" style={{ color: activityStatus.color }}>
+                      <activityStatus.Icon size={13} className="shrink-0" aria-hidden />
+                      <span role="status">{activityStatus.label}</span>
+                    </span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums group-hover:hidden group-focus-within:hidden" title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
+                  )}
+                  {!isCompanionContext() && (
+                    <button
+                      type="button"
+                      aria-label={`Mark ${sessionName} done`}
+                      className="hidden shrink-0 items-center gap-1 rounded px-1 group-hover:inline-flex group-focus-within:inline-flex hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                      style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
+                        void setChatSettled(sessionId, true)
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                    >
+                      <Check size={12} aria-hidden />
+                      Done
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
+              {activityWorktree && (
+                <span role="img" aria-label={`Worktree: ${activityWorktree}${activityBranch ? ` (${activityBranch})` : ''}`} title={`Worktree: ${activityWorktree}`} className="inline-flex shrink-0">
+                  <FolderGit2 size={12} aria-hidden />
+                </span>
+              )}
+              {activityBranch ? (
+                <>
+                  {!activityWorktree && <GitBranch size={12} className="shrink-0" aria-hidden />}
+                  <span className="min-w-0 flex-1 truncate" title={activityBranch}>{activityBranch}</span>
+                </>
+              ) : <span className="flex-1" />}
+              <span role="img" aria-label={activityHostLabel || (activityHostRemote ? 'Remote host' : 'This computer')} title={activityHostLabel} className="inline-flex shrink-0">
+                {activityHostRemote ? <Server size={12} aria-hidden /> : <Monitor size={12} aria-hidden />}
+              </span>
+              {sessionSummary.providerId && (
+                <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
+                  <ProviderLogo providerId={sessionSummary.providerId} size={13} />
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (<>
         {(selected || (isCompanionContext() && isSelectedChat)) && (
           <span role="img" aria-label={selected ? 'Selected for bulk actions' : 'Selected chat'} className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
             <Check size={12} aria-hidden />
@@ -332,7 +484,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         )}
         {!editing && showProviderIcon && sessionSummary.providerId && (
           <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
-            <ProviderLogo providerId={sessionSummary.providerId} size={activityLayout ? 24 : 16} />
+            <ProviderLogo providerId={sessionSummary.providerId} size={16} />
           </span>
         )}
         {!editing && isPinned && (
@@ -341,7 +493,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             aria-label={`Unpin ${sessionName}`}
             title={`Unpin ${sessionName}`}
             draggable={false}
-            className="inline-flex shrink-0 cursor-pointer rounded hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+            className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
             style={{ color: 'var(--accent)' }}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
@@ -377,10 +529,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           />
         ) : (
           <div className="min-w-0 flex-1">
-            <span className={`block truncate ${activityLayout ? 'text-sm font-medium' : 'text-[13px]'}`} style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
-            {activityLayout ? (
-              <span className="block truncate text-[11px]" title={activityContext} style={{ color: 'var(--text-3)' }}>{activityContext}</span>
-            ) : showWorktreePath && sessionSummary.worktreeDirectory && (
+            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
+            {!activityLayout && showWorktreePath && sessionSummary.worktreeDirectory && (
               <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
                 {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
               </span>
@@ -390,10 +540,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
-            <div className={`ml-auto flex ${activityLayout ? 'shrink-0 self-stretch flex-col items-end justify-between py-1' : 'items-center gap-1'} transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0`}>
+            {!activityLayout && <div className={`ml-auto flex items-center gap-1 ${HOVER_FADE}`}>
               {lastOpenedLabel && (
                 <span
-                  className={`${activityLayout ? 'max-w-[100px]' : 'max-w-[58px]'} truncate text-[10px] tabular-nums`}
+                  className={`${activityLayout ? 'max-w-[100px]' : `max-w-[58px] ${HOVER_FADE}`} truncate text-[10px] tabular-nums`}
                   title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
@@ -401,14 +551,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   }}
                 >
                   {lastOpenedLabel}
-                </span>
-              )}
-              {activityLayout && (
-                <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px]" style={{ color: lifecycleStatus?.type === 'attention' ? 'var(--yellow)' : lifecycleStatus?.type === 'done' ? 'var(--accent)' : 'var(--text-2)' }}>
-                  {lifecycleStatus?.type === 'processing' && <span className="session-status session-status--processing" aria-hidden="true"><span /></span>}
-                  {lifecycleStatus?.type === 'attention' && <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-hidden="true">{sidebarStatusIcon(lifecycleStatus.kind)}</span>}
-                  {lifecycleStatus?.type === 'done' && <Check size={14} aria-hidden />}
-                  {lifecycleStatus?.type === 'processing' ? 'Running' : lifecycleStatus?.type === 'attention' ? 'Needs input' : 'Ready to review'}
                 </span>
               )}
               {!activityLayout && lifecycleStatus?.type === 'processing' && (
@@ -426,11 +568,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   <span />
                 </span>
               )}
-            </div>
-            <div
+            </div>}
+            {!activityLayout && <div
               data-testid={`session-actions-${sessionId}`}
               style={isCompanionContext() ? { display: 'none' } : undefined}
-              className={`absolute right-2.5 flex items-center gap-0.5 transition-opacity duration-100 ${
+              className={`absolute ${!activityLayout && lifecycleStatus ? 'right-[30px]' : 'right-2.5'} flex items-center gap-0.5 transition-opacity duration-100 ${
                 menuPos
                   ? 'opacity-100 pointer-events-auto'
                   : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
@@ -487,9 +629,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   <MoreHorizontal size={14} aria-hidden />
                 </button>
               </Tooltip>
-            </div>
+            </div>}
           </>
         )}
+        </>)}
       </div>
 
       {/* Context menu — anchored at the cursor / trigger position */}
@@ -517,6 +660,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           >
             <Pencil size={13} aria-hidden />
             Rename
+            <kbd className="uam-menu-kbd">F2</kbd>
           </button>
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
@@ -526,27 +670,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             onClick={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }}
           >
             <Trash2 size={13} aria-hidden />
-            Delete
+            Delete…
+            <kbd className="uam-menu-kbd">Del</kbd>
           </button>
         </ViewportMenu>
       )}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.5)' }}>
-          <div role="alertdialog" aria-modal="true" aria-label={`Delete ${sessionName}`} className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete chat?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>{familySessionIds.length > 1
-                ? `${sessionName} and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
-                : `${sessionName} will be permanently deleted.`} This cannot be undone.</p>
-              {deleteError && <p role="alert" className="mt-3" style={{ color: 'var(--red)' }}>{deleteError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button size="sm" disabled={deleting} onClick={() => { setConfirmDelete(false); setDeleteError(''); rowRef.current?.focus() }}>Cancel</Button>
-              <Button size="sm" variant="danger" loading={deleting} onClick={() => { void confirmSessionDelete() }}>Delete chat</Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete chat?"
+        label={`Delete ${sessionName}`}
+        confirmLabel="Delete chat"
+        busy={deleting}
+        error={deleteError}
+        onCancel={() => { setConfirmDelete(false); setDeleteError('') }}
+        onConfirm={() => { void confirmSessionDelete() }}
+      >
+        {familySessionIds.length > 1
+          ? `“${sessionName}” and its ${familySessionIds.length - 1} related branch${familySessionIds.length === 2 ? '' : 'es'} will be permanently deleted.`
+          : `“${sessionName}” will be permanently deleted.`} This cannot be undone.
+      </ConfirmDialog>
     </div>
   )
 })

@@ -1,11 +1,12 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Columns2, MessageSquare, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
+import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
-import { createRequestId, sendToCEF, isCefContext } from '../../ipc/cefBridge'
+import { isCefContext } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { shortcutLabel } from '../../utils/shortcuts'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
@@ -13,8 +14,8 @@ import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
+const HIDDEN_RUNTIME_STOP = { visible: false, disabled: true, deadline: undefined, timeout: undefined, countdownStarts: undefined }
 import {
-  assignChatToPane,
   chatGridLeaves,
   chatPaneColors,
   clearChatLeaf,
@@ -71,21 +72,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   onActivate: (leafId: string, sessionId?: string) => void
   onClose: (leafId: string, sessionId: string) => void
 }) {
-  const [sideDismissBusy, setSideDismissBusy] = useState(false)
-  const returnToParent = () => {
-    if (!session.temporaryParentChatId) return
-    assignChatToPane(session.temporaryParentChatId, leafId)
-    useAppStore.getState().setActiveSession(session.temporaryParentChatId)
-  }
-  const dismissSide = async () => {
-    if (sideDismissBusy) return
-    setSideDismissBusy(true)
-    try {
-      const response = await sendToCEF({ action: 'dismissSideChat', payload: { chatId: session.id }, requestId: createRequestId('dismissSide') })
-      if (!response.ok) setStopRuntimeError(response.error || 'Side chat could not be dismissed.')
-      else if ([session.id, session.temporaryParentChatId].includes(useAppStore.getState().activeSessionId ?? '')) returnToParent()
-    } finally { setSideDismissBusy(false) }
-  }
   const view = session.importedReadOnly ? 'chat' : session.viewMode
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
@@ -95,12 +81,30 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     writeChatViewMode(session.id, nextView)
   }
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
-  const canStopAcpRuntime = useAppStore((s) => {
-    if (view !== 'chat' || session.importedReadOnly) return false
+  const runtimeStopState = useAppStore(useShallow((s) => {
+    if (view !== 'chat' || session.importedReadOnly) return HIDDEN_RUNTIME_STOP
     const acp = s.acpBindingBySessionId[session.id]
-    return Boolean(acp?.running && acp.lifecycleState === 'ready' &&
-      !acp.processing && !acp.pendingPermission && !acp.pendingUserInput)
-  })
+    return {
+      visible: Boolean(acp?.running),
+      disabled: acp?.lifecycleState !== 'ready' || Boolean(acp?.processing || acp?.pendingPermission || acp?.pendingUserInput),
+      deadline: acp?.idleShutdownAtMs,
+      countdownStarts: acp?.idleCountdownStartsAtMs,
+      timeout: acp?.idleShutdownTimeoutSeconds,
+    }
+  }))
+  const [runtimeClockMs, setRuntimeClockMs] = useState(Date.now)
+  useEffect(() => {
+    if (!runtimeStopState.visible || runtimeStopState.disabled || !runtimeStopState.deadline) return
+    setRuntimeClockMs(Date.now())
+    const interval = window.setInterval(() => setRuntimeClockMs(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [runtimeStopState.visible, runtimeStopState.disabled, runtimeStopState.deadline])
+  const idleSecondsLeft = runtimeStopState.deadline && runtimeStopState.countdownStarts && runtimeClockMs >= runtimeStopState.countdownStarts
+    ? Math.max(0, Math.ceil((runtimeStopState.deadline - runtimeClockMs) / 1000))
+    : null
+  const idleFraction = idleSecondsLeft !== null && runtimeStopState.timeout
+    ? Math.min(1, idleSecondsLeft / runtimeStopState.timeout)
+    : null
   const recordActivity = useRuntimeActivity(session.id)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
@@ -225,24 +229,52 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             </button>
           </Tooltip>
         </div>
-        {session.temporaryParentChatId && <><Button size="sm" variant="ghost" onClick={returnToParent}>Return</Button><Button size="sm" variant="danger" disabled={sideDismissBusy} onClick={() => void dismissSide()}>Dismiss</Button></>}
-        <RuntimeTimeout chatId={session.id} />
-        {canStopAcpRuntime && (
-          <IconButton
-            icon={<PowerOff size={14} aria-hidden />}
-            label="Stop runtime"
-            tooltip="Stop the idle runtime for this chat"
-            tooltipSide="bottom"
-            variant="danger"
-            size="sm"
-            onClick={() => {
-              setStopRuntimeError('')
-              void stopAcpSession(session.id, 'timeout').then((ok) => {
-                if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-              }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-            }}
-          />
-        )}
+        {view === 'cli' && <RuntimeTimeout chatId={session.id} />}
+        {runtimeStopState.visible && (() => {
+          const countdown = idleSecondsLeft !== null
+            ? `${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
+            : ''
+          const phase = runtimeStopState.disabled ? 'busy' : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
+          return (
+            <Tooltip
+              label={runtimeStopState.disabled
+                ? 'Runtime busy · stop is available when this turn finishes'
+                : countdown
+                  ? `Runtime idle · shuts down automatically in ${countdown}. Click to stop now.`
+                  : 'Runtime running · click to stop it'}
+              side="bottom"
+            >
+              <button
+                type="button"
+                className="uam-runtime-pill"
+                data-phase={phase}
+                aria-label="Stop runtime"
+                disabled={runtimeStopState.disabled}
+                onClick={() => {
+                  setStopRuntimeError('')
+                  void stopAcpSession(session.id, 'timeout').then((ok) => {
+                    if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
+                  }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
+                }}
+              >
+                <span className="uam-runtime-stop-icon">
+                  <PowerOff size={12} aria-hidden />
+                  {!runtimeStopState.disabled && idleFraction !== null && (
+                    <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
+                      <circle className="uam-runtime-stop-track" cx="14" cy="14" r="12" fill="none" strokeWidth="2.5" />
+                      <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+                        strokeDasharray={`${(2 * Math.PI * 12 * idleFraction).toFixed(2)} 75.40`} />
+                    </svg>
+                  )}
+                </span>
+                <span className="uam-runtime-pill__label" aria-hidden>
+                  <span className="uam-runtime-pill__state">{phase === 'busy' ? 'Busy' : countdown || 'Live'}</span>
+                  <span className="uam-runtime-pill__stop">Stop</span>
+                </span>
+              </button>
+            </Tooltip>
+          )
+        })()}
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
@@ -280,31 +312,27 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
   onClose: (leafId: string) => void
 }) {
   const paneColor = chatPaneColors[paneIndex]
+  const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   return (
     <div
       className="uam-chat-pane relative flex h-full w-full items-center justify-center text-center"
+      data-testid="empty-pane"
       data-focused={active}
       data-multi-pane={multiPane}
       onMouseDown={() => { if (!active) onActivate(leafId) }}
       onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      <div className="flex flex-col items-center gap-3">
-        <button type="button" className="cursor-pointer text-sm hover:text-white focus-visible:outline" onClick={() => onActivate(leafId)}>
-          <MessageSquare size={28} style={{ opacity: 0.3, margin: '0 auto 10px' }} />
+      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
+      <div className="flex max-w-xs flex-col items-center gap-4 px-4">
+        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
+          <MessageSquare size={28} aria-hidden style={{ opacity: 0.35 }} />
           Drag a chat here or select one
         </button>
-        <div className="flex flex-col items-center gap-1">
-          <Button variant="primary" onClick={() => {
-            onActivate(leafId)
-            useAppStore.getState().setNewChatModalOpen(true)
-          }}>New Chat</Button>
-          <Tooltip label={multiPane ? 'Close this view' : 'Keep one view open'}>
-            <span>
-              <Button variant="ghost" size="sm" disabled={!multiPane} style={{ color: 'var(--error)' }} onClick={() => onClose(leafId)}>Close View</Button>
-            </span>
-          </Tooltip>
-        </div>
+        <Button variant="primary" size="sm" onClick={() => {
+          onActivate(leafId)
+          useAppStore.getState().setNewChatModalOpen(true)
+        }}>New Chat</Button>
       </div>
     </div>
   )
@@ -531,7 +559,7 @@ export function MainPanel() {
           aria-label={label}
           disabled={paneLimitReached}
           onClick={() => splitActivePane(direction)}
-          style={{ color: 'var(--text-2)', background: 'transparent', opacity: paneLimitReached ? 0.45 : 1 }}
+          style={{ color: 'var(--text-2)', background: 'transparent' }}
         >
           {icon}
         </button>
@@ -548,18 +576,19 @@ export function MainPanel() {
         <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
-          <Tooltip label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'} side="bottom">
-            <button
-              type="button"
-              className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-              aria-label={leaves.length > 1 ? 'Close active pane' : 'Clear active pane'}
-              disabled={!activeLeaf?.sessionId && leaves.length === 1}
-              onClick={() => activeLeaf && closePane(activeLeaf.id)}
-              style={{ color: 'var(--text-2)', background: 'transparent', opacity: !activeLeaf?.sessionId && leaves.length === 1 ? 0.45 : 1 }}
-            >
-              <X size={15} aria-hidden />
-            </button>
-          </Tooltip>
+          {leaves.length > 1 && (
+            <Tooltip label="Close active pane" side="bottom">
+              <button
+                type="button"
+                className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+                aria-label="Close active pane"
+                onClick={() => activeLeaf && closePane(activeLeaf.id)}
+                style={{ color: 'var(--text-2)', background: 'transparent' }}
+              >
+                <X size={15} aria-hidden />
+              </button>
+            </Tooltip>
+          )}
         </div>
         {isCefContext() && <PushStatusDot />}
       </div>

@@ -451,7 +451,7 @@ describe('MarkdownStoreModal', () => {
     expect(folders.querySelectorAll('details').length).toBe(3)
     expect(folders.querySelector('details details details')).toBeTruthy()
     for (const details of folders.querySelectorAll('details')) {
-      expect((details.querySelector(':scope > div') as HTMLElement).style.borderLeft).toContain('var(--border-bright)')
+      expect((details.querySelector(':scope > div') as HTMLElement).style.borderLeft).toContain('var(--border)')
       expect(details.querySelector('summary svg')).toBeTruthy()
     }
     const preview = host.querySelector('[aria-label="Skill preview"]')!
