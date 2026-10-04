@@ -1319,7 +1319,11 @@ if(UAM_BUILD_TESTS)
       src/common/platform/platform_application_macos.mm
     )
     target_include_directories(uam_macos_application_tests PRIVATE src ${cef_binary_SOURCE_DIR})
-    target_link_libraries(uam_macos_application_tests PRIVATE "-Wl,-framework,AppKit")
+    target_link_libraries(uam_macos_application_tests PRIVATE
+      "-Wl,-framework,AppKit"
+      "-Wl,-framework,AVFoundation"
+      "-Wl,-framework,Speech"
+    )
     add_test(NAME uam_macos_application_tests COMMAND uam_macos_application_tests)
   endif()
   add_test(
