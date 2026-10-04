@@ -15082,6 +15082,52 @@ UAM_TEST(ClaudeControlHandshakeDiscoversModelsAndRoutesPermissionsAndQuestions)
 #endif
 }
 
+UAM_TEST(ClaudeConcurrentQuestionAndPermissionKeepRemainingWaitActive)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool permission_first : {false, true})
+	{
+		TempDir temp("uam-claude-concurrent-input");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "claude-concurrent";
+		chat.provider_id = "claude-cli";
+		chat.command_safety_tier = "off";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.processing = true;
+		session.session_ready = true;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+		std::string error;
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &error));
+		session.running = true;
+		app.acp_sessions.push_back(std::move(owned));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1","input":{"file_path":"file.txt","content":"test"}}})"));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"question-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"ask-1","input":{"questions":[{"question":"Which scope?","options":[{"label":"Focused"}]}]}}})"));
+		const bool resolved = permission_first
+		    ? uam::ResolveAcpPermission(app, chat.id, session.pending_permission.request_id_json, "allow", false, &error)
+		    : uam::ResolveAcpUserInput(app, chat.id, session.pending_user_input.request_id_json, {{"0", {"Focused"}}}, &error);
+		const std::string lifecycle = session.lifecycle_state;
+		const bool still_waiting = permission_first ? session.waiting_for_user_input : session.waiting_for_permission;
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		UAM_ASSERT(resolved);
+		UAM_ASSERT(still_waiting);
+		UAM_ASSERT_EQ(lifecycle, std::string(permission_first ? uam::acp_detail::kAcpLifecycleWaitingUserInput : uam::acp_detail::kAcpLifecycleWaitingPermission));
+	}
+#endif
+}
+
 UAM_TEST(ClaudeInstalledCliHandshakeSmoke)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
