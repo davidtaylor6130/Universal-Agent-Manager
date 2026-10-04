@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace uam::platform
 {
@@ -11,6 +12,16 @@ namespace uam::platform
 	/// Establish terminal ownership in a fresh process before executing the provider.
 	std::optional<int> RunMacTerminalChildIfRequested(int argc, char* argv[]);
 	bool InitializeMacApplication();
+	/// <summary>Attempts to request local-network access without sending traffic; macOS controls the prompt and saved decision.</summary>
+	void RequestMacLocalNetworkAccess();
+	struct MacPrivacyPermissions
+	{
+		std::string microphone;
+		std::string speech_recognition;
+	};
+	MacPrivacyPermissions GetMacPrivacyPermissions();
+	bool RequestMacPrivacyPermission(const std::string& permission);
+	std::vector<std::string> MacLocalIpv4Addresses();
 	bool BrowsePath(bool choose_directory, const std::filesystem::path& initial_path, std::string* selected_path_out, std::string* error_out = nullptr);
 	bool OpenExternalUrl(const std::string& url, std::string* error_out = nullptr);
 	bool OpenPath(const std::filesystem::path& path, std::string* error_out = nullptr);

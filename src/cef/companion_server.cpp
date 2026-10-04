@@ -1,4 +1,8 @@
 #include "cef/companion_server.h"
+
+#if defined(__APPLE__)
+#include "common/platform/platform_application_macos.h"
+#endif
 #include "cef/uam_bridge_request.h"
 #include "common/utils/env_utils.h"
 #include "common/platform/platform_services.h"
@@ -233,6 +237,9 @@ CefRefPtr<UamCompanionServer> UamCompanionServer::StartFromEnvironment(Dispatch 
 #endif
 		}
 	}
+#if defined(__APPLE__)
+	if (!origin.empty()) uam::platform::RequestMacLocalNetworkAccess();
+#endif
 	CefRefPtr<UamCompanionServer> handler = new UamCompanionServer(std::move(token), origin, std::move(dispatch), std::move(proxy_executable), std::move(proxy_config));
 	CefServer::CreateServer("127.0.0.1", static_cast<uint16_t>(port), 8, handler);
 	return handler;
@@ -255,6 +262,7 @@ void UamCompanionServer::Stop()
 		PlatformServicesFactory::Instance().process_service.StopStdioProcess(m_proxy_process, true);
 		m_proxy_started = false;
 	}
+	m_proxy_running = false;
 }
 
 void UamCompanionServer::StartProxy()
@@ -268,6 +276,7 @@ void UamCompanionServer::StartProxy()
 		return;
 	}
 	m_proxy_started = true;
+	m_proxy_running = true;
 	std::cerr << "Companion HTTPS proxy started.\n";
 	m_proxy_drainer = std::jthread([this](std::stop_token stop_token) { DrainProxy(stop_token); });
 }
@@ -297,6 +306,7 @@ void UamCompanionServer::DrainProxy(std::stop_token stop_token)
 		int exit_code = 0;
 		if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(m_proxy_process, &exit_code))
 		{
+			m_proxy_running = false;
 			std::cerr << "Companion HTTPS proxy exited with code " << exit_code;
 			if (!stderr_tail.empty()) std::cerr << ": " << stderr_tail;
 			std::cerr << '\n';

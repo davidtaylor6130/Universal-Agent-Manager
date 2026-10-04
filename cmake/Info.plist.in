@@ -24,6 +24,8 @@
   <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>
   <key>NSSpeechRecognitionUsageDescription</key>

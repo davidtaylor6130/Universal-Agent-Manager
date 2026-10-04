@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <optional>
+#include <atomic>
 
 /// <summary>Opt-in loopback transport for the React companion; dispatch remains on the CEF UI thread.</summary>
 class UamCompanionServer final : public CefServerHandler
@@ -21,6 +22,7 @@ public:
 	using Dispatch = std::function<void(const nlohmann::json&, CefRefPtr<Callback>)>;
 	static CefRefPtr<UamCompanionServer> StartFromEnvironment(Dispatch dispatch, const std::filesystem::path& data_root = {});
 	void Stop();
+	bool IsProxyRunning() const { return m_proxy_running.load(); }
 	void OnServerCreated(CefRefPtr<CefServer> server) override;
 	void OnServerDestroyed(CefRefPtr<CefServer> server) override;
 	void OnClientConnected(CefRefPtr<CefServer>, int) override {}
@@ -44,6 +46,7 @@ private:
 	uam::platform::StdioProcessPlatformFields m_proxy_process;
 	std::jthread m_proxy_drainer;
 	bool m_proxy_started = false;
+	std::atomic<bool> m_proxy_running{false};
 	std::mutex m_mutex;
 	CefRefPtr<CefServer> m_server;
 	bool m_stopped = false;

@@ -1,3 +1,4 @@
+import { PermissionsSettings } from './PermissionsSettings'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
@@ -123,7 +124,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = 'permissions' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -145,6 +146,7 @@ interface SettingsSection {
 }
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
+  { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
@@ -167,7 +169,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
   { label: 'Providers', sections: ['cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
-  { label: 'Security', sections: ['computer-use'] },
+  { label: 'Security', sections: ['permissions', 'computer-use'] },
   { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
@@ -194,6 +196,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
+  permissions: 'privacy local network microphone speech recording accessibility authorization',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents instructions import providers codex gemini claude copilot opencode',
@@ -437,7 +440,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [computerUseMessage, setComputerUseMessage] = useState('')
   const [computerUseBusy, setComputerUseBusy] = useState(false)
   const [computerUseSaveBusy, setComputerUseSaveBusy] = useState(false)
-  const [companionSettings, setCompanionSettings] = useState<{ configured: boolean; enabled: boolean; url: string; restartRequired?: boolean } | null>(null)
+  const [companionSettings, setCompanionSettings] = useState<{ configured: boolean; enabled: boolean; url: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean } | null>(null)
   const [companionBusy, setCompanionBusy] = useState(false)
   const [companionMessage, setCompanionMessage] = useState('')
   const [companionCopy, setCompanionCopy] = useState<{ kind: 'token' | 'url'; ok: boolean } | null>(null)
@@ -1202,19 +1205,21 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
   const loadCompanionSettings = async () => {
-    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean }>({ action: 'getCompanionSettings' })
+    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean }>({ action: 'getCompanionSettings' })
     if (!response.ok) { setCompanionMessage(response.error || 'Could not load phone access settings.'); return }
     setCompanionSettings({
       configured: Boolean(response.data?.configured),
       enabled: Boolean(response.data?.enabled),
       url: response.data?.url || '',
       restartRequired: response.data?.restartRequired,
+      localAddresses: response.data?.localAddresses,
+      proxyRunning: response.data?.proxyRunning,
     })
   }
   const setCompanionEnabled = async (enabled: boolean) => {
     setCompanionBusy(true)
     setCompanionMessage('')
-    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean }>({ action: 'setCompanionEnabled', payload: { enabled } })
+    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean }>({ action: 'setCompanionEnabled', payload: { enabled } })
     setCompanionBusy(false)
     if (!response.ok) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
     setCompanionSettings({
@@ -1222,6 +1227,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       enabled: Boolean(response.data?.enabled),
       url: response.data?.url || '',
       restartRequired: response.data?.restartRequired,
+      localAddresses: response.data?.localAddresses,
+      proxyRunning: response.data?.proxyRunning,
     })
     setCompanionMessage('Restart UAM to apply this change.')
   }
@@ -1290,6 +1297,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       <div className="flex items-center gap-2">
         <Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>
       </div>
+      {companionSettings?.enabled && companionSettings.proxyRunning === false && <p style={{ color: 'var(--red)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</p>}
+      {companionSettings?.localAddresses?.map((address) => {
+        let host = ''
+        try { host = new URL(companionSettings.url).hostname } catch { /* No configured URL. */ }
+        if (!host || host === address || host === '127.0.0.1' || !/^\d+\.\d+\.\d+\.\d+$/.test(host) || companionSettings.localAddresses?.includes(host)) return null
+        return <div key={address} className="flex items-center justify-between gap-3">
+          <span style={{ color: 'var(--red)' }}>The configured address {host} is no longer on this Mac.</span>
+          <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
+            setCompanionBusy(true)
+            void sendToCEF<typeof companionSettings>({ action: 'repairCompanionLanAddress', payload: { address } }).then((result) => {
+              if (!result.ok || !result.data) throw new Error(result.error || 'Could not update network address.')
+              setCompanionSettings(result.data)
+              setCompanionMessage('Network address updated. Restart UAM to start phone access.')
+            }).catch((error) => setCompanionMessage(error instanceof Error ? error.message : 'Could not update network address.')).finally(() => setCompanionBusy(false))
+          }}>Use {address}</Button>
+        </div>
+      })}
       {companionMessage && <div role="status" style={{ color: companionCopy?.ok === false ? 'var(--red)' : 'var(--text-2)' }}>{companionMessage}</div>}
     </div>
   </SectionCard>
@@ -1395,6 +1419,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderSectionContent = () => {
+    if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeOptions: Array<{ value: StoredTheme; label: string }> = [
