@@ -655,7 +655,8 @@ UAM_TEST(GoalRemovalPreservesCurrentRemoteTurn)
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->provider_id = uam::provider_ids::kClaudeCli;
-	session->session_id = "claude-session";
+	// Before session initialization, cancellation must stop and confirm the remote process.
+	session->session_id.clear();
 	session->running = true;
 	session->processing = true;
 	std::string error;

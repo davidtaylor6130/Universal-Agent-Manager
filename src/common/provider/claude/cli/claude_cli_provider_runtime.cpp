@@ -6,8 +6,11 @@
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_claude_stream.h"
+#include "common/runtime/acp/acp_permissions.h"
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/utils/range_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
 
 #include <array>
 #include <string_view>
@@ -119,7 +122,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(const ProviderProfile&, const ChatSession& chat) const
 {
-	std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"};
+	std::vector<std::string> argv = {"claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"};
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--permission-mode", ClaudeStructuredPermissionMode(chat));
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
@@ -129,8 +132,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const
 {
-	(void)request_id;
-	session.initialized = true;
+	session.initialized = false;
 	session.load_session_supported = true;
 	session.available_modes = {
 	    uam::AcpModeState{uam::approval_modes::kDefaultApprovalMode, "Default", "Use Claude's provider-managed permissions."},
@@ -140,7 +142,7 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSta
 	{
 		session.current_mode_id = uam::approval_modes::kDefaultApprovalMode;
 	}
-	return nullptr;
+	return uam::acp_claude_stream::ControlRequest(request_id, {{"subtype", "initialize"}});
 }
 
 bool ClaudeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
@@ -164,8 +166,18 @@ bool ClaudeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSe
 
 void ClaudeCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
-	(void)session;
-	(void)result;
+	session.available_models.clear();
+	for (const nlohmann::json& model : uam::acp_detail::JsonArrayValue(result, "models"))
+	{
+		if (!model.is_object())
+			continue;
+		const std::string id = uam::nlohmann_json::TrimmedStringValue(model, {"value"});
+		if (id.empty())
+			continue;
+		session.available_models.push_back(uam::AcpModelState{id, uam::acp_detail::JsonDiagnosticStringValueOr(model, "displayName", id), uam::acp_detail::JsonDiagnosticStringValue(model, "description")});
+	}
+	session.agent_name = "claude";
+	session.agent_title = "Claude Code";
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
@@ -189,10 +201,39 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& 
 	return uam::acp_detail::BuildClaudeInputMessage(prompt);
 }
 
-nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string& out_method) const
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int request_id, std::string& out_method) const
 {
-	out_method.clear();
-	return nullptr;
+	out_method = "claude/interrupt";
+	return uam::acp_claude_stream::ControlRequest(request_id, {{"subtype", "interrupt"}});
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const std::string& option_id, bool cancelled) const
+{
+	const bool deny = cancelled || option_id != "allow";
+	nlohmann::json input = nlohmann::json::parse(session.pending_permission.provider_input_json, nullptr, false);
+	nlohmann::json result = {{"behavior", "deny"}, {"message", "Permission denied by the user."}};
+	if (!deny && input.is_object())
+		result = {{"behavior", "allow"}, {"updatedInput", std::move(input)}};
+	return uam::acp_claude_stream::ControlResponse(uam::acp_detail::StableStringToJsonRpcId(session.pending_permission.request_id_json), std::move(result));
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildUserInputResponse(const uam::AcpSessionState& session, const std::map<std::string, std::vector<std::string>>& answers) const
+{
+	nlohmann::json input = nlohmann::json::parse(session.pending_user_input.provider_input_json, nullptr, false);
+	nlohmann::json result = {{"behavior", "deny"}, {"message", "Question cancelled by the user."}};
+	if (!answers.empty() && input.is_object())
+	{
+		nlohmann::json mapped = nlohmann::json::object();
+		for (const uam::AcpUserInputQuestionState& question : session.pending_user_input.questions)
+		{
+			const auto found = answers.find(question.id);
+			if (found != answers.end())
+				mapped[question.question] = uam::strings::Join(found->second, ", ");
+		}
+		input["answers"] = std::move(mapped);
+		result = {{"behavior", "allow"}, {"updatedInput", std::move(input)}};
+	}
+	return uam::acp_claude_stream::ControlResponse(uam::acp_detail::StableStringToJsonRpcId(session.pending_user_input.request_id_json), std::move(result));
 }
 
 const IProviderRuntime& GetClaudeCliProviderRuntime()

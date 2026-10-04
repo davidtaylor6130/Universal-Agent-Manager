@@ -488,13 +488,7 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		    [&](const uam::AcpToolCallState& candidate) { return candidate.id == tool_call_id; });
 		if (active_tool != session->tool_calls.end())
 		{
-			std::string content = active_tool->content;
-			if (!active_tool->permission_review_reason.empty())
-			{
-				if (!content.empty()) content += "\n\n";
-				content += "AI Review (" + active_tool->permission_review_decision + "): " +
-				           active_tool->permission_review_reason;
-			}
+			const std::string content = uam::StateSerializer::ToolCallContentForFrontend(*active_tool);
 			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(content, offset).dump());
 			return;
 		}

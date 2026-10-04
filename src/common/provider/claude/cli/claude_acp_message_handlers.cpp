@@ -1,23 +1,125 @@
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 
+#include "app/provider_model_catalog_service.h"
 #include "cef/cef_push.h"
 #include "common/config/approval_modes.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_content.h"
+#include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <string>
 
 namespace uam::acp_detail
 {
 
+	namespace
+	{
+		void HandleClaudeControlRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const nlohmann::json request = JsonObjectValue(message, "request");
+			const std::string id = uam::nlohmann_json::TrimmedStringValue(message, {"request_id"});
+			if (id.empty())
+				return;
+			const std::string subtype = JsonDiagnosticStringValue(request, "subtype");
+			if (subtype != "can_use_tool")
+			{
+				(void)WriteAcpMessage(session, {{"type", "control_response"}, {"response", {{"subtype", "error"}, {"request_id", id}, {"error", "Unsupported Claude control request: " + subtype}}}});
+				return;
+			}
+			if (uam::nlohmann_json::FindObjectField(request, "input") == nullptr || JsonDiagnosticStringValue(request, "tool_name").empty())
+			{
+				(void)WriteAcpMessage(session, uam::acp_claude_stream::ControlResponse(id, {{"behavior", "deny"}, {"message", "Malformed Claude tool request."}}));
+				return;
+			}
+			const nlohmann::json input = JsonObjectValue(request, "input");
+			const std::string tool_name = JsonDiagnosticStringValue(request, "tool_name");
+			const std::string tool_id = JsonDiagnosticStringValueOr(request, "tool_use_id", id);
+			if (uam::AcpSessionHasPendingCancel(session))
+			{
+				(void)WriteAcpMessage(session, uam::acp_claude_stream::ControlResponse(id, {{"behavior", "deny"}, {"message", "Turn cancelled."}}));
+				return;
+			}
+			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
+			tool.title = tool_name;
+			tool.kind = tool_name;
+			tool.args_json = input.dump();
+			tool.status = uam::acp_statuses::kPending;
+			AppendToolTurnEventIfNeeded(session, tool_id);
+			if (tool_name == "AskUserQuestion")
+			{
+				if (!session.pending_user_input.request_id_json.empty())
+				{
+					(void)WriteAcpMessage(session, uam::acp_claude_stream::ControlResponse(id, {{"behavior", "deny"}, {"message", "Another question is awaiting an answer."}}));
+					return;
+				}
+				AcpPendingUserInputState pending;
+				pending.request_id_json = JsonRpcIdToStableString(id);
+				pending.provider_input_json = input.dump();
+				pending.item_id = tool_id;
+				pending.status = uam::acp_statuses::kPending;
+				pending.attention_kind = "question";
+				for (const nlohmann::json& item : JsonArrayValue(input, "questions"))
+				{
+					if (!item.is_object())
+						continue;
+					AcpUserInputQuestionState question;
+					question.id = std::to_string(pending.questions.size());
+					question.header = JsonDiagnosticStringValue(item, "header");
+					question.question = JsonDiagnosticStringValue(item, "question");
+					question.is_other = true;
+					question.is_multiple = item.contains("multiSelect") && item["multiSelect"].is_boolean() && item["multiSelect"].get<bool>();
+					for (const nlohmann::json& option : JsonArrayValue(item, "options"))
+					{
+						if (!option.is_object())
+							continue;
+						question.options.push_back({JsonDiagnosticStringValue(option, "label"), JsonDiagnosticStringValue(option, "description")});
+					}
+					if (!question.question.empty())
+						pending.questions.push_back(std::move(question));
+				}
+				if (pending.questions.empty())
+				{
+					(void)WriteAcpMessage(session, uam::acp_claude_stream::ControlResponse(id, {{"behavior", "deny"}, {"message", "Claude sent no answerable questions."}}));
+					return;
+				}
+				AppendUserInputTurnEventIfNeeded(session, pending.request_id_json, tool_id);
+				session.pending_user_input = std::move(pending);
+				session.waiting_for_user_input = true;
+				BeginAcpPendingWait(session, kAcpLifecycleWaitingUserInput);
+			}
+			else
+			{
+				AcpPendingPermissionState pending;
+				pending.request_id_json = JsonRpcIdToStableString(id);
+				pending.provider_request_method = "can_use_tool";
+				pending.provider_request_kind = "claude-tool";
+				pending.provider_input_json = input.dump();
+				pending.tool_call_id = tool_id;
+				pending.title = tool_name;
+				pending.kind = tool_name == "Bash" ? "execute" : tool_name == "Edit" || tool_name == "Write" || tool_name == "NotebookEdit" ? "edit" : tool_name;
+				pending.status = uam::acp_statuses::kPending;
+				pending.content = tool_name == "Bash" ? JsonDiagnosticStringValue(input, "command") : input.dump(2);
+				pending.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
+				ApplyCommandSafetyDecision(app, chat, pending);
+				QueueAcpPermission(app, session, chat, std::move(pending));
+			}
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+		}
+	} // namespace
+
 void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = JsonArrayValue(assistant_message, "content");
+	const bool child_message = !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
 	if (!content.is_array())
 	{
 		const std::string fallback_text = ClaudeContentTextFromMessage(assistant_message);
@@ -44,6 +146,8 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 		const std::string type = JsonDiagnosticStringValue(item, "type");
 		if (type == uam::acp_content::kTextType)
 		{
+			if (child_message)
+				continue;
 			const std::string text = ContentTextFromJson(item);
 			if (!text.empty())
 			{
@@ -59,7 +163,9 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 		if (type == uam::acp_claude_stream::kContentThinking)
 		{
-			const std::string thought = ContentTextFromJson(item);
+			if (child_message)
+				continue;
+			const std::string thought = JsonDiagnosticStringValue(item, "thinking");
 			if (!thought.empty())
 			{
 				changed = AppendThoughtChunk(chat, session, thought) || changed;
@@ -81,7 +187,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			tool_call.status = uam::acp_statuses::kRunning;
 			if (const nlohmann::json* input = uam::nlohmann_json::FindField(item, "input"); input != nullptr)
 			{
-				tool_call.content = "Arguments:\n" + CapDiagnosticString(input->dump(), kMaxAcpDiagnosticDetailBytes);
+				tool_call.args_json = input->dump();
 			}
 			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);
@@ -128,15 +234,9 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 		AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
 		tool_call.status = JsonBooleanValueOr(item, "is_error", false) ? uam::acp_statuses::kFailed : uam::acp_statuses::kCompleted;
 		const nlohmann::json* content_value = uam::nlohmann_json::FindField(item, "content");
-		const std::string result_text = ContentTextFromJson(content_value == nullptr ? nlohmann::json::array() : *content_value);
-		if (tool_call.content.empty())
-		{
-			tool_call.content = result_text;
-		}
-		else if (!result_text.empty())
-		{
-			tool_call.content += "\n\nResult:\n" + result_text;
-		}
+		const bool plain_text = content_value != nullptr && (content_value->is_string() || (content_value->is_array() && std::ranges::all_of(*content_value, [](const nlohmann::json& block) { return block.is_string() || (block.is_object() && JsonDiagnosticStringValue(block, "type") == "text" && uam::acp_content::HasTextField(block)); })));
+		const std::string result_text = content_value == nullptr ? std::string{} : plain_text ? ContentTextFromJson(*content_value) : content_value->dump(2);
+		tool_call.content = result_text;
 		AppendToolTurnEventIfNeeded(session, tool_id);
 		changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
 	}
@@ -172,7 +272,7 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 		session.available_models.push_back(AcpModelState{session.current_model_id, session.current_model_id, ""});
 	}
 
-	if (session.turn_assistant_message_index < 0)
+	if (session.turn_assistant_message_index < 0 && !uam::AcpSessionHasPendingCancel(session) && !JsonBooleanValueOr(message, "is_error", false))
 	{
 		const std::string result_text = uam::nlohmann_json::TrimmedStringValueOr(message, "result", "");
 		if (!result_text.empty())
@@ -183,9 +283,17 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 
 	const bool is_error = JsonBooleanValueOr(message, "is_error", false);
 	const std::string subtype = JsonDiagnosticStringValue(message, "subtype");
-	if (is_error || uam::acp_claude_stream::IsResultErrorSubtype(subtype))
+	const bool cancelled = uam::AcpSessionHasPendingCancel(session);
+	if (cancelled && session.inactivity_timeout_pending)
 	{
-		const std::string result_text = uam::nlohmann_json::TrimmedStringValueOr(message, "result", "");
+		FinalizeAcpTurnInactivityTimeout(app, session, chat);
+		return;
+	}
+	session.pending_request_methods.erase(session.cancel_request_id);
+	session.cancel_request_id = 0;
+	if (!cancelled && (is_error || uam::acp_claude_stream::IsResultErrorSubtype(subtype)))
+	{
+		const std::string result_text = uam::strings::JoinNonEmpty(std::vector<std::string>{ContentTextFromJson(JsonArrayValue(message, "errors")), uam::nlohmann_json::TrimmedStringValueOr(message, "result", "")}, "\n");
 		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 		FailAcpTurnOrSession(session, &chat,
 		                     uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
@@ -193,7 +301,7 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	else
 	{
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
+		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 	}
 
 	if (browser)
@@ -212,9 +320,65 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"));
 		return;
 	}
+	if (type == "control_response")
+	{
+		const nlohmann::json response = JsonObjectValue(message, "response");
+		const int id = JsonRpcNumericId(uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(response, "request_id")));
+		if (id <= 0 || !session.pending_request_methods.contains(id))
+			return;
+		if (session.pending_request_methods.at(id) == "claude/interrupt" && JsonDiagnosticStringValue(response, "subtype") == "success")
+		{
+			// The acknowledgement precedes the terminal result; keep cancellation pending until it arrives.
+			session.pending_request_methods.erase(id);
+			return;
+		}
+		const bool initialization = session.pending_request_methods.at(id) == "initialize";
+		nlohmann::json normalized = {{"id", id}};
+		if (JsonDiagnosticStringValue(response, "subtype") == "error")
+			normalized["error"] = {{"message", JsonDiagnosticStringValue(response, "error")}};
+		else
+			normalized["result"] = JsonObjectValue(response, "response");
+		HandleAcpResponse(app, session, chat, normalized);
+		if (initialization && session.initialized)
+		{
+			RememberDiscoveredModels(app, session, chat);
+			if (app.provider_model_catalog != nullptr && session.available_models.empty())
+			{
+				app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Claude reported no available models.", chat.workspace_directory, chat.execution_host_id);
+			}
+			StopBackgroundModelDiscovery(app, session);
+		}
+		return;
+	}
+	if (type == "control_request")
+	{
+		if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", JsonDiagnosticStringValue(message, "request_id")}}))
+			return;
+		HandleClaudeControlRequest(app, session, chat, message);
+		return;
+	}
+	if (type == "control_cancel_request")
+	{
+		const std::string id = JsonRpcIdToStableString(JsonDiagnosticStringValue(message, "request_id"));
+		if (session.pending_permission.request_id_json == id)
+		{
+			StopPermissionReviewTasks(app, chat.id, id);
+			AdvanceAcpPermissionQueue(app, session, chat);
+		}
+		std::erase_if(session.queued_permissions, [&id](const AcpPendingPermissionState& pending) { return pending.request_id_json == id; });
+		if (session.pending_user_input.request_id_json == id)
+		{
+			session.pending_user_input = {};
+			session.waiting_for_user_input = false;
+			ClearAcpPendingWait(session);
+			session.lifecycle_state = session.waiting_for_permission ? kAcpLifecycleWaitingPermission : session.processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		}
+		return;
+	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == uam::acp_claude_stream::kSubtypeInit)
 	{
-		session.initialized = true;
+		if (session.initialize_request_id == 0)
+			session.initialized = true;
 		const std::string session_id = uam::nlohmann_json::TrimmedStringValueOr(message, "session_id", "");
 		if (!session_id.empty())
 		{
@@ -245,13 +409,15 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	}
 	if (type == uam::acp_claude_stream::kMessageTypeAssistant)
 	{
-		HandleClaudeAssistantMessage(app, session, chat, message, browser);
+		if (!uam::AcpSessionHasPendingCancel(session))
+			HandleClaudeAssistantMessage(app, session, chat, message, browser);
 		return;
 	}
 
 	if (type == uam::acp_claude_stream::kMessageTypeUser)
 	{
-		HandleClaudeUserMessage(app, session, chat, message);
+		if (!uam::AcpSessionHasPendingCancel(session))
+			HandleClaudeUserMessage(app, session, chat, message);
 		return;
 	}
 

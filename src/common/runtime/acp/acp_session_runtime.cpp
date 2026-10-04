@@ -2396,7 +2396,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::string pending_user_input_request_id = session->pending_user_input.request_id_json;
 		if (session->running && !pending_user_input_request_id.empty())
 		{
-			(void)acp_detail::SendCodexUserInputResponse(*session, pending_user_input_request_id, {}, error_out);
+			(void)acp_detail::WriteAcpMessage(*session, ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpBuildUserInputResponse(*session, {}), error_out);
 		}
 
 		session->queued_prompt.clear();
@@ -3225,7 +3225,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		AdvanceAcpPermissionQueue(app, *session, *chat, error_out);
 		session->cancel_requested = false;
 		session->cancel_requested_time_s = 0.0;
-		if (!session->waiting_for_permission)
+		if (!session->waiting_for_permission && !session->waiting_for_user_input)
 		{
 			session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
 		}
@@ -3254,8 +3254,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
-		const nlohmann::json response =
-		    acp_detail::BuildCodexUserInputResponse(request_id_json, answers);
+		const nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpBuildUserInputResponse(*session, answers);
 		if (!PersistRemoteInteractionResponse(
 		        app, *chat, request_id_json, response, error_out) ||
 		    !acp_detail::WriteAcpMessage(*session, response, error_out))
@@ -3268,9 +3267,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
 		session->pending_user_input = AcpPendingUserInputState{};
 		session->waiting_for_user_input = false;
-		ClearAcpPendingWait(*session);
 		session->cancel_requested = false;
-		session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		if (session->waiting_for_permission)
+		{
+			BeginAcpPendingWait(*session, kAcpLifecycleWaitingPermission);
+		}
+		else
+		{
+			ClearAcpPendingWait(*session);
+			session->lifecycle_state = session->processing ? kAcpLifecycleProcessing : kAcpLifecycleReady;
+		}
 		return true;
 	}
 

@@ -511,6 +511,7 @@ export function sanitizeUserInputQuestion(value: unknown): AcpUserInputQuestion 
     header: stringOr(value.header),
     question: stringOr(value.question),
     isOther: booleanOr(value.isOther),
+    isMultiple: booleanOr(value.isMultiple),
     isSecret: booleanOr(value.isSecret),
     options: Array.isArray(value.options)
       ? value.options.flatMap((option) => {

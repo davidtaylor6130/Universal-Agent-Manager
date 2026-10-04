@@ -180,7 +180,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
       hasReasoningEffort: false,
       hasServiceTier: false,
       hasAcceptEditsMode: false,
-      structuredPermissionControl: 'provider',
+      structuredPermissionControl: 'uam',
       terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
       showPlanActionButtons: false,

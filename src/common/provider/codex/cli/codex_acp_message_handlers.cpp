@@ -10,6 +10,7 @@
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_tool_items.h"
+#include "common/provider/codex/cli/codex_tool_item.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
@@ -25,33 +26,6 @@ namespace uam::acp_detail
 
 namespace
 {
-
-std::string CodexItemTitle(const nlohmann::json& item)
-{
-	const std::string type = JsonDiagnosticStringValueOr(item, "type", "tool");
-	if (type == uam::acp_tool_items::kCommandExecution)
-	{
-		const std::string command = JsonDiagnosticStringValue(item, "command");
-		return uam::strings::NonEmptyOrFallback(command, "Command");
-	}
-	if (type == uam::acp_tool_items::kFileChange)
-	{
-		return "File changes";
-	}
-	if (type == uam::acp_tool_items::kMcpToolCall)
-	{
-		return JsonDiagnosticStringValueOr(item, "tool", "MCP tool");
-	}
-	if (type == uam::acp_tool_items::kDynamicToolCall)
-	{
-		return JsonDiagnosticStringValueOr(item, "tool", "Tool");
-	}
-	if (type == uam::acp_tool_items::kCollabAgentToolCall)
-	{
-		return JsonDiagnosticStringValueOr(item, "tool", "Agent");
-	}
-	return type;
-}
 
 std::string CodexItemContent(const nlohmann::json& item)
 {
@@ -512,7 +486,7 @@ void RemoveCodexPlanDeltaEntryForItem(AcpSessionState& session, const std::strin
 	std::erase_if(session.plan_entries, [&](const AcpPlanEntryState& entry) { return entry.priority == item_id; });
 }
 
-void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item)
+void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item, bool completed)
 {
 	const std::string item_id = JsonDiagnosticStringValue(item, "id");
 	const std::string type = JsonDiagnosticStringValue(item, "type");
@@ -548,14 +522,17 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	}
 
 	AcpToolCallState& tool_call = UpsertToolCall(session, item_id);
-	tool_call.title = CodexItemTitle(item);
+	tool_call.title = uam::codex::ToolItemTitle(item);
+	const std::string arguments = uam::codex::ToolItemArguments(item);
+	if (!arguments.empty())
+		tool_call.args_json = arguments;
 	tool_call.kind = type;
-	tool_call.status = JsonDiagnosticStringValueOr(item, "status", uam::acp_statuses::ExistingOrPending(tool_call.status));
+	tool_call.status = JsonDiagnosticStringValueOr(item, "status", completed ? uam::acp_statuses::kCompleted : uam::acp_statuses::ExistingOrPending(tool_call.status));
 	if (tool_call.status == "inProgress")
 	{
 		tool_call.status = uam::acp_statuses::kInProgress;
 	}
-	const std::string content = CodexItemContent(item);
+	const std::string content = uam::codex::ToolItemContent(item);
 	if (!content.empty())
 	{
 		tool_call.content = content;
@@ -965,7 +942,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			}
 			return;
 		}
-		HandleCodexToolItem(session, chat, JsonObjectValue(params, "item"));
+		HandleCodexToolItem(session, chat, item, method == uam::acp_methods::kItemCompleted);
 		SaveChatQuietly(app, chat);
 		return;
 	}

@@ -470,6 +470,7 @@ function pendingUserInputEquivalent(existing: AcpPendingUserInput | null, next: 
         question.header === other.header &&
         question.question === other.question &&
         question.isOther === other.isOther &&
+        Boolean(question.isMultiple) === Boolean(other.isMultiple) &&
         question.isSecret === other.isSecret &&
         question.options.length === other.options.length &&
         question.options.every((option, optionIndex) => {

@@ -83,7 +83,7 @@ describe('providerMetadata', () => {
     }
     expect(providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).capabilities).toMatchObject({
       hasAcceptEditsMode: false,
-      structuredPermissionControl: 'provider',
+      structuredPermissionControl: 'uam',
       terminalPermissionControl: 'provider',
     })
   })

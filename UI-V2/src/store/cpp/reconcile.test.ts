@@ -338,3 +338,19 @@ describe('native inactivity deadlines', () => {
     expect(acpBindingFromCppChat({ ...chat, acpSession: { running: false } }, acp).idleShutdownAtMs).toBeUndefined()
   })
 })
+
+describe('question selection mode reconciliation', () => {
+  it('updates the binding when an otherwise identical question becomes multi-select', () => {
+    const question = { id: 'scope', header: 'Scope', question: 'Which checks?', isOther: true, isSecret: false, options: [] }
+    const chat: CppChat = {
+      id: 'chat-1', title: 'Chat', folderId: '', providerId: 'claude-cli', createdAt: '', updatedAt: '',
+      acpSession: { pendingUserInput: { requestId: 'request-1', itemId: 'tool-1', status: 'pending', questions: [question] } },
+    }
+    const previous = acpBindingFromCppChat(chat, undefined)
+    const next = acpBindingFromCppChat({ ...chat, acpSession: {
+      pendingUserInput: { ...chat.acpSession!.pendingUserInput!, questions: [{ ...question, isMultiple: true }] },
+    } }, previous)
+    expect(next).not.toBe(previous)
+    expect(next.pendingUserInput?.questions[0].isMultiple).toBe(true)
+  })
+})

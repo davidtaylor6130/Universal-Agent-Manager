@@ -1850,8 +1850,11 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Answer questions')
-    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    expect(host.querySelector('.uam-composer-region .qr-panel')).toBeTruthy()
+    expect(host.querySelectorAll('.qr-panel')).toHaveLength(1)
+    expect(host.querySelector('.qr-panel')?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull()
+    const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     expect(dialog.textContent).toContain('Which scope?')
     expect(dialog.textContent).toContain('Focused')
     expect(dialog.textContent).not.toContain('Any extra detail?')
@@ -1896,7 +1899,7 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    let dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    let dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     expect(dialog.textContent).toContain('Which browser should I use?')
     act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
@@ -1906,7 +1909,7 @@ describe('ChatView', () => {
       'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingUserInput: pendingInput(
         'uam-control:goal-1', 'goalCreate', 'Allow OpenCode to create this goal?', ['Allow', 'Deny'], false) },
     } })))
-    dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     expect(dialog.textContent).toContain('Allow OpenCode to create this goal?')
     act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
@@ -1945,7 +1948,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"].qr-dialog')!
+    const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     const answerButton = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!
     act(() => answerButton.click())
     const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
@@ -1963,7 +1966,7 @@ describe('ChatView', () => {
     resolveAcpUserInput.mockResolvedValueOnce(true)
     await act(async () => { submitButton.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
-    expect(document.body.querySelector('[role="dialog"].qr-dialog')).toBeNull()
+    expect(document.body.querySelector('.qr-panel fieldset')).toBeNull()
     expect(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Answers submitted')?.disabled).toBe(true)
 
     act(() => root.unmount())
@@ -3845,10 +3848,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.textContent).toContain('Claude structured mode cannot surface interactive permission')
-    expect(host.textContent).toContain('model discovery is limited to the active model')
-    act(() => (host.querySelector('button[aria-label="Dismiss Claude structured mode warning"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Claude structured mode cannot surface interactive permission')
+    expect(host.textContent).not.toContain('Limited structured support')
 
     const planButton = host.querySelector('[data-mode-chip="Provider Plan"] button') as HTMLButtonElement | null
     expect(planButton).toBeTruthy()
@@ -3868,7 +3868,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('labels Claude structured permissions as provider managed', () => {
+  it('allows UAM to control Claude structured permissions', () => {
     const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
     const setSessionCommandSafetyTier = vi.fn(() => Promise.resolve({ ok: true }))
     useAppStore.setState((state) => ({
@@ -3915,10 +3915,13 @@ describe('ChatView', () => {
     act(() => agentButton.click())
 
     const permissionButton = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permissionButton.textContent).toContain('Provider managed')
-    expect(permissionButton.disabled).toBe(true)
+    expect(permissionButton.textContent).toContain('Default')
+    expect(permissionButton.disabled).toBe(false)
+    act(() => permissionButton.click())
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    act(() => reviewOption.click())
     expect(document.body.textContent).not.toContain('Accept Edits')
-    expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
+    expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
     act(() => {

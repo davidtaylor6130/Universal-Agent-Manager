@@ -54,7 +54,7 @@ std::string ContentTextFromJson(const nlohmann::json& content)
 		std::vector<std::string> content_pieces;
 		for (const nlohmann::json& item : content)
 		{
-			const std::string piece = uam::strings::Trim(ContentTextFromJson(item));
+			const std::string piece = ContentTextFromJson(item);
 			if (piece.empty())
 			{
 				continue;

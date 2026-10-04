@@ -25,6 +25,8 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session, int request_id, std::string& out_method) const override;
+	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const std::string& option_id, bool cancelled) const override;
+	nlohmann::json OnAcpBuildUserInputResponse(const uam::AcpSessionState& session, const std::map<std::string, std::vector<std::string>>& answers) const override;
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	bool OnAcpCanSendPromptWithoutSessionId() const override { return true; }

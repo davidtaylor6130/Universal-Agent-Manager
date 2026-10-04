@@ -11,7 +11,6 @@ import type {
   AcpPlanEntry,
   AcpToolCall,
   AcpTurnEvent,
-  AcpUserInputAnswers,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Button, Notice, Tooltip } from '../ui'
@@ -21,7 +20,6 @@ import {
   PermissionInlineCard,
   ToolCallModal,
   ToolCallInlineRows,
-  UserInputInlineCard,
 } from './ToolCallViews'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
@@ -828,7 +826,6 @@ export function TurnTimelineContent({
   waitSeconds,
   onSelectTool,
   onResolvePermission,
-  onResolveUserInput,
   onCancelTurn,
   onStopRuntime,
   sourceChatId,
@@ -858,7 +855,6 @@ export function TurnTimelineContent({
   waitSeconds?: number
   onSelectTool: (toolId: string) => void
   onResolvePermission: (requestId: string, optionId: string) => Promise<boolean>
-  onResolveUserInput: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   onCancelTurn: () => void
   onStopRuntime: () => void
   sourceChatId?: string
@@ -882,15 +878,6 @@ export function TurnTimelineContent({
   const hasPendingPermissionToolEvent = Boolean(
     pendingPermission &&
       events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
-  )
-  const hasPendingUserInputEvent = Boolean(
-    pendingUserInput &&
-      events.some((event) => event.type === 'user_input_request' && event.requestId === pendingUserInput.requestId)
-  )
-  const hasPendingUserInputToolEvent = Boolean(
-    pendingUserInput &&
-      pendingUserInput.itemId &&
-      events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingUserInput.itemId)
   )
 
   return (
@@ -954,10 +941,6 @@ export function TurnTimelineContent({
             pendingPermission &&
             !hasPendingPermissionEvent &&
             pendingPermission.toolCallId === event.toolCallId
-          const shouldRenderPendingUserInput =
-            pendingUserInput &&
-            !hasPendingUserInputEvent &&
-            pendingUserInput.itemId === event.toolCallId
 
 
           return (
@@ -981,17 +964,7 @@ export function TurnTimelineContent({
                   onStopRuntime={onStopRuntime}
                 />
               )}
-              {shouldRenderPendingUserInput && (
-                <UserInputInlineCard
-                  input={pendingUserInput}
-                  onResolve={onResolveUserInput}
-                  waitIsStale={waitIsStale}
-                  waitStaleReason={waitStaleReason}
-                  waitSeconds={waitSeconds}
-                  onCancelTurn={onCancelTurn}
-                  onStopRuntime={onStopRuntime}
-                />
-              )}
+
             </div>
           )
         }
@@ -1011,20 +984,6 @@ export function TurnTimelineContent({
           )
         }
 
-        if (event.type === 'user_input_request' && pendingUserInput?.requestId === event.requestId) {
-          return (
-            <UserInputInlineCard
-              key={`user-input-${event.requestId}-${index}`}
-              input={pendingUserInput}
-              onResolve={onResolveUserInput}
-              waitIsStale={waitIsStale}
-              waitStaleReason={waitStaleReason}
-              waitSeconds={waitSeconds}
-              onCancelTurn={onCancelTurn}
-              onStopRuntime={onStopRuntime}
-            />
-          )
-        }
 
         return null
       })}
@@ -1044,17 +1003,6 @@ export function TurnTimelineContent({
         <PermissionInlineCard permission={pendingPermission} onResolve={onResolvePermission}
           waitIsStale={waitIsStale} waitStaleReason={waitStaleReason} waitSeconds={waitSeconds}
           onCancelTurn={onCancelTurn} onStopRuntime={onStopRuntime} />
-      )}
-      {pendingUserInput && !hasPendingUserInputEvent && !hasPendingUserInputToolEvent && (
-        <UserInputInlineCard
-          input={pendingUserInput}
-          onResolve={onResolveUserInput}
-          waitIsStale={waitIsStale}
-          waitStaleReason={waitStaleReason}
-          waitSeconds={waitSeconds}
-          onCancelTurn={onCancelTurn}
-          onStopRuntime={onStopRuntime}
-        />
       )}
       {stoppedResponseLabel(stopReason, interrupted) && <div className="conversation-interrupted">{stoppedResponseLabel(stopReason, interrupted)}</div>}
     </div>
