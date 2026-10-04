@@ -1,3 +1,4 @@
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
@@ -336,6 +337,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     fileExplorerApplication: '',
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
+    centralProviderConfiguration: DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: [] as McpServerConfiguration[],
     executionHosts: [{
       id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
@@ -1842,6 +1844,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       applySettings()
       return true
+    },
+
+    setCentralProviderConfiguration: async (configuration: CentralProviderConfiguration): Promise<{ ok: boolean; error?: string }> => {
+      const previous = get().centralProviderConfiguration
+      const revision = rememberOptimisticFields(['centralProviderConfiguration'])
+      set({ centralProviderConfiguration: configuration })
+      if (!isCefContext()) return { ok: true }
+      const response = await sendToCEF({ action: 'setCentralProviderConfiguration', payload: configuration, requestId: createRequestId('setCentralProviderConfiguration') })
+      if (!response.ok) set(latestOptimisticRollback({ centralProviderConfiguration: previous }, revision))
+      return { ok: response.ok, error: response.error }
     },
 
     setMcpServers: async (servers: McpServerConfiguration[]): Promise<{ ok: boolean; error?: string }> => {

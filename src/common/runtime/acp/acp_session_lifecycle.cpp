@@ -1,3 +1,4 @@
+#include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -202,6 +203,17 @@ namespace
 			    app, session, *chat, *execution_host, method, &request);
 		}
 
+		// Native launch configuration already owns shared MCP connections for this session.
+		if (!session.provider_configuration_directory.empty())
+		{
+			std::string error;
+			if (chat != nullptr && !UamControlService::AppendSessionMcpServer(app, session, *chat, method, request, &error))
+			{
+				session.last_error = std::move(error);
+				return false;
+			}
+			return true;
+		}
 		std::string error;
 		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(
 		    app.settings.mcp_servers, cwd, session.mcp_http_supported,
@@ -675,6 +687,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	ChatSession launch_chat = chat;
+	if (session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
 	std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, launch_chat);
 	std::vector<std::pair<std::string, std::string>> launch_environment =
@@ -708,6 +721,64 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			                          adapter.launch_environment.end());
 		}
 	}
+	nlohmann::json launch_control_servers = nlohmann::json::array();
+	AppSettings configuration_settings = app.settings;
+	if (!session.model_discovery_only && provider.id == uam::provider_ids::kClaudeCli && chat.uam_control_enabled)
+	{
+		nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		if (!UamControlService::AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, control_request, &startup_error))
+		{
+			session.lifecycle_state = kAcpLifecycleError;
+			session.last_error = startup_error;
+			if (error_out) *error_out = startup_error;
+			return false;
+		}
+		nlohmann::json server = control_request["params"]["mcpServers"].back();
+		if (remote)
+		{
+			const ExecutionHost host = *execution_host;
+			if (chat.remote_uam_control_channel_id.empty())
+			{
+				chat.remote_uam_control_channel_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+				if (chat.remote_uam_control_channel_id.empty() || !SaveChatQuietly(app, chat))
+				{
+					UamControlService::RevokeForSession(app, session);
+					session.last_error = "Could not save the remote UAM tool connection.";
+					if (error_out) *error_out = session.last_error;
+					return false;
+				}
+			}
+			const std::string channel = "claude-control-" + chat.remote_uam_control_channel_id;
+			std::vector<std::string> control_argv{server["command"].get<std::string>()};
+			for (const nlohmann::json& argument : server["args"]) control_argv.push_back(argument.get<std::string>());
+			uam::provider_setup::Environment control_environment;
+			for (const nlohmann::json& entry : server["env"]) control_environment.emplace_back(entry["name"].get<std::string>(), entry["value"].get<std::string>());
+			const std::string spec = uam::remote::BuildProcessProxySpec(channel, uam::paths::PathFromUtf8(control_argv.front()).parent_path(), control_argv, control_environment);
+			session.uam_control_relay = std::make_unique<std::jthread>([host, spec](std::stop_token stop) {
+				uam::remote::RunLocalMcpRelayFromSpec(stop, host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version, spec);
+			});
+			server = uam::remote::BuildRemoteMcpServer(channel, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version);
+		}
+		launch_control_servers.push_back(std::move(server));
+		if (!configuration_settings.central_provider_configuration.enabled)
+		{
+			configuration_settings.central_provider_configuration = {};
+			configuration_settings.central_provider_configuration.enabled = true;
+		}
+	}
+	ProviderConfigurationBundle configuration_bundle;
+	if (!session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
+	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error) ||
+	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers))))
+	{
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out) *error_out = startup_error;
+		return false;
+	}
+	if (!session.recovering_remote_turn && !session.recovering_remote_process) session.provider_configuration_directory = configuration_bundle.local_directory;
+	for (UamControlCapability& capability : app.uam_control_capabilities)
+		if (capability.id == session.uam_control_capability_id) capability.provider_configuration_directory = session.provider_configuration_directory;
 	const std::string launch_detail = "host=" + execution_host->id +
 	                                  ", cwd=" + AcpWorkingDirectoryString(workspace_root) +
 	                                  ", argv=" + JoinAcpArgvForDiagnostics(launch_argv) +
@@ -772,7 +843,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 					                            (session.recovering_remote_turn || session.recovering_remote_process)
 					                                ? chat.remote_delivered_stdout_cursor : 0,
 					                            (session.recovering_remote_turn || session.recovering_remote_process)
-					                                ? chat.remote_delivered_stderr_cursor : 0)}};
+					                                ? chat.remote_delivered_stderr_cursor : 0, {}, {},
+					                            configuration_bundle.local_directory.empty() ? "" : provider.id,
+					                            uam::paths::Utf8PathString(configuration_bundle.local_directory), launch_control_servers)}};
 		}
 	}
 	if (remote && startup_error.empty())

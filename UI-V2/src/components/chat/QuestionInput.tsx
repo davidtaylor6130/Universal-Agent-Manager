@@ -6,6 +6,7 @@ import './QuestionInput.css'
 type Props = {
     input: AcpPendingUserInput
     onResolve: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
+    autoOpen?: boolean
     waitIsStale?: boolean
     waitStaleReason?: string
     waitSeconds?: number
@@ -36,9 +37,9 @@ export function UserInputInlineCard(props: Props)
     return <QuestionRequest key={`${props.input.requestId}:${props.input.itemId}`} {...props} />
 }
 
-function QuestionRequest({ input, onResolve, ...wait }: Props)
+function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
 {
-    const [open, setOpen] = useState(true)
+    const [open, setOpen] = useState(autoOpen)
     const [drafts, setDrafts] = useState<Record<string, Draft>>({})
     const [step, setStep] = useState(0)
     const [submitting, setSubmitting] = useState(false)

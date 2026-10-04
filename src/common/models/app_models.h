@@ -485,6 +485,7 @@ struct McpSecretReference
 struct McpServerConfiguration
 {
 	std::string id;
+	std::string execution_host_id;
 	std::string name;
 	std::string workspace_directory;
 	std::string transport = "stdio";
@@ -526,6 +527,17 @@ struct ComputerUseApplicationRule
 /// <summary>
 /// Persisted application settings.
 /// </summary>
+/// <summary>Resources UAM installs privately for every configured provider launch.</summary>
+struct CentralProviderConfiguration
+{
+	bool enabled = false;
+	std::string instructions;
+	std::vector<std::string> instruction_files;
+	std::vector<std::string> skill_directories;
+	std::string default_agent_id = "build";
+	bool uam_control_enabled = true;
+};
+
 struct AppSettings
 {
 	bool computer_use_allowlist_enabled = false;
@@ -566,6 +578,7 @@ struct AppSettings
 	std::string file_explorer_application;
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
+	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
 	std::vector<std::string> favorite_uam_agent_ids;

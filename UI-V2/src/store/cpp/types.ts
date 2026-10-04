@@ -591,6 +591,7 @@ export interface CppSettings {
   fileExplorerApplication?: string
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
+  centralProviderConfiguration?: CentralProviderConfiguration
   mcpServers?: McpServerConfiguration[]
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
@@ -630,6 +631,7 @@ export interface McpSecretReference {
 }
 
 export interface McpServerConfiguration {
+  executionHostId?: string
   id: string
   name: string
   workspaceDirectory: string
@@ -846,3 +848,16 @@ export type ParsedPushMessage =
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
+
+export interface CentralProviderConfiguration {
+  enabled: boolean
+  instructions: string
+  instructionFiles: string[]
+  skillDirectories: string[]
+  defaultAgentId: string
+  uamControlEnabled: boolean
+}
+
+export const DEFAULT_CENTRAL_PROVIDER_CONFIGURATION: CentralProviderConfiguration = {
+  enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true,
+}

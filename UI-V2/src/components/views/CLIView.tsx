@@ -11,6 +11,7 @@ import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../stor
 import type { CliLifecycleState } from '../../store/useAppStore'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import { resolveDocumentTheme } from '../../utils/themeStorage'
+import { UserInputInlineCard } from '../chat/QuestionInput'
 import { useResolvedTheme } from '../../hooks/useTheme'
 
 interface CLIViewProps {
@@ -83,6 +84,8 @@ export function CLIView({ session }: CLIViewProps) {
     const binding = s.cliBindingBySessionId[session.id]
     return { terminalId: binding?.terminalId, running: binding?.running, lastError: binding?.lastError }
   }))
+  const pendingUserInput = useAppStore(s => s.acpBindingBySessionId[session.id]?.pendingUserInput)
+  const resolveAcpUserInput = useAppStore(s => s.resolveAcpUserInput)
   const setCliBinding = useAppStore((s) => s.setCliBinding)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
@@ -506,6 +509,11 @@ export function CLIView({ session }: CLIViewProps) {
         <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</button>
         <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</button>
       </div>}
+      {pendingUserInput?.requestId.startsWith('uam-control:') && <UserInputInlineCard
+        input={pendingUserInput}
+        autoOpen={false}
+        onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+      />}
       {/* Terminal area */}
       <div
         className={`flex-1 ${companion ? 'overflow-auto' : 'overflow-hidden'}`}

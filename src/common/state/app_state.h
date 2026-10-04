@@ -57,6 +57,7 @@ namespace uam
 		std::string chat_id;
 		std::vector<std::string> argv;
 		std::vector<std::pair<std::string, std::string>> environment;
+		std::filesystem::path provider_configuration_directory;
 		std::string channel;
 		std::string error;
 		bool succeeded = false;
@@ -78,8 +79,11 @@ namespace uam
 		int token_expected_bytes = 0;
 	};
 
+	struct AcpSessionState;
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
+		std::shared_ptr<AcpSessionState> uam_control_session;
+		std::unique_ptr<std::jthread> uam_control_relay;
 		std::string terminal_id;
 		std::string frontend_chat_id;
 		bool running = false;
@@ -379,6 +383,8 @@ namespace uam
 
 		std::string id;
 		std::filesystem::path directory;
+		std::filesystem::path provider_configuration_directory;
+		bool central_skills_enabled = false;
 		std::string chat_id;
 		std::string session_chat_id;
 		std::string provider_id;
@@ -486,6 +492,8 @@ namespace uam
 		std::string active_uam_agent_execution_capability = "uam-prompt-injected";
 		std::filesystem::path active_uam_agent_adapter_directory;
 		std::string managed_agent_run_id;
+		std::unique_ptr<std::jthread> uam_control_relay;
+		std::filesystem::path provider_configuration_directory;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;

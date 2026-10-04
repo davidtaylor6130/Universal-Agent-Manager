@@ -110,6 +110,23 @@ describe('CLIView', () => {
     delete (window as TestWindow).cefQuery
   })
 
+  it('shows native UAM questions without opening the review dialog', async () => {
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }], acpBindingBySessionId: { 'native-chat': {
+      pendingUserInput: { status: 'pending', requestId: 'uam-control:question', itemId: 'question', questions: [
+        { id: 'userQuestion', header: 'Question', question: 'Proceed?', options: [{ label: 'Yes', description: '' }], isOther: true, isSecret: false },
+      ] },
+    } } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<CLIView session={{ id: 'native-chat', name: 'Native', providerId: 'gemini-cli', folderId: null, createdAt: new Date(), updatedAt: new Date(), viewMode: 'cli' }} />))
+    expect(host.textContent).toContain('Answer questions')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(host.querySelector('input')).toBeNull()
+    await act(async () => root.unmount())
+    host.remove()
+  })
+
   it('scopes late cleanup to its old attachment after a replacement view mounts', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     let resolveStart: ((response: string) => void) | null = null

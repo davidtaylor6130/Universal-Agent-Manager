@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup.h"
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
@@ -192,6 +193,7 @@ namespace uam::remote
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
+		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
 		return true;
@@ -321,12 +323,39 @@ namespace uam::remote
 		return false;
 	}
 
+	bool RunnerClient::InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out, std::stop_token stop_token)
+	{
+		if (!Connect(error_out, stop_token)) return false;
+		std::string error;
+		if (!m_centralProviderConfiguration)
+		{
+			if (error_out) *error_out = "Update the SSH helper before using central provider configuration.";
+			return false;
+		}
+		std::string bytes;
+		if (!uam::provider_setup::ReadFile(source / "owner.json", bytes, error)) { if (error_out) *error_out = error; return false; }
+		const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
+		if (!uam::provider_setup::ValidateManifest(manifest, error)) { if (error_out) *error_out = error; return false; }
+		nlohmann::json response;
+		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json::array());
+		if (!missing.is_array()) { if (error_out) *error_out = "SSH helper returned an invalid resource list."; return false; }
+		for (const nlohmann::json& entry : missing)
+		{
+			if (!entry.is_string() || !manifest["files"].contains(entry.get<std::string>())) { if (error_out) *error_out = "SSH helper requested an unknown resource."; return false; }
+			const std::string name = entry.get<std::string>();
+			if (!uam::provider_setup::ReadFile(source / uam::paths::PathFromUtf8(name), bytes, error)) { if (error_out) *error_out = error; return false; }
+			if (!UploadFile("configuration-" + Nonce(), target / uam::paths::PathFromUtf8(name), bytes, error_out, stop_token)) return false;
+		}
+		return true;
+	}
+
 	bool RunnerClient::StartProcess(
 	    const std::string& session_id, const std::filesystem::path& working_directory,
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    std::string* error_out, bool attach_if_exists, std::string control_token,
-	    bool retry_lost_reply)
+	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers)
 	{
 		if (!Connect(error_out)) return false;
 		const bool transient_lease = control_token.empty();
@@ -342,6 +371,12 @@ namespace uam::remote
 		                          {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
 		                          {"environment", std::move(environment_json)},
 		                          {"attachIfExists", attach_if_exists}};
+		if (!configuration_directory.empty())
+		{
+			request["sessionMcpServers"] = session_mcp_servers;
+			request["configurationProvider"] = configuration_provider;
+			request["configurationDirectory"] = uam::paths::Utf8PathString(configuration_directory);
+		}
 		if (m_expectedProtocolVersion >= 3) request["controlToken"] = control_token;
 		if (m_expectedProtocolVersion >= 3 && transient_lease)
 			request["transientLeaseMs"] = 60000;
@@ -1000,5 +1035,6 @@ namespace uam::remote
 		m_runnerStartup = false;
 		m_leasedChannelTake = false;
 		m_providerNativeContext = false;
+		m_centralProviderConfiguration = false;
 	}
 }

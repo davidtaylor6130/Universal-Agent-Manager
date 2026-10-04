@@ -1,3 +1,4 @@
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
@@ -1406,6 +1407,16 @@ export function providerChatDefaultsForNewChat(
 // Settings sanitiser
 // ---------------------------------------------------------------------------
 
+export function sanitizeCentralProviderConfiguration(value: unknown): CentralProviderConfiguration {
+  if (!isRecord(value)) return { ...DEFAULT_CENTRAL_PROVIDER_CONFIGURATION }
+  const paths = (entries: unknown): string[] => Array.isArray(entries) ? entries.filter((entry): entry is string => typeof entry === 'string').slice(0, 64) : []
+  return {
+    enabled: booleanOr(value.enabled, false), instructions: stringOr(value.instructions),
+    instructionFiles: paths(value.instructionFiles), skillDirectories: paths(value.skillDirectories),
+    defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
+  }
+}
+
 export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
@@ -1434,6 +1445,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       fileExplorerApplication: '',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
+      centralProviderConfiguration: { ...DEFAULT_CENTRAL_PROVIDER_CONFIGURATION },
       mcpServers: [],
       executionHosts: [{
         id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
@@ -1479,6 +1491,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
           id: stringOr(entry.id),
           name: stringOr(entry.name),
           workspaceDirectory: stringOr(entry.workspaceDirectory),
+          executionHostId: stringOr(entry.executionHostId),
           transport,
           command: stringOr(entry.command),
 		  args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
@@ -1565,6 +1578,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     fileExplorerApplication: stringOr(value.fileExplorerApplication),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
+    centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
     mcpServers,
     executionHosts,
     favoriteUamAgentIds,

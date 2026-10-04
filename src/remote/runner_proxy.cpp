@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup.h"
 #include "remote/runner_proxy.h"
 
 #include "common/config/execution_host_config.h"
@@ -85,6 +86,9 @@ namespace uam::remote
 			std::filesystem::path working_directory;
 			std::vector<std::string> argv;
 			std::vector<std::pair<std::string, std::string>> environment;
+			nlohmann::json session_mcp_servers = nlohmann::json::array();
+			std::string configuration_provider;
+			std::filesystem::path configuration_directory;
 			std::string context_provider_id;
 			std::filesystem::path context_directory;
 			bool attach_only = false;
@@ -156,6 +160,10 @@ namespace uam::remote
 				result.argv = spec["argv"].get<std::vector<std::string>>();
 				for (const auto& [name, value] : spec["environment"].items())
 					result.environment.emplace_back(name, value.get<std::string>());
+				result.session_mcp_servers = spec.value("sessionMcpServers", nlohmann::json::array());
+				if (!result.session_mcp_servers.is_array()) return std::nullopt;
+				result.configuration_provider = spec.value("configurationProvider", "");
+				result.configuration_directory = uam::paths::PathFromUtf8(spec.value("configurationDirectory", ""));
 				result.context_provider_id = spec.value("contextProviderId", "");
 				result.context_directory = uam::paths::PathFromUtf8(spec.value("contextDirectory", ""));
 				result.attach_only = spec.value("attachOnly", false);
@@ -326,7 +334,7 @@ namespace uam::remote
 	    bool attach_only, const std::string& delivery_token,
 	    std::uintmax_t delivered_stdout_cursor,
 	    std::uintmax_t delivered_stderr_cursor, const std::string& context_provider_id,
-	    const std::string& context_directory)
+	    const std::string& context_directory, const std::string& configuration_provider, const std::string& configuration_directory, const nlohmann::json& session_mcp_servers)
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
@@ -336,6 +344,7 @@ namespace uam::remote
 		    {"deliveryToken", delivery_token},
 		    {"deliveredStdoutCursor", delivered_stdout_cursor},
 		    {"deliveredStderrCursor", delivered_stderr_cursor},
+		    {"sessionMcpServers", session_mcp_servers}, {"configurationProvider", configuration_provider}, {"configurationDirectory", configuration_directory},
 		    {"contextProviderId", context_provider_id}, {"contextDirectory", context_directory},
 		}.dump());
 	}
@@ -434,7 +443,7 @@ namespace uam::remote
 		int RunTerminalProcessInternal(const std::string& encoded_spec, bool private_launch)
 		{
 			std::optional<DecodedProxySpec> spec = DecodeProxySpec(encoded_spec);
-			if (!spec || (!private_launch && (!spec->environment.empty() || !spec->context_provider_id.empty())) ||
+			if (!spec || (!private_launch && (!spec->environment.empty() || !spec->context_provider_id.empty() || !spec->configuration_provider.empty() || !spec->session_mcp_servers.empty())) ||
 			    !spec->working_directory.is_absolute() ||
 			    uam::paths::Utf8PathString(spec->working_directory).find('\0') != std::string::npos ||
 			    spec->argv.front().empty()) return 2;
@@ -452,6 +461,14 @@ namespace uam::remote
 					std::cerr << error << "\n";
 					return 70;
 				}
+			}
+			if (!spec->configuration_directory.empty())
+			{
+				const std::filesystem::path& directory = spec->configuration_directory;
+				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != spec->working_directory.lexically_normal()) return 2;
+				std::string error;
+				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
+				{ std::cerr << error << '\n'; return 70; }
 			}
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
@@ -545,6 +562,24 @@ namespace uam::remote
 		return RunTerminalProcessInternal(encoded_spec, true);
 	}
 
+	nlohmann::json BuildRemoteMcpServer(const std::string& channel, const std::string& platform, const std::string& version, const std::string& directory, int protocol)
+	{
+		const std::string root = uam::execution_hosts::RunnerDirectory(platform, directory);
+		if (platform == "windows" || platform == "Windows")
+			return {{"name", "uam-control"}, {"command", "powershell.exe"}, {"args", nlohmann::json::array({"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "& (Join-Path $HOME '" + root + "/" + version + "/uam-runner.exe') mcp --channel '" + channel + "'"})}, {"env", nlohmann::json::array()}};
+		return {{"name", "uam-control"}, {"command", "/bin/sh"}, {"args", nlohmann::json::array({"-c", "exec \"$HOME/" + root + "/" + version + "/uam-runner\" mcp --channel \"$1\" --socket \"$HOME/" + root + "/" + RunnerEndpointName(version, protocol) + ".sock\"", "uam-control", channel})}, {"env", nlohmann::json::array()}};
+	}
+
+	void RunLocalMcpRelayFromSpec(std::stop_token stop, const std::string& alias, const std::string& platform, const std::string& version, const std::string& runner_directory, int protocol, const std::string& encoded_spec)
+	{
+#if defined(__APPLE__) || defined(_WIN32)
+		const std::optional<DecodedProxySpec> spec = DecodeProxySpec(encoded_spec);
+		if (spec) RunLocalMcpRelay(stop, alias, platform, version, runner_directory, protocol, *spec);
+#else
+		(void)stop; (void)alias; (void)platform; (void)version; (void)runner_directory; (void)protocol; (void)encoded_spec;
+#endif
+	}
+
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
 	                    const std::string& version, const std::string& runner_directory,
 	                    int protocol_version)
@@ -600,6 +635,13 @@ namespace uam::remote
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
 			return 70;
 		}
+		std::filesystem::path configuration_directory;
+		if (!spec->attach_only && !spec->configuration_directory.empty())
+		{
+			configuration_directory = spec->working_directory / ".UAM" / "provider-setup" / spec->configuration_directory.filename();
+			if (!client.InstallProviderConfiguration(spec->configuration_directory, configuration_directory, &error))
+			{ std::cerr << error << '\n'; return 70; }
+		}
 		if (protocol_version >= 3)
 			client.SetProcessControlToken(session_id, spec->delivery_token);
 		if (spec->attach_only)
@@ -622,7 +664,7 @@ namespace uam::remote
 		}
 		else if (!client.StartProcess(session_id, spec->working_directory, spec->argv,
 		                              spec->environment, &error, false,
-		                              spec->delivery_token))
+		                              spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
 			return 70;

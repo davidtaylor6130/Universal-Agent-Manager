@@ -1,3 +1,4 @@
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
@@ -121,6 +122,7 @@ function deserializeState(
     fileExplorerApplication: string
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
+    centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
@@ -313,6 +315,7 @@ function deserializeState(
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
+    centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
@@ -501,6 +504,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
+    centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
@@ -681,6 +685,7 @@ export const useAppStore = create<AppState>((set, get) => {
             fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
+            centralProviderConfiguration: current.centralProviderConfiguration,
             mcpServers: current.mcpServers,
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
@@ -994,7 +999,8 @@ export const useAppStore = create<AppState>((set, get) => {
         fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
-        mcpServers: current.mcpServers,
+        centralProviderConfiguration: current.centralProviderConfiguration,
+            mcpServers: current.mcpServers,
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,

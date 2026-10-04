@@ -1,3 +1,6 @@
+#include "app/uam_control_service.h"
+#include "app/provider_configuration_service.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 
 #include "app/chat_domain_service.h"
@@ -128,6 +131,12 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 	effective_chat.native_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
+	if (app.settings.central_provider_configuration.enabled || chat.uam_control_enabled)
+	{
+		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+		if (selected != catalog.definitions.end() && selected->workspace_access == "read") effective_chat.approval_mode = "plan";
+	}
 
 	return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 }
@@ -262,9 +271,9 @@ void RetryCliProviderContextCleanup(AppState& app, double now_s)
 	    });
 }
 
-bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
+bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
-    std::string& launch_channel, std::string& error, std::stop_token stop_token)
+    std::string& launch_channel, std::string& error, std::stop_token stop_token, const std::string& configuration_directory, const nlohmann::json& native_servers)
 {
 	launch_channel.clear();
 	if (!PrepareUnboundCodexHistory(app, chat, argv, error)) return false;
@@ -298,7 +307,7 @@ bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const Execution
 		return false;
 	};
 	const ProviderHandoffCliContext location{host.id, directory, ContextConnectionIdentity(host)};
-	if (!uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
+	if (!chat.provider_handoff_context.empty() && !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
 	{
 		chat.provider_handoff_cli_contexts.push_back(location);
 		if (!ChatRepository::SaveChat(app.data_root, chat))
@@ -337,7 +346,7 @@ bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const Execution
 	// Preserve the terminal proxy's environment trust gate: only its private leased handoff carries overrides.
 	launch_channel = "terminal-context-" + PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	if (!client->OpenChannel(launch_channel, &error, false, 60000, stop_token)) return false;
-	if (!client->WriteChannel(launch_channel, "desktopToRemote", uam::remote::BuildProcessProxySpec("terminal", workspace, argv, {}, false, {}, 0, 0, chat.provider_id, directory), &error, stop_token))
+	if (!client->WriteChannel(launch_channel, "desktopToRemote", uam::remote::BuildProcessProxySpec("terminal", workspace, argv, {}, false, {}, 0, 0, chat.provider_id, directory, configuration_directory.empty() ? "" : chat.provider_id, configuration_directory, native_servers), &error, stop_token))
 	{
 		if (!stop_token.stop_requested()) (void)client->CloseChannel(launch_channel, nullptr, stop_token);
 		launch_channel.clear();
@@ -346,17 +355,67 @@ bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const Execution
 	return true;
 }
 
+bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
+    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
+    std::string& launch_channel, std::string& error, std::stop_token stop_token, const nlohmann::json& native_servers, std::filesystem::path* installed_directory = nullptr)
+{
+	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	ProviderConfigurationBundle bundle;
+	AppSettings settings = app.settings;
+	if (!native_servers.empty() && !settings.central_provider_configuration.enabled)
+	{
+		settings.central_provider_configuration = {};
+		settings.central_provider_configuration.enabled = true;
+	}
+	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error)) return false;
+	if (installed_directory) *installed_directory = bundle.local_directory;
+	std::filesystem::path target;
+	std::unique_ptr<uam::remote::RunnerClient> client;
+	if (!bundle.local_directory.empty() && host.id != uam::execution_hosts::kLocalHostId)
+	{
+		target = workspace / ".UAM" / "provider-setup" / bundle.local_directory.filename();
+		client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		if (!client->InstallProviderConfiguration(bundle.local_directory, target, &error, stop_token)) return false;
+	}
+	if (!PrepareCliProviderConversation(app, chat, host, argv, environment, launch_channel, error, stop_token, uam::paths::Utf8PathString(target), native_servers)) return false;
+	if (bundle.local_directory.empty()) return true;
+	if (host.id == uam::execution_hosts::kLocalHostId)
+		return uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, workspace, argv, environment, error, native_servers);
+	if (launch_channel.empty())
+	{
+		launch_channel = "terminal-configuration-" + PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (!client->OpenChannel(launch_channel, &error, false, 60000, stop_token)) return false;
+		if (!client->WriteChannel(launch_channel, "desktopToRemote", uam::remote::BuildProcessProxySpec("terminal", workspace, argv, {}, false, {}, 0, 0, {}, {}, chat.provider_id, uam::paths::Utf8PathString(target), native_servers), &error, stop_token))
+		{
+			if (!stop_token.stop_requested()) (void)client->CloseChannel(launch_channel, nullptr, stop_token);
+			launch_channel.clear();
+			return false;
+		}
+	}
+	return true;
+}
+
+bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
+    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
+    std::string& launch_channel, std::string& error, std::stop_token stop_token)
+{
+	return PrepareConfiguredCliProviderHandoff(app, chat, host, argv, environment, launch_channel, error, stop_token, nlohmann::json::array());
+}
+
 // The worker uses a private snapshot. Only the UI owner registers durable cleanup metadata.
 bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
     std::string& launch_channel, std::string& error)
 {
 	if (terminal.context_preparation == nullptr && !PrepareUnboundCodexHistory(app, chat, argv, error)) return false;
-	if (terminal.context_preparation == nullptr && (chat.provider_handoff_context.empty() ||
+	if (terminal.context_preparation == nullptr && !app.settings.central_provider_configuration.enabled &&
+	    uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() &&
+	    (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() ||
 	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id))) return true;
 	const std::string baseline = nlohmann::json::array({chat.id, chat.provider_id,
 	    uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)),
-	    ContextConnectionIdentity(host), chat.provider_handoff_context, argv, environment}).dump();
+	    ContextConnectionIdentity(host), host.instruction_file, chat.uam_control_enabled, chat.uam_agent_id, chat.provider_handoff_context, argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(app.settings.mcp_servers)}).dump();
 	if (terminal.context_preparation != nullptr)
 	{
 		const std::shared_ptr<CliContextPreparation> state = terminal.context_preparation;
@@ -372,11 +431,20 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 		error = state->error;
 		if (!state->succeeded)
 		{
+			if (terminal.uam_control_session != nullptr) UamControlService::RevokeForSession(app, *terminal.uam_control_session);
+			terminal.uam_control_session.reset();
+			terminal.uam_control_relay.reset();
 			if (error.empty()) error = "Provider context preparation failed. Retry opening its terminal.";
 			return false;
 		}
+		if (terminal.uam_control_session != nullptr)
+		{
+			terminal.uam_control_session->provider_configuration_directory = state->provider_configuration_directory;
+			for (UamControlCapability& capability : app.uam_control_capabilities)
+				if (capability.id == terminal.uam_control_session->uam_control_capability_id) capability.provider_configuration_directory = state->provider_configuration_directory;
+		}
 		argv = state->argv;
-		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId)
+		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !chat.provider_handoff_context.empty() && (chat.native_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
 		{
 			const std::vector<std::string>::const_iterator resume = std::find(argv.cbegin() + 1, argv.cend(), "resume");
 			if (resume == argv.cend() || resume + 1 == argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1))) return false;
@@ -408,7 +476,7 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 	}
 	const ProviderHandoffCliContext location{host.id,
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};
-	if (!uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
+	if (!chat.provider_handoff_context.empty() && !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
 	{
 		chat.provider_handoff_cli_contexts.push_back(location);
 		if (!ChatRepository::SaveChat(app.data_root, chat))
@@ -424,9 +492,30 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 	state->argv = argv;
 	state->environment = environment;
 	terminal.context_preparation = state;
+	nlohmann::json native_servers = nlohmann::json::array();
+	if (chat.uam_control_enabled)
+	{
+		nlohmann::json server;
+		if (!UamControlService::PrepareTerminalMcpServer(app, terminal, chat, server, error))
+		{ terminal.context_preparation.reset(); return false; }
+		if (host.id != uam::execution_hosts::kLocalHostId)
+		{
+			const std::string channel = "terminal-control-" + PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			std::vector<std::string> control_argv{server["command"].get<std::string>()};
+			for (const nlohmann::json& argument : server["args"]) control_argv.push_back(argument.get<std::string>());
+			uam::provider_setup::Environment control_environment;
+			for (const nlohmann::json& entry : server["env"]) control_environment.emplace_back(entry["name"].get<std::string>(), entry["value"].get<std::string>());
+			const std::string spec = uam::remote::BuildProcessProxySpec(channel, uam::paths::PathFromUtf8(control_argv.front()).parent_path(), control_argv, control_environment);
+			terminal.uam_control_relay = std::make_unique<std::jthread>([host, spec](std::stop_token stop) {
+				uam::remote::RunLocalMcpRelayFromSpec(stop, host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version, spec);
+			});
+			server = uam::remote::BuildRemoteMcpServer(channel, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version);
+		}
+		native_servers.push_back(std::move(server));
+	}
 	CliContextPreparationTask task;
 	task.state = state;
-	task.worker = std::make_unique<std::jthread>([state, data_root = app.data_root, settings = app.settings, folders = app.folders, snapshot = chat, host](std::stop_token stop) mutable
+	task.worker = std::make_unique<std::jthread>([state, data_root = app.data_root, settings = app.settings, folders = app.folders, snapshot = chat, host, native_servers](std::stop_token stop) mutable
 	{
 		std::stop_callback cancel(stop, [state]() { state->cancellation.request_stop(); });
 		AppState isolated;
@@ -435,8 +524,8 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 		isolated.folders = folders;
 		try
 		{
-			state->succeeded = PrepareCliProviderHandoff(isolated, snapshot, host, state->argv, state->environment,
-			    state->channel, state->error, state->cancellation.get_token());
+			state->succeeded = PrepareConfiguredCliProviderHandoff(isolated, snapshot, host, state->argv, state->environment,
+			    state->channel, state->error, state->cancellation.get_token(), native_servers, &state->provider_configuration_directory);
 		}
 		catch (...)
 		{
