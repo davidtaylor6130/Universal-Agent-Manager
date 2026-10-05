@@ -46,6 +46,7 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 {
 	session.load_history_replay_updates.clear();
 	const int exclusive_end = std::min(turn_user_message_index, static_cast<int>(chat.messages.size()));
+	session.load_history_replay_end_message_index = exclusive_end;
 	for (int i = 0; i < exclusive_end; ++i)
 	{
 		const Message& message = chat.messages[static_cast<std::size_t>(i)];
@@ -54,6 +55,7 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 			if (!uam::strings::IsBlank(message.content))
 			{
 				AcpReplayUpdateState replay;
+				replay.message_index = i;
 				replay.session_update = uam::acp_stream_types::kSessionUpdateUserMessageChunk;
 				replay.text = message.content;
 				session.load_history_replay_updates.push_back(std::move(replay));
@@ -68,9 +70,12 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 
 		if (!message.blocks.empty())
 		{
-			for (const MessageBlock& block : message.blocks)
+			for (std::size_t block_index = 0; block_index < message.blocks.size(); ++block_index)
 			{
+				const MessageBlock& block = message.blocks[block_index];
 				AcpReplayUpdateState replay;
+				replay.message_index = i;
+				replay.block_index = static_cast<int>(block_index);
 				if (block.type == uam::acp_stream_types::kTurnEventThought)
 				{
 					replay.session_update = uam::acp_stream_types::kSessionUpdateAgentThoughtChunk;
@@ -99,6 +104,7 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 		if (!uam::strings::IsBlank(message.thoughts))
 		{
 			AcpReplayUpdateState replay;
+			replay.message_index = i;
 			replay.session_update = uam::acp_stream_types::kSessionUpdateAgentThoughtChunk;
 			replay.text = message.thoughts;
 			session.load_history_replay_updates.push_back(std::move(replay));
@@ -107,6 +113,7 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 		if (!uam::strings::IsBlank(message.content))
 		{
 			AcpReplayUpdateState replay;
+			replay.message_index = i;
 			replay.session_update = uam::acp_stream_types::kSessionUpdateAgentMessageChunk;
 			replay.text = message.content;
 			session.load_history_replay_updates.push_back(std::move(replay));
@@ -115,6 +122,7 @@ void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSessio
 		for (const ToolCall& tool_call : message.tool_calls)
 		{
 			AcpReplayUpdateState replay;
+			replay.message_index = i;
 			replay.session_update = uam::acp_stream_types::kSessionUpdateToolCall;
 			replay.tool_call_id = tool_call.id;
 			replay.title = tool_call.name;
