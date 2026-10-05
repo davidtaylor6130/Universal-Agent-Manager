@@ -930,6 +930,12 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	session.pending_request_methods[id] = method;
 	session.session_setup_request_id = id;
 	session.ignore_session_updates_until_ready = method == uam::acp_methods::kSessionLoad;
+	if (session.ignore_session_updates_until_ready)
+	{
+		const int history_end = uam::AcpSessionHasActiveTurn(session) && session.turn_first_user_message_index >= 0
+		    ? session.turn_first_user_message_index : static_cast<int>(chat.messages.size());
+		RememberLoadHistoryReplayUpdates(session, chat, history_end);
+	}
 	session.lifecycle_state = kAcpLifecycleStarting;
 	session.session_id = resume_chat.native_session_id;
 	session.codex_thread_id = resume_chat.native_session_id;

@@ -216,6 +216,8 @@ namespace uam
 
 	struct AcpReplayUpdateState
 	{
+		int message_index = -1;
+		int block_index = -1;
 		std::string session_update;
 		std::string text;
 		std::string tool_call_id;
@@ -550,6 +552,7 @@ namespace uam
 		std::string last_process_id;
 		std::vector<std::string> assistant_replay_prefixes;
 		std::vector<AcpReplayUpdateState> load_history_replay_updates;
+		int load_history_replay_end_message_index = -1;
 		std::vector<AcpDiagnosticEntryState> diagnostics;
 		std::string pending_assistant_thoughts;
 		std::string agent_name;
