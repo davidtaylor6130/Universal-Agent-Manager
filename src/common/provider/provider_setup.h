@@ -60,8 +60,8 @@ namespace uam::provider_setup
 		return true;
 	}
 
-	/// <summary>Publish complete files atomically so concurrent launches never read partially written settings.</summary>
-	inline bool WriteRuntimeFile(const std::filesystem::path& target, std::string_view bytes, std::string& error)
+	/// <summary>Publish complete files atomically; immutable bundle files accept only an identical existing value.</summary>
+	inline bool WriteRuntimeFile(const std::filesystem::path& target, std::string_view bytes, std::string& error, bool replace_existing = true)
 	{
 		if (!NoSymlinks(target)) { error = "Central runtime path contains a symbolic link."; return false; }
 		std::filesystem::path temporary;
@@ -69,17 +69,25 @@ namespace uam::provider_setup
 		{ error = "Could not stage central runtime configuration."; return false; }
 		std::error_code ec;
 #if defined(_WIN32)
-		if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		if (!MoveFileExW(temporary.c_str(), target.c_str(), (replace_existing ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
 			ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
 #else
-		std::filesystem::rename(temporary, target, ec);
+		if (replace_existing) std::filesystem::rename(temporary, target, ec);
+		else if (::link(temporary.c_str(), target.c_str()) != 0) ec = std::error_code(errno, std::generic_category());
 #endif
 		if (ec)
 		{
+			// Windows may deny replacement while a concurrent reader holds the identical published file.
+			std::string published;
+			std::string read_error;
+			const bool already_published = ReadFile(target, published, read_error) && published == bytes;
+			const std::string publication_error = ec.message();
 			std::filesystem::remove(temporary, ec);
-			error = "Could not publish central runtime configuration.";
+			if (already_published) return true;
+			error = "Could not publish central runtime configuration: " + publication_error;
 			return false;
 		}
+		if (!replace_existing) std::filesystem::remove(temporary, ec);
 		return true;
 	}
 
@@ -116,20 +124,33 @@ namespace uam::provider_setup
 		if (!directory.is_absolute() || !NoSymlinks(directory) || directory.filename() != Digest(manifest.dump()))
 		{ error = "Central resource directory does not match its manifest."; return false; }
 		std::error_code ec;
-		if (std::filesystem::exists(directory, ec))
+		std::filesystem::create_directories(directory, ec);
+		if (ec) { error = "Could not create central resource directory."; return false; }
+		const std::filesystem::path owner_path = directory / "owner.json";
+		const std::string serialized = manifest.dump();
+		if (!std::filesystem::exists(owner_path, ec))
 		{
-			std::string owner;
-			if (!ReadFile(directory / "owner.json", owner, error) || owner != manifest.dump())
-			{ error = "Central resource directory belongs to different data."; return false; }
+			// A stopped initializer may leave an empty directory or private staging files.
+			bool unowned_entries = false;
+			for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, ec))
+			{
+				const std::string name = uam::paths::Utf8PathString(entry.path().filename());
+				if (name != "owner.json" && !(name.starts_with("context-settings-") && name.ends_with(".json"))) unowned_entries = true;
+			}
+			if (ec) { error = "Could not inspect central resource ownership."; return false; }
+			// Another process may have published ownership and resources during inspection.
+			if (!std::filesystem::exists(owner_path, ec))
+			{
+				if (ec || unowned_entries) { error = "Central resource directory belongs to different data."; return false; }
+				std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+				if (ec) { error = "Could not secure central resource directory: " + ec.message(); return false; }
+				if (!WriteRuntimeFile(owner_path, serialized, error, false)) return false;
+			}
 		}
-		else
-		{
-			std::filesystem::create_directories(directory, ec);
-			if (ec) { error = "Could not create central resource directory."; return false; }
-			std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
-			if (ec || !uam::io::WriteTextFile(directory / "owner.json", manifest.dump()))
-			{ error = "Could not save central resource ownership."; return false; }
-		}
+		std::string owner;
+		if (!ReadFile(owner_path, owner, error) || owner != serialized)
+		{ error = "Central resource directory belongs to different data."; return false; }
+
 		missing.clear();
 		for (const auto& [name, entry] : manifest["files"].items())
 		{

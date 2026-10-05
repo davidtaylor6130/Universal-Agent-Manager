@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include <barrier>
+#include <thread>
 #include "app/provider_configuration_service.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
@@ -475,4 +477,92 @@ UAM_TEST(McpWindowsWorkspaceScopeMatchesAcrossControllerPlatforms)
 	UAM_ASSERT_EQ(selected.front().id, scoped.id);
 	UAM_ASSERT_EQ(uam::mcp_server_config::SelectForWorkspace(servers, "C:/Projects/Other", "ssh-windows").front().id, global.id);
 	UAM_ASSERT_EQ(uam::mcp_server_config::SelectForWorkspace(servers, "C:/Projects/Example", "local").front().id, global.id);
+}
+
+UAM_TEST(ConcurrentCentralPreparationPublishesCompleteBundles)
+{
+	TempDir temp("uam-central-concurrent");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = std::string(256 * 1024, 'x');
+	ChatSession chat;
+	ExecutionHost host;
+	for (int round = 0; round < 4; ++round)
+	{
+		std::barrier start(12);
+		std::vector<std::jthread> workers;
+		std::vector<std::string> errors(12);
+		for (int index = 0; index < 12; ++index)
+			workers.emplace_back([&, index]
+			{
+				start.arrive_and_wait();
+				uam::ProviderConfigurationBundle bundle;
+				if (!uam::PrepareProviderConfiguration(temp.root / std::to_string(round), settings, chat, host, temp.root, bundle, errors[index])) return;
+				std::vector<std::string> missing;
+				if (!uam::provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, errors[index])) return;
+				if (!missing.empty()) errors[index] = "Published bundle is incomplete.";
+			});
+		workers.clear();
+		for (const std::string& error : errors) if (!error.empty()) throw std::runtime_error(error);
+	}
+}
+
+UAM_TEST(CentralPreparationRecoversInterruptedOwnershipPublication)
+{
+	TempDir temp("uam-central-interrupted-owner");
+	const nlohmann::json manifest = {{"format", 1}, {"files", nlohmann::json::object()}};
+	const fs::path directory = temp.root / uam::provider_setup::Digest(manifest.dump());
+	fs::create_directories(directory);
+	std::vector<std::string> missing;
+	std::string error;
+	UAM_ASSERT(uam::provider_setup::Prepare(directory, manifest, missing, error));
+	UAM_ASSERT_EQ(ReadFile(directory / "owner.json"), manifest.dump());
+}
+
+UAM_TEST(CentralPreparationRecoversStagingFilesAndRejectsUnownedData)
+{
+	TempDir temp("uam-central-staging-recovery");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Shared resource";
+	ChatSession chat;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	const fs::path target = temp.root / "interrupted" / bundle.local_directory.filename();
+	fs::create_directories(target);
+	UAM_ASSERT(uam::io::WriteTextFile(target / "context-settings-123.json", "unfinished"));
+	std::vector<std::string> missing;
+	UAM_ASSERT(uam::provider_setup::Prepare(target, bundle.manifest, missing, error));
+	UAM_ASSERT_EQ(missing.size(), bundle.files.size());
+	for (const auto& [name, bytes] : bundle.files)
+	{
+		fs::create_directories((target / name).parent_path());
+		UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target / name, bytes, error));
+	}
+	UAM_ASSERT(uam::provider_setup::Prepare(target, bundle.manifest, missing, error));
+	UAM_ASSERT(missing.empty());
+	const fs::path foreign = temp.root / "foreign" / bundle.local_directory.filename();
+	fs::create_directories(foreign);
+	UAM_ASSERT(uam::io::WriteTextFile(foreign / "user.txt", "keep"));
+	UAM_ASSERT(!uam::provider_setup::Prepare(foreign, bundle.manifest, missing, error));
+	UAM_ASSERT(!fs::exists(foreign / "owner.json"));
+	UAM_ASSERT_EQ(ReadFile(foreign / "user.txt"), std::string("keep"));
+	UAM_ASSERT(uam::io::WriteTextFile(target / "owner.json", "other owner"));
+	UAM_ASSERT(!uam::provider_setup::Prepare(target, bundle.manifest, missing, error));
+	UAM_ASSERT_EQ(ReadFile(target / "owner.json"), std::string("other owner"));
+}
+
+UAM_TEST(ImmutableCentralPublicationKeepsExistingData)
+{
+	TempDir temp("uam-central-immutable-publication");
+	const fs::path target = temp.root / "resource.md";
+	std::string error;
+	UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target, "published", error, false));
+	UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target, "published", error, false));
+	UAM_ASSERT(!uam::provider_setup::WriteRuntimeFile(target, "different", error, false));
+	UAM_ASSERT_EQ(ReadFile(target), std::string("published"));
+	UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target, "updated runtime setting", error));
+	UAM_ASSERT_EQ(ReadFile(target), std::string("updated runtime setting"));
 }

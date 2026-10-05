@@ -153,7 +153,7 @@ namespace uam
 			const std::filesystem::path target = bundle.local_directory / uam::paths::PathFromUtf8(name);
 			std::error_code ec;
 			std::filesystem::create_directories(target.parent_path(), ec);
-			if (ec || !uam::io::WriteTextFile(target, bundle.files.at(name))) { error = "Could not install central resource: " + name; return false; }
+			if (ec || !provider_setup::WriteRuntimeFile(target, bundle.files.at(name), error, false)) { error = "Could not install central resource: " + name; return false; }
 		}
 		return true;
 	}

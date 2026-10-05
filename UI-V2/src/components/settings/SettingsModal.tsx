@@ -2749,7 +2749,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <details className="uam-skill-folder">
           <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/>Edit server configuration as JSON</summary>
           <textarea aria-label="MCP server configuration" value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
-          <p className="text-xs" style={{color:'var(--text-3)'}}>Leave workspaceDirectory empty for all workspaces. Set executionHostId to target one computer, or leave it empty for all hosts. Executable paths and secret environment variables belong to the executing host. HTTP and SSE must use localhost. Central Setup applies these servers to CLI launches.</p>
+          <p className="text-xs" style={{color:'var(--text-3)'}}>Leave workspaceDirectory empty for all workspaces. Set executionHostId to target one computer, or leave it empty for all hosts. Executable paths and secret environment variables belong to the executing host. HTTP and SSE must use localhost. Saved servers apply when Chat or CLI View starts, even with Central Setup disabled.</p>
         </details>
         </SectionCard>
       </div>
