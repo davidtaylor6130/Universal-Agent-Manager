@@ -981,6 +981,12 @@ namespace uam
 			acp_json["waitSeconds"] = 0;
 			acp_json["pendingPermission"] = nullptr;
 			acp_json["pendingUserInput"] = nullptr;
+			const auto approval = UamControlService::PendingApprovalForChat(app, chat.id);
+			if (approval.has_value())
+			{
+				acp_json["pendingUserInput"] = SerializePendingAcpUserInput(*approval);
+				acp_json["attentionKind"] = "question";
+			}
 			acp_json["providerUsage"] = nullptr;
 			return acp_json;
 		}

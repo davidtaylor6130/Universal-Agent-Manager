@@ -23,6 +23,7 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   McpServerConfiguration,
+  CentralProviderConfiguration,
   ProviderChatDefaults,
   ProviderModelCatalog,
   ProviderAgentImportPreview,
@@ -91,6 +92,7 @@ export interface AppState {
   fileExplorerApplication: string
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
+  centralProviderConfiguration: CentralProviderConfiguration
   mcpServers: McpServerConfiguration[]
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
@@ -172,6 +174,7 @@ export interface AppState {
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
+  setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
   setMcpServers: (servers: McpServerConfiguration[]) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>

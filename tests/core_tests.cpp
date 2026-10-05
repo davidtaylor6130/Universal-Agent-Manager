@@ -577,7 +577,7 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("opencode-acp"));
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("copilot-acp"));
 	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("codex-app-server"));
-	UAM_ASSERT(!uam::UamControlService::SupportsStructuredProtocol("claude-code-stream-json"));
+	UAM_ASSERT(uam::UamControlService::SupportsStructuredProtocol("claude-code-stream-json"));
 	TempDir temp("uam-control-capability");
 	uam::AppState app;
 	app.data_root = temp.root;

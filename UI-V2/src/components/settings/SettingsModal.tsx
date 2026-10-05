@@ -1,4 +1,5 @@
 import { PermissionsSettings } from './PermissionsSettings'
+import { CentralProviderSettings } from './CentralProviderSettings'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
@@ -124,7 +125,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'permissions' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = 'permissions' | 'central-configuration' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -158,6 +159,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'memory-store', label: 'Memory Store', icon: MemoryStick },
   { id: 'markdown-store', label: 'Skills', icon: BookOpen },
   { id: 'goal-loops', label: 'Goal Loops', icon: Target },
+  { id: 'central-configuration', label: 'Central Setup', icon: Server },
   { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
   { id: 'computer-use', label: 'Computer Use', icon: MousePointerClick },
   { id: 'editors', label: 'Editors', icon: Pencil },
@@ -168,7 +170,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
-  { label: 'Providers', sections: ['cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
+  { label: 'Providers', sections: ['central-configuration', 'cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
   { label: 'Security', sections: ['permissions', 'computer-use'] },
   { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
   { label: 'App', sections: ['chat-data', 'about'] },
@@ -180,6 +182,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'cli-version': 'Installed provider CLIs and their versions.',
   agents: 'Agent favourites and the shortcut that cycles between them.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
+  'central-configuration': 'Instructions and skills installed when providers launch locally or over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   'computer-use': 'Which apps agents may see and control.',
   editors: 'Which editor opens each kind of file.',
@@ -208,6 +211,7 @@ const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
   'memory-store': 'memory library lessons entries search delete',
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
+  'central-configuration': 'central provider setup instructions agents.md skills files defaults ssh',
   'mcp-servers': 'mcp computer browser control setup server config json',
   'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
   editors: 'editors extensions associations groups default vscode clion',
@@ -1326,7 +1330,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeUamControlSupported = Boolean(
       activeSession
       && activeProvider?.supportsStructured !== false
-      && ['codex-app-server', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+      && ['codex-app-server', 'claude-code-stream-json', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )
@@ -2709,6 +2713,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return <ShellActionsSettings ref={shellRef}/>
     }
 
+    if (selectedSection === 'central-configuration') return <CentralProviderSettings />
+
     if (selectedSection === 'mcp-servers') {
       const browserConfigured = mcpServers.some(server => server.enabled && server.transport === 'stdio' && workspaceKey(server.workspaceDirectory) === workspaceKey(mcpWorkspace) && server.args.some(arg => /^@playwright\/mcp(?:@|$)/.test(arg)))
       return <div>
@@ -2743,7 +2749,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <details className="uam-skill-folder">
           <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/>Edit server configuration as JSON</summary>
           <textarea aria-label="MCP server configuration" value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
-          <p className="text-xs" style={{color:'var(--text-3)'}}>Use absolute workspace and executable paths. HTTP and SSE must use localhost. Reference secrets by environment-variable name. Changes apply to the next session.</p>
+          <p className="text-xs" style={{color:'var(--text-3)'}}>Leave workspaceDirectory empty for all workspaces. Set executionHostId to target one computer, or leave it empty for all hosts. Executable paths and secret environment variables belong to the executing host. HTTP and SSE must use localhost. Saved servers apply when Chat or CLI View starts, even with Central Setup disabled.</p>
         </details>
         </SectionCard>
       </div>

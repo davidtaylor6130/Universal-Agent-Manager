@@ -5281,6 +5281,26 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
   })
 
+  it('hydrates central resources and restores them after a rejected save', async () => {
+    const configuration = {
+      enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],
+      skillDirectories: ['/skills'], defaultAgentId: 'plan', uamControlEnabled: true,
+    }
+    const state = makeCppState(1)
+    state.settings.centralProviderConfiguration = configuration
+    useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().centralProviderConfiguration).toEqual(configuration)
+    const requests: Array<{ action: string; payload: unknown }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(500, 'Storage unavailable')
+    }
+    const result = await useAppStore.getState().setCentralProviderConfiguration({ ...configuration, instructions: 'Updated context' })
+    expect(result).toEqual({ ok: false, error: 'Storage unavailable' })
+    expect(requests[0]).toMatchObject({ action: 'setCentralProviderConfiguration', payload: { instructions: 'Updated context' } })
+    expect(useAppStore.getState().centralProviderConfiguration).toEqual(configuration)
+  })
+
   it('persists MCP environment references and rolls back a rejected update', async () => {
     const cppState = makeCppState(1)
     cppState.settings.mcpServers = []

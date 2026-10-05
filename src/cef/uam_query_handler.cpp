@@ -126,6 +126,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatRemoteRecovery", &UamQueryHandler::HandleSetChatRemoteRecovery},
 		{"moveChatWorkspace", &UamQueryHandler::HandleMoveChatWorkspace},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
+		{"setCentralProviderConfiguration", &UamQueryHandler::HandleSetCentralProviderConfiguration},
 		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},

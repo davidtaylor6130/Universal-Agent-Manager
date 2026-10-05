@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup.h"
 #include "app/uam_control_service.h"
 
 #include "app/agent_definition_service.h"
@@ -124,7 +125,7 @@ namespace uam
 		{
 			if (method == "skill_list" || method == "agent_list" || method == "goal_get")
 				return arguments.is_object() && arguments.empty();
-			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"});
+			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"}, {"path"});
 			if (method == "agent_status" || method == "agent_cancel")
 				return HasOnlyStringArguments(arguments, {"runId"});
 			if (method == "agent_delegate")
@@ -172,6 +173,18 @@ namespace uam
 		bool IsMutation(std::string_view method)
 		{
 			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create";
+		}
+
+		bool ReadOnlyAgent(const AppState& app, const UamControlCapability& capability)
+		{
+			if (capability.agent_id == "plan") return true;
+			for (const auto& session : app.acp_sessions)
+				if (session != nullptr && session->uam_control_capability_id == capability.id)
+					return session->active_uam_agent_workspace_access == "read";
+			for (const auto& terminal : app.cli_terminals)
+				if (terminal != nullptr && terminal->uam_control_session != nullptr && terminal->uam_control_session->uam_control_capability_id == capability.id)
+					return terminal->uam_control_session->active_uam_agent_workspace_access == "read";
+			return false;
 		}
 
 		bool MutationsAllowed(const ChatSession& chat)
@@ -322,12 +335,32 @@ namespace uam
 			return capability.agent_skills;
 		}
 
+		nlohmann::json CentralSkillFiles(const UamControlCapability& capability)
+		{
+			if (capability.provider_configuration_directory.empty()) return nlohmann::json::object();
+			std::string bytes;
+			std::string error;
+			if (!uam::provider_setup::ReadFile(capability.provider_configuration_directory / "owner.json", bytes, error)) return nlohmann::json::object();
+			const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
+			if (!uam::provider_setup::ValidateManifest(manifest, error)) return nlohmann::json::object();
+			return manifest["files"];
+		}
+
 		ToolResult SkillList(const AppState& app, const UamControlCapability& capability,
 		                     const ChatSession& chat)
 		{
 			ToolResult out{.ok = true, .result = nlohmann::json::array(), .reason = "Listed approved skill metadata."};
 			const std::vector<std::string> allowed = AllowedSkillIds(capability);
-			if (allowed.empty()) return out;
+			const nlohmann::json files = CentralSkillFiles(capability);
+			for (const auto& [name, entry] : files.items())
+			{
+				if (!name.starts_with("skills/") || !name.ends_with("/SKILL.md")) continue;
+				const std::string id = name.substr(7, name.size() - 7 - 9);
+				if (id.find('/') != std::string::npos || (!capability.central_skills_enabled && !Contains(allowed, id))) continue;
+				out.result.push_back({{"id", id}, {"title", id}, {"relativePath", name}, {"version", "fnv1a64:" + entry["digest"].get<std::string>()}});
+				if (out.result.size() == 64) break;
+			}
+			if (!out.result.empty() || allowed.empty()) return out;
 			std::string error;
 			const auto entries = MarkdownStoreService::ListEntries(
 			    MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory), &error);
@@ -348,7 +381,23 @@ namespace uam
 		{
 			const std::string id = arguments.value("id", "");
 			const std::vector<std::string> allowed = AllowedSkillIds(capability);
-			if (!Contains(allowed, id)) return {.error = "Skill is not approved for this agent."};
+			if (!capability.central_skills_enabled && !Contains(allowed, id)) return {.error = "Skill is not approved for this agent."};
+			const std::string relative = arguments.value("path", "SKILL.md");
+			const std::string name = "skills/" + id + "/" + relative;
+			if (id.find_first_of("/\\") != std::string::npos || !uam::provider_setup::SafeRelativePath(name)) return {.error = "Skill asset path is invalid."};
+			const nlohmann::json files = CentralSkillFiles(capability);
+			if (files.contains(name))
+			{
+				std::string bytes;
+				std::string read_error;
+				if (!uam::provider_setup::ReadFile(capability.provider_configuration_directory / uam::paths::PathFromUtf8(name), bytes, read_error)) return {.error = read_error};
+				if (bytes.size() > 32 * 1024 || uam::provider_setup::Digest(bytes) != files[name]["digest"].get<std::string>()) return {.error = "Skill asset is too large or differs from the installed snapshot."};
+				ToolResult result{.ok = true, .result = {{"id", id}, {"path", relative}, {"version", "fnv1a64:" + files[name]["digest"].get<std::string>()}}, .reason = "Read installed skill asset."};
+				if (bytes.find('\0') == std::string::npos) result.result["body"] = bytes;
+				else result.result["bodyBase64"] = uam::base64::Encode(bytes);
+				return result;
+			}
+			if (relative != "SKILL.md") return {.error = "Skill asset is not installed."};
 			std::string error;
 			const auto entries = MarkdownStoreService::ListEntries(
 			    MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory), &error);
@@ -438,8 +487,8 @@ namespace uam
 		ToolResult GoalGet(const AppState& app, const UamControlCapability& capability)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			const bool mutations_allowed = chat != nullptr && MutationsAllowed(*chat);
-			const bool goal_creation_allowed = chat != nullptr &&
+			const bool mutations_allowed = chat != nullptr && !ReadOnlyAgent(app, capability) && MutationsAllowed(*chat);
+			const bool goal_creation_allowed = chat != nullptr && !ReadOnlyAgent(app, capability) &&
 			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) !=
 			        uam::approval_modes::kPlanApprovalMode;
 			return {.ok = true,
@@ -492,9 +541,9 @@ namespace uam
 				return value != nullptr && value->chat_id == capability.session_chat_id &&
 				       value->uam_control_capability_id == capability.id;
 			});
-			if (session == app.acp_sessions.end() ||
-			    !(*session)->pending_user_input.request_id_json.empty() ||
-			    !(*session)->pending_permission.request_id_json.empty())
+			if (session != app.acp_sessions.end() &&
+			    (!(*session)->pending_user_input.request_id_json.empty() ||
+			     !(*session)->pending_permission.request_id_json.empty()))
 				return {.error = "Finish the current provider question or permission request first."};
 			const std::string_view target_chat_id = pending.method == "goal_create"
 			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
@@ -613,7 +662,14 @@ namespace uam
 				return value != nullptr && value->chat_id == capability.session_chat_id && value->running &&
 				       value->uam_control_capability_id == capability.id && value->provider_id == capability.provider_id;
 			});
-			return session != app.acp_sessions.end();
+			if (session != app.acp_sessions.end()) return true;
+			return std::ranges::any_of(app.cli_terminals, [&](const auto& terminal) {
+				return terminal != nullptr && terminal->uam_control_session != nullptr &&
+				    terminal->uam_control_session->chat_id == capability.session_chat_id &&
+				    terminal->uam_control_session->uam_control_capability_id == capability.id &&
+				    terminal->uam_control_session->provider_id == capability.provider_id &&
+				    (terminal->running || terminal->context_preparation != nullptr);
+			});
 		}
 
 		nlohmann::json HandleRequest(AppState& app, const std::string& capability_id,
@@ -638,6 +694,8 @@ namespace uam
 			if (!SafeRequestId(request_id) || method.empty() || method.size() > 64 ||
 			    !ValidToolArguments(method, arguments))
 				return reject("Control request has an unknown method or invalid arguments.");
+			if (ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request"))
+				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
 			if (capability->seen_request_ids.size() > kMaxSeenRequests)
@@ -715,7 +773,7 @@ namespace uam
 			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
 			return nlohmann::json::array({
 			    ToolSchema("skill_list"),
-			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}}, {"id"}),
+			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
 			    ToolSchema("agent_list"),
 			    ToolSchema("agent_status", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    ToolSchema("goal_get"),
@@ -775,7 +833,8 @@ namespace uam
 		return protocol == uam::provider_profile_constants::kProtocolCodexAppServer ||
 		       protocol == uam::provider_profile_constants::kProtocolGeminiAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolOpenCodeAcp ||
-		       protocol == uam::provider_profile_constants::kProtocolCopilotAcp;
+		       protocol == uam::provider_profile_constants::kProtocolCopilotAcp ||
+		       protocol == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson;
 	}
 
 		int UamControlService::RunStdioServerFromEnvironment()
@@ -912,6 +971,8 @@ namespace uam
 		capability.agent_id = uam::strings::NonEmptyOrFallback(session.active_uam_agent_id, "build");
 		capability.agent_run_id = run == nullptr ? std::string{} : run->id;
 		capability.agent_skills = session.active_uam_agent_skills;
+		capability.provider_configuration_directory = session.provider_configuration_directory;
+		capability.central_skills_enabled = app.settings.central_provider_configuration.enabled && (capability.agent_id == "build" || capability.agent_id == "plan");
 		capability.agent_delegates = session.active_uam_agent_delegates;
 		capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() + kCapabilityLifetimeMs;
 		if (capability.id.empty() || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
@@ -947,8 +1008,32 @@ namespace uam
 		return true;
 	}
 
+	bool UamControlService::PrepareTerminalMcpServer(AppState& app, CliTerminalState& terminal, const ChatSession& chat, nlohmann::json& server, std::string& error)
+	{
+		if (terminal.uam_control_session != nullptr) RevokeForSession(app, *terminal.uam_control_session);
+		terminal.uam_control_session.reset();
+		terminal.uam_control_relay.reset();
+		if (!chat.uam_control_enabled) return true;
+		const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
+		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+		if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable."; return false; }
+		terminal.uam_control_session = std::make_shared<AcpSessionState>();
+		AcpSessionState& session = *terminal.uam_control_session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.active_uam_agent_id = selected->id;
+		session.active_uam_agent_workspace_access = selected->workspace_access;
+		session.active_uam_agent_skills = selected->skills;
+		session.active_uam_agent_delegates = selected->delegates;
+		nlohmann::json request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		if (!AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, request, &error)) return false;
+		server = request["params"]["mcpServers"].back();
+		return true;
+	}
+
 	void UamControlService::RevokeForSession(AppState& app, AcpSessionState& session)
 	{
+		session.uam_control_relay.reset();
 		if (session.uam_control_capability_id.empty()) return;
 		const std::string id = std::move(session.uam_control_capability_id);
 		session.uam_control_capability_id.clear();

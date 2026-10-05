@@ -238,7 +238,7 @@ namespace uam
 			return true;
 		}
 		launch_argv = provider_argv;
-		if (remote && provider.id == provider_ids::kCodexCli && !context_launch_channel.empty())
+		if (remote && provider.id == provider_ids::kCodexCli && !context_launch_channel.empty() && !chat.provider_handoff_context.empty() && (chat.native_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
 		{
 			terminal.attached_session_id.clear();
 			terminal.native_identity_requires_owned_reply = true;

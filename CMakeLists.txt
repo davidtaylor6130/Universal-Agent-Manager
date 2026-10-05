@@ -1132,6 +1132,7 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/provider_configuration_tests.cpp
     src/common/utils/diagnostic_log.cpp
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp

@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_text_worker.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_state.h"
@@ -836,6 +837,19 @@ namespace uam::remote
 			                       {"directories", std::move(entries)},
 			                       {"truncated", truncated}});
 		}
+		if (type == "configuration.prepare")
+		{
+			if (!request.contains("directory") || !request["directory"].is_string() || !request.contains("manifest"))
+				return ProcessError(request, "invalid_request", "Central resource request is invalid.");
+			const std::filesystem::path directory = uam::paths::PathFromUtf8(request["directory"].get<std::string>());
+			if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM")
+				return ProcessError(request, "invalid_request", "Central resources must use the workspace's managed folder.");
+			std::string error;
+			std::vector<std::string> missing;
+			if (!uam::provider_setup::Prepare(directory, request["manifest"], missing, error))
+				return ProcessError(request, "configuration_failed", error);
+			return ProcessSuccess(request, {{"missing", missing}});
+		}
 		if (type == "context.prepare" || type == "context.remove")
 		{
 			const std::string directory_text = request.value("directory", "");
@@ -1197,6 +1211,16 @@ namespace uam::remote
 			if (!ParseStart(request, session_id, working_directory, arguments, environment,
 			                error))
 				return ProcessError(request, "invalid_request", std::move(error));
+			if (request.contains("configurationDirectory"))
+			{
+				if (!request["configurationDirectory"].is_string() || !request.contains("configurationProvider") || !request["configurationProvider"].is_string())
+					return ProcessError(request, "invalid_request", "Central launch configuration is invalid.");
+				const std::filesystem::path directory = uam::paths::PathFromUtf8(request["configurationDirectory"].get<std::string>());
+				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != working_directory.lexically_normal())
+					return ProcessError(request, "invalid_request", "Central resource folder does not belong to this workspace.");
+				if (!uam::provider_setup::Apply(request["configurationProvider"].get<std::string>(), directory, working_directory, arguments, environment, error, request.value("sessionMcpServers", nlohmann::json::array())))
+					return ProcessError(request, "configuration_failed", error);
+			}
 			if (!request.contains("controlToken") || !request["controlToken"].is_string() ||
 			    !IsBoundedText(request["controlToken"].get_ref<const std::string&>(), 256) ||
 			    request["controlToken"].get_ref<const std::string&>().empty())

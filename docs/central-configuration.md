@@ -1,0 +1,19 @@
+# Central provider setup
+
+Configure shared resources in Settings > Central Setup, then enable them. UAM installs those resources when a provider starts in Chat or CLI View, including workspaces on SSH hosts. Changes apply to the next launch. Existing running sessions keep their setup until restarted.
+
+Instructions can come from the text field or absolute paths on the desktop. UAM adds the selected agent's instructions and an index of installed skills and agent definitions. Every provider can read the installed files. UAM also reads the workspace's AGENTS.md on the executing computer. Nested workspace instructions continue to follow each provider's own rules.
+
+Skill folders may contain one SKILL.md or several child skill folders. UAM copies each skill's scripts, references and other files. The existing Skills library is included too; imported SKILL.md entries retain their supporting files while the original source folder is available. A library entry without its original folder remains a Markdown skill. Paths to resources in the instruction index point to the installed copy on the executing computer.
+
+Global agents stay in UAM's existing agent library. The default agent and UAM tools switches affect new chats. Explicit choices in existing chats are retained. Per-provider model, permissions and other defaults remain in Settings > Defaults. Selecting a read-only agent restricts native CLI launches to Plan mode.
+
+MCP server configuration remains in Settings > MCP Servers. Saved MCP entries apply on the next launch even when Central Setup is disabled. Leave workspaceDirectory empty to apply a server to every workspace. An empty executionHostId applies to all hosts; a specific host id restricts it to that computer. Workspace settings override global servers with the same name, and host settings override equally scoped general entries. Executable paths and referenced environment variables must exist on the executing computer. HTTP and SSE URLs refer to that computer's localhost. Controller secret values are never copied to SSH hosts.
+
+Set each SSH host's instruction file in Settings > Remote Hosts. That path belongs to the remote computer. The helper reads it for both Chat and CLI launches. An unreadable file, missing executable or missing secret variable stops setup with a clear error.
+
+UAM writes shared copies to its data root under runtime/provider-setup locally, and under .UAM/provider-setup in each remote workspace. These directories belong to UAM. It does not overwrite workspace or provider home configuration. Resource manifests include checksums; interrupted remote uploads resume with missing files only. An older SSH helper must be updated before it can accept central setup.
+
+Resource bundles allow up to 4,096 files, 2 MiB per file, 32 MiB total and a 512 KiB manifest. Codex limits combined central instructions to 64 KiB on macOS/Linux and 12 KiB on Windows so its launch arguments remain within OS limits. Put larger reference material in skills. Symbolic links inside skill assets are rejected. UAM exposes skills through an instruction index, so providers can use their scripts and references even where the CLI has no session-only skill directory option. This does not add slash commands to every provider.
+
+UAM tools use a separate capability for each Chat or CLI session. Stopping a terminal ends its authority without revoking a concurrent structured chat's capability. Remote tools use the existing SSH MCP relay. Built-in Build and Plan agents can list the central skills and read their installed files through UAM tools. Custom agents retain their approved skill list. The skill_read tool accepts an optional relative asset path. Permission and approval rules continue to apply.
