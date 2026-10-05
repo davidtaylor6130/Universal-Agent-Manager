@@ -995,7 +995,7 @@ namespace
 		std::string error;
 	};
 
-	void ApplyChatTimestampFallbacks(ChatSession& chat);
+	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
@@ -1376,7 +1376,7 @@ namespace
 		// Load active_goal_id
 		chat.active_goal_id = JsonStringOrEmpty(root.Find("activeGoalId"));
 
-		ApplyChatTimestampFallbacks(chat);
+		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
 		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
@@ -1550,7 +1550,7 @@ namespace
 		}
 	}
 
-	void ApplyChatTimestampFallbacks(ChatSession& chat)
+	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction)
 	{
 		if (chat.created_at.empty())
 		{
@@ -1560,7 +1560,8 @@ namespace
 		{
 			chat.updated_at = chat.created_at;
 		}
-		if (chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
+		// An explicitly empty timestamp means this import has no UAM interaction yet.
+		if (legacy_interaction && chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
 		if (chat.last_opened_at.empty())
 		{
 			chat.last_opened_at = chat.updated_at;
