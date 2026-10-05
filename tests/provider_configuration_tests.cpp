@@ -56,6 +56,51 @@ UAM_TEST(CentralResourcesPreserveFullSkillAssetsAndDetectTampering)
 	UAM_ASSERT(!uam::provider_setup::SafeRelativePath("C:\\outside"));
 }
 
+UAM_TEST(CentralSkillManifestPathsStayPortableForDirectoriesAndImportedLibraries)
+{
+	TempDir temp("uam-central-portable-assets");
+	const fs::path skill = temp.root / "example";
+	const std::string relative_asset = "references/nested/caf\xc3\xa9.bin";
+	const fs::path asset = skill / uam::paths::PathFromUtf8(relative_asset);
+	fs::create_directories(asset.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(skill / "SKILL.md", "Read the nested reference."));
+	const std::string binary("a\0b", 3);
+	UAM_ASSERT(uam::io::WriteTextFile(asset, binary));
+	for (const bool imported : {false, true})
+	{
+		AppSettings settings;
+		settings.central_provider_configuration.enabled = true;
+		std::string skill_name = "example";
+		std::string error;
+		if (imported)
+		{
+			const fs::path library = temp.root / "library";
+			fs::create_directories(library);
+			const std::vector<MarkdownStoreService::ImportResult> results = MarkdownStoreService::ImportEntries(
+			    library, {{"claude", skill / "SKILL.md", MarkdownStoreService::ImportConflictAction::Skip}}, &error);
+			UAM_ASSERT_EQ(results.size(), std::size_t(1));
+			UAM_ASSERT_EQ(results.front().status, std::string("imported"));
+			settings.markdown_store_directory = uam::paths::Utf8PathString(library);
+			skill_name = results.front().entry.command_name;
+		}
+		else settings.central_provider_configuration.skill_directories = {uam::paths::Utf8PathString(skill)};
+		ChatSession chat;
+		ExecutionHost host;
+		uam::ProviderConfigurationBundle bundle;
+		if (!uam::PrepareProviderConfiguration(temp.root / (imported ? "imported-data" : "direct-data"), settings, chat, host, temp.root, bundle, error)) throw std::runtime_error(error);
+		const std::string key = "skills/" + skill_name + "/" + relative_asset;
+		UAM_ASSERT(bundle.files.contains(key));
+		UAM_ASSERT_EQ(bundle.files.at(key), binary);
+		UAM_ASSERT(bundle.manifest["files"].contains(key));
+		UAM_ASSERT_EQ(ReadFile(bundle.local_directory / uam::paths::PathFromUtf8(key)), binary);
+		for (const std::pair<const std::string, std::string>& file : bundle.files)
+		{
+			UAM_ASSERT(file.first.find('\\') == std::string::npos);
+			UAM_ASSERT(uam::provider_setup::SafeRelativePath(file.first));
+		}
+	}
+}
+
 UAM_TEST(CentralLaunchContractsCoverAllFiveProvidersAndPreserveOpenCodeConfig)
 {
 	TempDir temp("uam-central-contracts");

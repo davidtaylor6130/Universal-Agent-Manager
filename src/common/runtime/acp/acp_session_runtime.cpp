@@ -1114,6 +1114,25 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			const AcpQueuedUserPromptState& first = batch.front();
+			const Goal* goal = first.goal_id.empty()
+			                       ? GoalService::FindActiveGoal(app, chat.id)
+			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
+			const std::string turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
+			    ? GoalService::ReviewerModelId(chat, *goal)
+			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
+			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
+			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
+			    chat.command_safety_tier);
+			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
+			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
+			const bool settings_require_restart = session.running && session.session_ready &&
+			    ((!turn_model_id.empty() && session.current_model_id != turn_model_id &&
+			      runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession) ||
+			     (first.uam_agent_execution_capability != "opencode-native-agent-config" &&
+			      (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			      session.current_mode_id != desired_mode &&
+			      runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "opencode-native-agent-config" ||
@@ -1125,13 +1144,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (session.active_uam_agent_id != first.uam_agent_id ||
 			     session.active_uam_agent_definition_hash != first.uam_agent_definition_hash ||
 			     session.active_uam_agent_execution_capability != first.uam_agent_execution_capability);
-			if (native_adapter_changed)
+			if (native_adapter_changed || settings_require_restart)
 			{
 				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
 				if (!StopAcpSession(app, chat.id))
 				{
 					session.queued_user_prompts = std::move(pending);
-					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected native UAM agent.";
+					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected agent or session settings.";
 					return false;
 				}
 				session.queued_user_prompts = std::move(pending);
@@ -1151,14 +1170,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				return false;
 			}
-			const Goal* goal = first.goal_id.empty()
-			                       ? GoalService::FindActiveGoal(app, chat.id)
-			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
-			session.goal_turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
-			                                 ? GoalService::ReviewerModelId(chat, *goal)
-			                                 : goal != nullptr
-			                                     ? GoalService::WorkerModelId(chat, *goal)
-			                                     : chat.model_id;
+			session.goal_turn_model_id = turn_model_id;
 			const std::string selected_model_id = uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, session.current_model_id);
 			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
 			if (selected_model != session.available_models.end() && !chat.reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
@@ -1172,10 +1184,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.service_tier.clear();
 				chat.service_tier_explicit = true;
 			}
-			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
-			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
-			    chat.command_safety_tier);
-			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			if (session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
 			    session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
 			    session.current_mode_id != desired_mode &&
@@ -1406,7 +1414,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			queued.text = uam::strings::Trim(text);
-			if (queued.text.empty())
+			if (queued.text.empty() && attachments.empty())
 			{
 				if (error_out != nullptr)
 				{

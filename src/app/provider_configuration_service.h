@@ -85,7 +85,7 @@ namespace uam
 					{
 						if (entry.is_symlink(ec)) { error = "Central skill assets cannot contain symbolic links."; return false; }
 						if (entry.is_directory(ec)) continue;
-						const std::string destination = "skills/" + name + "/" + uam::paths::Utf8PathString(entry.path().lexically_relative(skill));
+						const std::string destination = "skills/" + name + "/" + uam::paths::PortablePathString(entry.path().lexically_relative(skill));
 						if (!provider_setup::SafeRelativePath(destination) || bundle.files.size() >= provider_setup::kMaxFiles)
 						{ error = "Central skill assets contain an invalid path or too many files."; return false; }
 						std::string bytes;
@@ -118,7 +118,7 @@ namespace uam
 					{
 						if (asset.is_symlink(ec)) { error = "Imported skill assets cannot contain symbolic links."; return false; }
 						if (asset.is_directory(ec) || asset.path() == source) continue;
-						const std::string destination = "skills/" + name + "/" + uam::paths::Utf8PathString(asset.path().lexically_relative(source.parent_path()));
+						const std::string destination = "skills/" + name + "/" + uam::paths::PortablePathString(asset.path().lexically_relative(source.parent_path()));
 						if (!provider_setup::SafeRelativePath(destination) || bundle.files.size() >= provider_setup::kMaxFiles) { error = "An imported skill contains invalid paths or too many assets."; return false; }
 						std::string bytes;
 						if (!provider_setup::ReadFile(asset.path(), bytes, error)) return false;

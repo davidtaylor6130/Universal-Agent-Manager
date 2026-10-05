@@ -1369,6 +1369,26 @@ describe('useAppStore Gemini CLI slice', () => {
     consoleSpy.mockRestore()
   })
 
+  it('sends an image-only prompt through the bridge and rejects a completely empty send', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(makeCppState(1)))
+      else { requests.push(parsed); onSuccess('{}') }
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const image = { id: 'image-1', name: 'image.png', type: 'image', size: 10, path: '/tmp/image.png' }
+    await expect(cefStore.getState().sendAcpPrompt('chat-1', '', [image])).resolves.toBe(true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'sendAcpPrompt', payload: expect.objectContaining({ text: '', attachments: [image] }) }))
+    const count = requests.length
+    await expect(cefStore.getState().sendAcpPrompt('chat-1', '  ')).resolves.toBe(false)
+    expect(requests).toHaveLength(count)
+  })
+
   it('matches a late send response to its user position rather than the last message', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

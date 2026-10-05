@@ -428,3 +428,25 @@ describe('interaction recency', () => {
     expect(searchModel('', [], [a, branch, b], undefined, context).activeSessionIds).toEqual(['a', 'b'])
   })
 })
+
+it('keeps external history discoverable but inactive until UAM interaction', () => {
+  for (const providerId of ['gemini', 'codex', 'opencode', 'claude', 'copilot']) {
+    const imported: Session = { ...makeSession(providerId, 'External history', 'general', new Date(), new Date(), false, providerId), interactionAt: null }
+    const folders = [makeFolder('general')]
+    expect(searchModel('', folders, [imported]).activeSessionIds).toEqual([])
+    expect(visibleSessionIds(searchModel('external', folders, [imported]))).toEqual([providerId])
+    expect(searchModel('external', folders, [imported]).activeSessionIds).toEqual([])
+    imported.updatedAt = new Date(Date.now() + 1000)
+    imported.lastOpenedAt = new Date()
+    expect(searchModel('', folders, [imported]).activeSessionIds).toEqual([])
+    imported.interactionAt = new Date()
+    expect(searchModel('', folders, [imported]).activeSessionIds).toEqual([providerId])
+  }
+})
+
+it('activates an imported family when its UAM branch is used', () => {
+  const root: Session = { ...makeSession('root', 'Imported', null, new Date(), new Date()), interactionAt: null }
+  const branch: Session = { ...makeSession('branch', 'UAM branch', null), branchRootChatId: 'root', interactionAt: new Date() }
+  expect(searchModel('', [], [root, branch]).activeSessionIds).toEqual(['root'])
+  expect(searchModel('imported', [], [root, branch]).activeSessionIds).toEqual([])
+})

@@ -250,7 +250,7 @@ export function buildChatSearchSessionGroups(
   for (const candidate of sortedSessions) {
     const rootId = branchRootId(candidate)
     familyStatus.set(rootId, mergeDisplayedStatus(familyStatus.get(rootId) ?? null, sessionStatus(candidate)))
-    familyUpdatedMs.set(rootId, Math.max(familyUpdatedMs.get(rootId) ?? 0, sessionRecentTime(candidate)))
+    familyUpdatedMs.set(rootId, Math.max(familyUpdatedMs.get(rootId) ?? 0, candidate.interactionAt === null ? 0 : sessionRecentTime(candidate)))
   }
   const nowMs = Date.now()
   const returnedAtMs = new Map<string, number>()
@@ -262,7 +262,9 @@ export function buildChatSearchSessionGroups(
     }
 
     const status = isSearching ? sessionStatus(session) : familyStatus.get(rootId) ?? null
-    const updatedMs = isSearching ? sessionRecentTime(session) : familyUpdatedMs.get(rootId) ?? 0
+    const updatedMs = isSearching
+      ? session.interactionAt === null ? 0 : sessionRecentTime(session)
+      : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
     const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
     if (status?.type === 'processing' || status?.type === 'attention' || unsettled || (status?.type === 'done' && !session.settledAt)) {

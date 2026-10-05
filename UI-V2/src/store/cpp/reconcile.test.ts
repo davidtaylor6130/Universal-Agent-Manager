@@ -354,3 +354,13 @@ describe('question selection mode reconciliation', () => {
     expect(next.pendingUserInput?.questions[0].isMultiple).toBe(true)
   })
 })
+
+it('preserves empty imported interaction timestamps across reconciliation and activation', () => {
+  const chat = sanitizeCppChat({ id: 'imported', name: 'External', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:05:00Z', interactionAt: '' })!
+  const imported = sessionFromCppChat(chat, undefined, [])
+  expect(imported.interactionAt).toBeNull()
+  const refreshed = sessionFromCppChat({ ...chat, updatedAt: '2026-01-01T00:06:00Z' }, imported, [])
+  expect(refreshed.interactionAt).toBeNull()
+  const used = sessionFromCppChat({ ...chat, interactionAt: '2026-01-01T00:07:00Z' }, refreshed, [])
+  expect(used.interactionAt?.toISOString()).toBe('2026-01-01T00:07:00.000Z')
+})

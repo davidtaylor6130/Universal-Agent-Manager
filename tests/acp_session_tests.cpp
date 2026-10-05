@@ -10547,6 +10547,317 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
 }
 
+UAM_TEST(AcpCompactionLoadReplayEnrichesNativeIdentityWithoutEnteringLiveTurn)
+{
+	TempDir temp("uam-compaction-native-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "native-replay";
+	chat.provider_id = "opencode-cli";
+	chat.messages = {{.role = MessageRole::User, .content = "Earlier question"},
+	    {.role = MessageRole::Assistant, .content = "BeforeAfter", .blocks = {
+	        {"assistant_text", "Before", "", ""}, {"context_compaction", "Imported summary", "", "native-id"}, {"assistant_text", "After", "", ""}}},
+	    {.role = MessageRole::User, .content = "Continue"}};
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.ignore_session_updates_until_ready = true;
+	session.turn_first_user_message_index = 2;
+	session.turn_user_message_index = 2;
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 2);
+	const auto send = [&](const nlohmann::json& update)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	};
+	send({{"sessionUpdate", "user_message_chunk"}, {"content", {{"type", "text"}, {"text", "Earlier question"}}}});
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Before"}}}});
+	const nlohmann::json completed = {{"sessionUpdate", "compaction_update"}, {"compactionId", "native-id"}, {"status", "completed"},
+	    {"summary", nlohmann::json::array({{{"type", "text"}, {"text", "Replayed summary"}}})}};
+	send(completed);
+	send(completed);
+	UAM_ASSERT_EQ(chat.messages[1].blocks.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(chat.messages[1].blocks[1].text, std::string("Replayed summary"));
+	UAM_ASSERT_EQ(chat.messages[1].blocks[1].request_id_json, std::string("native-id"));
+	UAM_ASSERT(session.turn_events.empty());
+	UAM_ASSERT_EQ(session.current_assistant_message_index, -1);
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "After"}}}});
+	session.ignore_session_updates_until_ready = false;
+	session.processing = true;
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "New reply"}}}});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("New reply"));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->messages[1].blocks[1].text, std::string("Replayed summary"));
+}
+
+UAM_TEST(AcpCompactionLoadReplayInsertsMissingBoundariesAtNativeTimelinePosition)
+{
+	TempDir temp("uam-compaction-position-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "position-replay";
+	chat.provider_id = "gemini-cli";
+	chat.messages = {{.role = MessageRole::Assistant, .content = "BeforeAfter", .blocks = {
+	    {"assistant_text", "Before", "", ""}, {"assistant_text", "After", "", ""}}},
+	    {.role = MessageRole::User, .content = "Continue"}};
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.ignore_session_updates_until_ready = true;
+	session.processing = true;
+	session.turn_first_user_message_index = 1;
+	session.turn_user_message_index = 1;
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 1);
+	const auto send = [&](const nlohmann::json& update)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	};
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Before"}}}});
+	const nlohmann::json first = {{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"},
+	    {"summary", nlohmann::json::array({{{"type", "text"}, {"text", "First summary"}}})}};
+	send(first);
+	send(first);
+	send({{"sessionUpdate", "compaction_update"}, {"compactionId", "second"}, {"status", "completed"}});
+	UAM_ASSERT_EQ(chat.messages[0].blocks.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(chat.messages[0].blocks[0].text, std::string("Before"));
+	UAM_ASSERT_EQ(chat.messages[0].blocks[1].request_id_json, std::string("acp-compaction:first"));
+	UAM_ASSERT_EQ(chat.messages[0].blocks[2].request_id_json, std::string("acp-compaction:second"));
+	UAM_ASSERT_EQ(chat.messages[0].blocks[3].text, std::string("After"));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const auto persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(persisted.has_value());
+	ChatSession reloaded = *persisted;
+	uam::AcpSessionState replay;
+	replay.provider_id = chat.provider_id;
+	replay.ignore_session_updates_until_ready = true;
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(replay, reloaded, 1);
+	for (const nlohmann::json update : {
+	    nlohmann::json{{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Before"}}}},
+	    first,
+	    nlohmann::json{{"sessionUpdate", "compaction_update"}, {"compactionId", "second"}, {"status", "completed"}}})
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, replay, reloaded,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	}
+	UAM_ASSERT_EQ(reloaded.messages[0].blocks.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(reloaded.messages[0].blocks[1].text, std::string("First summary"));
+	UAM_ASSERT(replay.turn_events.empty());
+	send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}, {"summary", nlohmann::json::array()}});
+	UAM_ASSERT(chat.messages[0].blocks[1].text.empty());
+	UAM_ASSERT(session.turn_events.empty());
+	UAM_ASSERT_EQ(session.turn_user_message_index, 1);
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "After"}}}});
+	UAM_ASSERT(session.load_history_replay_updates.empty());
+	session.ignore_session_updates_until_ready = false;
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Live"}}}});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Live"));
+}
+
+UAM_TEST(OpenCodeCompactionLoadReplayKeepsQueuedAndLiveMessageAnchors)
+{
+	TempDir temp("uam-compaction-marker-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "marker-replay";
+	chat.provider_id = "opencode-cli";
+	chat.messages = {{.role = MessageRole::User, .content = "Old"},
+	    {.role = MessageRole::User, .content = "New"},
+	    {.role = MessageRole::Assistant, .content = "Live", .blocks = {{"assistant_text", "Live", "", ""}}}};
+	chat.remote_turn_user_message_index = 1;
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.ignore_session_updates_until_ready = true;
+	session.turn_first_user_message_index = 1;
+	session.turn_user_message_index = 1;
+	session.current_assistant_message_index = 2;
+	session.turn_assistant_message_index = 2;
+	session.turn_events = {{.type = "assistant_text", .text = "Live"}};
+	session.tool_call_message_indices["live-tool"] = 2;
+	session.pending_steer_requests["steer"].user_message_index = 1;
+	chat.remote_pending_requests.push_back({.user_message_index = 1});
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 1);
+	const auto send = [&](const nlohmann::json& update)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	};
+	send({{"sessionUpdate", "user_message_chunk"}, {"content", {{"type", "text"}, {"text", "Old"}}}});
+	const nlohmann::json marker = {{"sessionUpdate", "session_info_update"}, {"_meta", {{"opencode/compaction", {{"messageId", "marker"}, {"status", "completed"}}}}}};
+	send(marker);
+	send(marker);
+	UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(4));
+	UAM_ASSERT_EQ(chat.messages[1].blocks.front().request_id_json, std::string("acp-compaction:marker"));
+	UAM_ASSERT_EQ(chat.messages[2].content, std::string("New"));
+	UAM_ASSERT_EQ(session.turn_first_user_message_index, 2);
+	UAM_ASSERT_EQ(session.turn_user_message_index, 2);
+	UAM_ASSERT_EQ(session.current_assistant_message_index, 3);
+	UAM_ASSERT_EQ(session.turn_assistant_message_index, 3);
+	UAM_ASSERT_EQ(chat.remote_turn_user_message_index, 2);
+	UAM_ASSERT_EQ(session.tool_call_message_indices.at("live-tool"), 3);
+	UAM_ASSERT_EQ(session.pending_steer_requests.at("steer").user_message_index, 2);
+	UAM_ASSERT_EQ(chat.remote_pending_requests.front().user_message_index, 2);
+	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(session.turn_events.front().text, std::string("Live"));
+}
+
+UAM_TEST(AcpCompactionLoadReplayNeverUsesAssistantAtHistoryCutoff)
+{
+	TempDir temp("uam-compaction-cutoff");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "history-cutoff";
+	chat.provider_id = "opencode-cli";
+	chat.messages = {{.role = MessageRole::User, .content = "Historical"},
+	    {.role = MessageRole::Assistant, .content = "Live", .blocks = {{"assistant_text", "Live", "", ""}}}};
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.processing = true;
+	session.ignore_session_updates_until_ready = true;
+	session.current_assistant_message_index = 1;
+	session.turn_assistant_message_index = 1;
+	session.turn_events = {{.type = "assistant_text", .text = "Live"}};
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 1);
+	const auto send = [&](const nlohmann::json& update)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	};
+	send({{"sessionUpdate", "user_message_chunk"}, {"content", {{"type", "text"}, {"text", "Historical"}}}});
+	send({{"sessionUpdate", "compaction_update"}, {"compactionId", "history"}, {"status", "completed"}});
+	UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(chat.messages[1].blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(session.current_assistant_message_index, 2);
+	UAM_ASSERT_EQ(chat.messages[2].blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages[2].blocks.front().text, std::string("Live"));
+	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(AcpSessionInfoWithoutCompactionMetadataKeepsNormalHandling)
+{
+	TempDir temp("uam-session-info-metadata");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "info";
+	chat.provider_id = "opencode-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.processing = true;
+	for (const nlohmann::json metadata : {nlohmann::json::object(), nlohmann::json{{"opencode/compaction", nullptr}}, nlohmann::json{{"opencode/compaction", "invalid"}}})
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", {{"sessionUpdate", "session_info_update"},
+		        {"_meta", metadata}, {"toolCallId", "tool"}, {"title", "Ordinary tool"}, {"status", "completed"}}}}}}.dump()));
+		UAM_ASSERT_EQ(session.tool_calls.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(session.tool_calls.front().title, std::string("Ordinary tool"));
+	}
+}
+
+UAM_TEST(AcpCompactionUsesSharedTimelineAcrossProviders)
+{
+	for (const std::string provider : {"opencode-cli", "gemini-cli", "copilot-cli"})
+	{
+		TempDir temp("uam-acp-compaction");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "compaction-chat";
+		chat.provider_id = provider;
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = provider;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& update)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+			    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+		};
+		const nlohmann::json initialize = ProviderRuntimeRegistry::ResolveById(provider).OnAcpBuildInitialize(session, 1);
+		UAM_ASSERT(initialize["params"]["clientCapabilities"]["session"]["compaction"].is_object());
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "in_progress"}});
+		send({{"sessionUpdate", "compaction_summary_chunk"}, {"compactionId", "first"}, {"content", {{"type", "text"}, {"text", "Keep "}}}});
+		send({{"sessionUpdate", "compaction_summary_chunk"}, {"compactionId", "first"}, {"content", {{"type", "text"}, {"text", "the workspace."}}}});
+		send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Ordinary reply."}}}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Keep the workspace."));
+		const nlohmann::json completed = {{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}, {"summary", nlohmann::json::array({{{"type", "text"}, {"text", "Authoritative summary."}}})}};
+		send(completed);
+		send(completed);
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Authoritative summary."));
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "first"}, {"status", "completed"}, {"summary", nullptr}});
+		UAM_ASSERT(chat.messages.back().blocks.front().text.empty());
+		send(completed);
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "failed"}, {"status", "in_progress"}});
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "failed"}, {"status", "failed"}, {"error", "Provider failed"}});
+		send({{"sessionUpdate", "compaction_update"}, {"compactionId", "cancelled"}, {"status", "cancelled"}});
+		send({{"sessionUpdate", "compaction_update"}, {"status", "completed"}});
+		UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(2));
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Ordinary reply."));
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.back().blocks.front().text, std::string("Authoritative summary."));
+	}
+}
+
+UAM_TEST(OpenCodeCompactionMetadataKeepsParentAndChildBoundariesSeparate)
+{
+	TempDir temp("uam-opencode-compaction-marker");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "marker-chat";
+	chat.provider_id = "opencode-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.processing = true;
+	const auto send = [&](const nlohmann::json& metadata)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", {{"sessionUpdate", "session_info_update"}, {"_meta", metadata}}}}}}.dump()));
+	};
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "started"}}}});
+	UAM_ASSERT(chat.messages.empty());
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "completed"}}}});
+	send({{"opencode/compaction", {{"messageId", "first"}, {"status", "completed"}}}});
+	send({{"opencode/compaction", {{"messageId", "child"}, {"status", "completed"}}}, {"opencode/child-session", {{"id", "child"}}}});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(chat.messages.back().content.empty());
+}
+
+UAM_TEST(ClaudeCompactionRetainsSharedSeparatorAndSummary)
+{
+	TempDir temp("uam-claude-compaction");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-compaction";
+	chat.provider_id = "claude-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	const nlohmann::json boundary = {{"type", "system"}, {"subtype", "compact_boundary"}, {"uuid", "boundary"}, {"summary", "Remember the workspace."}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Remember the workspace."));
+	UAM_ASSERT(chat.messages.back().content.empty());
+}
+
 UAM_TEST(CodexCompactionNotificationsDeduplicateEnrichAndPreserveDistinctEvents)
 {
 	TempDir temp("uam-codex-compaction");
@@ -10903,4 +11214,309 @@ UAM_TEST(AcpIdleGraceUsesInteractionAndBlockingGuards)
 	session.local_stop_pending = false;
 	chat.remote_prompt_delivery_id = "outbox";
 	UAM_ASSERT(!uam::AcpIdleShutdownDeadlineSeconds(app, session, chat));
+}
+
+
+UAM_TEST(ClaudePromptEmbedsOnlyCurrentTurnImages)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-images");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "image.png", "image-bytes"));
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	chat.workspace_directory = temp.root.string();
+	MessageAttachment image;
+	image.kind = "image";
+	image.mime_type = "image/png";
+	image.path = "image.png";
+	Message user;
+	user.role = MessageRole::User;
+	user.attachments = {image};
+	chat.messages = {user, user, user};
+	chat.messages[0].attachments[0].path = "old-missing.png";
+	uam::AcpSessionState session;
+	session.turn_first_user_message_index = 1;
+	session.turn_user_message_index = 2;
+	std::string method;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	const nlohmann::json prompt = runtime.OnAcpBuildPrompt(session, 1, "Describe", chat, method);
+	UAM_ASSERT_EQ(prompt["message"]["content"].size(), std::size_t{3});
+	UAM_ASSERT_EQ(prompt["message"]["content"][1]["source"]["media_type"], nlohmann::json("image/png"));
+	UAM_ASSERT_EQ(prompt["message"]["content"][1]["source"]["data"], nlohmann::json("aW1hZ2UtYnl0ZXM="));
+	chat.messages[1].attachments[0].path = "missing.png";
+	UAM_ASSERT(runtime.OnAcpBuildPrompt(session, 2, "Describe", chat, method).is_null());
+	UAM_ASSERT(session.last_error.find("image") != std::string::npos);
+	chat.messages[1].attachments[0] = image;
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "image.png", std::string(4 * 1024 * 1024, 'x')));
+	UAM_ASSERT(runtime.OnAcpBuildPrompt(session, 3, "Describe", chat, method).is_null());
+#endif
+}
+
+UAM_TEST(ClaudeToolResultsHideBinaryBlocksAndPreserveTerminalStatus)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-tools");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-tools";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	const std::string announcement = R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"image.png"}}]}})";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, announcement));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":[{"type":"text","text":"Screenshot"},{"type":"image","source":{"type":"base64","data":"secret-image-data"}}]}]}})"));
+	UAM_ASSERT_EQ(session.tool_calls[0].content, std::string("Screenshot\n[Image]"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, announcement));
+	UAM_ASSERT_EQ(session.tool_calls[0].status, std::string("completed"));
+	UAM_ASSERT_EQ(chat.messages.back().tool_calls[0].status, std::string("completed"));
+#endif
+}
+
+UAM_TEST(ClaudeStringAssistantContentStaysOutOfParentToolTranscript)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-string");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-string";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":"Child answer"}})"));
+	UAM_ASSERT(chat.messages.empty());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"assistant","message":{"content":"Parent answer"}})"));
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Parent answer"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"result","subtype":"success","result":"Parent answer"})"));
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Parent answer"));
+#endif
+}
+
+UAM_TEST(ClaudeResultFallbackSurvivesToolOnlyAssistantMessages)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-fallback");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-fallback";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read","input":{}}]}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"result","subtype":"success","result":"Final answer"})"));
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Final answer"));
+#endif
+}
+
+UAM_TEST(ClaudeCancelledControlRequestsFinalizeTheirTools)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-cancel-control");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-cancel-control";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	chat.command_safety_tier = "off";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.processing = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"control_request","request_id":"cancel-1","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1","input":{"file_path":"test.txt","content":"test"}}})"));
+	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"control_request","request_id":"question-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"ask-1","input":{"questions":[{"question":"Which scope?"}]}}})"));
+	UAM_ASSERT(session.waiting_for_user_input);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"control_cancel_request","request_id":"question-1"})"));
+	UAM_ASSERT(!session.waiting_for_user_input);
+	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT_EQ(session.tool_calls[1].status, std::string("cancelled"));
+	UAM_ASSERT_EQ(session.interaction_wait_request_id, session.pending_permission.request_id_json);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, R"({"type":"control_cancel_request","request_id":"cancel-1"})"));
+	UAM_ASSERT(!session.waiting_for_permission);
+	UAM_ASSERT_EQ(session.tool_calls[0].status, std::string("cancelled"));
+	UAM_ASSERT_EQ(chat.messages.back().tool_calls[0].status, std::string("cancelled"));
+#endif
+}
+
+UAM_TEST(ClaudeImageOnlyPromptQueuesWithoutInventingUserText)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-image-only");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "claude-image-only";
+	chat.provider_id = uam::provider_ids::kClaudeCli;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->provider_id = chat.provider_id;
+	session->running = true;
+	session->processing = true;
+	app.acp_sessions.push_back(std::move(session));
+	MessageAttachment image;
+	image.kind = "image";
+	image.mime_type = "image/png";
+	image.path = "image.png";
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "", {}, {image}, false, &error));
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.front().text.empty());
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments.front().path, image.path);
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "", {}, {}, false, &error));
+#endif
+}
+
+UAM_TEST(ClaudeAiReviewMapsOneTimeDecisionsWithoutChangingToolInput)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string decision : {"approve", "deny", "uncertain"})
+	{
+		TempDir temp("uam-claude-review");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "claude-review";
+		chat.provider_id = uam::provider_ids::kClaudeCli;
+		chat.command_safety_tier = "aiReview";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.processing = true;
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "cat"};
+#endif
+		std::string error;
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
+		session.running = true;
+		app.acp_sessions.push_back(std::move(owned));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"review-1","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write-1","input":{"file_path":"example.txt","content":"Exact input"}}})"));
+		UAM_ASSERT(session.waiting_for_permission);
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+		const nlohmann::json allow = runtime.OnAcpBuildPermissionResponse(session, "allow", false);
+		UAM_ASSERT_EQ(allow["response"]["request_id"], nlohmann::json("review-1"));
+		UAM_ASSERT_EQ(allow["response"]["response"]["updatedInput"], nlohmann::json::parse(session.pending_permission.provider_input_json));
+		UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "deny", false)["response"]["response"]["behavior"], nlohmann::json("deny"));
+		uam::AsyncPermissionReviewTask task;
+		task.chat_id = chat.id;
+		task.request_id_json = session.pending_permission.request_id_json;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = true;
+		task.state->result.output = nlohmann::json{{"decision", decision}, {"reason", "Fixture decision"}}.dump();
+		task.state->completed = true;
+		app.permission_review_tasks.push_back(std::move(task));
+		UAM_ASSERT(uam::acp_detail::PollPermissionReviewTasks(app));
+		const bool waiting = session.waiting_for_permission;
+		const std::string recorded = session.tool_calls[0].permission_review_decision;
+		std::string wire;
+		for (int attempt = 0; decision != "uncertain" && wire.find('\n') == std::string::npos && attempt < 100; ++attempt)
+		{
+			char buffer[4096];
+			const std::ptrdiff_t read = process.ReadStdioProcessStdout(session, buffer, sizeof(buffer), &error);
+			if (read > 0) wire.append(buffer, static_cast<std::size_t>(read));
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		UAM_ASSERT_EQ(waiting, decision == "uncertain");
+		UAM_ASSERT_EQ(recorded, decision);
+		if (decision != "uncertain")
+		{
+			const nlohmann::json response = nlohmann::json::parse(wire);
+			UAM_ASSERT_EQ(response["response"]["request_id"], nlohmann::json("review-1"));
+			UAM_ASSERT_EQ(response["response"]["response"]["behavior"], nlohmann::json(decision == "approve" ? "allow" : "deny"));
+			if (decision == "approve") UAM_ASSERT_EQ(response["response"]["response"]["updatedInput"], allow["response"]["response"]["updatedInput"]);
+		}
+	}
+#endif
+}
+
+UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool worktree : {false, true})
+	{
+		TempDir temp("uam-claude-image-workspace");
+		const fs::path workspace = temp.root / "active";
+		fs::create_directories(workspace);
+		UAM_ASSERT(uam::io::WriteTextFile(workspace / "image.png", "active-image"));
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "claude-workspace";
+		chat.provider_id = uam::provider_ids::kClaudeCli;
+		chat.approval_mode = "default";
+		if (worktree)
+		{
+			chat.workspace_directory = (temp.root / "base").string();
+			chat.workspace_isolation_kind = "gitWorktree";
+			chat.workspace_worktree_directory = workspace.string();
+		}
+		else
+		{
+			chat.folder_id = "folder";
+			ChatFolder folder;
+			folder.id = chat.folder_id;
+			folder.directory = workspace.string();
+			app.folders.push_back(folder);
+		}
+		Message user;
+		user.role = MessageRole::User;
+		MessageAttachment image;
+		image.kind = "image";
+		image.mime_type = "image/png";
+		image.path = "image.png";
+		user.attachments.push_back(image);
+		chat.messages.push_back(user);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.current_mode_id = "default";
+		session.session_ready = true;
+		session.processing = true;
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 0;
+		session.queued_prompt = "Describe image";
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, workspace, sink, &error));
+		session.running = true;
+		const bool sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		const std::string prompt_error = session.last_error;
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		UAM_ASSERT(sent);
+		UAM_ASSERT(prompt_error.empty());
+	}
+#endif
 }

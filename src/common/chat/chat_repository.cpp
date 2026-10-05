@@ -371,7 +371,7 @@ namespace
 		if (obj.type != JsonValue::Type::Object) return std::nullopt;
 		uam::AcpQueuedUserPromptState prompt;
 		prompt.text = JsonStringOrEmpty(obj.Find("text"));
-		if (prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		if (prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(total_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) return std::nullopt;
 		total_text_bytes += prompt.text.size();
 		prompt.uam_agent_id = uam::strings::NonEmptyOrFallback(
@@ -410,6 +410,7 @@ namespace
 				if (!attachment.path.empty()) prompt.attachments.push_back(std::move(attachment));
 			}
 		}
+		if (prompt.text.empty() && prompt.attachments.empty()) return std::nullopt;
 		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
@@ -994,7 +995,7 @@ namespace
 		std::string error;
 	};
 
-	void ApplyChatTimestampFallbacks(ChatSession& chat);
+	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
@@ -1375,7 +1376,7 @@ namespace
 		// Load active_goal_id
 		chat.active_goal_id = JsonStringOrEmpty(root.Find("activeGoalId"));
 
-		ApplyChatTimestampFallbacks(chat);
+		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
 		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
@@ -1549,7 +1550,7 @@ namespace
 		}
 	}
 
-	void ApplyChatTimestampFallbacks(ChatSession& chat)
+	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction)
 	{
 		if (chat.created_at.empty())
 		{
@@ -1559,7 +1560,8 @@ namespace
 		{
 			chat.updated_at = chat.created_at;
 		}
-		if (chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
+		// An explicitly empty timestamp means this import has no UAM interaction yet.
+		if (legacy_interaction && chat.interaction_at.empty()) chat.interaction_at = chat.updated_at;
 		if (chat.last_opened_at.empty())
 		{
 			chat.last_opened_at = chat.updated_at;
@@ -1680,7 +1682,7 @@ try
 	for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
 	{
 		if (queued_prompts.array_value.size() >= kMaxPersistedAcpQueuedPrompts ||
-		    prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		    (prompt.text.empty() && prompt.attachments.empty()) || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(queued_prompt_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) break;
 		queued_prompt_text_bytes += prompt.text.size();
 		uam::json::PushValue(queued_prompts, AcpQueuedPromptToJson(prompt));
