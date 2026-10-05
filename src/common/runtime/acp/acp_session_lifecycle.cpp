@@ -610,6 +610,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const bool recovering_remote_process = session.recovering_remote_process;
 	const bool was_processing = session.processing;
 	const std::string pending_prompt = session.queued_prompt;
+	const int turn_first_user_message_index = session.turn_first_user_message_index;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int current_assistant_message_index = session.current_assistant_message_index;
 	const int turn_assistant_message_index = session.turn_assistant_message_index;
@@ -648,6 +649,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.processing = was_processing;
 		session.recovering_remote_turn = recovering_remote_turn;
 		session.recovering_remote_process = recovering_remote_process;
+		session.turn_first_user_message_index = turn_first_user_message_index;
 		session.turn_user_message_index = turn_user_message_index;
 		session.current_assistant_message_index = current_assistant_message_index;
 		session.turn_assistant_message_index = turn_assistant_message_index;
@@ -1181,6 +1183,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const int id = session.next_request_id++;
 	std::string method;
 	ChatSession prompt_chat = chat;
+	// Prompt attachments use the same effective root as staging and process launch.
+	prompt_chat.workspace_directory = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
 	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, context + prompt, prompt_chat, method);
 

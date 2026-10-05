@@ -6386,7 +6386,7 @@ describe('ChatView', () => {
     useAppStore.setState({ discardChatWorktreeChanges: originalDiscardChatWorktreeChanges })
   })
 
-  it('stages selected files and sends them with the prompt', async () => {
+  it.each(['Use this image', ''])('stages selected files and sends them with prompt %j', async (prompt) => {
     let stagedAttachment = {
       id: 'file-1',
       name: 'diagram.png',
@@ -6440,7 +6440,7 @@ describe('ChatView', () => {
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-      valueSetter?.call(textarea, 'Use this image')
+      valueSetter?.call(textarea, prompt)
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
 
@@ -6449,7 +6449,7 @@ describe('ChatView', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use this image', [stagedAttachment])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', prompt, [stagedAttachment])
 
     act(() => {
       root.unmount()

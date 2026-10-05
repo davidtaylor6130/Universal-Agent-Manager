@@ -371,7 +371,7 @@ namespace
 		if (obj.type != JsonValue::Type::Object) return std::nullopt;
 		uam::AcpQueuedUserPromptState prompt;
 		prompt.text = JsonStringOrEmpty(obj.Find("text"));
-		if (prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		if (prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(total_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) return std::nullopt;
 		total_text_bytes += prompt.text.size();
 		prompt.uam_agent_id = uam::strings::NonEmptyOrFallback(
@@ -410,6 +410,7 @@ namespace
 				if (!attachment.path.empty()) prompt.attachments.push_back(std::move(attachment));
 			}
 		}
+		if (prompt.text.empty() && prompt.attachments.empty()) return std::nullopt;
 		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
@@ -1680,7 +1681,7 @@ try
 	for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
 	{
 		if (queued_prompts.array_value.size() >= kMaxPersistedAcpQueuedPrompts ||
-		    prompt.text.empty() || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
+		    (prompt.text.empty() && prompt.attachments.empty()) || prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(queued_prompt_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) break;
 		queued_prompt_text_bytes += prompt.text.size();
 		uam::json::PushValue(queued_prompts, AcpQueuedPromptToJson(prompt));

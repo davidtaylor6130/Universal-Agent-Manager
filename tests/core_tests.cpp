@@ -15251,6 +15251,170 @@ UAM_TEST(ClaudeInstalledCliHandshakeSmoke)
 #endif
 }
 
+UAM_TEST(ClaudeFollowupSettingsRestartFailureDoesNotAcceptAnUnsentTurn)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool change_model : {false, true})
+	{
+		TempDir temp("uam-claude-followup-restart");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		// A stopped transport cannot relaunch on a missing host. Never invoke the real CLI.
+		app.settings.execution_hosts.clear();
+		ChatSession chat;
+		chat.id = "claude-followup";
+		chat.provider_id = "claude-cli";
+		chat.execution_host_id = "missing-fixture-host";
+		chat.workspace_directory = temp.root.string();
+		chat.model_id = "opus";
+		chat.approval_mode = "default";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->process_execution_host_id = "local";
+		owned->protocol_kind = "claude-code-stream-json";
+		owned->running = true;
+		owned->initialized = true;
+		owned->session_ready = true;
+		owned->session_id = "fixture-session";
+		owned->current_model_id = change_model ? "claude-opus-5-5" : "opus";
+		owned->current_mode_id = change_model ? "default" : "plan";
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", "more > NUL"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owned, temp.root, argv, &error));
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		struct Cleanup
+		{
+			uam::AppState& app;
+			~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+		} cleanup{app};
+		UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Follow up", &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(!session.running);
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT(session.queued_prompt.empty());
+		UAM_ASSERT(app.chats.front().messages.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && !defined(_WIN32)
+	for (const bool change_model : {false, true})
+	{
+		TempDir temp("uam-claude-followup-delivery");
+		const fs::path shim = temp.root / "claude";
+		UAM_ASSERT(uam::io::WriteTextFile(shim, "#!/bin/sh\nexec /bin/cat >> received.jsonl\n"));
+		fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+		const char* previous_path = std::getenv("PATH");
+		ScopedEnvVar path_env("PATH", temp.root.string() + ":" + (previous_path == nullptr ? "" : previous_path));
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+		app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+		app.provider_model_catalog->Initialize(temp.root);
+		app.runtime_cli_versions_by_provider_id["claude-cli"].checked = true;
+		app.runtime_cli_versions_by_provider_id["claude-cli"].supported = true;
+		ChatSession chat;
+		chat.id = "claude-followup-delivery";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.model_id = "opus";
+		chat.approval_mode = "default";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->protocol_kind = "claude-code-stream-json";
+		owned->running = true;
+		owned->initialized = true;
+		owned->session_ready = true;
+		owned->session_id = "fixture-session";
+		owned->current_model_id = change_model ? "claude-opus-5-5" : "opus";
+		owned->current_mode_id = change_model ? "default" : "plan";
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owned, temp.root, {"/bin/sh", "-c", "cat >/dev/null"}, &error));
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		struct Cleanup
+		{
+			uam::AppState& app;
+			~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+		} cleanup{app};
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Followup delivery sentinel", &error));
+		UAM_ASSERT(session.running);
+		UAM_ASSERT(session.initialize_request_id != 0);
+		const nlohmann::json response = {{"type", "control_response"}, {"response", {
+		    {"subtype", "success"}, {"request_id", std::to_string(session.initialize_request_id)},
+		    {"response", {{"models", nlohmann::json::array({{{"value", "opus"}}})}}}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), response.dump()));
+		std::string received;
+		for (int attempt = 0; attempt < 200; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			(void)uam::io::TryReadTextFile(temp.root / "received.jsonl", received);
+			if (received.find("Followup delivery sentinel") != std::string::npos) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(session.running);
+		UAM_ASSERT(session.queued_prompt.empty());
+		UAM_ASSERT(!app.chats.front().messages.front().acp_prompt_not_sent);
+		const std::size_t sent = received.find("Followup delivery sentinel");
+		UAM_ASSERT(sent != std::string::npos);
+		UAM_ASSERT(received.find("Followup delivery sentinel", sent + 1) == std::string::npos);
+		if (change_model)
+		{
+			// Restart an unsent batch whose image belongs to its first, rather than last, message.
+			IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+			process.StopStdioProcess(session, true);
+			process.CloseStdioProcessHandles(session);
+			const fs::path image = temp.root / "batch.png";
+			UAM_ASSERT(uam::io::WriteTextFile(image, "batch-image"));
+			Message first;
+			first.role = MessageRole::User;
+			first.content = "Image batch first";
+			first.acp_prompt_not_sent = true;
+			first.attachments.push_back(MessageAttachment{"image-1", "batch.png", "image", "image/png", "batch.png"});
+			app.chats.front().messages.push_back(std::move(first));
+			app.chats.front().messages.push_back({.role = MessageRole::User, .content = "Image batch last", .acp_prompt_not_sent = true});
+			session.running = false;
+			session.processing = true;
+			session.queued_prompt = "Recovery batch sentinel";
+			session.turn_first_user_message_index = 1;
+			session.turn_user_message_index = 2;
+			UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+			UAM_ASSERT_EQ(session.turn_first_user_message_index, 1);
+			UAM_ASSERT_EQ(session.turn_user_message_index, 2);
+			nlohmann::json recovered_response = response;
+			recovered_response["response"]["request_id"] = std::to_string(session.initialize_request_id);
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), recovered_response.dump()));
+			for (int attempt = 0; attempt < 200; ++attempt)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				(void)uam::io::TryReadTextFile(temp.root / "received.jsonl", received);
+				if (received.find("Recovery batch sentinel") != std::string::npos) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			const std::size_t recovery = received.find("Recovery batch sentinel");
+			UAM_ASSERT(recovery != std::string::npos);
+			UAM_ASSERT(received.find(uam::base64::Encode("batch-image"), recovery) != std::string::npos);
+			UAM_ASSERT(!app.chats.front().messages[1].acp_prompt_not_sent);
+			UAM_ASSERT(!app.chats.front().messages[2].acp_prompt_not_sent);
+		}
+
+	}
+#endif
+}
+
 UAM_TEST(ClaudeThinkingErrorsAndInterruptKeepTranscriptAndSessionConsistent)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
@@ -15279,7 +15443,7 @@ UAM_TEST(ClaudeThinkingErrorsAndInterruptKeepTranscriptAndSessionConsistent)
 	nlohmann::json structured_result = tool_result;
 	structured_result["message"]["content"][0]["content"] = structured;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), structured_result.dump()));
-	UAM_ASSERT_EQ(nlohmann::json::parse(session.tool_calls[0].content), structured);
+	UAM_ASSERT_EQ(session.tool_calls[0].content, std::string("Screenshot\n[Image]"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[{"type":"text","text":"Child response"}]}})"));
 	UAM_ASSERT(app.chats.front().messages[0].content.empty());
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Budget exceeded"]})"));
