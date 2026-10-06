@@ -689,6 +689,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	ChatSession launch_chat = chat;
+	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
 	if (session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
 	std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, launch_chat);
@@ -698,7 +699,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	    runtime.BuildStructuredLaunchEnvironment(provider, launch_chat);
 	launch_environment.insert(launch_environment.end(), runtime_environment.begin(), runtime_environment.end());
 	session.active_uam_agent_adapter_directory.clear();
-	if (!session.model_discovery_only && !session.active_uam_agent_instructions.empty())
+	if (!session.model_discovery_only && !session.active_uam_agent_instructions.empty() &&
+	    session.active_uam_agent_execution_capability != "uam-central-native-setup")
 	{
 		if (remote)
 		{
@@ -770,7 +772,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	ProviderConfigurationBundle configuration_bundle;
 	if (!session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
-	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error) ||
+	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error,
+	                                  session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr) ||
 	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers))))
 	{
 		session.lifecycle_state = kAcpLifecycleError;

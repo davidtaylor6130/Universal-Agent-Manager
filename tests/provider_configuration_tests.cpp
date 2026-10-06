@@ -611,3 +611,22 @@ UAM_TEST(ImmutableCentralPublicationKeepsExistingData)
 	UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target, "updated runtime setting", error));
 	UAM_ASSERT_EQ(ReadFile(target), std::string("updated runtime setting"));
 }
+
+UAM_TEST(CentralNativeSetupInstallsTheQueuedAgentSnapshot)
+{
+	TempDir temp("uam-central-native-snapshot");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "SHARED_NATIVE_INSTRUCTIONS";
+	ChatSession chat;
+	chat.uam_agent_id = "build";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	const std::string snapshot = "QUEUED_NATIVE_AGENT_SNAPSHOT";
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, &snapshot));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find(snapshot) != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("SHARED_NATIVE_INSTRUCTIONS") != std::string::npos);
+	UAM_ASSERT_EQ(bundle.files.at("agents/build.md"), snapshot);
+	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "agents/build.md"), snapshot);
+}

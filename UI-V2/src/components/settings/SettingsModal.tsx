@@ -1,5 +1,6 @@
 import { PermissionsSettings } from './PermissionsSettings'
 import { CentralProviderSettings } from './CentralProviderSettings'
+import { McpServerSetup } from './McpServerSetup'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
@@ -2718,6 +2719,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'mcp-servers') {
       const browserConfigured = mcpServers.some(server => server.enabled && server.transport === 'stdio' && workspaceKey(server.workspaceDirectory) === workspaceKey(mcpWorkspace) && server.args.some(arg => /^@playwright\/mcp(?:@|$)/.test(arg)))
       return <div>
+        <SectionCard title="Shared setup"><McpServerSetup disabled={mcpDraftDirty} onBusyChange={setMcpSaving} /></SectionCard>
+        <SectionCard title="Instructions, skills and agents"><CentralProviderSettings showUamTools={false} /></SectionCard>
+        <details>
+        <summary className="cursor-pointer py-3 text-sm">Browser control preset</summary>
         <SectionCard title="Browser control">
         <p className="text-xs" style={{color:'var(--text-3)'}}>Give agents a Playwright browser for this workspace.</p>
         <label className="uam-inline-form__label" htmlFor="uam-mcp-workspace" style={{marginBottom:-8}}>Workspace</label>
@@ -2745,10 +2750,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </div>}
         {mcpMessage && <p role="status" className="text-xs">{mcpMessage}</p>}
         </SectionCard>
+        </details>
         <SectionCard title="Advanced">
         <details className="uam-skill-folder">
           <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/>Edit server configuration as JSON</summary>
-          <textarea aria-label="MCP server configuration" value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+          <textarea aria-label="MCP server configuration" disabled={mcpSaving} value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
+          {renderMcpSave()}
           <p className="text-xs" style={{color:'var(--text-3)'}}>Leave workspaceDirectory empty for all workspaces. Set executionHostId to target one computer, or leave it empty for all hosts. Executable paths and secret environment variables belong to the executing host. HTTP and SSE must use localhost. Saved servers apply when Chat or CLI View starts, even with Central Setup disabled.</p>
         </details>
         </SectionCard>
@@ -2868,7 +2875,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                     {selectedSection === 'editors' && renderAddEditor()}
-                    {selectedSection === 'mcp-servers' && renderMcpSave()}
+                    {selectedSection === 'mcp-servers' && mcpDraftDirty && renderMcpSave()}
                   </div>
                 </div>
                 <div key={selectedSection} className={`uam-settings-page flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto uam-settings-page--narrow'}`}>{renderSectionContent()}</div>
