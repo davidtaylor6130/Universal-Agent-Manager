@@ -636,7 +636,9 @@ UAM_TEST(McpServersAcceptLanUrlsAndLiteralValuesButRejectCredentialUrls)
 {
 	McpServerConfiguration remote{.id = "penpot", .name = "penpot", .transport = "http", .url = "http://main.homelab.com:9001/mcp/stream?userToken=abc"};
 	remote.headers = {{"Authorization", "", "Bearer token"}};
-	McpServerConfiguration local{.id = "searxng", .name = "searxng", .transport = "stdio", .command = "/bin/sh"};
+	TempDir temp("uam-mcp-literal-values");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	McpServerConfiguration local{.id = "searxng", .name = "searxng", .transport = "stdio", .command = uam::paths::Utf8PathString(temp.root / "server")};
 	local.environment = {{"SEARXNG_URL", "", "http://main.homelab.com:8081"}};
 	std::vector<McpServerConfiguration> servers{remote, local};
 	std::string error;
