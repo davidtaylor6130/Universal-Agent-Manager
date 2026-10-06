@@ -308,6 +308,21 @@ describe('CLI context preparation', () => {
   })
 })
 
+describe('remote recovery reconciliation', () => {
+  it.each([
+    { remoteRecoveryEnabled: true },
+    { remoteRecoveryState: 'blocked' },
+  ])('publishes recovery-only changes %j', (change) => {
+    const chat = sanitizeCppChat({ id: 'recovery', title: 'Recovery',
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' })!
+    const previous = sessionFromCppChat(chat, undefined, [])
+    const next = sessionFromCppChat({ ...chat, ...change }, previous, [])
+    expect(next).toMatchObject(change)
+    expect(next).not.toBe(previous)
+    expect(sessionFromCppChat({ ...chat, ...change }, next, [])).toBe(next)
+  })
+})
+
 it('preserves state event recency through bridge sanitization and streaming snapshots', () => {
   const chat = sanitizeCppChat({
     id: 'recency', title: 'Recency', createdAt: '2026-01-01T00:00:00Z',

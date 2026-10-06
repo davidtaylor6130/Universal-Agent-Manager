@@ -5643,6 +5643,61 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().memoryLibraryScope).toBeNull()
   })
 
+  it.each(['success', 'failure'])('ignores a stale memory refresh %s after changing scope', async (outcome) => {
+    const requests: Array<{ succeed: (response: string) => void; fail: (code: number, message: string) => void }> = []
+    window.cefQuery = ({ onSuccess, onFailure }) => { requests.push({ succeed: onSuccess, fail: onFailure }) }
+    const globalScope = { scopeType: 'global' as const, folderId: '', label: 'Global', rootPath: '/tmp/global' }
+    const folderScope = { scopeType: 'folder' as const, folderId: 'project', label: 'Project', rootPath: '/tmp/project/.UAM' }
+    useAppStore.setState({ memoryLibraryScope: globalScope })
+    const older = useAppStore.getState().refreshMemoryLibrary()
+    const newer = useAppStore.getState().openFolderMemoryLibrary('project')
+    requests[1].succeed(JSON.stringify({ scope: folderScope, entries: [] }))
+    await expect(newer).resolves.toBe(true)
+    if (outcome === 'success') requests[0].succeed(JSON.stringify({ scope: globalScope, entries: [] }))
+    else requests[0].fail(500, 'Old scope unavailable')
+    await expect(older).resolves.toBe(false)
+    expect(useAppStore.getState()).toMatchObject({ memoryLibraryScope: folderScope,
+      memoryLibraryEntries: [], memoryLibraryLoading: false, memoryLibraryError: '' })
+  })
+
+  it.each(['success', 'failure'])('preserves newly attached skills after pending prompt %s', async (outcome) => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    let succeed: (response: string) => void = () => { throw new Error('No pending send') }
+    let fail: (code: number, message: string) => void = () => { throw new Error('No pending send') }
+    let sentFiles: string[] = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      sentFiles = parsed.payload.markdownStoreFiles
+      succeed = onSuccess
+      fail = onFailure
+    }
+    const skill = (id: string) => ({ id, title: id, maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: `/tmp/${id}.uam` })
+    const first = skill('first')
+    const second = skill('second')
+    useAppStore.setState({ markdownStoreAttachedBySessionId: { 'chat-1': [first] } })
+    const sending = useAppStore.getState().sendAcpPrompt('chat-1', 'Review changes')
+    expect(sentFiles).toEqual([first.filePath])
+    useAppStore.setState({ markdownStoreAttachedBySessionId: { 'chat-1': [first, second] } })
+    if (outcome === 'success') succeed('{}')
+    else fail(500, 'Delivery failed')
+    await expect(sending).resolves.toBe(outcome === 'success')
+    expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual(outcome === 'success' ? [second] : [first, second])
+  })
+
+  it('preserves a skill detached and reattached during a pending prompt', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    let succeed: (response: string) => void = () => { throw new Error('No pending send') }
+    window.cefQuery = ({ onSuccess }) => { succeed = onSuccess }
+    const entry = { id: 'skill', title: 'Skill', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/tmp/skill.uam' }
+    useAppStore.getState().attachMarkdownStoreEntry('chat-1', entry)
+    const sending = useAppStore.getState().sendAcpPrompt('chat-1', 'Review changes')
+    useAppStore.getState().detachMarkdownStoreEntry('chat-1', entry.filePath)
+    useAppStore.getState().attachMarkdownStoreEntry('chat-1', entry)
+    succeed('{}')
+    await expect(sending).resolves.toBe(true)
+    expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([entry])
+  })
+
   it('keeps the most recently requested memory-library scope', async () => {
     const callbacks = new Map<string, (response: string) => void>()
     window.cefQuery = ({ request, onSuccess }) => {

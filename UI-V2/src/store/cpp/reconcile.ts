@@ -143,6 +143,8 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
   return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+    (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
+    (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     previous.name === next.name &&
     previous.folderId === next.folderId &&

@@ -569,7 +569,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return {
         markdownStoreAttachedBySessionId: {
           ...state.markdownStoreAttachedBySessionId,
-          [sessionId]: [...current, entry],
+          // Each attachment owns its identity, including reattachments during a pending send.
+          [sessionId]: [...current, { ...entry }],
         },
       }
     }),
@@ -763,7 +764,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
-        const requestKey = `listMemoryEntries:refresh:${scope.scopeType}:${scope.folderId ?? ''}`
+        const requestKey = 'listMemoryEntries:open'
         const requestId = createRequestId('listMemoryEntries')
         rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
