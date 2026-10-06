@@ -2724,11 +2724,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             )}
             {!isCompanionContext() && (
               <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
-                <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <ComposerIcon name="folder" size={14} />
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
-                </span>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
@@ -2797,6 +2792,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     </ViewportMenu>
                   )}
                 </div>
+                <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
+                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
+                  {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
+                </span>
               </div>
             )}
             {pendingUserInput && !session.importedReadOnly && (
