@@ -5563,6 +5563,26 @@ describe('useAppStore Gemini CLI slice', () => {
     assertLatest()
   })
 
+  it.each(['success', 'failure'] as const)('ignores stale refresh %s after selecting another memory scope', async (result) => {
+    const callbacks: Array<{ succeed: (response: string) => void; fail: (code: number, message: string) => void }> = []
+    window.cefQuery = ({ onSuccess, onFailure }) => { callbacks.push({ succeed: onSuccess, fail: onFailure }) }
+    const globalScope = { scopeType: 'global' as const, folderId: '', label: 'Global', rootPath: '/global' }
+    const folderScope = { scopeType: 'folder' as const, folderId: 'project', label: 'Project', rootPath: '/project/.UAM' }
+    useAppStore.setState({ memoryLibraryScope: globalScope, memoryLibraryEntries: [] })
+    const refreshing = useAppStore.getState().refreshMemoryLibrary()
+    const opening = useAppStore.getState().openFolderMemoryLibrary('project')
+    if (result === 'success') callbacks[0].succeed(JSON.stringify({ scope: globalScope, entries: [{ id: 'stale' }] }))
+    else callbacks[0].fail(500, 'Old scope failed')
+    await expect(refreshing).resolves.toBe(false)
+    expect(useAppStore.getState()).toMatchObject({
+      memoryLibraryScope: { scopeType: 'folder', folderId: 'project' }, memoryLibraryLoading: true,
+      memoryLibraryEntries: [], memoryLibraryError: '',
+    })
+    callbacks[1].succeed(JSON.stringify({ scope: folderScope, entries: [] }))
+    await expect(opening).resolves.toBe(true)
+    expect(useAppStore.getState().memoryLibraryScope).toEqual(folderScope)
+  })
+
   it('loads the global memory library through CEF', async () => {
     const testWindow = ensureTestWindow()
     testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
