@@ -6129,6 +6129,12 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    const workspaceTab = host.querySelector('.uam-composer-workspace-tab') as HTMLElement
+    const workspaceButton = workspaceTab.querySelector('button[aria-label="Workspace actions"]')
+    expect(workspaceTab.firstElementChild?.contains(workspaceButton)).toBe(true)
+    expect(workspaceTab.querySelectorAll('button')).toHaveLength(1)
+    expect(workspaceTab.lastElementChild?.querySelector('svg')).toBeNull()
+
     openWorkspaceActions(host)
     const openButton = document.body.querySelector('button[role="menuitem"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()

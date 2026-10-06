@@ -8975,6 +8975,47 @@ UAM_TEST(FolderDirectoryMatchesNormalizesEquivalentPathShapes)
 	UAM_ASSERT(!FolderDirectoryMatches(workspace, temp.root / "workspace-sibling"));
 }
 
+UAM_TEST(GitWorktreeCreationExplainsUnbornHeadWithoutChangingRepository)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const bool with_files : {false, true})
+	{
+		TempDir temp("uam-unborn-worktree");
+		const fs::path repo = temp.root / "repo";
+		fs::create_directories(repo);
+		UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(uam::paths::Utf8PathString(repo))));
+		UAM_ASSERT(RunGitForTest(repo, "symbolic-ref HEAD refs/heads/new-work"));
+		if (with_files)
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(repo / "staged.txt", "staged\n"));
+			UAM_ASSERT(uam::io::WriteTextFile(repo / "untracked.txt", "untracked\n"));
+			UAM_ASSERT(RunGitForTest(repo, "add staged.txt"));
+		}
+		const std::string original_head = uam::io::ReadTextFile(repo / ".git" / "HEAD");
+		const std::string original_index = uam::io::ReadTextFile(repo / ".git" / "index");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "unborn-worktree";
+		chat.workspace_directory = uam::paths::Utf8PathString(repo);
+		const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(app, chat);
+		UAM_ASSERT(!result.ok);
+		UAM_ASSERT_EQ(result.message, std::string("This repository has no commits. Create an initial commit before creating a worktree."));
+		UAM_ASSERT(chat.workspace_isolation_kind.empty());
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(repo / ".git" / "HEAD"), original_head);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(repo / ".git" / "index"), original_index);
+		UAM_ASSERT(!fs::exists(repo / ".git" / "refs" / "heads" / "new-work"));
+		UAM_ASSERT(!fs::exists(repo / ".git" / "worktrees"));
+		UAM_ASSERT(!fs::exists(app.data_root));
+		if (with_files)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(repo / "staged.txt"), std::string("staged\n"));
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(repo / "untracked.txt"), std::string("untracked\n"));
+		}
+	}
+}
+
 UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 {
 	if (!GitAvailableForTests())

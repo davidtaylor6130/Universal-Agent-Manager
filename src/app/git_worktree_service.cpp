@@ -650,8 +650,17 @@ namespace uam
 			}
 		}
 
-		if (!GitOutput(repository, "rev-parse HEAD", &head, &result.message))
+		if (!GitOutput(repository, "rev-parse --verify " + uam::shell::EscapeArg("HEAD^{commit}"), &head, &result.message))
 		{
+			std::string head_ref;
+			if (!managed_repository && GitOutput(repository, "symbolic-ref -q HEAD", &head_ref) && !head_ref.empty())
+			{
+				const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository, "show-ref --verify --quiet " + uam::shell::EscapeArg(head_ref)));
+				if (!reference.timed_out && !reference.canceled && reference.exit_code == 1)
+				{
+					result.message = "This repository has no commits. Create an initial commit before creating a worktree.";
+				}
+			}
 			if (managed_repository)
 			{
 				std::error_code cleanup_error;
