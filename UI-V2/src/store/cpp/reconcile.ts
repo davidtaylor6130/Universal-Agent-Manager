@@ -144,6 +144,8 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
   return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
+    (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
+    (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
     previous.name === next.name &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
