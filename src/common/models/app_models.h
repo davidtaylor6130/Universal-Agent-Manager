@@ -481,6 +481,7 @@ struct McpSecretReference
 {
 	std::string name;
 	std::string environment_variable;
+	std::string value; // Literal value stored in settings; used when environment_variable is empty.
 };
 
 struct McpServerConfiguration
@@ -537,6 +538,8 @@ struct CentralProviderConfiguration
 	std::vector<std::string> skill_directories;
 	std::string default_agent_id = "build";
 	bool uam_control_enabled = true;
+	std::vector<std::string> default_skills;
+	std::vector<std::string> default_agents;
 };
 
 struct AppSettings

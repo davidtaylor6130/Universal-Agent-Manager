@@ -77,6 +77,9 @@ namespace uam
 		                                const ProviderAgentImportRequest& request,
 		                                AgentDefinition* imported_out = nullptr,
 		                                std::string* error_out = nullptr);
+		/// <summary>Write or replace a global agent under data_root/agents after canonical validation.</summary>
+		static bool SaveGlobalAgent(const std::filesystem::path& data_root, const AgentDefinition& agent, std::string* error_out = nullptr);
+		static bool DeleteGlobalAgent(const std::filesystem::path& data_root, const std::string& id, std::string* error_out = nullptr);
 		static std::string ExecutionCapabilityForProvider(const std::string& provider_id);
 		static bool PrepareRuntimeAdapter(const std::filesystem::path& data_root,
 		                                  const std::string& chat_id,

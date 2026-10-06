@@ -634,6 +634,50 @@ namespace uam
 		return true;
 	}
 
+	bool AgentDefinitionService::SaveGlobalAgent(const std::filesystem::path& data_root, const AgentDefinition& agent, std::string* error_out)
+	{
+		const auto fail = [&](const std::string& message) { if (error_out != nullptr) *error_out = message; return false; };
+		const std::string id = uam::strings::TrimAndLowerAscii(agent.id);
+		if (!ValidId(id) || id == "build" || id == "plan") return fail("Use a lowercase agent name with letters, numbers, - or _. Build and Plan are built in.");
+		if (agent.description.find_first_of("\"\r\n") != std::string::npos) return fail("The description must be one line without double quotes.");
+		const std::filesystem::path root = data_root / "agents";
+		std::error_code create_error;
+		std::filesystem::create_directories(root, create_error);
+		if (create_error || !PathComponentsAreSafe(data_root, root) || uam::paths::IsLinkOrReparsePointNoThrow(root)) return fail("The agent directory could not be created safely.");
+		const std::filesystem::path target = root / (id + ".md");
+		std::string previous;
+		if (uam::paths::PathExistsNoThrow(target) && !uam::io::TryReadTextFile(target, previous)) return fail("The existing agent could not be read.");
+		const std::string markdown = "---\nversion: 1\nname: " + id + "\ndescription: \"" + agent.description +
+		                             "\"\nmode: " + agent.mode + "\nworkspaceAccess: " + agent.workspace_access +
+		                             "\nskills: " + IdListMarkdown(agent.skills) + "\ndelegates: " + IdListMarkdown(agent.delegates) +
+		                             "\n---\n" + uam::strings::Trim(agent.instructions) + "\n";
+		if (!uam::io::WriteTextFile(target, markdown)) return fail("The agent could not be written.");
+		std::uintmax_t bytes = 0;
+		std::string parse_error;
+		if (!ParseFile(root, target, false, &bytes, &parse_error))
+		{
+			// Never leave an invalid definition behind; restore the previous file or remove the new one.
+			if (previous.empty()) std::filesystem::remove(target, create_error);
+			else (void)uam::io::WriteTextFile(target, previous);
+			return fail("Agent is invalid: " + parse_error);
+		}
+		if (error_out != nullptr) error_out->clear();
+		return true;
+	}
+
+	bool AgentDefinitionService::DeleteGlobalAgent(const std::filesystem::path& data_root, const std::string& id, std::string* error_out)
+	{
+		const std::filesystem::path root = data_root / "agents";
+		const std::filesystem::path target = root / (id + ".md");
+		std::error_code error;
+		if (!ValidId(id) || id == "build" || id == "plan" || !PathComponentsAreSafe(data_root, root) || !std::filesystem::remove(target, error) || error)
+		{
+			if (error_out != nullptr) *error_out = "The agent could not be deleted.";
+			return false;
+		}
+		return true;
+	}
+
 	std::string AgentDefinitionService::ExecutionCapabilityForProvider(const std::string& provider_id)
 	{
 		const std::string provider = provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);

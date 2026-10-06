@@ -960,6 +960,42 @@ void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, co
 	cb->Success(SerializeProviderAgentImportPreview(preview).dump());
 }
 
+void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(m_app.data_root, {});
+	nlohmann::json agents = nlohmann::json::array();
+	for (const uam::AgentDefinition& agent : catalog.definitions)
+		agents.push_back({{"id", agent.id}, {"description", agent.description}, {"mode", agent.mode}, {"workspaceAccess", agent.workspace_access},
+		                  {"skills", agent.skills}, {"delegates", agent.delegates}, {"instructions", agent.instructions}, {"builtIn", agent.built_in}});
+	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", catalog.errors}}.dump());
+}
+
+void UamQueryHandler::HandleSaveAgentDefinition(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	uam::AgentDefinition agent;
+	try
+	{
+		agent.id = payload.at("id").get<std::string>();
+		agent.description = payload.at("description").get<std::string>();
+		agent.mode = payload.at("mode").get<std::string>();
+		agent.workspace_access = payload.at("workspaceAccess").get<std::string>();
+		agent.skills = payload.value("skills", std::vector<std::string>{});
+		agent.delegates = payload.value("delegates", std::vector<std::string>{});
+		agent.instructions = payload.at("instructions").get<std::string>();
+	}
+	catch (const nlohmann::json::exception&) { cb->Failure(400, "Agent fields are missing or invalid."); return; }
+	std::string error;
+	if (!uam::AgentDefinitionService::SaveGlobalAgent(m_app.data_root, agent, &error)) { cb->Failure(400, error); return; }
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleDeleteAgentDefinition(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string error;
+	if (!uam::AgentDefinitionService::DeleteGlobalAgent(m_app.data_root, payload.value("id", ""), &error)) { cb->Failure(400, error); return; }
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");

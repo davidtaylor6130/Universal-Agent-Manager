@@ -14,7 +14,6 @@ import {
   type AcpModel,
   type EditorFileAssociation,
   type MemoryWorkerBinding,
-  type McpServerConfiguration,
     type ProviderChatDefaults,
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
@@ -388,7 +387,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
   const defaultEditorPresetId = useAppStore((s) => s.defaultEditorPresetId)
   const editorFileAssociations = useAppStore(useShallow((s) => s.editorFileAssociations))
-  const mcpServers = useAppStore(useShallow((s) => s.mcpServers))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const favoriteUamAgentIds = useAppStore(useShallow((s) => s.favoriteUamAgentIds))
   const uamAgentCycleShortcut = useAppStore((s) => s.uamAgentCycleShortcut)
@@ -398,7 +396,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
-  const setMcpServers = useAppStore((s) => s.setMcpServers)
   const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
   const setSessionUamControlEnabled = useAppStore((s) => s.setSessionUamControlEnabled)
   const setUamAgentPreferences = useAppStore((s) => s.setUamAgentPreferences)
@@ -430,16 +427,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
-  const [mcpDraft, setMcpDraft] = useState(() => JSON.stringify(mcpServers, null, 2))
   const [mcpDraftDirty, setMcpDraftDirty] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  const [mcpWorkspace, setMcpWorkspace] = useState(() => {
-    const active = sessions.find((session) => session.id === activeSessionId)
-    return active?.workspaceSourceDirectory || active?.workspaceDirectory || folders[0]?.directory || ''
-  })
-  const [mcpExecutable, setMcpExecutable] = useState('')
   const [mcpSaving, setMcpSaving] = useState(false)
-  const [mcpMessage, setMcpMessage] = useState('')
   const [computerUseStatus, setComputerUseStatus] = useState<{ screenRecording: { available: boolean; error: string }; accessibility: { available: boolean; error: string } } | null>(null)
   const [computerUseApps, setComputerUseApps] = useState<Array<{ identityKind: ComputerUseAllowedApplication['identityKind']; identity: string; name: string }>>([])
   const [computerUseMessage, setComputerUseMessage] = useState('')
@@ -492,10 +482,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [editorError, setEditorError] = useState('')
   const editorSavePending = useRef(false)
   const [editorSaving, setEditorSaving] = useState(false)
-  const mcpRevision = useRef(0)
-  const mcpSavePending = useRef(false)
-  const [browserSetupProvider, setBrowserSetupProvider] = useState<string | null>(null)
-  const [browserSetupSaved, setBrowserSetupSaved] = useState(false)
   const [themeStep, setThemeStep] = useState(0)
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
@@ -538,7 +524,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return () => window.removeEventListener('beforeunload',guard)
   }, [themeDirty,mcpDraftDirty,editorDirty])
   const requestClose = () => {
-    if (mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
       if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
@@ -546,7 +532,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }))
   }
   const changeSection = (section: SettingsSectionId) => {
-    if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSavePending.current || editorSavePending.current || remoteBusy) return
+    if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
@@ -733,9 +719,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setDefaultEditorDraft(defaultEditorPresetId)
   }, [defaultEditorPresetId])
 
-  useEffect(() => {
-    if (!mcpDraftDirty) setMcpDraft(JSON.stringify(mcpServers, null, 2))
-  }, [mcpDraftDirty, mcpServers])
 
   useEffect(() => {
     if (activeSessionId) void refreshUamAgents(activeSessionId)
@@ -1024,44 +1007,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     anchor.click()
     URL.revokeObjectURL(url)
     setThemeMessage('Theme exported.')
-  }
-  const parseMcpDraft = (): McpServerConfiguration[] | null => {
-    try {
-      const parsed: unknown = JSON.parse(mcpDraft)
-      if (!Array.isArray(parsed)) { setMcpMessage('MCP server configuration must be a JSON array.'); return null }
-      return parsed as McpServerConfiguration[]
-    } catch { setMcpMessage('Enter valid JSON.'); return null }
-  }
-  const saveMcpConfiguration = async (servers: McpServerConfiguration[], browserSetup = false) => {
-    if (mcpSavePending.current) return
-    mcpSavePending.current = true
-    const submittedRevision = mcpRevision.current
-    setMcpSaving(true)
-    setMcpMessage('')
-    setBrowserSetupSaved(false)
-    try {
-      const result = await setMcpServers(servers)
-      if (!result.ok) { setMcpMessage(result.error || 'MCP server configuration was rejected.'); return }
-      const newerEdits = submittedRevision !== mcpRevision.current
-      if (!newerEdits) { setMcpDraft(JSON.stringify(servers,null,2)); setMcpDraftDirty(false) }
-      if (browserSetup) setBrowserSetupSaved(true)
-      setMcpMessage(newerEdits ? 'Submitted configuration saved; newer edits remain unsaved.' : browserSetup ? 'Browser control configured. Start a new local structured chat to launch the tools.' : 'MCP server configuration saved.')
-    } catch { setMcpMessage('MCP server configuration could not be saved. Try again.') }
-    finally { mcpSavePending.current = false; setMcpSaving(false) }
-  }
-  const renderMcpSave = () => <Button size="sm" variant={mcpDraftDirty ? "primary" : "secondary"} leadingIcon={<Save size={14}/>} aria-label="Save MCP server configuration" loading={mcpSaving} onClick={() => { const servers = parseMcpDraft(); if (servers) void saveMcpConfiguration(servers) }}>Save</Button>
-  const configureBrowserControl = () => {
-    const configured = parseMcpDraft()
-    if (!configured || !mcpWorkspace.trim() || !mcpExecutable.trim()) return
-    // Settings are workspace-wide. ACP sessions resolve these entries when they start.
-    let suffix = configured.length + 1
-    while (configured.some(server => server?.id === `playwright-browser-${suffix}`)) suffix += 1
-    const server: McpServerConfiguration = {
-      id:`playwright-browser-${suffix}`,name:'Playwright browser control',workspaceDirectory:mcpWorkspace.trim(),
-      transport:'stdio',command:mcpExecutable.trim(),args:['-y','@playwright/mcp@latest','--isolated'],
-      url:'',environment:[],headers:[],enabled:true,
-    }
-    void saveMcpConfiguration([...configured,server],true)
   }
 
   const renderAddEditor = () => (
@@ -2716,51 +2661,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'central-configuration') return <CentralProviderSettings />
 
-    if (selectedSection === 'mcp-servers') {
-      const browserConfigured = mcpServers.some(server => server.enabled && server.transport === 'stdio' && workspaceKey(server.workspaceDirectory) === workspaceKey(mcpWorkspace) && server.args.some(arg => /^@playwright\/mcp(?:@|$)/.test(arg)))
-      return <div>
-        <SectionCard title="Shared setup"><McpServerSetup disabled={mcpDraftDirty} onBusyChange={setMcpSaving} /></SectionCard>
-        <SectionCard title="Instructions, skills and agents"><CentralProviderSettings showUamTools={false} /></SectionCard>
-        <details>
-        <summary className="cursor-pointer py-3 text-sm">Browser control preset</summary>
-        <SectionCard title="Browser control">
-        <p className="text-xs" style={{color:'var(--text-3)'}}>Give agents a Playwright browser for this workspace.</p>
-        <label className="uam-inline-form__label" htmlFor="uam-mcp-workspace" style={{marginBottom:-8}}>Workspace</label>
-        <input id="uam-mcp-workspace" aria-label="Browser control workspace directory" placeholder="Workspace directory" value={mcpWorkspace} disabled={mcpSaving} onChange={event => { setMcpWorkspace(event.currentTarget.value); setBrowserSetupSaved(false) }} className="uam-field w-full"/>
-        <div>
-          {providers.map(provider => {
-            const supported = provider.supportsStructured !== false && ['gemini-acp','opencode-acp','copilot-acp'].includes(provider.structuredProtocol || providerMetadataForId(provider.id).structuredProtocol)
-            return <div key={provider.id} className="uam-settings-row text-sm">
-              <span className="flex min-w-0 flex-1 items-center gap-2"><ProviderLogo providerId={provider.id}/><span>{providerDisplayName(provider,provider.id)}</span></span>
-              {!supported ? <span className="text-xs" style={{color:'var(--text-3)'}}>Not supported</span> : mcpSaving ? <span className="text-xs">Saving…</span> : browserConfigured ? <span className="uam-memory-chip" data-confidence="high">Configured</span> : <Button size="sm" aria-label={`Setup ${providerDisplayName(provider,provider.id)} browser control`} onClick={() => { setBrowserSetupProvider(provider.id); setBrowserSetupSaved(false); setMcpMessage('') }}>Setup</Button>}
-            </div>
-          })}
-        </div>
-        {browserSetupProvider && <div className="grid gap-3">
-          <p className="text-xs">This configures browser tools for all supported providers in this workspace. The provider downloads and starts the tools in a new local structured chat.</p>
-          {!browserSetupSaved && <>
-            <label className="grid gap-1 text-xs">npx executable
-              <span className="flex gap-2"><input aria-label="npx executable path" placeholder="Absolute npx path" value={mcpExecutable} disabled={mcpSaving} onChange={event => setMcpExecutable(event.currentTarget.value)} className="min-w-0 flex-1 rounded-lg px-3 py-2" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
-                <Button size="sm" disabled={mcpSaving} onClick={() => void browseProviderAgentImport(mcpExecutable).then(path => path && setMcpExecutable(path))}>Browse</Button>
-              </span>
-            </label>
-            <div className="flex gap-2"><Button size="sm" disabled={mcpSaving} onClick={() => setBrowserSetupProvider(null)}>Cancel</Button><Button size="sm" aria-label="Add Playwright browser control" aria-busy={mcpSaving || undefined} disabled={mcpSaving || !mcpWorkspace.trim() || !mcpExecutable.trim()} onClick={configureBrowserControl}>{mcpSaving ? 'Saving configuration…' : 'Save configuration'}</Button></div>
-          </>}
-          {browserSetupSaved && <Button size="sm" onClick={() => setBrowserSetupProvider(null)}>Done</Button>}
-        </div>}
-        {mcpMessage && <p role="status" className="text-xs">{mcpMessage}</p>}
-        </SectionCard>
-        </details>
-        <SectionCard title="Advanced">
-        <details className="uam-skill-folder">
-          <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/>Edit server configuration as JSON</summary>
-          <textarea aria-label="MCP server configuration" disabled={mcpSaving} value={mcpDraft} onChange={event => { mcpRevision.current += 1; setMcpDraft(event.target.value); setMcpDraftDirty(true); setMcpMessage(''); setBrowserSetupSaved(false) }} spellCheck={false} rows={16} className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" style={{color:'var(--text)',background:'var(--bg)',border:'1px solid var(--border)'}}/>
-          {renderMcpSave()}
-          <p className="text-xs" style={{color:'var(--text-3)'}}>Leave workspaceDirectory empty for all workspaces. Set executionHostId to target one computer, or leave it empty for all hosts. Executable paths and secret environment variables belong to the executing host. HTTP and SSE must use localhost. Saved servers apply when Chat or CLI View starts, even with Central Setup disabled.</p>
-        </details>
-        </SectionCard>
-      </div>
-    }
+    if (selectedSection === 'mcp-servers') return <SectionCard title="MCP servers"><McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} /></SectionCard>
 
     if (selectedSection === 'chat-data') {
       return (
@@ -2867,7 +2768,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 {renderThemeEditor()}
                 {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
-                <div className="flex items-start justify-between gap-3 mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
+                <div className="w-full mx-auto flex items-start justify-between gap-3 mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
                   <div key={selectedSection} className="uam-reveal min-w-0">
                     <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
                     {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="mt-0.5 text-xs" style={{color:'var(--text-3)'}}>{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
@@ -2875,7 +2776,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                     {selectedSection === 'editors' && renderAddEditor()}
-                    {selectedSection === 'mcp-servers' && mcpDraftDirty && renderMcpSave()}
                   </div>
                 </div>
                 <div key={selectedSection} className={`uam-settings-page flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto uam-settings-page--narrow'}`}>{renderSectionContent()}</div>

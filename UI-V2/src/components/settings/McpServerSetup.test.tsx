@@ -1,95 +1,72 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { McpServerSetup } from './McpServerSetup'
-import { CentralProviderSettings } from './CentralProviderSettings'
+import { McpServerSetup, fromJsonText, toJsonText } from './McpServerSetup'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-const nativeSaveServers = useAppStore.getState().setMcpServers
 let host: HTMLDivElement
 let root: Root
-const entry = (): McpServerConfiguration => ({ id: 'existing', name: 'Existing', executionHostId: '', workspaceDirectory: '', transport: 'stdio', command: '/bin/server', args: [], url: '', environment: [], headers: [], enabled: true })
+const server: McpServerConfiguration = { id: 'pw', name: 'playwright', executionHostId: '', workspaceDirectory: '', transport: 'stdio', command: '/usr/local/bin/npx', args: ['-y', '@playwright/mcp@latest'], url: '', environment: [{ name: 'TOKEN', environmentVariable: 'PW_TOKEN' }], headers: [], enabled: true }
 const saveServers = vi.fn(async (servers: McpServerConfiguration[]) => { useAppStore.setState({ mcpServers: servers }); return { ok: true } })
+const saveCentral = vi.fn(async (configuration: ReturnType<typeof useAppStore.getState>['centralProviderConfiguration']) => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
 beforeEach(async () => {
-  window.cefQuery = undefined
-  saveServers.mockClear()
-  useAppStore.setState({ mcpServers: [], sessions: [], activeSessionId: null, executionHosts: [{ id: 'local', label: 'This Mac', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' }, { id: 'homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' }], centralProviderConfiguration: { enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers })
+  saveServers.mockClear(); saveCentral.mockClear()
+  useAppStore.setState({ mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
-  await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} />))
+  await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove() })
-async function click(text: string) {
-  const button = [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === text)
-  expect(button, text).toBeDefined()
-  await act(async () => button!.click())
-}
-async function fill(label: string, value: string) {
-  const field = [...host.querySelectorAll('label')].find(item => item.firstChild?.textContent === label)?.querySelector('input,textarea,select') as HTMLInputElement
-  expect(field, label).toBeDefined()
+const button = (text: string) => [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === text)!
+async function click(text: string) { await act(async () => button(text).click()) }
+async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
-    const prototype = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : field.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype
-    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(field, value)
-    field.dispatchEvent(new Event(field.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }))
+    Object.getOwnPropertyDescriptor(field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
-async function connection() { await click('Add MCP server'); await fill('Server name', 'Docs'); await fill('Executable path', '/bin/server'); await fill('Arguments, one per line', '--path\n/a path/with spaces\n'); await click('Next') }
 
-it('saves a single global launch configuration and preserves concurrently added servers', async () => {
-  await connection(); await click('Next')
-  await act(async () => useAppStore.setState({ mcpServers: [entry()] }))
-  await click('Save for all providers')
-  expect(saveServers).toHaveBeenCalledTimes(1)
-  const saved = useAppStore.getState().mcpServers
-  expect(saved).toHaveLength(2)
-  expect(saved[1]).toMatchObject({ name: 'Docs', workspaceDirectory: '', executionHostId: '', args: ['--path', '/a path/with spaces'], enabled: true })
-  expect(host.textContent).toContain('Server saved for all five providers')
+it('round-trips OpenCode-style JSON with the built-in UAM service and env references', () => {
+  const text = toJsonText([server], false)
+  expect(JSON.parse(text).mcp).toEqual({ 'uam-mcp': { type: 'builtin', enabled: false }, playwright: { type: 'local', command: ['/usr/local/bin/npx', '-y', '@playwright/mcp@latest'], environment: { TOKEN: '{env:PW_TOKEN}' }, enabled: true } })
+  expect(fromJsonText(text, [server])).toEqual({ servers: [server], uamEnabled: false })
+  const literal = fromJsonText('{"mcp":{"x":{"type":"remote","url":"http://main.homelab.com:9001/mcp?userToken=abc","headers":{"Authorization":"Bearer t"}}}}', [])
+  expect(literal.servers[0]).toMatchObject({ transport: 'http', url: 'http://main.homelab.com:9001/mcp?userToken=abc', headers: [{ name: 'Authorization', environmentVariable: '', value: 'Bearer t' }] })
+  expect(JSON.parse(toJsonText(literal.servers, true)).mcp.x.headers).toEqual({ Authorization: 'Bearer t' })
 })
-it('saves SSH HTTP headers as secret references without command fields', async () => {
-  await click('Add MCP server'); await fill('Server name', 'Remote docs'); await fill('Connection type', 'http'); await fill('Server URL', 'http://localhost:8080/mcp'); await click('Next')
-  await fill('Execution host', 'homelab'); await fill('Workspace path (leave empty for all workspaces)', '/srv/project'); await click('Add header'); await fill('Header name 1', 'Authorization'); await fill('Secret variable 1', 'MCP_TOKEN'); await click('Next'); await click('Save for all providers')
-  expect(useAppStore.getState().mcpServers[0]).toMatchObject({ executionHostId: 'homelab', workspaceDirectory: '/srv/project', transport: 'http', command: '', args: [], environment: [], headers: [{ name: 'Authorization', environmentVariable: 'MCP_TOKEN' }] })
-})
-it('blocks invalid paths and unsupported remote URLs before saving', async () => {
-  await click('Add MCP server'); await fill('Server name', 'Docs'); await fill('Executable path', 'npx'); await click('Next')
-  expect(host.textContent).toContain('absolute executable path')
-  await fill('Connection type', 'http'); await fill('Server URL', 'https://example.com/mcp'); await click('Next')
-  expect(host.textContent).toContain('localhost HTTP or HTTPS URL'); expect(saveServers).not.toHaveBeenCalled()
-})
-it('keeps the wizard open when the backend rejects configuration', async () => {
-  saveServers.mockImplementationOnce(async () => ({ ok: false, error: 'Secret variable is unavailable.' }))
-  await connection(); await click('Next'); await click('Save for all providers')
-  expect(host.textContent).toContain('Secret variable is unavailable.'); expect(host.textContent).toContain('Step 3 of 3'); expect(host.textContent).not.toContain('Server saved for all five')
-})
-it('rejects stale edits rather than replacing a changed server', async () => {
-  await act(async () => useAppStore.setState({ mcpServers: [entry()] })); await click('Edit Existing'); await click('Next'); await click('Next')
-  await act(async () => useAppStore.setState({ mcpServers: [{ ...entry(), command: '/bin/new-server' }] })); await click('Save for all providers')
-  expect(host.textContent).toContain('changed while you were editing'); expect(saveServers).not.toHaveBeenCalled()
-})
-it('edits, disables and removes the selected server without affecting other entries', async () => {
-  await act(async () => useAppStore.setState({ mcpServers: [entry(), { ...entry(), id: 'other', name: 'Other' }] }))
-  await click('Edit Existing'); await fill('Server name', 'Updated'); await click('Next'); await click('Next'); await click('Save for all providers'); await click('Disable Updated')
-  expect(useAppStore.getState().mcpServers.find(server => server.id === 'existing')?.enabled).toBe(false)
-  await click('Remove Updated'); expect(useAppStore.getState().mcpServers).toHaveLength(2); await click('Confirm removal'); expect(useAppStore.getState().mcpServers.map(server => server.id)).toEqual(['other'])
-})
-it('preserves the visible UAM service default while saving dirty native resource fields', async () => {
-  const saveCentral = vi.fn(async configuration => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
-  useAppStore.setState({ setCentralProviderConfiguration: saveCentral })
-  await act(async () => root.render(<CentralProviderSettings showUamTools={false} />))
-  const instructions = host.querySelector<HTMLTextAreaElement>('[aria-label="Central instructions"]')!
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(instructions, 'Native launch instructions'); instructions.dispatchEvent(new Event('input', { bubbles: true })) })
-  await act(async () => useAppStore.setState({ centralProviderConfiguration: { ...useAppStore.getState().centralProviderConfiguration, uamControlEnabled: false } }))
+
+it('shows built-ins without delete buttons and deletes a user server only after save', async () => {
+  expect(host.textContent).toContain('UAM MCP service')
+  expect(host.textContent).toContain('UAM Computer Use')
+  expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
+  await click('Delete')
+  expect(saveServers).not.toHaveBeenCalled()
   await click('Save')
-  expect(saveCentral).toHaveBeenCalledWith(expect.objectContaining({ instructions: 'Native launch instructions', uamControlEnabled: false }))
+  expect(saveServers).toHaveBeenCalledWith([])
 })
 
-it('submits the wizard configuration through the native settings bridge without sending a chat message', async () => {
-  const requests: Array<{ action: string; payload: { servers: McpServerConfiguration[] } }> = []
-  useAppStore.setState({ setMcpServers: nativeSaveServers })
-  window.cefQuery = request => { requests.push(JSON.parse(request.request)); request.onSuccess(JSON.stringify({ ok: true })) }
-  await connection(); await click('Next'); await click('Save for all providers')
-  expect(requests).toHaveLength(1)
-  expect(requests[0].action).toBe('setMcpServers')
-  expect(requests[0].payload.servers[0]).toMatchObject({ name: 'Docs', executionHostId: '', args: ['--path', '/a path/with spaces'] })
-  window.cefQuery = undefined
+it('adds a server through the form and blocks a relative program path', async () => {
+  await click('+ Add server')
+  const inputs = () => [...host.querySelectorAll('input:not([type=checkbox])')] as HTMLInputElement[]
+  await type(inputs()[0], 'docs')
+  await type(inputs()[1], 'docs-server')
+  await click('Save')
+  expect(host.textContent).toContain('program path must be a full path')
+  await type(inputs()[1], '/opt/docs/server')
+  await click('+ Add argument')
+  await type(host.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
+  await click('Save')
+  expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', transport: 'stdio', command: '/opt/docs/server', args: ['--stdio'] })
+})
+
+it('edits in JSON, toggles the built-in UAM service and saves both', async () => {
+  await click('JSON')
+  const area = host.querySelector('textarea[aria-label="MCP JSON"]') as HTMLTextAreaElement
+  await type(area, area.value.replace('"enabled": true\n    },\n    "playwright"', '"enabled": false\n    },\n    "playwright"'))
+  await click('Save')
+  expect(saveServers).toHaveBeenCalledWith([server])
+  expect(saveCentral.mock.calls[0][0].uamControlEnabled).toBe(false)
+  await type(area, '{ not json')
+  await click('Form')
+  expect(host.textContent).toContain('not valid')
 })

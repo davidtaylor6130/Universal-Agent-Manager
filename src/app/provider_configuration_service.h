@@ -55,6 +55,9 @@ namespace uam
 			instructions += "\n\nUAM agent definitions are available below. Delegate through UAM tools only when permitted by the selected agent.\n";
 			for (const AgentDefinition& agent : catalog.definitions)
 			{
+				// Install built-ins, the chat's agent and the agents chosen in Central Setup.
+				if (!agent.built_in && agent.id != selected->id &&
+				    std::find(configuration.default_agents.begin(), configuration.default_agents.end(), agent.id) == configuration.default_agents.end()) continue;
 				const std::string name = "agents/" + agent.id + ".md";
 				if (!provider_setup::SafeRelativePath(name)) { error = "An agent id cannot be installed safely."; return false; }
 				bundle.files[name] = selected_agent_instructions && agent.id == selected->id ? *selected_agent_instructions
@@ -107,6 +110,9 @@ namespace uam
 				{
 					const std::string name = entry.command_name;
 					if (!provider_setup::SafeRelativePath(name) || name.find('/') != std::string::npos) { error = "A library skill name cannot be installed safely."; return false; }
+					// Library skills install only when chosen as defaults or listed by the selected agent.
+					if (std::find(configuration.default_skills.begin(), configuration.default_skills.end(), name) == configuration.default_skills.end() &&
+					    std::find(selected->skills.begin(), selected->skills.end(), name) == selected->skills.end()) continue;
 					if (!skill_names.insert(name).second) continue;
 					instructions += "- " + name + ": __UAM_RESOURCE_ROOT__/skills/" + name + "/SKILL.md\n";
 					resource_bytes += entry.body.size();

@@ -1,114 +1,228 @@
-import { useRef, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
-import { SSH_ENABLED } from '../../config/buildFeatures'
 import { Button } from '../ui'
 
 type Reference = McpServerConfiguration['environment'][number]
-const emptyServer = (): McpServerConfiguration => ({ id: crypto.randomUUID(), name: '', workspaceDirectory: '', executionHostId: '', transport: 'stdio', command: '', args: [], url: '', environment: [], headers: [], enabled: true })
+type JsonEntry = { type: 'builtin' | 'local' | 'remote'; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
+const BUILTIN = 'uam-mcp'
 const absolutePath = (value: string) => /^(\/|[a-z]:[\\/]|\\\\)/i.test(value)
+const refsToJson = (refs: Reference[]) => refs.length ? Object.fromEntries(refs.map(ref => [ref.name, ref.value !== undefined ? ref.value : `{env:${ref.environmentVariable}}`])) : undefined
+const refsFromJson = (value: unknown, label: string): Reference[] => {
+  if (value === undefined) return []
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error(`${label} must be an object of "NAME": "value" or "NAME": "{env:VARIABLE}".`)
+  return Object.entries(value).map(([name, text]) => {
+    const match = typeof text === 'string' ? /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(text) : null
+    if (typeof text !== 'string') throw Error(`${label} "${name}" must be text.`)
+    return match ? { name, environmentVariable: match[1] } : { name, environmentVariable: '', value: text }
+  })
+}
 
-/** Edit shared launch configuration without writing individual provider configuration files. */
-export function McpServerSetup({ disabled = false, onBusyChange }: { disabled?: boolean; onBusyChange: (busy: boolean) => void }) {
-  const servers = useAppStore(state => state.mcpServers)
-  const hosts = useAppStore(state => state.executionHosts)
-  const central = useAppStore(state => state.centralProviderConfiguration)
-  const active = useAppStore(state => state.sessions.find(session => session.id === state.activeSessionId))
-  const [draft, setDraft] = useState<McpServerConfiguration | null>(null)
-  const [original, setOriginal] = useState<McpServerConfiguration | null>(null)
-  const [step, setStep] = useState(0)
-  const [args, setArgs] = useState('')
-  const [message, setMessage] = useState('')
-  const [removal, setRemoval] = useState<McpServerConfiguration | null>(null)
-  const [busy, setBusy] = useState(false)
-  const pending = useRef(false)
-  const locked = busy || disabled
-  const change = (update: Partial<McpServerConfiguration>) => { if (draft) setDraft({ ...draft, ...update }); setMessage('') }
-  const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string) => {
-    if (pending.current || disabled) return false
-    pending.current = true; setBusy(true); onBusyChange(true); setMessage('')
-    try {
-      const result = await action()
-      setMessage(result.ok ? success : result.error || 'Could not save MCP settings.')
-      return result.ok
-    } catch { setMessage('Could not save MCP settings. Try again.'); return false }
-    finally { pending.current = false; setBusy(false); onBusyChange(false) }
+/** OpenCode-style document; the form edits the same data. */
+export function toJsonText(servers: McpServerConfiguration[], uamEnabled: boolean) {
+  const mcp: Record<string, JsonEntry> = { [BUILTIN]: { type: 'builtin', enabled: uamEnabled } }
+  for (const server of servers) mcp[server.name] = {
+    type: server.transport === 'stdio' ? 'local' : 'remote',
+    ...(server.transport === 'stdio' ? { command: [server.command, ...server.args], environment: refsToJson(server.environment) } : { url: server.url, headers: refsToJson(server.headers), sse: server.transport === 'sse' || undefined }),
+    enabled: server.enabled,
+    workspace: server.workspaceDirectory || undefined,
+    host: server.executionHostId || undefined,
   }
-  const start = (server?: McpServerConfiguration) => {
-    setOriginal(server ? structuredClone(server) : null)
-    setDraft(server ? structuredClone(server) : emptyServer()); setArgs(server?.args.join('\n') || ''); setStep(0); setMessage('')
-  }
-  const validate = () => {
-    if (!draft) return false
-    if (!draft.name.trim()) { setMessage('Enter a server name.'); return false }
-    if (['uam-control', 'uam-computer'].includes(draft.name.trim())) { setMessage('This name is reserved for the built-in UAM service.'); return false }
-    if (draft.transport === 'stdio' && !absolutePath(draft.command.trim())) { setMessage('Enter an absolute executable path on the computer that runs the provider.'); return false }
-    if (draft.transport !== 'stdio') {
-      try {
-        const url = new URL(draft.url.trim())
-        if (!['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password) throw Error()
-      } catch { setMessage('Enter a localhost HTTP or HTTPS URL, such as http://localhost:3000/mcp.'); return false }
+  return JSON.stringify({ mcp }, null, 2)
+}
+
+export function fromJsonText(text: string, previous: McpServerConfiguration[]): { servers: McpServerConfiguration[]; uamEnabled: boolean } {
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { throw Error('The JSON is not valid. Check for a missing comma or quote.') }
+  const mcp = (parsed as { mcp?: unknown })?.mcp
+  if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) throw Error('Put servers inside { "mcp": { ... } }.')
+  let uamEnabled = true
+  const servers = Object.entries(mcp as Record<string, JsonEntry>).flatMap(([name, entry]): McpServerConfiguration[] => {
+    if (!entry || typeof entry !== 'object') throw Error(`"${name}" must be an object.`)
+    if (name === BUILTIN) { uamEnabled = entry.enabled !== false; return [] }
+    if (entry.type !== 'local' && entry.type !== 'remote') throw Error(`"${name}" needs "type": "local" or "remote".`)
+    const workspaceDirectory = entry.workspace ?? ''
+    const executionHostId = entry.host ?? ''
+    const id = previous.find(server => server.name === name && server.workspaceDirectory === workspaceDirectory && server.executionHostId === executionHostId)?.id ?? crypto.randomUUID()
+    const base = { id, name, workspaceDirectory, executionHostId, enabled: entry.enabled !== false, command: '', args: [], url: '', environment: [], headers: [] }
+    if (entry.type === 'local') {
+      if (!Array.isArray(entry.command) || !entry.command.length || entry.command.some(part => typeof part !== 'string')) throw Error(`"${name}" needs "command": ["/path/to/program", "argument", ...].`)
+      return [{ ...base, transport: 'stdio', command: entry.command[0], args: entry.command.slice(1), environment: refsFromJson(entry.environment, `"${name}" environment`) }]
     }
-    if (draft.workspaceDirectory.trim() && !absolutePath(draft.workspaceDirectory.trim())) { setMessage('Enter an absolute workspace path, or choose all workspaces.'); return false }
-    const references = draft.transport === 'stdio' ? draft.environment : draft.headers
-    if (references.some(ref => !ref.name.trim() || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.environmentVariable.trim()))) { setMessage('Each secret reference needs a name and a valid environment variable.'); return false }
-    if (new Set(references.map(ref => draft.transport === 'stdio' ? ref.name.trim() : ref.name.trim().toLowerCase())).size !== references.length) { setMessage('Use each environment or header name once.'); return false }
-    return true
+    if (typeof entry.url !== 'string') throw Error(`"${name}" needs "url".`)
+    return [{ ...base, transport: entry.sse ? 'sse' : 'http', url: entry.url, headers: refsFromJson(entry.headers, `"${name}" headers`) }]
+  })
+  return { servers, uamEnabled }
+}
+
+function problem(server: McpServerConfiguration): string {
+  const label = server.name.trim() || 'Unnamed server'
+  if (!server.name.trim()) return 'Every server needs a name.'
+  if ([BUILTIN, 'uam-control', 'uam-computer'].includes(server.name.trim())) return `"${label}" is reserved for a built-in UAM service.`
+  if (server.transport === 'stdio' && !absolutePath(server.command.trim())) return `${label}: program path must be a full path, such as /usr/local/bin/npx.`
+  if (server.transport !== 'stdio') {
+    try {
+      const url = new URL(server.url.trim())
+      if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw Error()
+    } catch { return `${label}: enter an http:// or https:// URL, such as http://main.homelab.com:9001/mcp.` }
+  }
+  if (server.workspaceDirectory.trim() && !absolutePath(server.workspaceDirectory.trim())) return `${label}: workspace must be a full path, or empty for all workspaces.`
+  const refs = server.transport === 'stdio' ? server.environment : server.headers
+  if (refs.some(ref => !ref.name.trim() || (ref.value !== undefined ? !ref.value || /[\r\n]/.test(ref.value) : !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.environmentVariable.trim())))) return `${label}: each variable needs a name and a value (or a valid source variable).`
+  return ''
+}
+
+const newServer = (name: string): McpServerConfiguration => ({ id: crypto.randomUUID(), name, workspaceDirectory: '', executionHostId: '', transport: 'stdio', command: '', args: [], url: '', environment: [], headers: [], enabled: true })
+
+/** One list of MCP servers, edited as a form or as JSON, sent to every provider on launch (local and SSH). */
+export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void }) {
+  const savedServers = useAppStore(state => state.mcpServers)
+  const savedUam = useAppStore(state => state.centralProviderConfiguration.uamControlEnabled)
+  const hosts = useAppStore(state => state.executionHosts)
+  const active = useAppStore(state => state.sessions.find(session => session.id === state.activeSessionId))
+  const [servers, setServers] = useState(savedServers)
+  const [uamEnabled, setUamEnabled] = useState(savedUam)
+  const [view, setView] = useState<'form' | 'json'>('form')
+  const [jsonText, setJsonText] = useState('')
+  const [open, setOpen] = useState<string | null>(null)
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const dirty = view === 'json' ? jsonText !== toJsonText(savedServers, savedUam) : toJsonText(servers, uamEnabled) !== toJsonText(savedServers, savedUam)
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
+  useEffect(() => { if (!dirty) { setServers(savedServers); setUamEnabled(savedUam) } }, [savedServers, savedUam])
+
+  const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)); setMessage('') }
+  const switchView = (next: 'form' | 'json') => {
+    if (next === view) return
+    if (next === 'json') { setJsonText(toJsonText(servers, uamEnabled)); setView('json'); return }
+    try { const parsed = fromJsonText(jsonText, servers); setServers(parsed.servers); setUamEnabled(parsed.uamEnabled); setView('form'); setMessage('') }
+    catch (error) { setMessage((error as Error).message) }
   }
   const save = async () => {
-    if (!draft || !validate()) return
-    const next: McpServerConfiguration = { ...draft, name: draft.name.trim(), command: draft.transport === 'stdio' ? draft.command.trim() : '', args: draft.transport === 'stdio' ? args.split('\n').filter(arg => arg.length > 0) : [], url: draft.transport === 'stdio' ? '' : draft.url.trim(), workspaceDirectory: draft.workspaceDirectory.trim(), environment: draft.transport === 'stdio' ? draft.environment.map(trimReference) : [], headers: draft.transport === 'stdio' ? [] : draft.headers.map(trimReference) }
-    const current = useAppStore.getState().mcpServers
-    if (original && JSON.stringify(current.find(server => server.id === original.id)) !== JSON.stringify(original)) { setMessage('This server changed while you were editing. Cancel and reopen it.'); return }
-    if (current.some(server => server.id !== next.id && server.name.toLowerCase() === next.name.toLowerCase() && server.workspaceDirectory === next.workspaceDirectory && (server.executionHostId || '') === (next.executionHostId || ''))) { setMessage('A server with this name already exists in this scope. Edit it or choose another name.'); return }
-    if (await run(() => useAppStore.getState().setMcpServers([...current.filter(server => server.id !== next.id), next]), 'Server saved for all five providers. Start a new session or restart a running session to apply it.')) setDraft(null)
+    let next = servers, nextUam = uamEnabled
+    if (view === 'json') {
+      try { ({ servers: next, uamEnabled: nextUam } = fromJsonText(jsonText, servers)) } catch (error) { setMessage((error as Error).message); return }
+    }
+    next = next.map(server => ({ ...server, name: server.name.trim(), command: server.command.trim(), url: server.url.trim(), workspaceDirectory: server.workspaceDirectory.trim(), args: server.args.filter(arg => arg.length > 0) }))
+    const issue = next.map(problem).find(Boolean)
+    if (issue) { setMessage(issue); return }
+    const keys = next.map(server => `${server.name.toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`)
+    if (new Set(keys).size !== keys.length) { setMessage('Two servers share the same name. Rename one.'); return }
+    setBusy(true); onBusyChange(true); setMessage('')
+    try {
+      const store = useAppStore.getState()
+      const result = await store.setMcpServers(next)
+      if (!result.ok) { setMessage(result.error || 'Could not save MCP servers.'); return }
+      if (nextUam !== store.centralProviderConfiguration.uamControlEnabled) {
+        const central = await store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, uamControlEnabled: nextUam })
+        if (!central.ok) { setMessage(central.error || 'Servers saved, but the UAM MCP setting was not.'); return }
+      }
+      setServers(next); setUamEnabled(nextUam)
+      if (view === 'json') setJsonText(toJsonText(next, nextUam))
+      setMessage('Saved. Gemini, Codex, Claude Code, OpenCode and Copilot get these servers the next time a chat or CLI starts, locally and over SSH.')
+    } catch { setMessage('Could not save MCP servers. Try again.') }
+    finally { setBusy(false); onBusyChange(false) }
   }
-  const field = (label: string, value: string, onChange: (value: string) => void, placeholder = '') => <label className="grid gap-1 text-sm">{label}<input className="uam-field w-full" value={value} placeholder={placeholder} disabled={locked} onChange={event => onChange(event.currentTarget.value)} /></label>
-  const references = draft?.transport === 'stdio' ? draft.environment : draft?.headers || []
-  const updateReferences = (values: Reference[]) => change(draft?.transport === 'stdio' ? { environment: values } : { headers: values })
-  return <div className="space-y-5" style={{ color: 'var(--text)' }}>
-    <p className="text-sm">Set up an MCP server once for Gemini, Codex, Claude Code, OpenCode and Copilot. Settings apply to Chat and CLI View, including SSH, on the next launch.</p>
-    <div className="border-b pb-4 space-y-3" style={{ borderColor: 'var(--border)' }}>
-      <strong>UAM MCP service</strong>
-      <p className="text-sm">Built in. UAM manages the connection for questions, goals, skills and approved actions. No command or URL is needed.</p>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={central.uamControlEnabled} disabled={locked} onChange={event => {
-        const enabled = event.currentTarget.checked
-        void run(() => { const store = useAppStore.getState(); return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, uamControlEnabled: enabled }) }, 'UAM tools default saved. Existing chats retain their setting.')
-      }} />Enable UAM MCP service for new chats</label>
-      {active && <div className="flex items-center justify-between gap-3 text-sm"><span>Current chat: {active.name} · UAM tools {active.uamControlEnabled ? 'enabled' : 'disabled'}</span><Button size="sm" disabled={locked} onClick={() => void run(async () => ({ ok: await useAppStore.getState().setSessionUamControlEnabled(active.id, !active.uamControlEnabled), error: 'Stop the current session before changing its UAM tools setting.' }), 'Current chat UAM tools setting saved.')}>{active.uamControlEnabled ? 'Disable' : 'Enable'} for current chat</Button></div>}
-      <p className="text-xs">Enabled is a configuration setting, not a live connection check.</p>
+
+  const text = (label: string, value: string, onChange: (value: string) => void, placeholder = '', help = '') => <label className="grid gap-1 text-sm">
+    <span>{label}</span>
+    <input className="uam-field w-full" value={value} placeholder={placeholder} disabled={busy} onChange={event => onChange(event.currentTarget.value)} />
+    {help && <span className="text-xs" style={{ color: 'var(--text-3)' }}>{help}</span>}
+  </label>
+  const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <label className="flex items-center gap-2 text-xs"><input type="checkbox" aria-label={label} checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />{checked ? 'On' : 'Off'}</label>
+  const builtinRow = (name: string, detail: string, control: ReactNode) => <div className="uam-settings-row flex items-center gap-3 text-sm">
+    <div className="flex-1 min-w-0"><strong>{name}</strong> <span className="text-xs" style={{ color: 'var(--text-3)' }}>Built in · cannot be deleted</span><p className="text-xs" style={{ color: 'var(--text-3)' }}>{detail}</p></div>{control}
+  </div>
+
+  return <div className="space-y-4" style={{ color: 'var(--text)' }}>
+    <div className="flex items-center justify-between gap-3">
+      <p className="text-sm">Add a server once. Every provider gets it, locally and over SSH.</p>
+      <div role="tablist" aria-label="Editor view" className="flex gap-1">
+        <Button size="sm" role="tab" aria-selected={view === 'form'} variant={view === 'form' ? 'primary' : 'secondary'} disabled={busy} onClick={() => switchView('form')}>Form</Button>
+        <Button size="sm" role="tab" aria-selected={view === 'json'} variant={view === 'json' ? 'primary' : 'secondary'} disabled={busy} onClick={() => switchView('json')}>JSON</Button>
+      </div>
     </div>
-    {disabled && <p className="text-sm">Save your advanced JSON edits before using the setup wizard.</p>}
-    {!draft && <>
-      <div className="flex items-center justify-between gap-3"><strong>Shared MCP servers</strong><Button size="sm" disabled={locked} onClick={() => start()}>Add MCP server</Button></div>
-      {removal && <div role="group" aria-label="Confirm server removal" className="space-y-2 text-sm"><p>Remove {removal.name} from shared settings? Running sessions retain their configuration.</p><div className="flex gap-2"><Button size="sm" disabled={locked} onClick={() => setRemoval(null)}>Keep server</Button><Button size="sm" variant="danger" disabled={locked} onClick={() => void run(() => { const store = useAppStore.getState(); return store.setMcpServers(store.mcpServers.filter(item => item.id !== removal.id)) }, 'Server removed from shared settings.').then(ok => { if (ok) setRemoval(null) })}>Confirm removal</Button></div></div>}
-      {servers.length === 0 && <p className="text-sm">No shared servers configured. Add a server to use it across providers.</p>}
-      {servers.map(server => <div key={server.id} className="uam-settings-row flex flex-wrap items-center gap-3 text-sm">
-        <div className="flex-1 min-w-0"><strong>{server.name}</strong><p className="text-xs break-all">{server.transport} · {server.workspaceDirectory || 'All workspaces'} · {server.executionHostId ? hosts.find(host => host.id === server.executionHostId)?.label || server.executionHostId : 'All hosts, including SSH'}</p><span className="text-xs">{server.enabled ? 'Saved · applies on next launch' : 'Disabled'}</span></div>
-        <Button size="sm" disabled={locked} onClick={() => start(server)}>Edit {server.name}</Button>
-        <Button size="sm" disabled={locked} onClick={() => void run(() => { const store = useAppStore.getState(); return store.setMcpServers(store.mcpServers.map(item => item.id === server.id ? { ...item, enabled: !item.enabled } : item)) }, 'Server setting saved. Applies on the next launch.')}>{server.enabled ? 'Disable' : 'Enable'} {server.name}</Button>
-        <Button size="sm" variant="danger" disabled={locked} onClick={() => setRemoval(server)}>Remove {server.name}</Button>
-      </div>)}
-    </>}
-    {draft && <div className="space-y-4 border-t pt-4" style={{ borderColor: 'var(--border)' }}>
-      <h3 className="font-semibold">{original ? 'Edit' : 'Add'} MCP server · Step {step + 1} of 3: {['Connection', 'Scope and credentials', 'Review'][step]}</h3>
-      {step === 0 && <>
-        {field('Server name', draft.name, name => change({ name }), 'documentation')}
-        <label className="grid gap-1 text-sm">Connection type<select className="uam-field w-full" value={draft.transport} disabled={locked} onChange={event => change({ transport: event.currentTarget.value as McpServerConfiguration['transport'] })}><option value="stdio">Local command (stdio)</option><option value="http">HTTP</option><option value="sse">SSE</option></select></label>
-        {draft.transport === 'stdio' ? <>{field('Executable path', draft.command, command => change({ command }), '/usr/local/bin/npx or C:\\tools\\server.exe')}<label className="grid gap-1 text-sm">Arguments, one per line<textarea className="uam-field w-full" rows={4} value={args} disabled={locked} onChange={event => setArgs(event.currentTarget.value)} placeholder={'-y\n@playwright/mcp@latest'} /></label><p className="text-xs">Each line is one argument. Do not add shell quotes around paths with spaces.</p></> : <>{field('Server URL', draft.url, url => change({ url }), 'http://localhost:3000/mcp')}<p className="text-xs">UAM currently accepts localhost HTTP/SSE servers. On SSH, localhost means the remote host.</p></>}
-      </>}
-      {step === 1 && <>
-        <label className="grid gap-1 text-sm">Execution host<select className="uam-field w-full" value={draft.executionHostId || ''} disabled={locked} onChange={event => change({ executionHostId: event.currentTarget.value })}><option value="">All hosts{SSH_ENABLED ? ', including SSH' : ''}</option>{hosts.filter(host => SSH_ENABLED || host.transport === 'local').map(host => <option key={host.id} value={host.id}>{host.label}</option>)}{draft.executionHostId && !hosts.some(host => host.id === draft.executionHostId) && <option value={draft.executionHostId}>{draft.executionHostId} (unavailable)</option>}</select></label>
-        {field('Workspace path (leave empty for all workspaces)', draft.workspaceDirectory, workspaceDirectory => change({ workspaceDirectory }))}
-        <p className="text-sm">Commands, workspace paths and secret variables belong to the computer that runs the provider. Use a host-specific entry when local and SSH paths differ.</p>
-        <strong className="text-sm">{draft.transport === 'stdio' ? 'Environment variables' : 'HTTP headers'}</strong>
-        <p className="text-xs">Reference an existing environment variable. UAM does not copy secret values to SSH hosts.</p>
-        {references.map((reference, index) => <div key={index} className="flex flex-wrap gap-2 items-end">{field(`${draft.transport === 'stdio' ? 'Environment' : 'Header'} name ${index + 1}`, reference.name, name => updateReferences(references.map((item, i) => i === index ? { ...item, name } : item)))}{field(`Secret variable ${index + 1}`, reference.environmentVariable, environmentVariable => updateReferences(references.map((item, i) => i === index ? { ...item, environmentVariable } : item)), 'MCP_API_TOKEN')}<Button size="sm" disabled={locked} onClick={() => updateReferences(references.filter((_, i) => i !== index))}>Remove reference {index + 1}</Button></div>)}
-        <Button size="sm" disabled={locked} onClick={() => updateReferences([...references, { name: '', environmentVariable: '' }])}>Add {draft.transport === 'stdio' ? 'environment variable' : 'header'}</Button>
-      </>}
-      {step === 2 && <div className="space-y-2 text-sm"><p><strong>{draft.name}</strong> · {draft.transport}</p><p className="break-all">{draft.transport === 'stdio' ? draft.command : draft.url}</p>{draft.transport === 'stdio' && <pre className="whitespace-pre-wrap">{args}</pre>}<p>{draft.workspaceDirectory || 'All workspaces'} · {draft.executionHostId ? hosts.find(host => host.id === draft.executionHostId)?.label || draft.executionHostId : 'All hosts, including SSH'}</p><p>Providers: Gemini, Codex, Claude Code, OpenCode and Copilot. Chat and CLI View.</p><p>{references.length} secret reference(s). Values are resolved on the executing host.</p><label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} disabled={locked} onChange={event => change({ enabled: event.currentTarget.checked })} />Enable server</label><p>Save to apply on the next launch. Restart running sessions. Saving does not test the connection.</p></div>}
-      <div className="flex gap-2"><Button size="sm" disabled={locked} onClick={() => { setDraft(null); setMessage('') }}>Cancel setup</Button>{step > 0 && <Button size="sm" disabled={locked} onClick={() => { setStep(step - 1); setMessage('') }}>Back</Button>}{step < 2 ? <Button size="sm" disabled={locked} onClick={() => { if (validate()) { setStep(step + 1); setMessage('') } }}>Next</Button> : <Button size="sm" loading={busy} disabled={disabled} onClick={() => void save()}>Save for all providers</Button>}</div>
+
+    {view === 'json' ? <div className="grid gap-2">
+      <textarea aria-label="MCP JSON" className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => { setJsonText(event.currentTarget.value); setMessage('') }} style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} />
+      <p className="text-xs" style={{ color: 'var(--text-3)' }}>Same layout as OpenCode. <code>local</code> runs a program: <code>command</code> is the program path followed by its arguments. <code>remote</code> connects to a <code>url</code>. Values are plain text, or <code>{'"{env:VARIABLE}"'}</code> to read from the machine's environment. Optional <code>workspace</code> and <code>host</code> limit where a server is used. <code>uam-mcp</code> is built in: only <code>enabled</code> can change.</p>
+    </div> : <div className="grid gap-2">
+      {builtinRow('UAM MCP service', 'Lets agents ask you questions, manage goals and use UAM skills. Applies to new chats.', toggle('UAM MCP service enabled', uamEnabled, value => { setUamEnabled(value); setMessage('') }))}
+      {builtinRow('UAM Computer Use', active ? `Lets agents see and control apps you allow. Off by default; switched per chat. Current chat: ${active.name}.` : 'Lets agents see and control apps you allow. Off by default; open a chat to switch it on.',
+        toggle('UAM Computer Use for current chat', Boolean(active?.computerUseEnabled), value => {
+          if (!active) return
+          void useAppStore.getState().setSessionComputerUseEnabled(active.id, value).then(result => setMessage(result.ok ? `Computer Use ${value ? 'on' : 'off'} for ${active.name}.` : result.error || 'Could not change Computer Use.'))
+        }, !active))}
+
+      {servers.map(server => {
+        const expanded = open === server.id
+        const refs = server.transport === 'stdio' ? server.environment : server.headers
+        const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
+        return <div key={server.id} className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-3 px-3 py-2 text-sm">
+            <button type="button" className="flex-1 min-w-0 text-left" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : server.id)}>
+              <strong>{expanded ? '▾' : '▸'} {server.name || 'New server'}</strong>
+              <span className="ml-2 text-xs break-all" style={{ color: 'var(--text-3)' }}>{server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'}</span>
+            </button>
+            {toggle(`${server.name || 'Server'} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
+            <Button size="sm" variant="danger" disabled={busy} aria-label={`Delete ${server.name || 'server'}`} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }}>Delete</Button>
+          </div>
+          {expanded && <div className="grid gap-3 px-3 pb-3">
+            {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
+            <label className="grid gap-1 text-sm"><span>Connection type</span>
+              <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
+                <option value="stdio">Local program (runs on the same computer as the agent)</option>
+                <option value="http">Remote URL (HTTP)</option>
+                <option value="sse">Remote URL (SSE, older servers)</option>
+              </select>
+            </label>
+            {server.transport === 'stdio' ? <>
+              {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', 'Full path to the program. On SSH this is the path on the remote machine.')}
+              <div className="grid gap-1 text-sm"><span>Arguments</span>
+                {server.args.map((arg, index) => <div key={index} className="flex gap-2">
+                  <input aria-label={`Argument ${index + 1}`} className="uam-field flex-1" value={arg} disabled={busy} onChange={event => { const value = event.currentTarget.value; update(server.id, { args: server.args.map((item, i) => i === index ? value : item) }) }} />
+                  <Button size="sm" disabled={busy} aria-label={`Remove argument ${index + 1}`} onClick={() => update(server.id, { args: server.args.filter((_, i) => i !== index) })}>−</Button>
+                </div>)}
+                <Button size="sm" className="self-start" disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>+ Add argument</Button>
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>One value per box, no quotes. Example: <code>-y</code> then <code>@playwright/mcp@latest</code>.</span>
+              </div>
+            </> : text('URL', server.url, url => update(server.id, { url }), 'http://main.homelab.com:9001/mcp', 'Any http:// or https:// address. On SSH, localhost means the remote machine.')}
+            <div className="grid gap-1 text-sm"><span>{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
+              {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
+                <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
+                <select aria-label={`Value source ${index + 1}`} className="uam-field text-xs" style={{ width: 'auto' }} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={event => { const literal = event.currentTarget.value === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }}>
+                  <option value="value">=</option><option value="variable">from variable</option>
+                </select>
+                {ref.value !== undefined
+                  ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://main.homelab.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
+                  : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}
+                <Button size="sm" disabled={busy} aria-label={`Remove variable ${index + 1}`} onClick={() => setRefs(refs.filter((_, i) => i !== index))}>−</Button>
+              </div>)}
+              <Button size="sm" className="self-start" disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>+ Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Type a value, or choose "from variable" to read it from that machine's environment. Typed values are saved in UAM settings as plain text.</span>
+            </div>
+            <details><summary className="cursor-pointer text-sm">Limit where it runs (optional)</summary>
+              <div className="grid gap-3 pt-2">
+                {text('Only in this workspace', server.workspaceDirectory, workspaceDirectory => update(server.id, { workspaceDirectory }), 'Empty = every workspace')}
+                <label className="grid gap-1 text-sm"><span>Only on this machine</span>
+                  <select className="uam-field w-full" value={server.executionHostId} disabled={busy} onChange={event => update(server.id, { executionHostId: event.currentTarget.value })}>
+                    <option value="">Every machine, including SSH</option>
+                    {hosts.map(host => <option key={host.id} value={host.id}>{host.label}</option>)}
+                    {server.executionHostId && !hosts.some(host => host.id === server.executionHostId) && <option value={server.executionHostId}>{server.executionHostId} (unavailable)</option>}
+                  </select>
+                </label>
+              </div>
+            </details>
+          </div>}
+        </div>
+      })}
+      <Button size="sm" className="self-start" disabled={busy} onClick={() => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setMessage('') }}>+ Add server</Button>
     </div>}
+
+    <div className="flex items-center gap-2">
+      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty} onClick={() => void save()}>Save</Button>
+      {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
+      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Running chats keep their old setup until restarted.</span>
+    </div>
     {message && <p role="status" className="text-sm">{message}</p>}
   </div>
 }
-function trimReference(reference: Reference): Reference { return { name: reference.name.trim(), environmentVariable: reference.environmentVariable.trim() } }

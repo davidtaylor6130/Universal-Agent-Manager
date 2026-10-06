@@ -223,7 +223,8 @@ describe('AppShell', () => {
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
     await act(async () => { settings.click(); await import('../settings/SettingsModal') })
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
-    const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP server configuration"]')!
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
+    const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(editor,'[{"name":"draft"}]')
       editor.dispatchEvent(new Event('input',{bubbles:true}))
