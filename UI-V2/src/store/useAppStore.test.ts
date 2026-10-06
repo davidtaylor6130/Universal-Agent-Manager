@@ -1232,6 +1232,39 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-1'][0].content).toBe('First second third')
   })
 
+  it.each(['new', 'reattached', 'failed'] as const)('preserves %s skill attachments across pending prompt acknowledgement', async (scenario) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messages = []
+    initial.chats[0].messageCount = 0
+    initial.chats[0].acpSession = { sessionId: 'native', running: true, processing: false, lastError: '' }
+    let finish = () => { throw new Error('Prompt request not started') }
+    const requests: Array<{ payload: { markdownStoreFiles: string[] } }> = []
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action !== 'sendAcpPrompt') { onSuccess(JSON.stringify(initial)); return }
+      requests.push(parsed)
+      finish = () => scenario === 'failed' ? onFailure(500, 'Admission failed') : onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const sent = { id: 'sent', title: 'Sent skill', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/sent.md' }
+    const added = { ...sent, id: 'next', filePath: '/skills/next.md' }
+    cefStore.getState().attachMarkdownStoreEntry('chat-1', sent)
+    const sending = cefStore.getState().sendAcpPrompt('chat-1', 'Use the skill')
+    expect(requests[0].payload.markdownStoreFiles).toEqual([sent.filePath])
+    if (scenario === 'reattached') {
+      cefStore.getState().detachMarkdownStoreEntry('chat-1', sent.filePath)
+      cefStore.getState().attachMarkdownStoreEntry('chat-1', sent)
+    } else cefStore.getState().attachMarkdownStoreEntry('chat-1', added)
+    finish()
+    await expect(sending).resolves.toBe(scenario !== 'failed')
+    expect(cefStore.getState().markdownStoreAttachedBySessionId['chat-1'].map((entry) => entry.filePath)).toEqual(
+      scenario === 'reattached' ? [sent.filePath] : scenario === 'failed' ? [sent.filePath, added.filePath] : [added.filePath]
+    )
+  })
+
   it('ignores an older prompt failure after a newer prompt succeeds', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

@@ -2133,7 +2133,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: { ...binding, promptActionError: undefined },
         } } : state
       })
-      const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
+      const sentMarkdownEntries = new Set(get().markdownStoreAttachedBySessionId[sessionId] ?? [])
+      const markdownStoreFiles = [...sentMarkdownEntries].map((entry) => entry.filePath)
       const state = get()
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
       const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
@@ -2227,7 +2228,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             messages,
             markdownStoreAttachedBySessionId: {
               ...state.markdownStoreAttachedBySessionId,
-              [sessionId]: [],
+              [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => !sentMarkdownEntries.has(entry)),
             },
           }
         })

@@ -569,7 +569,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return {
         markdownStoreAttachedBySessionId: {
           ...state.markdownStoreAttachedBySessionId,
-          [sessionId]: [...current, entry],
+          // Each attachment occurrence has its own identity, even when reusing a catalog entry.
+          [sessionId]: [...current, { ...entry }],
         },
       }
     }),
