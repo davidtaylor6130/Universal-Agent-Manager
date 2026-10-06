@@ -39,17 +39,23 @@ namespace uam::mcp_server_config
 		return key;
 	}
 
-	inline bool IsLoopbackUrl(std::string_view value)
+	/// <summary>Any HTTP(S) URL with a host and no embedded credentials or whitespace.</summary>
+	inline bool IsHttpUrl(std::string_view value)
 	{
 		const std::string url = uam::strings::TrimAndLowerAscii(value);
 		if (!url.starts_with("http://") && !url.starts_with("https://")) return false;
-		if (url.find('@') != std::string::npos || url.find_first_of(" \t\r\n") != std::string::npos) return false;
 		const std::size_t authority_at = url.starts_with("https://") ? 8 : 7;
 		const std::size_t authority_end = url.find_first_of("/?#", authority_at);
 		const std::string authority = url.substr(authority_at, authority_end - authority_at);
-		return authority == "localhost" || authority.starts_with("localhost:") ||
-		       authority == "127.0.0.1" || authority.starts_with("127.0.0.1:") ||
-		       authority == "[::1]" || authority.starts_with("[::1]:");
+		return !authority.empty() && authority.find('@') == std::string::npos && url.find_first_of(" \t\r\n") == std::string::npos;
+	}
+
+	/// <summary>A reference either names a host environment variable or carries a literal value.</summary>
+	inline bool IsValidReferenceSource(const McpSecretReference& reference)
+	{
+		if (reference.environment_variable.empty())
+			return !reference.value.empty() && reference.value.size() <= 64 * 1024 && reference.value.find_first_of(std::string_view("\0\r\n", 3)) == std::string::npos;
+		return uam::env::IsVariableName(reference.environment_variable) && reference.value.empty();
 	}
 
 	inline bool IsHeaderName(std::string_view value)
@@ -67,7 +73,9 @@ namespace uam::mcp_server_config
 		nlohmann::json result = nlohmann::json::array();
 		for (const McpSecretReference& reference : references)
 		{
-			result.push_back({{"name", reference.name}, {"environmentVariable", reference.environment_variable}});
+			nlohmann::json entry = {{"name", reference.name}, {"environmentVariable", reference.environment_variable}};
+			if (!reference.value.empty()) entry["value"] = reference.value;
+			result.push_back(std::move(entry));
 		}
 		return result;
 	}
@@ -101,7 +109,8 @@ namespace uam::mcp_server_config
 			const std::string name = entry.contains("name") && entry["name"].is_string() ? entry["name"].get<std::string>() : "";
 			const std::string environment_variable = entry.contains("environmentVariable") && entry["environmentVariable"].is_string()
 			                                             ? entry["environmentVariable"].get<std::string>() : "";
-			result.push_back({uam::strings::Trim(name), uam::strings::Trim(environment_variable)});
+			const std::string literal = entry.contains("value") && entry["value"].is_string() ? entry["value"].get<std::string>() : "";
+			result.push_back({uam::strings::Trim(name), uam::strings::Trim(environment_variable), literal});
 		}
 		return result;
 	}
@@ -194,16 +203,16 @@ namespace uam::mcp_server_config
 					return false;
 				}
 			}
-			else if (!IsLoopbackUrl(server.url))
+			else if (!IsHttpUrl(server.url))
 			{
-				if (error_out) *error_out = "MCP server '" + server.name + "' must use a localhost HTTP(S) URL.";
+				if (error_out) *error_out = "MCP server '" + server.name + "' needs an HTTP(S) URL without a username or password.";
 				return false;
 			}
 			for (McpSecretReference& reference : server.environment)
 			{
 				reference.name = uam::strings::Trim(reference.name);
 				reference.environment_variable = uam::strings::Trim(reference.environment_variable);
-				if (!uam::env::IsVariableName(reference.name) || !uam::env::IsVariableName(reference.environment_variable))
+				if (!uam::env::IsVariableName(reference.name) || !IsValidReferenceSource(reference))
 				{
 					if (error_out) *error_out = "MCP server '" + server.name + "' has an invalid environment-variable reference.";
 					return false;
@@ -213,7 +222,7 @@ namespace uam::mcp_server_config
 			{
 				reference.name = uam::strings::Trim(reference.name);
 				reference.environment_variable = uam::strings::Trim(reference.environment_variable);
-				if (!IsHeaderName(reference.name) || !uam::env::IsVariableName(reference.environment_variable))
+				if (!IsHeaderName(reference.name) || !IsValidReferenceSource(reference))
 				{
 					if (error_out) *error_out = "MCP server '" + server.name + "' has an invalid header environment-variable reference.";
 					return false;
@@ -283,7 +292,7 @@ namespace uam::mcp_server_config
 				resolved["env"] = nlohmann::json::array();
 				for (const McpSecretReference& reference : server.environment)
 				{
-					const std::optional<std::string> value = uam::env::GetNonEmptyString(reference.environment_variable.c_str());
+					const std::optional<std::string> value = reference.environment_variable.empty() ? std::optional<std::string>(reference.value) : uam::env::GetNonEmptyString(reference.environment_variable.c_str());
 					if (!value)
 					{
 						if (error_out) *error_out = "MCP server '" + server.name + "' needs environment variable " + reference.environment_variable + ".";
@@ -299,7 +308,7 @@ namespace uam::mcp_server_config
 				resolved["headers"] = nlohmann::json::array();
 				for (const McpSecretReference& reference : server.headers)
 				{
-					const std::optional<std::string> value = uam::env::GetNonEmptyString(reference.environment_variable.c_str());
+					const std::optional<std::string> value = reference.environment_variable.empty() ? std::optional<std::string>(reference.value) : uam::env::GetNonEmptyString(reference.environment_variable.c_str());
 					if (!value)
 					{
 						if (error_out) *error_out = "MCP server '" + server.name + "' needs environment variable " + reference.environment_variable + ".";

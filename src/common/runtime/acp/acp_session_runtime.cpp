@@ -837,6 +837,8 @@ namespace uam
 				    AgentDefinitionService::ExecutionCapabilityForProvider(run->provider_id));
 				if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
 					queued.uam_agent_execution_capability = "uam-prompt-injected";
+				if (app.settings.central_provider_configuration.enabled)
+					queued.uam_agent_execution_capability = "uam-central-native-setup";
 				return true;
 			}
 			const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
@@ -860,6 +862,8 @@ namespace uam
 			    chat.execution_host_id == uam::execution_hosts::kLocalHostId
 			        ? AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id)
 			        : "uam-prompt-injected";
+			if (app.settings.central_provider_configuration.enabled)
+				queued.uam_agent_execution_capability = "uam-central-native-setup";
 			return true;
 		}
 
@@ -1135,7 +1139,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			      runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
-				return capability == "opencode-native-agent-config" ||
+				return capability == "uam-central-native-setup" ||
+				       capability == "opencode-native-agent-config" ||
 				       capability == "copilot-native-agent-plugin";
 			};
 			const bool native_adapter_changed = session.running &&
@@ -2209,7 +2214,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			queued.goal_id = active_goal->id;
 		}
 		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
-		if ((queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
+		if ((queued.uam_agent_execution_capability == "uam-central-native-setup" ||
+		     session->active_uam_agent_execution_capability == "uam-central-native-setup" ||
+		     queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
 		     queued.uam_agent_execution_capability == "copilot-native-agent-plugin" ||
 		     session->active_uam_agent_execution_capability == "opencode-native-agent-config" ||
 		     session->active_uam_agent_execution_capability == "copilot-native-agent-plugin") &&

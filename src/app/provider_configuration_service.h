@@ -14,10 +14,10 @@ namespace uam
 		std::filesystem::path local_directory;
 	};
 
-	/// <summary>Compile controller resources once; SSH receives bytes and unresolved secret references.</summary>
+	/// <summary>Compile native launch resources; preserve the queued agent instructions when supplied. SSH receives bytes and unresolved secret references.</summary>
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
-	    ProviderConfigurationBundle& bundle, std::string& error)
+	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr)
 	{
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
 		std::vector<McpServerConfiguration> candidates = settings.mcp_servers;
@@ -51,13 +51,17 @@ namespace uam
 			const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(data_root, host.transport == "ssh" ? std::filesystem::path{} : workspace);
 			const std::vector<AgentDefinition>::const_iterator selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
 			if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable: " + chat.uam_agent_id; return false; }
-			instructions += "\n\n" + selected->instructions;
+			instructions += "\n\n" + (selected_agent_instructions ? *selected_agent_instructions : selected->instructions);
 			instructions += "\n\nUAM agent definitions are available below. Delegate through UAM tools only when permitted by the selected agent.\n";
 			for (const AgentDefinition& agent : catalog.definitions)
 			{
+				// Install built-ins, the chat's agent and the agents chosen in Central Setup.
+				if (!agent.built_in && agent.id != selected->id &&
+				    std::find(configuration.default_agents.begin(), configuration.default_agents.end(), agent.id) == configuration.default_agents.end()) continue;
 				const std::string name = "agents/" + agent.id + ".md";
 				if (!provider_setup::SafeRelativePath(name)) { error = "An agent id cannot be installed safely."; return false; }
-				bundle.files[name] = agent.built_in || agent.markdown_snapshot.empty() ? agent.instructions : agent.markdown_snapshot;
+				bundle.files[name] = selected_agent_instructions && agent.id == selected->id ? *selected_agent_instructions
+				    : agent.built_in || agent.markdown_snapshot.empty() ? agent.instructions : agent.markdown_snapshot;
 				instructions += "- " + agent.id + ": __UAM_RESOURCE_ROOT__/" + name + "\n";
 			}
 			instructions += "\nAvailable skills: read the skill's SKILL.md before using it. Relative script and reference paths resolve inside that skill directory.\n";
@@ -106,6 +110,9 @@ namespace uam
 				{
 					const std::string name = entry.command_name;
 					if (!provider_setup::SafeRelativePath(name) || name.find('/') != std::string::npos) { error = "A library skill name cannot be installed safely."; return false; }
+					// Library skills install only when chosen as defaults or listed by the selected agent.
+					if (std::find(configuration.default_skills.begin(), configuration.default_skills.end(), name) == configuration.default_skills.end() &&
+					    std::find(selected->skills.begin(), selected->skills.end(), name) == selected->skills.end()) continue;
 					if (!skill_names.insert(name).second) continue;
 					instructions += "- " + name + ": __UAM_RESOURCE_ROOT__/skills/" + name + "/SKILL.md\n";
 					resource_bytes += entry.body.size();

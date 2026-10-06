@@ -82,6 +82,7 @@ UAM_TEST(CentralSkillManifestPathsStayPortableForDirectoriesAndImportedLibraries
 			UAM_ASSERT_EQ(results.front().status, std::string("imported"));
 			settings.markdown_store_directory = uam::paths::Utf8PathString(library);
 			skill_name = results.front().entry.command_name;
+			settings.central_provider_configuration.default_skills = {skill_name};
 		}
 		else settings.central_provider_configuration.skill_directories = {uam::paths::Utf8PathString(skill)};
 		ChatSession chat;
@@ -610,4 +611,48 @@ UAM_TEST(ImmutableCentralPublicationKeepsExistingData)
 	UAM_ASSERT_EQ(ReadFile(target), std::string("published"));
 	UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(target, "updated runtime setting", error));
 	UAM_ASSERT_EQ(ReadFile(target), std::string("updated runtime setting"));
+}
+
+UAM_TEST(CentralNativeSetupInstallsTheQueuedAgentSnapshot)
+{
+	TempDir temp("uam-central-native-snapshot");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "SHARED_NATIVE_INSTRUCTIONS";
+	ChatSession chat;
+	chat.uam_agent_id = "build";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	const std::string snapshot = "QUEUED_NATIVE_AGENT_SNAPSHOT";
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, &snapshot));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find(snapshot) != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("SHARED_NATIVE_INSTRUCTIONS") != std::string::npos);
+	UAM_ASSERT_EQ(bundle.files.at("agents/build.md"), snapshot);
+	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "agents/build.md"), snapshot);
+}
+
+UAM_TEST(McpServersAcceptLanUrlsAndLiteralValuesButRejectCredentialUrls)
+{
+	McpServerConfiguration remote{.id = "penpot", .name = "penpot", .transport = "http", .url = "http://main.homelab.com:9001/mcp/stream?userToken=abc"};
+	remote.headers = {{"Authorization", "", "Bearer token"}};
+	TempDir temp("uam-mcp-literal-values");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	McpServerConfiguration local{.id = "searxng", .name = "searxng", .transport = "stdio", .command = uam::paths::Utf8PathString(temp.root / "server")};
+	local.environment = {{"SEARXNG_URL", "", "http://main.homelab.com:8081"}};
+	std::vector<McpServerConfiguration> servers{remote, local};
+	std::string error;
+	UAM_ASSERT(uam::mcp_server_config::NormalizeAndValidate(servers, &error));
+	const std::vector<McpServerConfiguration> round_trip = uam::mcp_server_config::Parse(uam::mcp_server_config::Serialize(servers));
+	UAM_ASSERT_EQ(round_trip[1].environment.front().value, std::string("http://main.homelab.com:8081"));
+	const nlohmann::json resolved = uam::mcp_server_config::ResolveForWorkspace(round_trip, "/any", true, true, &error);
+	UAM_ASSERT(resolved.is_array() && resolved.size() == 2);
+	UAM_ASSERT_EQ(resolved[0]["headers"][0]["value"].get<std::string>(), std::string("Bearer token"));
+	UAM_ASSERT_EQ(resolved[1]["env"][0]["value"].get<std::string>(), std::string("http://main.homelab.com:8081"));
+	std::vector<McpServerConfiguration> credentialed{remote};
+	credentialed.front().url = "http://user:pass@main.homelab.com/mcp";
+	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(credentialed, &error));
+	std::vector<McpServerConfiguration> both{local};
+	both.front().environment.front().environment_variable = "SEARXNG_URL";
+	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(both, &error));
 }

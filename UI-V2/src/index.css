@@ -1954,7 +1954,7 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--surface);
 }
 .uam-settings-page { animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-settings-page--narrow > * { max-width: 800px; }
+.uam-settings-page--narrow > * { max-width: 800px; margin-inline: auto; }
 
 /* ── Memory library ─────────────────────────────────────────── */
 .uam-memory-card {

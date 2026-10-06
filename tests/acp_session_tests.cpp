@@ -11553,3 +11553,82 @@ UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
 	}
 #endif
 }
+
+UAM_TEST(CentralSetupQueuesNativeAgentInstructionsForAllProvidersAndSsh)
+{
+	TempDir temp("uam-central-agent-queue");
+	for (const std::string& provider : {"gemini-cli", "codex-cli", "claude-cli", "opencode-cli", "copilot-cli"})
+	{
+		for (const bool remote : {false, true})
+		{
+			uam::AppState app;
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			app.settings.central_provider_configuration.enabled = true;
+			ExecutionHost host;
+			host.id = "ssh-central";
+			host.transport = "ssh";
+			host.ssh_alias = "fixture";
+			host.platform = "linux";
+			app.settings.execution_hosts.push_back(host);
+			ChatSession chat;
+			chat.id = "central-" + provider + (remote ? "-remote" : "-local");
+			chat.provider_id = provider;
+			chat.workspace_directory = temp.root.string();
+			if (remote) chat.execution_host_id = host.id;
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = provider;
+			session->processing = true;
+			app.acp_sessions.push_back(std::move(session));
+			std::string error;
+			if (!uam::SendAcpPrompt(app, chat.id, "Only the user task", {}, {}, false, &error)) throw std::runtime_error(error);
+			const uam::AcpQueuedUserPromptState& queued = app.acp_sessions.front()->queued_user_prompts.front();
+			UAM_ASSERT_EQ(queued.uam_agent_execution_capability, std::string("uam-central-native-setup"));
+			UAM_ASSERT_EQ(queued.text, std::string("Only the user task"));
+			UAM_ASSERT(!queued.uam_agent_instructions.empty());
+		}
+	}
+}
+
+UAM_TEST(CentralNativeAgentInstructionsStayOutOfTheUserPrompt)
+{
+	TempDir temp("uam-central-native-agent-prompt");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.id = "native-agent-prompt";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::AcpSessionState> state = std::make_unique<uam::AcpSessionState>();
+	state->chat_id = chat.id;
+	state->provider_id = chat.provider_id;
+	state->running = true;
+	state->processing = true;
+	state->active_uam_agent_id = "build";
+	state->active_uam_agent_definition_hash = "snapshot";
+	state->active_uam_agent_execution_capability = "uam-central-native-setup";
+	uam::AcpSessionState& session = *state;
+	app.acp_sessions.push_back(std::move(state));
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, sink, &error));
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Only the user task";
+	queued.uam_agent_id = "build";
+	queued.uam_agent_definition_hash = "snapshot";
+	queued.uam_agent_instructions = "NATIVE_AGENT_INSTRUCTIONS";
+	queued.uam_agent_execution_capability = "uam-central-native-setup";
+	session.queued_user_prompts.push_back(queued);
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, app.chats.front(), "ready", nullptr, false);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("Only the user task"));
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+}

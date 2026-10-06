@@ -628,6 +628,8 @@ export interface ProviderAgentImportPreview {
 export interface McpSecretReference {
   name: string
   environmentVariable: string
+  /** Literal value stored in settings; present means "use this value" instead of a host variable. */
+  value?: string
 }
 
 export interface McpServerConfiguration {
@@ -854,10 +856,12 @@ export interface CentralProviderConfiguration {
   instructions: string
   instructionFiles: string[]
   skillDirectories: string[]
+  defaultSkills?: string[]
+  defaultAgents?: string[]
   defaultAgentId: string
   uamControlEnabled: boolean
 }
 
 export const DEFAULT_CENTRAL_PROVIDER_CONFIGURATION: CentralProviderConfiguration = {
-  enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true,
+  enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultSkills: [], defaultAgentId: 'build', uamControlEnabled: true,
 }

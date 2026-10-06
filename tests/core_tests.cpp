@@ -1305,6 +1305,25 @@ UAM_TEST(AgentDefinitionDiscoveryBoundsAggregateReadsAndVisibleDiagnostics)
 	UAM_ASSERT(diagnostic_catalog.errors.back().find("additional agent definition diagnostics omitted") != std::string::npos);
 }
 
+UAM_TEST(GlobalAgentEditorSavesValidDefinitionsAndRejectsInvalidOnes)
+{
+	TempDir temp("uam-agent-editor");
+	uam::AgentDefinition agent{.id = "reviewer", .description = "Reviews diffs", .mode = "primary", .workspace_access = "read", .skills = {"tests"}, .instructions = "Review the work."};
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(temp.root, agent, &error));
+	const auto catalog = uam::AgentDefinitionService::Load(temp.root, {});
+	const auto saved = std::ranges::find(catalog.definitions, std::string("reviewer"), &uam::AgentDefinition::id);
+	UAM_ASSERT(saved != catalog.definitions.end() && saved->skills == std::vector<std::string>{"tests"} && saved->instructions == "Review the work.");
+	agent.instructions = "";
+	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(temp.root, agent, &error));
+	UAM_ASSERT(uam::AgentDefinitionService::Load(temp.root, {}).errors.empty());
+	agent.id = "build";
+	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(temp.root, agent, &error));
+	UAM_ASSERT(!uam::AgentDefinitionService::DeleteGlobalAgent(temp.root, "../reviewer", &error));
+	UAM_ASSERT(uam::AgentDefinitionService::DeleteGlobalAgent(temp.root, "reviewer", &error));
+	UAM_ASSERT(!fs::exists(temp.root / "agents" / "reviewer.md"));
+}
+
 UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecurity)
 {
 	TempDir temp("uam-provider-agent-import");
@@ -3097,6 +3116,8 @@ UAM_TEST(McpServerConfigurationIsWorkspaceScopedCapabilityGatedAndSecretSafe)
 	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(servers, &error));
 	servers.front() = server;
 	servers.front().url = "https://example.com/mcp";
+	UAM_ASSERT(uam::mcp_server_config::NormalizeAndValidate(servers, &error));
+	servers.front().url = "ftp://example.com/mcp";
 	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(servers, &error));
 }
 
