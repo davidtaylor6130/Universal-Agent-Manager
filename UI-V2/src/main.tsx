@@ -1,4 +1,5 @@
 import { StrictMode } from 'react'
+import { InterfaceErrorBoundary } from './components/shared/InterfaceErrorBoundary'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import { isCefContext } from './ipc/cefBridge'
@@ -52,9 +53,12 @@ if (isCefContext()) {
   void import('./App').then(({ default: App }) => {
     root.render(
       <StrictMode>
-        <App />
+        <InterfaceErrorBoundary><App /></InterfaceErrorBoundary>
       </StrictMode>
     )
+  }).catch((error: unknown) => {
+    console.error('[UI startup]', error)
+    document.getElementById('uam-startup-recovery')?.removeAttribute('hidden')
   })
 } else {
   root.render(<BrowserLaunchGuard />)

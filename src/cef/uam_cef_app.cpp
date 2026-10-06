@@ -2,6 +2,12 @@
 #include "cef/uam_cef_client.h"
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
+#include "cef/ui_asset_snapshot.h"
+#include "include/views/cef_label_button.h"
+#include "include/views/cef_panel.h"
+#include "include/views/cef_box_layout.h"
+#include "include/views/cef_button_delegate.h"
+#include "include/wrapper/cef_byte_read_handler.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/io_utils.h"
@@ -25,7 +31,14 @@ namespace
 	class UamUiSchemeHandlerFactory final : public CefSchemeHandlerFactory
 	{
 	  public:
-		explicit UamUiSchemeHandlerFactory(std::filesystem::path root) : m_root(std::move(root)) {}
+		explicit UamUiSchemeHandlerFactory(const std::filesystem::path& root)
+		{
+			try { m_assets.emplace(root); }
+			catch (const std::exception& error)
+			{
+				uam::diagnostics::Write(std::string("[UI recovery] Asset snapshot failed: ") + error.what());
+			}
+		}
 
 		CefRefPtr<CefResourceHandler> Create(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
 		                                      const CefString& scheme_name,
@@ -36,12 +49,16 @@ namespace
 			{
 				return nullptr;
 			}
-			const auto path = uam::cef::ResolveTrustedUiResourcePath(m_root, request->GetURL().ToString());
-			if (!path.has_value()) return nullptr;
-			CefRefPtr<CefStreamReader> stream = CefStreamReader::CreateForFile(path->string());
-			if (stream == nullptr) return nullptr;
-
-			std::string extension = path->extension().string();
+			const std::optional<std::filesystem::path> relative = uam::cef::TrustedUiResourceRelativePath(request->GetURL().ToString());
+			if (!relative) return nullptr;
+			const std::string key = relative->generic_string();
+			const std::string* bytes = m_assets ? m_assets->Find(key) : nullptr;
+			if (!m_assets && key == "index.html") bytes = &m_startupFailure;
+			if (!bytes) return nullptr;
+			// The reader retains this factory, so its immutable bytes outlive pending requests.
+			CefRefPtr<CefStreamReader> stream = CefStreamReader::CreateForHandler(new CefByteReadHandler(
+			    reinterpret_cast<const unsigned char*>(bytes->data()), bytes->size(), this));
+			std::string extension = relative->extension().string();
 			if (!extension.empty() && extension.front() == '.') extension.erase(0, 1);
 			CefString mime = CefGetMimeType(extension);
 			if (mime.empty()) mime = "application/octet-stream";
@@ -53,7 +70,8 @@ namespace
 		}
 
 	  private:
-		const std::filesystem::path m_root;
+		std::optional<uam::cef::UiAssetSnapshot> m_assets;
+		const std::string m_startupFailure = "<!doctype html><html><body style='background:#000;color:#fff;padding:24px;font:14px system-ui'><h1 style='font-size:16px'>The installed interface could not load.</h1><p>Close UAM and install it again.</p><p>Your saved chats are kept in the data folder.</p></body></html>";
 		IMPLEMENT_REFCOUNTING(UamUiSchemeHandlerFactory);
 	};
 
@@ -98,7 +116,7 @@ namespace
 		return nullptr;
 	}
 
-	class UamRootWindowDelegate : public CefWindowDelegate, public CefBrowserViewDelegate
+	class UamRootWindowDelegate : public CefWindowDelegate, public CefBrowserViewDelegate, public CefButtonDelegate
 	{
 	  public:
 		explicit UamRootWindowDelegate(const CefRect& initial_bounds) : m_initialBounds(initial_bounds)
@@ -108,6 +126,38 @@ namespace
 		void SetBrowserView(CefRefPtr<CefBrowserView> browser_view)
 		{
 			m_browserView = browser_view;
+		}
+
+		void SetClient(CefRefPtr<UamCefClient> client) { m_client = client; }
+
+		/// Native fallback is painted by the browser process, even when the renderer cannot run.
+		void ShowRecovery(bool visible)
+		{
+			if (!m_recoveryPanel || !m_browserView) return;
+			m_recoveryPanel->SetBackgroundColor(0xFF000000);
+			m_browserView->SetVisible(!visible);
+			m_recoveryPanel->SetVisible(visible);
+			if (CefRefPtr<CefWindow> window = m_browserView->GetWindow()) window->Layout();
+			if (visible) m_recoveryButton->RequestFocus();
+		}
+
+		void OnThemeChanged(CefRefPtr<CefView> view) override
+		{
+			view->SetBackgroundColor(0xFF000000);
+		}
+
+		void OnButtonPressed(CefRefPtr<CefButton> button) override
+		{
+			(void)button;
+			if (m_client) m_client->ReloadInterface();
+		}
+
+		bool OnAccelerator(CefRefPtr<CefWindow> window, int command_id) override
+		{
+			(void)window;
+			if (command_id != MENU_ID_USER_FIRST || !m_client) return false;
+			m_client->ReloadInterface();
+			return true;
 		}
 
 		void OnWindowCreated(CefRefPtr<CefWindow> window) override
@@ -128,6 +178,31 @@ namespace
 				window->AddChildView(m_browserView);
 			}
 
+			m_recoveryPanel = CefPanel::CreatePanel(nullptr);
+			m_recoveryPanel->SetBackgroundColor(0xFF000000);
+			CefBoxLayoutSettings layout;
+			layout.horizontal = false;
+			layout.inside_border_insets = CefInsets(24, 24, 24, 24);
+			layout.between_child_spacing = 12;
+			layout.main_axis_alignment = CEF_AXIS_ALIGNMENT_START;
+			layout.cross_axis_alignment = CEF_AXIS_ALIGNMENT_START;
+			m_recoveryPanel->SetToBoxLayout(layout);
+			CefRefPtr<CefLabelButton> title = CefLabelButton::CreateLabelButton(this, "The interface could not load.");
+			title->SetEnabled(false);
+			title->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
+			m_recoveryPanel->AddChildView(title);
+			CefRefPtr<CefLabelButton> detail = CefLabelButton::CreateLabelButton(this, "Active sessions keep running. Unsaved drafts may be lost when reloading.");
+			detail->SetEnabled(false);
+			detail->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
+			m_recoveryPanel->AddChildView(detail);
+			m_recoveryButton = CefLabelButton::CreateLabelButton(this, "Reload interface (Ctrl+Shift+R)");
+			m_recoveryButton->SetTextColor(CEF_BUTTON_STATE_NORMAL, 0xFFFFFFFF);
+			m_recoveryButton->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+			m_recoveryButton->SetTextColor(CEF_BUTTON_STATE_PRESSED, 0xFFFFFFFF);
+			m_recoveryPanel->AddChildView(m_recoveryButton);
+			m_recoveryPanel->SetVisible(false);
+			window->AddChildView(m_recoveryPanel);
+			window->SetAccelerator(MENU_ID_USER_FIRST, 'R', true, true, false, true);
 			window->Show();
 		}
 
@@ -135,6 +210,9 @@ namespace
 		{
 			CEF_REQUIRE_UI_THREAD();
 			m_browserView = nullptr;
+			m_recoveryButton = nullptr;
+			m_recoveryPanel = nullptr;
+			m_client = nullptr;
 		}
 
 		CefRect GetInitialBounds(CefRefPtr<CefWindow> /*window*/) override
@@ -173,6 +251,9 @@ namespace
 	  private:
 		CefRect m_initialBounds;
 		CefRefPtr<CefBrowserView> m_browserView;
+		CefRefPtr<CefLabelButton> m_recoveryButton;
+		CefRefPtr<CefPanel> m_recoveryPanel;
+		CefRefPtr<UamCefClient> m_client;
 
 		IMPLEMENT_REFCOUNTING(UamRootWindowDelegate);
 	};
@@ -301,6 +382,8 @@ void UamCefApp::OnContextInitialized()
 		return;
 	}
 
+	window_delegate->SetClient(client);
+	client->SetNativeRecoveryCallback([window_delegate](bool visible) { window_delegate->ShowRecovery(visible); });
 	window_delegate->SetBrowserView(browser_view);
 	CefWindow::CreateTopLevelWindow(window_delegate);
 }
