@@ -870,6 +870,7 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.title === other.title &&
       tool.kind === other.kind &&
       tool.status === other.status &&
+      (tool.approvalStatus ?? '') === (other.approvalStatus ?? '') &&
       tool.content === other.content &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
       (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&

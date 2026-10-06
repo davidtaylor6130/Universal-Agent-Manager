@@ -186,6 +186,20 @@ nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id,
 	};
 }
 
+/// <summary>Records permission independently of the provider's execution lifecycle.</summary>
+void RecordAcpPermissionDecision(AcpSessionState& session, const std::string& option_id, bool cancelled)
+{
+	if (!session.pending_permission.tool_call_id.empty())
+	{
+		AcpToolCallState& tool = UpsertToolCall(session, session.pending_permission.tool_call_id);
+		bool denied = cancelled;
+		for (const AcpPermissionOptionState& option : session.pending_permission.options)
+			if (option.id == option_id) denied = denied || IsRejectPermissionOption(option.id, option.name, option.kind);
+		tool.approval_status = denied ? "denied" : "approved";
+		if (denied && uam::acp_statuses::IsActiveStatus(tool.status)) tool.status = uam::acp_statuses::kCancelled;
+	}
+}
+
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out)
 {
 	(void)request_id_json;
@@ -199,7 +213,9 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 	}
 	nlohmann::json response = ProviderRuntimeRegistry::ResolveById(session.provider_id)
 	    .OnAcpBuildPermissionResponse(session, option_id, cancelled);
-	return WriteAcpMessage(session, response, error_out);
+	if (!WriteAcpMessage(session, response, error_out)) return false;
+	RecordAcpPermissionDecision(session, option_id, cancelled);
+	return true;
 }
 
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind)
@@ -367,7 +383,7 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		if (!session.pending_permission.tool_call_id.empty())
 		{
 			AcpToolCallState& tracked_tool_call = UpsertToolCall(session, session.pending_permission.tool_call_id);
-			tracked_tool_call.status = uam::acp_statuses::kAutoApproved;
+			tracked_tool_call.approval_status = uam::acp_statuses::kAutoApproved;
 		}
 		const char* decision_reason = tier == uam::command_safety::Tier::Yolo
 		                                  ? "UAM YOLO auto-approved one permission request."

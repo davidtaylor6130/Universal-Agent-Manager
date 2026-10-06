@@ -1142,6 +1142,7 @@ if(UAM_BUILD_TESTS)
     tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
     tests/acp_session_tests.cpp
+    tests/claude_projection_tests.cpp
     tests/terminal_tests.cpp
     tests/goal_tests.cpp
     tests/theme_tests.cpp
