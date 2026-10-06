@@ -765,6 +765,34 @@ UAM_TEST(FailedTextOnlyTurnPersistsAsInterrupted)
 	UAM_ASSERT(reloaded->messages.back().interrupted);
 }
 
+UAM_TEST(AcpFailedUnsentRemotePromptRetiresOnlyItsPreparedOutboxEntry)
+{
+	for (const bool delivery_pending : {false, true})
+	{
+		ChatSession chat;
+		chat.execution_host_id = "ssh-test";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry this.",
+		                         .acp_prompt_not_sent = true});
+		chat.acp_queued_prompts.push_back({.text = "Retry this.", .append_user_message = false,
+		                                 .prepared_for_delivery = true, .prepared_user_message_count = 1});
+		chat.acp_queued_prompts.push_back({.text = "Keep this queued."});
+		chat.acp_dispatched_queued_prompt_count = 1;
+		chat.remote_turn_reconnect_pending = delivery_pending;
+		if (delivery_pending) chat.remote_prompt_delivery_id = "unconfirmed-delivery";
+		uam::AcpSessionState session;
+		session.processing = true;
+		session.queued_prompt = "Retry this.";
+		session.turn_user_message_index = 0;
+		uam::acp_detail::FailAcpTurnOrSession(session, &chat, "Remote context preparation failed.");
+		UAM_ASSERT(chat.messages.front().interrupted);
+		UAM_ASSERT(chat.messages.front().acp_prompt_not_sent);
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), static_cast<std::size_t>(delivery_pending ? 2 : 1));
+		UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, static_cast<std::size_t>(delivery_pending ? 1 : 0));
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.back().text, std::string("Keep this queued."));
+	}
+}
+
 UAM_TEST(AcpRetryFailedPromptRestoresNonDeliveryMarkerAfterWriteFailure)
 {
 	TempDir temp("uam-acp-retry-write-failure");
@@ -9033,6 +9061,8 @@ UAM_TEST(AcpRemoteDuplicateProcessExitSchedulesAttachRecovery)
 	owned_session->chat_id = chat.id;
 	owned_session->provider_id = chat.provider_id;
 	owned_session->running = true;
+	owned_session->initialize_request_id = 25;
+	owned_session->pending_request_methods[25] = "initialize";
 	uam::AcpSessionState* session = owned_session.get();
 #if defined(_WIN32)
 	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
@@ -9056,6 +9086,9 @@ UAM_TEST(AcpRemoteDuplicateProcessExitSchedulesAttachRecovery)
 	UAM_ASSERT(session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().remote_process_exists);
 	UAM_ASSERT_EQ(session->reconnect_attempts, 0);
+	UAM_ASSERT_EQ(session->initialize_request_id, 0);
+	UAM_ASSERT(!session->pending_request_methods.contains(25));
+	UAM_ASSERT(!uam::AcpSessionHasBlockingRuntimeWork(*session));
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
 }
 

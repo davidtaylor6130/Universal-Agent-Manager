@@ -1687,6 +1687,18 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	session.last_error = message;
 	if (chat != nullptr)
 	{
+		// A failure before delivery retires the staged copy; the visible user message
+		// remains available for retry. Unconfirmed deliveries and later queued prompts stay intact.
+		if (session.prompt_request_id == 0 && !session.queued_prompt.empty() &&
+		    !chat->remote_turn_reconnect_pending && chat->remote_pending_requests.empty() &&
+		    chat->remote_prompt_delivery_id.empty() && chat->remote_prompt_delivery_payload.empty() &&
+		    chat->acp_dispatched_queued_prompt_count == 1 && !chat->acp_queued_prompts.empty() &&
+		    chat->acp_queued_prompts.front().prepared_for_delivery &&
+		    chat->acp_queued_prompts.front().text == session.queued_prompt)
+		{
+			chat->acp_queued_prompts.erase(chat->acp_queued_prompts.begin());
+			chat->acp_dispatched_queued_prompt_count = 0;
+		}
 		if (session.turn_user_message_index >= 0 && session.turn_user_message_index < static_cast<int>(chat->messages.size()))
 		{
 			Message& user = chat->messages[static_cast<std::size_t>(session.turn_user_message_index)];

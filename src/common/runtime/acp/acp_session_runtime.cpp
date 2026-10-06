@@ -3624,6 +3624,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				{
 					// The runner rejected a fresh proxy because its helper-owned process
 					// survived the bridge. Reattach before any further fresh launch.
+					if (!recovering_remote_process)
+					{
+						// This initialize went to the rejected proxy, not the surviving provider.
+						session.pending_request_methods.erase(session.initialize_request_id);
+						session.initialize_request_id = 0;
+					}
 					chat.remote_process_exists = true;
 					session.processing = remote_turn_recovery;
 					session.recovering_remote_turn = remote_turn_recovery;
