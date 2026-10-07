@@ -437,6 +437,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/model_discovery_service.cpp
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
   src/app/vcs_commit_service.cpp
@@ -1143,6 +1144,7 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/model_discovery_startup_tests.cpp
     tests/remote_delivery_exit_tests.cpp
     tests/agent_provider_inheritance_tests.cpp
     tests/workspace_import_policy_tests.cpp
@@ -1185,6 +1187,7 @@ if(UAM_BUILD_TESTS)
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/model_discovery_service.cpp
     src/app/shell_action_service.cpp
     src/app/theme_service.cpp
     src/app/vcs_commit_service.cpp

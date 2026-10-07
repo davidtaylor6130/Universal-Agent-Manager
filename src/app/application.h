@@ -4,6 +4,7 @@
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/model_discovery_service.h"
 
 #include <future>
 #include <chrono>
@@ -43,6 +44,7 @@ class Application
 
   private:
 	uam::AppState m_app;
+	uam::StartupModelDiscoveryService m_startupModelDiscovery;
 	PlatformServices* m_platformServices = nullptr;
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);

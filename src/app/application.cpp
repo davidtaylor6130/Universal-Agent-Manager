@@ -476,6 +476,7 @@ void Application::PollTick()
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
+	const bool startup_model_discovery_changed = m_startupModelDiscovery.Poll(m_app);
 	const bool history_discovery_changed = PollHistoryDiscovery();
 
 	// Poll the provider model catalog service for async model refresh completion.
@@ -483,10 +484,9 @@ void Application::PollTick()
 	if (m_app.provider_model_catalog != nullptr)
 	{
 		model_catalog_changed = m_app.provider_model_catalog->Poll();
-		m_app.provider_model_catalog->MaybeStartRefresh();
 	}
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -683,6 +683,7 @@ bool Application::InitializeState()
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
 	m_app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
+	m_app.provider_model_catalog->MaybeStartRefresh();
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
@@ -712,6 +713,7 @@ bool Application::InitializeState()
 		                    " after the manager restarted.";
 	}
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
+	m_startupModelDiscovery.Initialize(m_app);
 	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())

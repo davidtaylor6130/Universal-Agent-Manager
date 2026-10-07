@@ -615,14 +615,12 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	std::string error;
-	const bool started = chat != nullptr
-	    ? uam::StartAcpModelDiscovery(m_app, chat->id, &error)
-	    : uam::StartEphemeralAcpModelDiscovery(
-	          m_app, provider_id, workspace_directory, execution_host_id, &error);
+	const bool started = uam::StartEphemeralAcpModelDiscovery(
+	    m_app, provider_id, workspace_directory, execution_host_id, &error);
 	if (!started)
 	{
 		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(
-		        m_app, chat == nullptr ? std::string{} : chat->id, provider_id,
+		        m_app, std::string{}, provider_id,
 		        workspace_directory, execution_host_id, error))
 		{
 			uam::PushStateUpdateIfChanged(browser, m_app);

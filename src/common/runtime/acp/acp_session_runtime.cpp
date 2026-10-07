@@ -2053,9 +2053,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return false;
 	}
 
-	bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id,
+	bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& /*chat_id*/,
 		const std::string& provider_id, const std::string& workspace_directory,
-		const std::string& execution_host_id, const std::string& blocked_reason)
+		const std::string& execution_host_id, const std::string& /*blocked_reason*/)
 	{
 		if (!uam::strings::IsBlank(execution_host_id) &&
 		    execution_host_id != uam::execution_hosts::kLocalHostId) return false;
@@ -2070,9 +2070,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		});
 		if (existing == app.pending_model_discovery_retries.end())
 		{
-			app.pending_model_discovery_retries.push_back({chat_id, normalized_provider_id, workspace, host});
+			app.pending_model_discovery_retries.push_back({{}, normalized_provider_id, workspace, host});
 		}
-		app.provider_model_catalog->RememberDiscoveryCompatibilityBlocked(normalized_provider_id, uam::strings::NonEmptyOrFallback(blocked_reason, "Waiting for provider compatibility check."), workspace, host);
+		app.provider_model_catalog->RememberDiscoveryCompatibilityBlocked(normalized_provider_id, std::string{}, workspace, host);
 		return true;
 	}
 
@@ -2092,15 +2092,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			bool started = false;
 			if (compatibility_error.empty())
 			{
-				if (ChatDomainService().FindChatById(app, retry->chat_id) != nullptr)
-				{
-					started = StartAcpModelDiscovery(app, retry->chat_id, &launch_error, true);
-				}
-				else
-				{
-					started = StartEphemeralAcpModelDiscovery(app, retry->provider_id,
-					    retry->workspace_directory, retry->execution_host_id, &launch_error);
-				}
+				started = StartEphemeralAcpModelDiscovery(app, retry->provider_id,
+				    retry->workspace_directory, retry->execution_host_id, &launch_error);
 			}
 			if (started)
 			{
