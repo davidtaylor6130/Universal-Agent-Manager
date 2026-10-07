@@ -180,8 +180,8 @@ ProviderProfile ProviderProfileStore::DefaultAntigravityProfile()
 	profile.title = "Antigravity CLI";
 	profile.output_mode = uam::provider_profile_constants::kOutputModeCli;
 	profile.interactive_command = "agy";
-	profile.supports_structured = false;
-	profile.structured_protocol = uam::provider_profile_constants::kProtocolNone;
+	profile.supports_structured = true;
+	profile.structured_protocol = uam::provider_profile_constants::kProtocolAntigravityStreamJson;
 	profile.resume_argument = "--conversation";
 	profile.history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson;
 	profile.prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone;

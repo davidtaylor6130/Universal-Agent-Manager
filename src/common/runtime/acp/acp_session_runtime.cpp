@@ -21,6 +21,8 @@
 #include "computer_use/computer_use_mcp_config.h"
 #include <cstring>
 #include <iterator>
+#include <limits>
+#include <unordered_set>
 #include "common/config/approval_modes.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/provider_chat_defaults.h"
@@ -1439,6 +1441,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Computer Use is disabled for remote execution hosts.";
 				return false;
 			}
+			queued.id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			if (queued.id.empty()) queued.id = uam::time::SteadyEpochNanosecondsTokenNow();
+			queued.revision = 1;
 			queued.text = uam::strings::Trim(text);
 			if (queued.text.empty() && attachments.empty())
 			{
@@ -1492,7 +1497,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool CanMergeQueuedUserPrompts(const AcpQueuedUserPromptState& target, const AcpQueuedUserPromptState& next)
 		{
-			return target.append_user_message && next.append_user_message &&
+			return target.revision < std::numeric_limits<int>::max() &&
+			       target.append_user_message && next.append_user_message &&
 			       !target.priority_steer && !next.priority_steer &&
 			       target.uam_agent_id == next.uam_agent_id &&
 			       target.uam_agent_definition_hash == next.uam_agent_definition_hash &&
@@ -1565,6 +1571,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		void MergeQueuedUserPrompt(AcpQueuedUserPromptState& target, AcpQueuedUserPromptState&& next)
 		{
+			if (target.id.empty()) target.id = next.id;
+			++target.revision;
 			target.text += "\n\n" + next.text;
 			const bool can_merge_snapshots = target.markdown_store_prompt_blocks.size() == target.markdown_store_files.size() && next.markdown_store_prompt_blocks.size() == next.markdown_store_files.size();
 			for (std::size_t index = 0; index < next.markdown_store_files.size(); ++index)
@@ -1664,8 +1672,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
-		if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
-		    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+		if (selected_provider != nullptr && !selected_provider->supports_structured)
 		{
 			if (error_out != nullptr) *error_out = "This provider supports terminal chat only. Open its terminal to continue.";
 			return false;
@@ -1894,6 +1901,86 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return uam::AcpSessionHasPendingCancel(session) || DrainNextQueuedAcpUserPrompt(app, session, *chat);
 	}
 
+	/** Updates only undispatched text, preserving the queued task's captured context. */
+	bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id,
+	                         int expected_revision, const std::string& text, std::string* error_out)
+	{
+		const auto reject = [&](const std::string& reason)
+		{
+			if (error_out != nullptr) *error_out = reason;
+			return false;
+		};
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (chat == nullptr || session == nullptr || prompt_id.empty() || expected_revision < 1)
+			return reject("Queued prompt is no longer available. Refresh the queue.");
+		std::deque<AcpQueuedUserPromptState>& queue = session->queued_user_prompts;
+		const auto item = std::find_if(queue.begin(), queue.end(), [&](const AcpQueuedUserPromptState& prompt) { return prompt.id == prompt_id; });
+		if (item == queue.end() || item->revision != expected_revision || item->prepared_for_delivery)
+			return reject("Queued prompt changed or was dispatched. Refresh the queue.");
+		if (item->revision == std::numeric_limits<int>::max())
+			return reject("This queued prompt cannot be revised further. Remove it and queue a new prompt.");
+		const std::string updated_text = uam::strings::Trim(text);
+		if (updated_text.empty() && item->attachments.empty()) return reject("Prompt is empty.");
+		if (updated_text.size() > kAcpUserPromptMaxBytes) return reject("Prompt exceeds the 1 MiB limit.");
+		std::size_t total_bytes = updated_text.size();
+		for (const AcpQueuedUserPromptState& prompt : queue)
+			if (&prompt != &*item) total_bytes += prompt.text.size();
+		if (total_bytes > kAcpQueuedPromptMaxBytes) return reject("Queued prompts exceed the session limit.");
+		const std::deque<AcpQueuedUserPromptState> previous_queue = queue;
+		const std::vector<AcpQueuedUserPromptState> previous_outbox = chat->acp_queued_prompts;
+		const std::size_t previous_dispatched = chat->acp_dispatched_queued_prompt_count;
+		item->text = updated_text;
+		++item->revision;
+		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out)) return true;
+		queue = previous_queue;
+		chat->acp_queued_prompts = previous_outbox;
+		chat->acp_dispatched_queued_prompt_count = previous_dispatched;
+		return false;
+	}
+
+	/** Reorders a matching queue snapshot atomically without dispatching any prompt. */
+	bool ReorderQueuedAcpPrompts(AppState& app, const std::string& chat_id,
+	                            const std::vector<std::pair<std::string, int>>& expected,
+	                            const std::vector<std::string>& ordered_ids, std::string* error_out)
+	{
+		const auto reject = [&](const std::string& reason)
+		{
+			if (error_out != nullptr) *error_out = reason;
+			return false;
+		};
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (chat == nullptr || session == nullptr) return reject("Queued prompts are no longer available.");
+		std::deque<AcpQueuedUserPromptState>& queue = session->queued_user_prompts;
+		if (expected.size() != queue.size() || ordered_ids.size() != queue.size())
+			return reject("Queue changed. Refresh before reordering.");
+		std::unordered_set<std::string> ids;
+		for (std::size_t index = 0; index < queue.size(); ++index)
+		{
+			const AcpQueuedUserPromptState& prompt = queue[index];
+			if (prompt.id.empty() || prompt.id != expected[index].first || prompt.revision != expected[index].second ||
+			    prompt.prepared_for_delivery || !ids.insert(prompt.id).second)
+				return reject("Queue changed or a prompt was dispatched. Refresh before reordering.");
+		}
+		std::deque<AcpQueuedUserPromptState> reordered;
+		for (const std::string& id : ordered_ids)
+		{
+			if (ids.erase(id) != 1) return reject("Reordered prompt IDs must match the current queue exactly.");
+			const auto item = std::find_if(queue.begin(), queue.end(), [&](const AcpQueuedUserPromptState& prompt) { return prompt.id == id; });
+			reordered.push_back(*item);
+		}
+		const std::deque<AcpQueuedUserPromptState> previous_queue = queue;
+		const std::vector<AcpQueuedUserPromptState> previous_outbox = chat->acp_queued_prompts;
+		const std::size_t previous_dispatched = chat->acp_dispatched_queued_prompt_count;
+		queue = std::move(reordered);
+		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out)) return true;
+		queue = previous_queue;
+		chat->acp_queued_prompts = previous_outbox;
+		chat->acp_dispatched_queued_prompt_count = previous_dispatched;
+		return false;
+	}
+
 	bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -2017,6 +2104,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::string* error_out)
 	{
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+        if (normalized_provider_id == uam::provider_ids::kAntigravityCli)
+        {
+            if (error_out) *error_out = "Antigravity model discovery is unavailable in its native stream protocol. Choose a model manually.";
+            return false;
+        }
 		const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id);
 		if (provider == nullptr || !provider->supports_structured)
 		{

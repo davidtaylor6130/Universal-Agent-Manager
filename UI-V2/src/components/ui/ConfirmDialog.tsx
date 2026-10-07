@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { TriangleAlert } from 'lucide-react'
 import { Button } from './Button'
 import { Overlay } from './Overlay'
+import { getTopmostModal } from '../../utils/modalFocus'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -30,9 +31,13 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
   useEffect(() => {
     if (!open) return
     const returnFocus = document.activeElement as HTMLElement | null
-    if (busyRef.current) dialogRef.current?.focus()
-    else cancelRef.current?.focus()
+    const dialog = dialogRef.current
+    if (getTopmostModal() === dialog) {
+      if (busyRef.current) dialog?.focus()
+      else cancelRef.current?.focus()
+    }
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || getTopmostModal() !== dialog) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
@@ -40,7 +45,6 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
         return
       }
       if (event.key !== 'Tab') return
-      const dialog = dialogRef.current
       const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
@@ -54,12 +58,12 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
     window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('keydown', onKey, true)
-      if (returnFocus?.isConnected) returnFocus.focus()
+      if (returnFocus?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) returnFocus.focus()
     }
   }, [open])
 
   useEffect(() => {
-    if (open && busy) dialogRef.current?.focus()
+    if (open && busy && getTopmostModal() === dialogRef.current) dialogRef.current?.focus()
   }, [open, busy])
 
   return (

@@ -280,6 +280,8 @@ namespace
 	JsonValue AcpQueuedPromptToJson(const uam::AcpQueuedUserPromptState& prompt)
 	{
 		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, "id", prompt.id);
+		uam::json::SetNumber(obj, "revision", prompt.revision);
 		uam::json::SetString(obj, "text", prompt.text);
 		uam::json::SetString(obj, "uam_agent_id", prompt.uam_agent_id);
 		uam::json::SetString(obj, "uam_agent_definition_hash", prompt.uam_agent_definition_hash);
@@ -370,6 +372,9 @@ namespace
 	{
 		if (obj.type != JsonValue::Type::Object) return std::nullopt;
 		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = JsonStringOrEmpty(obj.Find("id"));
+		if (prompt.id.size() > 128) prompt.id.clear();
+		prompt.revision = IntFieldAtLeastOrDefault(obj.Find("revision"), 1, 1);
 		prompt.text = JsonStringOrEmpty(obj.Find("text"));
 		if (prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(total_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) return std::nullopt;
@@ -842,7 +847,8 @@ namespace
 	    const uam::AcpQueuedUserPromptState& lhs,
 	    const uam::AcpQueuedUserPromptState& rhs)
 	{
-		return lhs.text == rhs.text && lhs.uam_agent_id == rhs.uam_agent_id &&
+		return lhs.id == rhs.id && lhs.revision == rhs.revision &&
+		       lhs.text == rhs.text && lhs.uam_agent_id == rhs.uam_agent_id &&
 		       lhs.uam_agent_definition_hash == rhs.uam_agent_definition_hash &&
 		       lhs.uam_agent_definition_snapshot == rhs.uam_agent_definition_snapshot &&
 		       lhs.uam_agent_instructions == rhs.uam_agent_instructions &&
@@ -1212,6 +1218,15 @@ namespace
 				    AcpQueuedPromptFromJson(item, total_text_bytes);
 				if (prompt.has_value()) chat.acp_queued_prompts.push_back(std::move(*prompt));
 			}
+		}
+		// Legacy identities are deterministic so repeated hydration and recovery agree.
+		std::unordered_set<std::string> queued_ids;
+		for (std::size_t index = 0; index < chat.acp_queued_prompts.size(); ++index)
+		{
+			uam::AcpQueuedUserPromptState& prompt = chat.acp_queued_prompts[index];
+			if (!prompt.id.empty() && queued_ids.insert(prompt.id).second) continue;
+			prompt.id = "legacy-queue-" + chat.id + "-" + std::to_string(index);
+			while (!queued_ids.insert(prompt.id).second) prompt.id += "-legacy";
 		}
 		chat.acp_dispatched_queued_prompt_count = std::min<std::uintmax_t>(
 		    NonNegativeUintmaxFieldOrZero(root.Find(kChatAcpDispatchedQueuedPromptCountField)),

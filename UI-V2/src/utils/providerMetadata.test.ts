@@ -107,15 +107,16 @@ describe('providerMetadata', () => {
 })
 
 
-describe('Antigravity terminal capabilities', () => {
+describe('Antigravity native capabilities', () => {
   it('canonicalizes native executable aliases without Gemini fallback', () => {
     for (const alias of [' AGY ', 'Antigravity', ANTIGRAVITY_CLI_PROVIDER_ID]) {
       expect(normalizeCliProviderIdAlias(alias)).toBe(ANTIGRAVITY_CLI_PROVIDER_ID)
-      expect(fallbackProviderForId(alias)).toMatchObject({ id: ANTIGRAVITY_CLI_PROVIDER_ID, supportsCli: true, supportsStructured: false, structuredProtocol: 'none' })
+      expect(providerRuntimeKindLabel(undefined, 'antigravity-stream-json')).toBe('Antigravity Stream')
+      expect(fallbackProviderForId(alias)).toMatchObject({ id: ANTIGRAVITY_CLI_PROVIDER_ID, supportsCli: true, supportsStructured: true, structuredProtocol: 'antigravity-stream-json' })
     }
   })
 
-  it('keeps the terminal provider out of workers and invented package installations', () => {
+  it('keeps unsupported text workers disabled and invented package installations', () => {
     expect(SUPPORTED_CLI_PROVIDER_IDS).toContain(ANTIGRAVITY_CLI_PROVIDER_ID)
     expect(SUPPORTED_TEXT_WORKER_PROVIDER_IDS).not.toContain(ANTIGRAVITY_CLI_PROVIDER_ID)
     expect(SUPPORTED_TEXT_WORKER_PROVIDER_IDS).toHaveLength(5)

@@ -540,4 +540,49 @@ describe('CLIView', () => {
     } finally { vi.useRealTimers(); window.history.replaceState({}, '', '/'); window.localStorage.removeItem('uam-companion-token') }
   })
 
+  it.each(['online', 'visibilitychange'])('recovers when %s arrives before an interrupted companion read settles', async (eventName) => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/companion')
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: () => 'paired', removeItem: vi.fn() } })
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    let finishInterruptedRead: (() => void) | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      const request = JSON.parse(init.body)
+      requests.push(request)
+      if (requests.length === 2) {
+        await new Promise<void>((resolve) => { finishInterruptedRead = resolve })
+        throw new Error('Interrupted connection')
+      }
+      return { ok: true, json: async () => ({ terminalId: 'term-owned', sourceChatId: 'chat-owned', startupTime: 42,
+        cursor: requests.length === 1 ? 5 : 6, cols: 100, rows: 30, replayData: btoa(requests.length === 1 ? 'hello' : '!') }) }
+    }))
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#fff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    useAppStore.getState().setCliBinding('chat-owned', { terminalId: 'term-owned', boundChatId: 'chat-owned', running: true })
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const session = { id: 'chat-owned', name: 'Owned', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    try {
+      await act(async () => { root.render(<CLIView session={session} />) })
+      await act(async () => { vi.advanceTimersByTime(500); await Promise.resolve() })
+      expect(requests).toHaveLength(2)
+      await act(async () => {
+        const target = eventName === 'online' ? window : document
+        target.dispatchEvent(new Event(eventName))
+        target.dispatchEvent(new Event(eventName))
+      })
+      await act(async () => { finishInterruptedRead!(); await Promise.resolve() })
+      expect(requests).toHaveLength(3)
+      expect(requests[2].payload).toMatchObject({ operation: 'read', startupTime: 42, cursor: 5 })
+      expect(xtermState.writesByInstance[0].map((bytes) => new TextDecoder().decode(bytes as Uint8Array))).toEqual(['hello', '!'])
+      expect(xtermState.constructCount).toBe(1)
+      expect(host.textContent).not.toContain('Connection lost.')
+    } finally {
+      await act(async () => root.unmount())
+      vi.useRealTimers()
+      window.history.replaceState({}, '', '/')
+      window.localStorage.removeItem('uam-companion-token')
+    }
+  })
+
 })

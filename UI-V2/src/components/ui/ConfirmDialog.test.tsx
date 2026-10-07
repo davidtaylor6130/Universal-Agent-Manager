@@ -53,4 +53,69 @@ describe('ConfirmDialog keyboard ownership', () => {
     expect(view.cancel).toHaveBeenCalledOnce()
     expect(view.close()).toBe(true)
   })
+
+  it('only the top dialog owns Escape and Tab when confirmations are stacked', () => {
+    const lower = mount()
+    const upper = mount()
+    try {
+      const dialogs = document.querySelectorAll('[role="alertdialog"]')
+      const upperButtons = dialogs[1].querySelectorAll('button')
+      expect(document.activeElement).toBe(upperButtons[0])
+      key('Tab', true)
+      expect(document.activeElement).toBe(upperButtons[1])
+      key('Escape')
+      expect(upper.cancel).toHaveBeenCalledOnce()
+      expect(lower.cancel).not.toHaveBeenCalled()
+    } finally {
+      upper.close()
+      lower.close()
+    }
+  })
+
+  it('does not steal focus from a newer dialog when an underlying dialog unmounts', () => {
+    const lower = mount()
+    const upper = mount()
+    const focused = document.activeElement
+    lower.close()
+    try {
+      expect(document.activeElement).toBe(focused)
+    } finally {
+      upper.close()
+    }
+  })
+
+  it('does not steal upper dialog focus when an underlying operation becomes busy', () => {
+    const lower = mount()
+    const upper = mount()
+    try {
+      const focused = document.activeElement
+      lower.render(true)
+      expect(document.activeElement).toBe(focused)
+    } finally {
+      upper.close()
+      lower.close()
+    }
+  })
+
+  it('keeps focus in an existing higher layer when a lower confirmation mounts', () => {
+    const upper = document.createElement('div')
+    upper.setAttribute('role', 'dialog')
+    upper.setAttribute('aria-modal', 'true')
+    upper.style.zIndex = '1000'
+    const button = document.createElement('button')
+    upper.append(button)
+    const host = document.createElement('div')
+    document.body.append(upper, host)
+    button.focus()
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ConfirmDialog open title="Lower" confirmLabel="Confirm" onConfirm={vi.fn()} onCancel={vi.fn()}>Lower layer</ConfirmDialog>))
+      expect(document.activeElement).toBe(button)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      upper.remove()
+    }
+  })
+
 })

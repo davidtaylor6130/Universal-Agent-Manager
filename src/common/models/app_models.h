@@ -97,6 +97,8 @@ namespace uam
 		std::string goal_id;
 		bool computer_use_mode = false;
 		bool priority_steer = false;
+		std::string id;
+		int revision = 1;
 	};
 
 	/// <summary>

@@ -1022,4 +1022,51 @@ describe('MainPanel', () => {
     act(() => root.unmount()); host.remove(); delete window.cefQuery
   })
 
+  it('reports all desktop pane chat IDs for safe native transcript retention', async () => {
+    const first = useAppStore.getState().sessions[0]
+    useAppStore.setState({ sessions: [first, { ...first, id: 'chat-2', name: 'Second' }], messages: { 'chat-1': [], 'chat-2': [] } })
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const requests: Array<{ action: string; payload?: { chatIds?: string[] } }> = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}'); return 1 }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<MainPanel />) })
+      expect(requests.filter((request) => request.action === 'setVisibleChatIds').at(-1)?.payload?.chatIds).toEqual(['chat-1', 'chat-2'])
+      await act(async () => { writeChatGridLayout(paneLayout('chat-1')) })
+      expect(requests.filter((request) => request.action === 'setVisibleChatIds').at(-1)?.payload?.chatIds).toEqual(['chat-1'])
+    } finally {
+      await act(async () => root.unmount())
+      delete window.cefQuery
+    }
+  })
+
+  it.each([false, true])('retries cold native history release after idle stop unless reopened: %s', async (reopened) => {
+    const initial = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [initial.sessions[0], { ...initial.sessions[0], id: 'chat-2', name: 'Second' }],
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: { 'chat-1': { ...initial.acpBindingBySessionId['chat-1'], processing: false, running: true, lifecycleState: 'ready' } },
+    })
+    writeChatGridLayout(paneLayout('chat-1'))
+    const requests: Array<{ action: string; payload?: { chatId?: string } }> = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}'); return 1 }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<MainPanel />) })
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-2' }); writeChatGridLayout(paneLayout('chat-2')) })
+      expect(useAppStore.getState().messages['chat-1']).toBeUndefined()
+      if (reopened) await act(async () => { useAppStore.setState({ activeSessionId: 'chat-1' }); writeChatGridLayout(paneLayout('chat-1')) })
+      requests.length = 0
+      await act(async () => { useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped' } } })) })
+      expect(requests.filter((request) => request.action === 'releaseChatMessages')).toEqual(reopened ? [] : [{ action: 'releaseChatMessages', payload: { chatId: 'chat-1' }, requestId: expect.any(String) }])
+      if (!reopened) expect(useAppStore.getState().messages['chat-1']).toBeUndefined()
+      expect(requests.filter((request) => request.action === 'getChatMessages' && request.payload?.chatId === 'chat-1')).toHaveLength(0)
+    } finally {
+      await act(async () => root.unmount())
+      delete window.cefQuery
+    }
+  })
+
 })
