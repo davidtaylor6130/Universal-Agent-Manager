@@ -120,6 +120,8 @@ std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* ar
 	}
 	if (argc >= 2 && std::string_view(argv[1]) == "--uam-test-opencode-terminal")
 	{
+		const char* cwd_marker = std::getenv("UAM_TEST_WORKTREE_CWD_MARKER");
+		if (cwd_marker != nullptr && !uam::io::WriteTextFile(cwd_marker, uam::paths::Utf8PathString(fs::current_path()))) return 9;
 		std::string line;
 		while (std::getline(std::cin, line)) {}
 		return 0;
@@ -557,6 +559,63 @@ UAM_TEST(ClaudeCliReusesItsAssignedSessionLocallyAndRemotelyAndOffersLegacyPicke
 	UAM_ASSERT(blocked.native_session_id.empty());
 	UAM_ASSERT(blocked.remote_claude_session_unstarted);
 	UAM_ASSERT_EQ(blocked_argv.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-default-terminal-worktree");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "source";
+	const fs::path marker = temp.root / "cwd.txt";
+	ScopedEnvVar cwd_marker("UAM_TEST_WORKTREE_CWD_MARKER", marker.string());
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source\n"));
+	ProviderProfile provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	provider.output_mode = uam::provider_profile_constants::kOutputModeCli;
+	provider.interactive_command = ShellQuoteForTest(uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath())) +
+	    " --uam-test-opencode-terminal";
+	app.provider_profiles = {provider};
+	app.settings.active_provider_id = provider.id;
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	ChatSession chat = ChatDomainService().CreateNewChat("", provider.id);
+	chat.title = "Terminal task";
+	chat.workspace_directory = source.string();
+	chat.native_session_id = "ses_worktreefixture";
+	uam::CliTerminalState terminal;
+	const bool launched = uam::StartCliTerminalForChat(app, terminal, chat, 24, 80);
+	const std::string launch_error = terminal.last_error;
+	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 100; ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
+	if (!launched) throw std::runtime_error("Default worktree terminal launch failed: " + launch_error);
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT(fs::exists(marker));
+	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source\n"));
+	UAM_ASSERT(!fs::exists(source / ".git"));
+	fs::remove(marker);
+	app.provider_profiles.front().output_mode = uam::provider_profile_constants::kOutputModeStructured;
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[provider.id];
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "999.0.0";
+	ChatSession structured = ChatDomainService().CreateNewChat("", provider.id);
+	structured.title = "Structured task";
+	structured.workspace_directory = source.string();
+	app.chats.push_back(structured);
+	std::string error;
+	const bool sent = uam::SendAcpPrompt(app, structured.id, "Check this workspace", &error);
+	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 100; ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	(void)uam::StopAcpSession(app, structured.id);
+	if (!sent) throw std::runtime_error("Default worktree ACP launch failed: " + error);
+	UAM_ASSERT(fs::exists(marker));
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory)));
+#endif
 }
 
 UAM_TEST(CliTerminalRejectsImportedReadOnlyTranscriptBeforeProviderLaunch)

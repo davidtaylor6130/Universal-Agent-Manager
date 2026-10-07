@@ -2754,6 +2754,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         {workspaceDirectory}
                       </div>
                       {isGitWorktree && (
+                        <div className="flex items-center gap-2 px-2 py-1 text-[11px]" title={session.workspaceBranchName}>
+                          <ComposerIcon name="git-tree" size={14} />
+                          <span className="truncate">{session.workspaceBranchName}</span>
+                        </div>
+                      )}
+                      {isGitWorktree && (
                         <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
                           Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
                         </div>
