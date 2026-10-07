@@ -364,3 +364,27 @@ it('preserves empty imported interaction timestamps across reconciliation and ac
   const used = sessionFromCppChat({ ...chat, interactionAt: '2026-01-01T00:07:00Z' }, refreshed, [])
   expect(used.interactionAt?.toISOString()).toBe('2026-01-01T00:07:00.000Z')
 })
+
+
+describe('remote recovery snapshot reconciliation', () => {
+  const chat = sanitizeCppChat({
+    id: 'remote-recovery', title: 'Remote', createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:05:00Z', remoteRecoveryEnabled: false, remoteRecoveryState: '',
+  })!
+
+  it('applies recovery enablement without a timestamp change', () => {
+    const previous = sessionFromCppChat(chat, undefined, [])
+    const next = sessionFromCppChat({ ...chat, remoteRecoveryEnabled: true }, previous, [])
+    expect(next.remoteRecoveryEnabled).toBe(true)
+    expect(next).not.toBe(previous)
+  })
+
+  it.each(['waiting', 'recovering', 'failed', ''])('applies recovery state %j independently', (remoteRecoveryState) => {
+    const previousChat = { ...chat, remoteRecoveryEnabled: true, remoteRecoveryState: 'reconnecting' }
+    const previous = sessionFromCppChat(previousChat, undefined, [])
+    const next = sessionFromCppChat({ ...previousChat, remoteRecoveryState }, previous, [])
+    expect(next.remoteRecoveryState).toBe(remoteRecoveryState)
+    expect(next).not.toBe(previous)
+    expect(sessionFromCppChat({ ...previousChat, remoteRecoveryState }, next, [])).toBe(next)
+  })
+})
