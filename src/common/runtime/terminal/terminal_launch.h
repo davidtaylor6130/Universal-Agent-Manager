@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "app/chat_domain_service.h"
+#include "app/git_worktree_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -141,6 +142,10 @@ namespace uam
 
 		std::string runtime_handoff_error;
 		if (!PrepareAcpSessionForCliTerminalLaunch(app, chat, &runtime_handoff_error))
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
+		}
+		if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, &runtime_handoff_error))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
 		}

@@ -1118,6 +1118,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			const AcpQueuedUserPromptState& first = batch.front();
+			if (chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind &&
+			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty())
+			{
+				// Model discovery may have opened an idle provider in the source directory.
+				// Restart it so the first prompt runs in the new worktree.
+				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
+				if (session.running && !StopAcpSession(app, chat.id))
+				{
+					session.queued_user_prompts = std::move(pending);
+					if (error_out != nullptr) *error_out = "Could not stop the idle provider before creating this chat's worktree.";
+					return false;
+				}
+				session.queued_user_prompts = std::move(pending);
+				if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, error_out)) return false;
+			}
 			const Goal* goal = first.goal_id.empty()
 			                       ? GoalService::FindActiveGoal(app, chat.id)
 			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);

@@ -6221,6 +6221,7 @@ describe('ChatView', () => {
         workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
         workspaceSourceDirectory: '/tmp/project',
         workspaceIsolationKind: 'gitWorktree',
+        workspaceBranchName: 'build/fix-login',
       })),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -6242,6 +6243,7 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     openWorkspaceActions(host)
+    expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
       .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
     expect(discard.disabled).toBe(false)
