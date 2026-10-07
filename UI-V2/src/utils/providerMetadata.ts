@@ -249,6 +249,9 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
   },
 }
 
+/** Supported provider IDs in catalogue order, shared by provider selection controls. */
+export const SUPPORTED_CLI_PROVIDER_IDS = Object.keys(PROVIDER_METADATA_BY_ID)
+
 const GEMINI_METADATA = PROVIDER_METADATA_BY_ID[DEFAULT_PROVIDER_ID]
 
 const PROVIDER_ID_ALIASES: Record<string, string> = {
