@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, Loa
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
 import { Button, IconButton, MenuSelect } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
+import { RecordedChatEdits } from './RecordedChatEdits'
 
 function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
   return {
@@ -31,7 +32,8 @@ export function VcsCommitPanel() {
   const generateVcsCommitMessage = useAppStore((s) => s.generateVcsCommitMessage)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
-  const [diffFile, setDiffFile] = useState<VcsChangedFile | null>(null)
+  const [diffSelection, setDiffSelection] = useState<{ file: VcsChangedFile; chatId: string; workspaceDirectory: string | undefined; workspaceWorktreeDirectory: string | undefined; executionHostId: string | undefined } | null>(null)
+  const [reviewScope, setReviewScope] = useState<'workspace' | 'recorded'>('workspace')
   const [status, setStatus] = useState<VcsCommitStatus>(() => emptyStatus(session?.workspaceDirectory ?? ''))
   const [selectedVcsType, setSelectedVcsType] = useState<VcsType>('git')
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
@@ -45,12 +47,15 @@ export function VcsCommitPanel() {
   const latestStatusRequestRef = useRef('')
   const latestGenerateRequestRef = useRef(0)
   const latestCommitRequestRef = useRef(0)
+  const draftRevisionRef = useRef(0)
 
   useEffect(() => {
     latestStatusRequestRef.current = ''
     latestGenerateRequestRef.current += 1
     latestCommitRequestRef.current += 1
+    draftRevisionRef.current += 1
     setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
+    setDiffSelection(null)
     setSelectedFiles([])
     setTitle('')
     setDescription('')
@@ -59,7 +64,7 @@ export function VcsCommitPanel() {
     setLoading(false)
     setGenerating(false)
     setCommitting(false)
-  }, [activeSessionId, session?.workspaceDirectory])
+  }, [activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])
 
   const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
     if (!activeSessionId) {
@@ -87,7 +92,7 @@ export function VcsCommitPanel() {
         setSelectedFiles((current) => current.filter((file) => detailed.changedFiles.some((changed) => changed.path === file)))
       }
     }
-  }, [activeSessionId, getVcsCommitStatus, selectedVcsType, session?.workspaceDirectory])
+  }, [activeSessionId, getVcsCommitStatus, selectedVcsType, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])
 
   useEffect(() => {
     void refresh()
@@ -114,6 +119,7 @@ export function VcsCommitPanel() {
     if (!activeSessionId || generateDisabled) return
     const sourceSessionId = activeSessionId
     const request = ++latestGenerateRequestRef.current
+    const draftRevision = draftRevisionRef.current
     setGenerating(true)
     setNotice('')
     const suggestion = await generateVcsCommitMessage(sourceSessionId, selectedVcsType, selectedFiles)
@@ -123,14 +129,18 @@ export function VcsCommitPanel() {
       setNotice('Failed to generate a commit message.')
       return
     }
-    setTitle(suggestion.title)
-    setDescription(suggestion.description)
+    if (draftRevisionRef.current === draftRevision) {
+      draftRevisionRef.current += 1
+      setTitle(suggestion.title)
+      setDescription(suggestion.description)
+    }
   }
 
   const commit = async () => {
     if (!activeSessionId || commitDisabled) return
     const sourceSessionId = activeSessionId
     const request = ++latestCommitRequestRef.current
+    const draftRevision = draftRevisionRef.current
     setCommitting(true)
     setNotice('')
     const result = await commitVcsChanges(sourceSessionId, selectedVcsType, commitMessage, selectedFiles)
@@ -140,8 +150,11 @@ export function VcsCommitPanel() {
       setNotice(result.error || 'Failed to commit changes.')
       return
     }
-    setTitle('')
-    setDescription('')
+    if (draftRevisionRef.current === draftRevision) {
+      draftRevisionRef.current += 1
+      setTitle('')
+      setDescription('')
+    }
     setSelectedFiles([])
     setNotice('Commit created.')
     setCommitOutput(result.message || '')
@@ -168,7 +181,21 @@ export function VcsCommitPanel() {
         />
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+        <button type="button" className="uam-choice-button text-xs" aria-pressed={reviewScope === 'workspace'} style={{ color: reviewScope === 'workspace' ? 'var(--text)' : 'var(--text-3)', borderBottom: reviewScope === 'workspace' ? '2px solid var(--accent)' : '2px solid transparent' }} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
+        <button type="button" className="uam-choice-button text-xs" aria-pressed={reviewScope === 'recorded'} style={{ color: reviewScope === 'recorded' ? 'var(--text)' : 'var(--text-3)', borderBottom: reviewScope === 'recorded' ? '2px solid var(--accent)' : '2px solid transparent' }} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
+      </div>
+      {reviewScope === 'recorded' ? (
+        activeSessionId && session ? (
+          <RecordedChatEdits
+            key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])}
+            chatId={activeSessionId}
+            workspaceDirectory={session?.workspaceDirectory}
+            workspaceWorktreeDirectory={session?.workspaceWorktreeDirectory}
+            executionHostId={session?.executionHostId}
+          />
+        ) : <p className="px-3 py-3 text-xs">Select a chat to review recorded edits.</p>
+      ) : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="shrink-0 px-3 pt-3">
           {(status.warning || status.error || notice) && (
             <div role="status" className="mb-3 rounded-md px-3 py-2 text-xs" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
@@ -232,7 +259,7 @@ export function VcsCommitPanel() {
                 <button
                   type="button"
                   aria-label={`Review changes to ${file.path}`}
-                  onClick={() => setDiffFile(file)}
+                  onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
                   className="uam-choice-button flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-2 text-left"
                   style={{ background: 'transparent', color: 'inherit' }}
                 >
@@ -263,7 +290,7 @@ export function VcsCommitPanel() {
               placeholder="Summary"
               aria-label="Commit summary"
               value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              onChange={(event) => { draftRevisionRef.current += 1; setTitle(event.target.value) }}
             />
             <IconButton
               icon={generating ? <LoaderCircle size={16} /> : <Sparkles size={16} />}
@@ -278,21 +305,21 @@ export function VcsCommitPanel() {
             placeholder="Description"
             aria-label="Commit description"
             value={description}
-            onChange={(event) => setDescription(event.target.value)}
+            onChange={(event) => { draftRevisionRef.current += 1; setDescription(event.target.value) }}
           />
           <Button variant="primary" block disabled={commitDisabled} leadingIcon={committing ? <LoaderCircle size={15} /> : <GitCommitHorizontal size={15} />} onClick={() => { void commit() }}>
             {committing ? 'Committing…' : `Commit ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}`}
           </Button>
         </div>
-      </div>
-      {diffFile && activeSessionId && (
+      </div>}
+      {reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId && (
         <RepositoryDiffDialog
-          chatId={activeSessionId}
-          file={diffFile}
+          chatId={diffSelection.chatId}
+          file={diffSelection.file}
           vcsType={selectedVcsType}
           comparisonRef={session?.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() || undefined : undefined}
           getDiff={getVcsFileDiff}
-          onClose={() => setDiffFile(null)}
+          onClose={() => setDiffSelection(null)}
         />
       )}
     </aside>
