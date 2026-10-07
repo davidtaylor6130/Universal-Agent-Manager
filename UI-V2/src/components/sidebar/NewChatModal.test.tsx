@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import { NewChatModal } from './NewChatModal'
+import * as modelOptions from '../chat/modelOptions'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -31,6 +32,104 @@ describe('NewChatModal', () => {
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
       ],
     })
+  })
+
+  it('does not discover models on opening or reopening the new chat picker', async () => {
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ discoverProviderModels })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    let root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      act(() => root.unmount())
+      root = createRoot(host)
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('keeps cached models with live selection and config, tolerates legacy bindings, and refreshes independently', async () => {
+    const optionsSpy = vi.spyOn(modelOptions, 'buildModelOptions')
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ discoverProviderModels })
+    useAppStore.setState({
+      sessions: [{ id: 'active', name: 'Active', providerId: 'gemini-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { active: {
+        sessionId: 'active-native', threadId: '', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+        running: true, lifecycleState: 'ready', processing: true, processingStartedAtMs: null,
+        readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+        diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+        availableModels: [], currentModelId: 'cached-model', configOptions: [{ id: 'model', name: 'Model', description: '', category: 'model', currentValue: 'live-config', options: [{ value: 'live-config', name: 'Live Config', description: '' }] }], turnEvents: [], turnUserMessageIndex: -1,
+        turnAssistantMessageIndex: -1, turnSerial: 0, pendingPermission: null, pendingUserInput: null,
+        agentInfo: null, modelsLoading: false, modelRefreshError: '',
+      } },
+      providerModelCatalogs: [{ providerId: 'gemini-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local',
+        availableModels: [{ id: 'cached-model', name: 'Cached Model', description: '' }], currentModelId: '', modelsLoading: true, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+      expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('Cached Model')
+      expect(host.textContent).toContain('discovering')
+      expect(optionsSpy.mock.calls.at(-1)?.[0]).toMatchObject({ currentModelId: 'cached-model', configOptions: [{ currentValue: 'live-config' }] })
+      act(() => {
+        const binding = { ...useAppStore.getState().acpBindingBySessionId.active }
+        Reflect.deleteProperty(binding, 'availableModels')
+        useAppStore.setState((state) => ({ acpBindingBySessionId: { active: binding }, providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false })) }))
+      })
+      expect(optionsSpy.mock.calls.at(-1)?.[0]?.availableModels?.[0].id).toBe('cached-model')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh models')?.click() })
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'gemini-cli', '/tmp/project', 'local')
+    } finally {
+      optionsSpy.mockRestore()
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('owns independent refresh state and fresh models in the scoped catalog while a chat stays running', async () => {
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    const live = {
+      sessionId: 'native', threadId: '', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+      running: true, lifecycleState: 'ready' as const, processing: true, processingStartedAtMs: null,
+      readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+      diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+      availableModels: [{ id: 'old-model', name: 'Old Model', description: '' }], currentModelId: 'old-model',
+      turnEvents: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnSerial: 0,
+      pendingPermission: null, pendingUserInput: null, agentInfo: null, modelsLoading: false, modelRefreshError: '',
+    }
+    useAppStore.setState({
+      discoverProviderModels,
+      sessions: [{ id: 'active', name: 'Active', providerId: 'gemini-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { active: live },
+      providerModelCatalogs: [{ providerId: 'gemini-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', currentModelId: '', availableModels: [], modelsLoading: true, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discovering models…')?.disabled).toBe(true)
+      act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false, availableModels: [{ id: 'fresh-model', name: 'Fresh Model', description: '' }] })) })))
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+      expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('Fresh Model')
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+      act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelRefreshError: 'Independent discovery failed.' })) })))
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Independent discovery failed.')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')?.click() })
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'gemini-cli', '/tmp/project', 'local')
+      expect(useAppStore.getState().acpBindingBySessionId.active).toEqual(live)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('creates terminal-only Antigravity without requesting structured model discovery', async () => {
@@ -550,14 +649,14 @@ describe('NewChatModal', () => {
 
   it('dismisses model discovery errors without hiding a new failure or losing retry', async () => {
     let discoveryCalls = 0
-    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+    window.cefQuery = ({ request, onSuccess }) => {
       if (JSON.parse(request).action !== 'discoverProviderModels') {
         onSuccess('{}')
         return
       }
       discoveryCalls += 1
-      if (discoveryCalls === 1) onFailure(500, 'Model discovery failed.')
-      else onSuccess(JSON.stringify({ started: true, pending: true }))
+      expect(JSON.parse(request).payload.chatId).toBe('')
+      onSuccess(JSON.stringify({ started: true, pending: true }))
     }
     useAppStore.setState({
       sessions: [{
@@ -599,7 +698,7 @@ describe('NewChatModal', () => {
           pendingUserInput: null,
           agentInfo: null,
           modelsLoading: false,
-          modelRefreshError: '',
+          modelRefreshError: 'Model discovery failed.',
         },
       },
     })
@@ -627,14 +726,14 @@ describe('NewChatModal', () => {
       retry?.click()
       await Promise.resolve()
     })
-    expect(discoveryCalls).toBe(2)
+    expect(discoveryCalls).toBe(1)
 
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
   })
 
-	it('discovers and displays workspace-scoped models before the first chat exists', async () => {
+	it('displays workspace-scoped models before the first chat and refreshes only explicitly', async () => {
 	  const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
 	  window.cefQuery = ({ request, onSuccess }) => {
 		requests.push(JSON.parse(request))
@@ -661,6 +760,10 @@ describe('NewChatModal', () => {
 	  expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
 	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
 	  expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('GPT First Chat')
+	  expect(requests).toEqual([])
+	  await act(async () => {
+	    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh models')?.click()
+	  })
 	  expect(requests).toContainEqual(expect.objectContaining({
 		action: 'discoverProviderModels',
 		payload: { chatId: '', providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local' },

@@ -54,7 +54,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
   const creatingChatRef = useRef(false)
-  const discoveryRequestedRef = useRef(new Set<string>())
   const workspaceChoices = useRef<Record<string, { folderId: string | null; path: string }>>({})
   const providerChoices = useRef<Record<string, { modelId: string; effort: string }>>({})
   const requestedFolderRef = useRef(initialFolder?.id === newChatFolderId ? newChatFolderId : null)
@@ -196,7 +195,15 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const selectedWorkspace = isRemote ? selectedFolder?.directory ?? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
-	const cachedAcp = (discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined) ?? scopedCatalog
+	const liveBinding = discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined
+	const cachedAcp = scopedCatalog
+	  ? { ...(liveBinding ?? scopedCatalog),
+	      availableModels: scopedCatalog.availableModels.length ? scopedCatalog.availableModels : liveBinding?.availableModels ?? [],
+	      configOptions: liveBinding?.configOptions?.length ? liveBinding.configOptions : scopedCatalog.configOptions,
+	      modelsLoading: scopedCatalog.modelsLoading,
+	      modelRefreshError: scopedCatalog.modelRefreshError,
+	    }
+	  : liveBinding
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true, providerChatDefaults[providerId]).filter((option) => !option.disabled)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
   useEffect(() => {
@@ -214,15 +221,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	  : []
   const requestModelDiscovery = () => {
 	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
-	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
-	discoveryRequestedRef.current.add(discoveryKey)
-	void discoverProviderModels(isRemote ? '' : discoverySession?.id ?? '', providerId, selectedWorkspace, executionHostId)
+	void discoverProviderModels('', providerId, selectedWorkspace, executionHostId)
   }
-  useEffect(() => {
-	const discoveryKey = `${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`
-	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)) || cachedAcp?.modelsLoading || discoveryRequestedRef.current.has(discoveryKey)) return
-	if (!isRemote) requestModelDiscovery()
-	}, [cachedAcp?.availableModels.length, cachedAcp?.modelsLoading, discoverProviderModels, discoverySession, executionHostId, isRemote, providerId, selectedExecutionHost?.platform, selectedWorkspace, structuredCreationBlocked])
   const canCreate = Boolean(selectedExecutionHost) && (isRemote
     ? isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)
     : selectedFolder !== null && Boolean(selectedWorkspace))
@@ -447,11 +447,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             /></div>
             <StatusIndicator issues={cachedAcp?.modelRefreshError ? [cachedAcp.modelRefreshError] : cachedAcp?.modelsLoading ? ['Discovering models.'] : []} okLabel="Model options available" />
             </div>
-			{isRemote && (
 			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={!canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
-				{cachedAcp?.modelsLoading ? 'Discovering remote models…' : 'Discover remote models'}
+				{cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
 			  </Button>
-			)}
             {cachedAcp?.modelRefreshError && (
               <Notice
                 key={`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}\n${cachedAcp.modelRefreshError}`}
@@ -459,7 +457,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 title="Model refresh failed"
                 dismissLabel="Dismiss model refresh error"
                 actions={<Button variant="secondary" size="sm" onClick={() => {
-				  discoveryRequestedRef.current.delete(`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}`)
                   requestModelDiscovery()
                 }}>Retry</Button>}
               >
