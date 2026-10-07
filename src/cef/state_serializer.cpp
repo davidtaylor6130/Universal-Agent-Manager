@@ -305,9 +305,12 @@ namespace uam
 		nlohmann::json tool_json;
 		tool_json["id"] = tool_call.id;
 		tool_json["title"] = tool_call.name;
-		tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.name, "tool");
+		tool_json["kind"] = uam::strings::NonEmptyOrFallback(tool_call.kind, uam::strings::NonEmptyOrFallback(tool_call.name, "tool"));
 		tool_json["status"] = tool_call.status;
+		tool_json["approvalStatus"] = tool_call.approval_status;
 		const std::size_t content_size = tool_call.args_json.size() + tool_call.result_text.size() +
+		                                 tool_call.child_activity.size() + (tool_call.child_activity.empty() ? 0 : std::string_view("\n\nChild activity:\n").size()) +
+		                                 tool_call.approval_status.size() + (tool_call.approval_status.empty() ? 0 : std::string_view("Approval: \n\n").size()) +
 		                                 (!tool_call.args_json.empty() && !tool_call.result_text.empty()
 		                                      ? std::string_view("Arguments:\n\n\nResult:\n").size()
 		                                      : 0);
@@ -317,7 +320,9 @@ namespace uam
 		tool_json["contentDeferred"] = content_deferred;
 		if (content_deferred)
 			tool_json["contentDigest"] = std::to_string(std::hash<std::string>{}(tool_call.args_json)) + ":" +
-			                             std::to_string(std::hash<std::string>{}(tool_call.result_text));
+			                             std::to_string(std::hash<std::string>{}(tool_call.result_text)) + ":" +
+		                             std::to_string(std::hash<std::string>{}(tool_call.approval_status)) + ":" +
+		                             std::to_string(std::hash<std::string>{}(tool_call.child_activity));
 		if (!content_deferred)
 			tool_json["content"] = StateSerializer::ToolCallContentForFrontend(tool_call);
 		tool_json["isSubAgent"] = tool_call.is_sub_agent;
@@ -536,6 +541,10 @@ namespace uam
 				{
 					FingerprintHashString(hash, tool_call.id);
 					FingerprintHashString(hash, tool_call.name);
+					FingerprintHashString(hash, tool_call.kind);
+					FingerprintHashString(hash, tool_call.approval_status);
+					FingerprintHashString(hash, tool_call.task_id);
+					FingerprintHashString(hash, tool_call.child_activity);
 					FingerprintHashString(hash, tool_call.status);
 					// The native refresh guard needs content changes even when output is deferred.
 					FingerprintHashString(hash, tool_call.args_json);
@@ -685,7 +694,7 @@ namespace uam
 			{
 				const std::string content = StateSerializer::ToolCallContentForFrontend(tool_call);
 				nlohmann::json tool_call_json = {
-				    {"id", tool_call.id}, {"title", tool_call.title}, {"kind", tool_call.kind}, {"status", tool_call.status}, {"contentDeferred", content.size() > kInlineToolContentMaxBytes}, {"isSubAgent", tool_call.is_sub_agent}, {"subAgentId", tool_call.sub_agent_id}, {"subAgentTitle", tool_call.sub_agent_title},
+				    {"id", tool_call.id}, {"title", tool_call.title}, {"kind", tool_call.kind}, {"status", tool_call.status}, {"approvalStatus", tool_call.approval_status}, {"contentDeferred", content.size() > kInlineToolContentMaxBytes}, {"isSubAgent", tool_call.is_sub_agent}, {"subAgentId", tool_call.sub_agent_id}, {"subAgentTitle", tool_call.sub_agent_title},
 				};
 				if (content.size() <= kInlineToolContentMaxBytes)
 					tool_call_json["content"] = content;
@@ -1636,15 +1645,13 @@ namespace uam
 
 	std::string StateSerializer::ToolCallContentForFrontend(const ToolCall& tool_call)
 	{
+		std::string content;
+		if (!tool_call.approval_status.empty()) content = "Approval: " + tool_call.approval_status + "\n\n";
 		if (!tool_call.args_json.empty() && !tool_call.result_text.empty())
-		{
-			return "Arguments:\n" + tool_call.args_json + "\n\nResult:\n" + tool_call.result_text;
-		}
-		if (!tool_call.result_text.empty())
-		{
-			return tool_call.result_text;
-		}
-		return tool_call.args_json;
+			content += "Arguments:\n" + tool_call.args_json + "\n\nResult:\n" + tool_call.result_text;
+		else content += tool_call.result_text.empty() ? tool_call.args_json : tool_call.result_text;
+		if (!tool_call.child_activity.empty()) content += "\n\nChild activity:\n" + tool_call.child_activity;
+		return content;
 	}
 
 	std::string StateSerializer::ToolCallContentForFrontend(const AcpToolCallState& tool_call)

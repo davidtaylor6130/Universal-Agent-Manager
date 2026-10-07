@@ -119,6 +119,7 @@ bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, st
 // Permission handler helpers
 void SendJsonRpcError(AcpSessionState& session, const nlohmann::json& id, int code, const std::string& message);
 nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id, bool cancelled);
+void RecordAcpPermissionDecision(AcpSessionState& session, const std::string& option_id, bool cancelled);
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out = nullptr);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);

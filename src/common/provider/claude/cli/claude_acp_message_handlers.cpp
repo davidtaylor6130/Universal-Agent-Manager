@@ -1,4 +1,5 @@
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
+#include "common/provider/claude/cli/claude_tool_projection.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -57,6 +58,138 @@ namespace uam::acp_detail
 			return type.empty() ? content.dump(2) : "[" + type + "]";
 		}
 
+		/// <summary>Late task/child events update their original message even after the next turn starts.</summary>
+		AcpToolCallState& RestoreClaudeTool(AcpSessionState& session, const ChatSession& chat, const std::string& id)
+		{
+			for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
+			AcpToolCallState& tool = UpsertToolCall(session, id);
+			for (std::size_t index = 0; index < chat.messages.size(); ++index)
+			{
+				for (const ToolCall& saved : chat.messages[index].tool_calls)
+				{
+					if (saved.id != id) continue;
+					tool.title = saved.name;
+					tool.kind = saved.kind;
+					tool.status = saved.status;
+					tool.args_json = saved.args_json;
+					tool.content = saved.result_text;
+					tool.is_sub_agent = saved.is_sub_agent;
+					tool.sub_agent_id = saved.sub_agent_id;
+					tool.sub_agent_title = saved.sub_agent_title;
+					tool.approval_status = saved.approval_status;
+					tool.task_id = saved.task_id;
+					tool.child_activity = saved.child_activity;
+					session.tool_call_message_indices[id] = static_cast<int>(index);
+					return tool;
+				}
+			}
+			return tool;
+		}
+
+		bool HandleClaudeTaskEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const std::string subtype = JsonDiagnosticStringValue(message, "subtype");
+			if (subtype != "task_started" && subtype != "task_progress" && subtype != "task_notification" && subtype != "task_updated") return false;
+			if (subtype == "task_updated")
+			{
+				const std::string status = JsonDiagnosticStringValueOr(JsonObjectValue(message, "patch"), "status", JsonDiagnosticStringValue(message, "status"));
+				if (status != "completed" && status != "failed" && status != "stopped" && status != "cancelled" && status != "killed" && status != "pending" && status != "running" && status != "paused") return true;
+			}
+			const std::string task_id = JsonDiagnosticStringValue(message, "task_id");
+			std::string tool_id = JsonDiagnosticStringValue(message, "tool_use_id");
+			if (tool_id.empty() && !task_id.empty())
+			{
+				for (const AcpToolCallState& tool : session.tool_calls) if (tool.task_id == task_id) tool_id = tool.id;
+				if (tool_id.empty()) for (const Message& saved : chat.messages)
+					for (const ToolCall& tool : saved.tool_calls) if (tool.task_id == task_id) tool_id = tool.id;
+			}
+			if (tool_id.empty())
+			{
+				if (task_id.empty()) return true;
+				tool_id = "claude-task:" + task_id;
+			}
+			AcpToolCallState& tool = RestoreClaudeTool(session, chat, tool_id);
+			const bool first_task_event = tool.task_id.empty() && !task_id.empty();
+			if (!task_id.empty()) tool.task_id = task_id;
+			if (tool.title.empty()) tool.title = JsonDiagnosticStringValueOr(message, "description", "Background task");
+			if (JsonDiagnosticStringValue(message, "task_type") == "local_agent") tool.is_sub_agent = true;
+			if (subtype == "task_notification" || subtype == "task_updated")
+			{
+				const nlohmann::json patch = JsonObjectValue(message, "patch");
+				const std::string status = JsonDiagnosticStringValueOr(patch, "status", JsonDiagnosticStringValue(message, "status"));
+				if (status == "completed") tool.status = uam::acp_statuses::kCompleted;
+				else if (status == "failed") tool.status = uam::acp_statuses::kFailed;
+				else if (status == "stopped" || status == "cancelled" || status == "killed") tool.status = uam::acp_statuses::kCancelled;
+				else if (status == "pending" || status == "running" || status == "paused")
+				{
+					if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status)) tool.status = status;
+				}
+				else return true;
+				const std::string summary = JsonDiagnosticStringValue(message, "summary");
+				if (!summary.empty() && !tool.content.ends_with(summary))
+				{
+					if (!tool.content.empty()) tool.content += "\n\n";
+					tool.content += summary;
+				}
+			}
+			else if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status) ||
+			         (first_task_event && !uam::AcpSessionHasPendingCancel(session))) tool.status = uam::acp_statuses::kRunning;
+			AppendToolTurnEventIfNeeded(session, tool_id);
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			SaveChatQuietly(app, chat);
+			MarkAcpChatUnseenIfBackground(app, chat);
+			return true;
+		}
+
+		/// <summary>Child narration and tools belong to the launching tool, never the parent timeline.</summary>
+		bool HandleClaudeChildMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
+		{
+			const std::string parent = JsonDiagnosticStringValue(message, "parent_tool_use_id");
+			if (parent.empty()) return false;
+			const std::string type = JsonDiagnosticStringValue(message, "type");
+			if (type != "assistant" && type != "user") return false;
+			bool known_parent = std::ranges::any_of(session.tool_calls, [&parent](const AcpToolCallState& tool) { return tool.id == parent; });
+			if (!known_parent)
+			{
+				for (const Message& saved : chat.messages)
+					if (std::ranges::any_of(saved.tool_calls, [&parent](const ToolCall& tool) { return tool.id == parent; })) { known_parent = true; break; }
+			}
+			if (!known_parent) return true;
+			const std::string identity = JsonDiagnosticStringValue(message, "uuid");
+			if (!identity.empty() && !session.claude_seen_child_messages.insert(identity).second) return true;
+			AcpToolCallState& tool = RestoreClaudeTool(session, chat, parent);
+			tool.is_sub_agent = true;
+			if (tool.title.empty()) tool.title = "Sub-agent";
+			const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(JsonObjectValue(message, "message"), "content"));
+			if (content.is_string() && !content.get_ref<const std::string&>().empty())
+			{
+				if (!tool.child_activity.empty()) tool.child_activity += "\n\n";
+				tool.child_activity += content.get_ref<const std::string&>();
+			}
+			for (const nlohmann::json& block : JsonArrayValue(JsonObjectValue(message, "message"), "content"))
+			{
+				const std::string block_type = JsonDiagnosticStringValue(block, "type");
+				std::string activity;
+				if (block_type == "text") activity = ContentTextFromJson(block);
+				else if (block_type == "thinking") activity = JsonDiagnosticStringValue(block, "thinking");
+				else if (block_type == "tool_use") activity = uam::claude::ToolTitle(JsonDiagnosticStringValue(block, "name"), JsonObjectValue(block, "input"));
+				else if (block_type == "tool_result")
+				{
+					const nlohmann::json output = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(block, "content"));
+					activity = ClaudeToolResultText(output);
+				}
+				if (!activity.empty())
+				{
+					if (!tool.child_activity.empty()) tool.child_activity += "\n\n";
+					tool.child_activity += activity;
+				}
+			}
+			AppendToolTurnEventIfNeeded(session, parent);
+			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+			SaveChatQuietly(app, chat);
+			return true;
+		}
+
 		void HandleClaudeControlRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 		{
 			const nlohmann::json request = JsonObjectValue(message, "request");
@@ -83,8 +216,9 @@ namespace uam::acp_detail
 				return;
 			}
 			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
-			tool.title = tool_name;
-			tool.kind = tool_name;
+			tool.title = uam::claude::ToolTitle(tool_name, input);
+			tool.kind = uam::claude::ToolKind(tool_name);
+			tool.is_sub_agent = tool.kind == "sub-agent";
 			tool.args_json = input.dump();
 			tool.status = uam::acp_statuses::kPending;
 			AppendToolTurnEventIfNeeded(session, tool_id);
@@ -138,7 +272,7 @@ namespace uam::acp_detail
 				pending.provider_request_kind = "claude-tool";
 				pending.provider_input_json = input.dump();
 				pending.tool_call_id = tool_id;
-				pending.title = tool_name;
+				pending.title = tool.title;
 				pending.kind = tool_name == "Bash" ? "execute" : tool_name == "Edit" || tool_name == "Write" || tool_name == "NotebookEdit" ? "edit" : tool_name;
 				pending.status = uam::acp_statuses::kPending;
 				pending.content = tool_name == "Bash" ? JsonDiagnosticStringValue(input, "command") : input.dump(2);
@@ -219,11 +353,12 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 				continue;
 			}
 
-			AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
-			tool_call.kind = JsonDiagnosticStringValueOr(item, "name", tool_call.kind);
-			tool_call.title = tool_call.kind;
-			if (tool_call.status != uam::acp_statuses::kCompleted && tool_call.status != uam::acp_statuses::kFailed && tool_call.status != uam::acp_statuses::kCancelled)
-				tool_call.status = uam::acp_statuses::kRunning;
+			AcpToolCallState& tool_call = RestoreClaudeTool(session, chat, tool_id);
+			const std::string tool_name = JsonDiagnosticStringValueOr(item, "name", tool_call.kind);
+			tool_call.kind = uam::claude::ToolKind(tool_name);
+			tool_call.title = uam::claude::ToolTitle(tool_name, JsonObjectValue(item, "input"));
+			tool_call.is_sub_agent = tool_call.kind == "sub-agent" || tool_call.is_sub_agent;
+			if (tool_call.status.empty() || uam::acp_statuses::IsActiveStatus(tool_call.status)) tool_call.status = uam::acp_statuses::kRunning;
 			if (const nlohmann::json* input = uam::nlohmann_json::FindField(item, "input"); input != nullptr)
 			{
 				tool_call.args_json = input->dump();
@@ -269,10 +404,16 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 			continue;
 		}
 
-		AcpToolCallState& tool_call = UpsertToolCall(session, tool_id);
-		tool_call.status = JsonBooleanValueOr(item, "is_error", false) ? uam::acp_statuses::kFailed : uam::acp_statuses::kCompleted;
+		AcpToolCallState& tool_call = RestoreClaudeTool(session, chat, tool_id);
+		if (JsonBooleanValueOr(item, "is_error", false)) tool_call.status = uam::acp_statuses::kFailed;
+		else if (tool_call.task_id.empty()) tool_call.status = uam::acp_statuses::kCompleted;
 		const nlohmann::json* content_value = uam::nlohmann_json::FindField(item, "content");
-		tool_call.content = content_value == nullptr ? std::string{} : ClaudeToolResultText(*content_value);
+		const std::string result_text = content_value == nullptr ? std::string{} : ClaudeToolResultText(*content_value);
+		if (!tool_call.task_id.empty() && !uam::acp_statuses::IsActiveStatus(tool_call.status) && !tool_call.content.empty())
+		{
+			if (!result_text.empty() && !tool_call.content.ends_with(result_text)) tool_call.content += "\n\n" + result_text;
+		}
+		else tool_call.content = result_text;
 		AppendToolTurnEventIfNeeded(session, tool_id);
 		changed = SyncAcpToolCallsToAssistantMessage(chat, session, true) || changed;
 	}
@@ -355,6 +496,13 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	const std::string type = JsonDiagnosticStringValue(message, "type");
+	if (type == "system" && HandleClaudeTaskEvent(app, session, chat, message)) return;
+	if (HandleClaudeChildMessage(app, session, chat, message)) return;
+	if (type == "user")
+	{
+		const nlohmann::json notification = uam::claude::TaskNotification(ClaudeContentTextFromMessage(JsonObjectValue(message, "message")));
+		if (notification.is_object() && HandleClaudeTaskEvent(app, session, chat, notification)) return;
+	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == "compact_boundary")
 	{
 		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"));

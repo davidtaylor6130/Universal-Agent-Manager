@@ -35,6 +35,10 @@ struct ToolCall
 	bool is_sub_agent = false;
 	std::string sub_agent_id;
 	std::string sub_agent_title;
+	std::string kind;
+	std::string approval_status;
+	std::string task_id;
+	std::string child_activity;
 	bool operator==(const ToolCall&) const = default;
 };
 
