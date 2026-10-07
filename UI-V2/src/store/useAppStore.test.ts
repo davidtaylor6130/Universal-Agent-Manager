@@ -175,9 +175,20 @@ function resetStore() {
 describe('useAppStore Gemini CLI slice', () => {
   beforeEach(() => {
     const testWindow = ensureTestWindow()
+    vi.restoreAllMocks()
+    const stored = new Map<string, string>()
+    const storage: Storage = {
+      get length() { return stored.size },
+      clear: () => stored.clear(),
+      getItem: (key) => stored.get(key) ?? null,
+      setItem: (key, value) => { stored.set(key, String(value)) },
+      removeItem: (key) => { stored.delete(key) },
+      key: (index) => Array.from(stored.keys())[index] ?? null,
+    }
+    Object.defineProperty(testWindow, 'localStorage', { configurable: true, value: storage })
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
     resetStore()
     delete testWindow.cefQuery
-    vi.restoreAllMocks()
   })
 
   it('keeps loaded skills cached when the Skills window closes', () => {
@@ -345,17 +356,6 @@ describe('useAppStore Gemini CLI slice', () => {
   })
 
   it('persists working display preferences and expands traces by default', () => {
-    const stored = new Map<string, string>()
-    Object.defineProperty(window, 'localStorage', {
-      configurable: true,
-      value: {
-        clear: () => stored.clear(),
-        getItem: (key: string) => stored.get(key) ?? null,
-        setItem: (key: string, value: string) => stored.set(key, value),
-      },
-    })
-    window.localStorage.clear()
-
     expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).expandWorkTraces).toBe(true)
     expect(createUiSlice(vi.fn(), () => useAppStore.getState(), false).collapsibleWorkSections).toBe(true)
     useAppStore.getState().setWorkingDisplayMode('compact')
