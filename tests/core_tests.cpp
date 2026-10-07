@@ -135,7 +135,14 @@ UAM_TEST(ManualCompactionSendsNativeRequestAndPreservesConversationAndGoal)
 	    nlohmann::json{{"id", request_id}, {"result", nlohmann::json::object()}}.dump()));
 	UAM_ASSERT(session.manual_compaction_pending && session.processing);
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "previous-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
 	    nlohmann::json{{"method", "turn/started"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "compact-turn"}}}}}}.dump()));
+	UAM_ASSERT(!uam::SteerAcpPrompt(app, chat.id, "Follow up", {}, {}, false, &error));
+	UAM_ASSERT(error.find("compaction") != std::string::npos);
+	UAM_ASSERT(transport.captured.find("turn/steer") == std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
 	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "stale-turn"}, {"status", "completed"}}}}}}.dump()));
 	UAM_ASSERT(session.manual_compaction_pending);
@@ -379,6 +386,50 @@ UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
 	UAM_ASSERT(transport.captured.find("turn/start") != std::string::npos);
 	UAM_ASSERT(transport.captured.find(queued.text) != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, queued.text);
+#endif
+}
+
+UAM_TEST(ManualCompactionStreamErrorWaitsForItsCompletionWithoutSettlingGoal)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-compact-stream-error");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	Goal goal;
+	goal.id = "goal";
+	goal.objective = "Keep working";
+	goal.loop_count = 7;
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.session_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/started"}, {"params", {{"threadId", "thread"}, {"turn", {{"id", "maintenance"}}}}}}.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "error"}, {"params", {{"threadId", "thread"}, {"turnId", "maintenance"}, {"error", {{"message", "Context compaction failed"}}}, {"willRetry", false}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(session.last_error.find("Context compaction failed") != std::string::npos);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", "thread"}, {"turn", {{"id", "maintenance"}, {"status", "failed"}, {"error", {{"message", "Context compaction failed"}}}}}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT(app.chats.front().messages.empty());
 #endif
 }
 
