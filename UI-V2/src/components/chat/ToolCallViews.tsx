@@ -694,7 +694,6 @@ export function MessageFrame({
   role,
   children,
   assistantLabel,
-  copyText = '',
   branchLabel,
   branchNavigation,
   onEdit,
@@ -707,7 +706,6 @@ export function MessageFrame({
   role: Message['role']
   children: ReactNode
   assistantLabel: string
-  copyText?: string
   branchLabel?: string
   branchNavigation?: {
     current: number
@@ -723,7 +721,7 @@ export function MessageFrame({
   goalReview?: boolean
 }) {
   if (role === 'user' || role === 'assistant') {
-    return <ConversationTurn role={role} assistantLabel={assistantLabel} copyText={copyText}
+    return <ConversationTurn role={role} assistantLabel={assistantLabel}
       branchLabel={branchLabel} branchNavigation={branchNavigation} onEdit={onEdit} onRevert={onRevert}
       revertLabel={revertLabel}
       actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}>{children}</ConversationTurn>
@@ -755,9 +753,8 @@ export function MessageFrame({
               {branchLabel}
             </span>
           )}
-          {(copyText.trim() || onEdit || onRevert) && (
+          {(onEdit || onRevert) && (
             <span className="ml-auto flex items-center gap-1 uam-message-frame__actions">
-              {!streaming && copyText.trim() && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
               {onEdit && (
                 <IconButton
                   icon={<Pencil size={13} aria-hidden />}

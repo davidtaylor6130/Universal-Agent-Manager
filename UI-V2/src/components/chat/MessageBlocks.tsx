@@ -533,6 +533,26 @@ export function CompactionSeparator({ summary }: { summary: string }) {
   </details>
 }
 
+/** Parse contiguous provider text together, retaining raw spacing and nontext boundaries. */
+function coalesceAssistantText<T extends { type: string; text?: string }>(entries: readonly T[]): T[] {
+  const result: T[] = []
+  let run: T | undefined
+  const flush = () => {
+    if (run?.text?.trim()) result.push(run)
+    run = undefined
+  }
+  for (const entry of entries) {
+    if (entry.type === 'assistant_text') {
+      run = run ? { ...run, text: (run.text ?? '') + (entry.text ?? '') } : { ...entry }
+    } else {
+      flush()
+      result.push(entry)
+    }
+  }
+  flush()
+  return result
+}
+
 export function PersistedMessageBlocksContent({
   message,
   disclosureState,
@@ -560,9 +580,10 @@ export function PersistedMessageBlocksContent({
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
+  const renderedBlocks = coalesceAssistantText(blocks)
   let thoughtIndex = 0
-  const lastAssistantBlockIndex = blocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
-  const lastPlanBlockIndex = blocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
+  const lastAssistantBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
+  const lastPlanBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
 
   return (
     <div className="space-y-2">
@@ -581,7 +602,7 @@ export function PersistedMessageBlocksContent({
         />
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {blocks.map((block, index) => {
+      {renderedBlocks.map((block, index) => {
         if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} />
         if (block.type === 'assistant_text') {
           if (!expanded && index !== lastAssistantBlockIndex) return null
@@ -863,21 +884,22 @@ export function TurnTimelineContent({
   workedSeconds?: number
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
+  const renderedEvents = coalesceAssistantText(events)
   const traceExpanded = active ? true : expanded
-  const lastAssistantEventIndex = events.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
+  const lastAssistantEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
   let thoughtIndex = 0
-  const activeEventIndex = active && !pendingPermission && !pendingUserInput ? events.reduce((latest, event, index) =>
+  const activeEventIndex = active && !pendingPermission && !pendingUserInput ? renderedEvents.reduce((latest, event, index) =>
     (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
-  const hasPlanEvent = events.some((event) => event.type === 'plan')
-  const lastPlanEventIndex = events.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
+  const hasPlanEvent = renderedEvents.some((event) => event.type === 'plan')
+  const lastPlanEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
   const hasPendingPermissionEvent = Boolean(
     pendingPermission &&
-      events.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
+      renderedEvents.some((event) => event.type === 'permission_request' && event.requestId === pendingPermission.requestId)
   )
   const hasPendingPermissionToolEvent = Boolean(
     pendingPermission &&
-      events.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
+      renderedEvents.some((event) => event.type === 'tool_call' && event.toolCallId === pendingPermission.toolCallId)
   )
 
   return (
@@ -898,7 +920,7 @@ export function TurnTimelineContent({
         />
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {events.map((event, index) => {
+      {renderedEvents.map((event, index) => {
         if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null

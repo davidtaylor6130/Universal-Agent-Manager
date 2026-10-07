@@ -199,8 +199,8 @@ describe('working transcript', () => {
       blocks: [
         { type: 'assistant_text', text: 'Earlier answer.' },
         { type: 'thought', text: 'Saved thought.' },
-        { type: 'tool_call', toolCallId: 'tool-1' },
         { type: 'assistant_text', text: 'Intermediate answer.' },
+        { type: 'tool_call', toolCallId: 'tool-1' },
         { type: 'assistant_text', text: 'Final answer.' },
         { type: 'assistant_text', text: '   ' },
       ], toolCalls: tools,
@@ -908,4 +908,36 @@ describe('persisted context compaction', () => {
     await act(async () => root.unmount())
     host.remove()
   })
+})
+
+it('renders adjacent streamed and saved text as one markdown run without empty rows or crossing tool boundaries', () => {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  const events = [
+    { type: 'assistant_text' as const, text: '' },
+    { type: 'assistant_text' as const, text: '**Complete' },
+    { type: 'assistant_text' as const, text: ' sentence**\n\n```ts\nconst value = ' },
+    { type: 'assistant_text' as const, text: '1\n```' },
+    { type: 'tool_call' as const, toolCallId: 'tool-boundary' },
+    { type: 'assistant_text' as const, text: ' \n ' },
+    { type: 'thought' as const, text: 'Boundary thought' },
+    { type: 'assistant_text' as const, text: 'Final paragraph.' },
+  ]
+  const tools = [{ id: 'tool-boundary', title: 'Inspect', kind: 'read', status: 'completed', content: 'OK' }]
+  const inspect = () => {
+    expect(Array.from(host.querySelectorAll('.conversation-trace__text'), node => node.textContent?.replace('Copy code block', ''))).toEqual(['Complete sentencetsconst value = 1', 'Final paragraph.'])
+    expect(host.querySelectorAll('strong')).toHaveLength(1)
+    expect(host.querySelector('pre code')?.textContent).toBe('const value = 1')
+    expect(host.querySelectorAll('.conversation-trace__text p')).toHaveLength(2)
+  }
+  try {
+    act(() => root.render(<TurnTimelineContent events={events} tools={tools} active disclosureState={{ expanded: true }} pendingPermission={null} pendingUserInput={null} onSelectTool={() => {}} onResolvePermission={async () => true} onCancelTurn={() => {}} onStopRuntime={() => {}} />))
+    inspect()
+    act(() => root.render(<PersistedMessageContent message={{ id: 'saved', sessionId: 'chat', role: 'assistant', content: '**Complete sentence**\n\n```ts\nconst value = 1\n```Final paragraph.', blocks: events, toolCalls: tools, createdAt: new Date(0) }} disclosureState={{ expanded: true }} onSelectTool={() => {}} />))
+    inspect()
+    // Rendering must not rewrite persisted/provider-owned fragments.
+    expect(events[1].text).toBe('**Complete')
+    expect(events).toHaveLength(8)
+  } finally { act(() => root.unmount()); host.remove() }
 })

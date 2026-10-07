@@ -373,7 +373,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
     <MessageFrame
       role={message.role}
       assistantLabel={assistantLabel}
-      copyText={message.content}
       branchLabel={branchLabel}
       branchNavigation={isBranchPoint ? {
         current: messageBranchIndex + 1,
@@ -2340,7 +2339,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       <MessageFrame
                         role={message.role}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
-                        copyText={message.content}
                         goalReview={Boolean(goalReviewForMessage(message))}
                         streaming={Boolean(acp?.processing)}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}

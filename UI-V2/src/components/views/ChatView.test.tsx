@@ -492,8 +492,8 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     expect(host.querySelector('article.conversation-turn--assistant')?.getAttribute('aria-label')).toBe(`Codex · historical-model · ${time}`)
     expect(host.querySelector('time.conversation-turn-start')?.textContent).toBe(`Codex · historical-model · ${prompt.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`)
-    expect(host.querySelector('article.conversation-turn--assistant footer')?.textContent).not.toContain('historical-model')
-    expect(host.querySelector('article.conversation-turn--assistant button[aria-label="Copy message"]')).not.toBeNull()
+    expect(host.querySelector('article.conversation-turn--assistant footer')?.textContent ?? '').not.toContain('historical-model')
+    expect(host.querySelector('article.conversation-turn--assistant button[aria-label="Copy message"]')).toBeNull()
     act(() => root.unmount())
     host.remove()
   })
@@ -1235,7 +1235,7 @@ describe('ChatView', () => {
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
     expect(selector).toBeTruthy()
-    expect(selector.querySelector('svg')).toBeTruthy()
+    expect(selector.querySelector('img, svg')).toBeTruthy()
     act(() => selector.click())
 
     const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLElement
@@ -1409,7 +1409,7 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     const copyButton = host.querySelector('button[aria-label="Copy message"]')
-    expect(copyButton?.querySelector('svg')).toBeTruthy()
+    expect(copyButton).toBeNull()
     const editButton = host.querySelector('button[aria-label="Edit message in new branch"]')
     const revertButton = host.querySelector('button[aria-label="Revert to message in new branch"]')
     expect(editButton).toBeTruthy()
@@ -2284,7 +2284,7 @@ describe('ChatView', () => {
 		const steer = host.querySelector('article.conversation-turn--user')
 		expect(steer?.textContent).toContain('Keep the work local.')
 		expect(steer?.textContent).toContain('/tmp/scope.txt')
-		expect(steer?.querySelector('[aria-label="Copy message"]')).toBeTruthy()
+		expect(steer?.querySelector('[aria-label="Copy message"]')).toBeNull()
 		expect(steer?.querySelector('[aria-label="Edit message in new branch"]')).toBeTruthy()
 		const text = host.textContent ?? ''
 		expect(text.indexOf('I was changing the remote helper.')).toBeLessThan(text.indexOf('Response interrupted'))

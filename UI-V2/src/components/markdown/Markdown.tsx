@@ -1,4 +1,5 @@
 import { memo, ReactNode } from 'react'
+import { CopyTextButton } from '../chat/StatusHelpers'
 import { isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
@@ -201,6 +202,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
 }
 
 export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+  if (!content.trim()) return null
   const parts: ReactNode[] = []
   const fencePattern = /```(?:([A-Za-z0-9_-]+)\r?\n|\r?\n)?([\s\S]*?)```/g
   let lastIndex = 0
@@ -218,10 +220,14 @@ export const MarkdownContent = memo(function MarkdownContent({ content }: { cont
     }
 
     const language = match[1]?.trim()
+    const code = match[2].replace(/\r?\n$/, '')
     parts.push(
       <pre key={`code-${match.index}`}>
-        {language && <div className="mb-2 text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{language}</div>}
-        <code>{match[2].replace(/\r?\n$/, '')}</code>
+        <div className="mb-2 flex items-center justify-between gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
+          <span className="uppercase">{language}</span>
+          <CopyTextButton text={code} label="Copy code block" title="Copy code block" />
+        </div>
+        <code>{code}</code>
       </pre>
     )
     lastIndex = match.index + match[0].length

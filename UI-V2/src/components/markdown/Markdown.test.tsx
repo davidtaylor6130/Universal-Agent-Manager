@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MarkdownContent } from './Markdown'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -32,9 +32,9 @@ describe('MarkdownContent', () => {
     const host = renderMarkdown('```ts\nconst x = 1\n```\n\n```plain text```\n\n```\nno label\n```'.replace(/\n/g, newline))
 
     expect(host.querySelector('pre code')?.textContent).toBe('const x = 1')
-    expect(host.querySelector('pre div')?.textContent).toBe('ts')
+    expect(host.querySelector('pre span.uppercase')?.textContent).toBe('ts')
     expect(Array.from(host.querySelectorAll('pre code'), node => node.textContent)).toEqual(['const x = 1', 'plain text', 'no label'])
-    expect(host.querySelectorAll('pre div')).toHaveLength(1)
+    expect(host.querySelectorAll('pre button[aria-label="Copy code block"]')).toHaveLength(3)
 
     host.remove()
   })
@@ -54,4 +54,53 @@ describe('MarkdownContent', () => {
 
     host.remove()
   })
+})
+
+
+it('copies only fenced code from its keyboard-focusable control and exposes clipboard failure', async () => {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  const originalExec = document.execCommand
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  const content = 'Surrounding text\n\n```ts\nconst value = 1\n```\n\nAfter text'
+  try {
+    act(() => root.render(<MarkdownContent content={content} />))
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="Copy code block"]')!
+    expect(button).not.toBeNull()
+    expect(button.type).toBe('button')
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    await act(async () => { button.click() })
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('const value = 1')
+    expect(button.textContent).toContain('Copied')
+    writeText.mockRejectedValue(new Error('Denied'))
+    document.execCommand = vi.fn().mockReturnValue(false)
+    await act(async () => { button.click() })
+    expect(button.textContent).toContain('Copy failed')
+    expect(host.querySelector('pre code')?.textContent).toBe('const value = 1')
+    expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull()
+  } finally {
+    act(() => root.unmount()); host.remove()
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+    document.execCommand = originalExec
+  }
+})
+
+
+it('does not mount an empty markdown row and preserves long code without extra paragraphs', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const longLine = 'const token = "' + 'x'.repeat(4000) + '"'
+  try {
+    act(() => root.render(<MarkdownContent content={' \n \t'} />))
+    expect(host.children).toHaveLength(0)
+    act(() => root.render(<MarkdownContent content={'```\n' + longLine + '\n```'} />))
+    expect(host.querySelector('pre code')?.textContent).toBe(longLine)
+    expect(host.querySelectorAll('p')).toHaveLength(0)
+    expect(host.querySelectorAll('button')).toHaveLength(1)
+  } finally { act(() => root.unmount()) }
 })
