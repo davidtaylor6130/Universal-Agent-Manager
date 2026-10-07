@@ -2591,8 +2591,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 onDismiss={() => setConfirmYolo(false)}
                 actions={(
                   <>
-                    <Button size="sm" variant="secondary" onClick={() => setConfirmYolo(false)}>Cancel</Button>
-                    <Button size="sm" variant="danger" onClick={() => {
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmYolo(false)}>Cancel</Button>
+                    <Button type="button" size="sm" variant="danger" onClick={() => {
                       setConfirmYolo(false)
                       void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
                     }}>Enable YOLO</Button>
@@ -2610,8 +2610,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 onDismiss={() => setRollbackConfirmation(null)}
                 actions={(
                   <>
-                    <Button size="sm" variant="secondary" onClick={() => setRollbackConfirmation(null)}>Cancel</Button>
-                    <Button size="sm" variant="danger" loading={workspaceActionBusy} onClick={() => void confirmLatestTurnRollback()}>Roll back turn</Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setRollbackConfirmation(null)}>Cancel</Button>
+                    <Button type="button" size="sm" variant="danger" loading={workspaceActionBusy} onClick={() => void confirmLatestTurnRollback()}>Roll back turn</Button>
                   </>
                 )}
               >
@@ -2674,7 +2674,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 onDismiss={() => setClaudePlanPrompt(null)}
                 actions={(
                   <>
-                  <Button
+                  <Button type="button"
                     size="sm"
                     variant="primary"
                     disabled={submitting}
@@ -2682,7 +2682,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   >
                     Accept edits and proceed
                   </Button>
-                  <Button
+                  <Button type="button"
                     size="sm"
                     variant="secondary"
                     disabled={submitting}
@@ -2690,7 +2690,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   >
                     Review each edit
                   </Button>
-                  <Button
+                  <Button type="button"
                     size="sm"
                     variant="secondary"
                     disabled={submitting}
@@ -2763,11 +2763,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 <CornerUpRight size={12} aria-hidden style={{ color: 'var(--accent)' }} />
                 {session.temporaryParentChatId ? <>
                   <span className="min-w-0 flex-1 truncate">Side chat · main chat context is reference only</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={13} aria-hidden />} title="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')}>Return</Button>
-                  <Button size="sm" variant="ghost" leadingIcon={<X size={13} aria-hidden />} title="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')}>Dismiss</Button>
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={13} aria-hidden />} title="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')}>Return</Button>
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<X size={13} aria-hidden />} title="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')}>Dismiss</Button>
                 </> : <>
                   <span className="min-w-0 flex-1 truncate">A side chat is open for this chat</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
                 </>}
               </div>
             )}

@@ -7212,4 +7212,34 @@ describe('ChatView', () => {
     act(() => root.unmount()); host.remove(); delete window.cefQuery
   })
 
+  it.each(['YOLO Cancel', 'side Return'])('keeps an unsent draft when clicking %s instead of submitting the composer', async (journey) => {
+    const originalSend = useAppStore.getState().sendAcpPrompt
+    const originalSelect = useAppStore.getState().setActiveSession
+    const send = vi.fn().mockResolvedValue(true)
+    const select = vi.fn()
+    const session = { ...useAppStore.getState().sessions[0], ...(journey === 'side Return' ? { temporaryParentChatId: 'main-chat' } : {}) }
+    useAppStore.setState((state) => ({ sendAcpPrompt: send, setActiveSession: select,
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null } } }))
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={session} />))
+      const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Do not send this draft'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+      if (journey === 'YOLO Cancel') {
+        openComposerOptions(host)
+        act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Permissions"]')!.click())
+        await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('YOLO'))!.click())
+        expect(host.textContent).toContain('Enable YOLO?')
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button')).find((button) => button.textContent === 'Cancel')!.click())
+        expect(host.textContent).not.toContain('Enable YOLO?')
+      } else {
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Return')!.click())
+        expect(select).toHaveBeenCalledWith('main-chat')
+      }
+      expect(send).not.toHaveBeenCalled()
+      expect(input.value).toBe('Do not send this draft')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sendAcpPrompt: originalSend, setActiveSession: originalSelect }) }
+  })
+
+
 })
