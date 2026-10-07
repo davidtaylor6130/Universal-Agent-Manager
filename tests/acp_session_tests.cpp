@@ -6002,6 +6002,8 @@ UAM_TEST(OpenCodeLateCancelPermissionsReplyAndNextTurnCanApprove)
 	std::string line;
 	while (std::getline(lines, line))
 	{
+		// Windows more adds a blank line at EOF; it is not a protocol message.
+		if (uam::strings::Trim(line).empty()) continue;
 		const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
 		UAM_ASSERT(!message.is_discarded());
 		if (message.contains("result")) responses.push_back(message);
