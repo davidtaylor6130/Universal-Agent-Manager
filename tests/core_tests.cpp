@@ -1767,6 +1767,62 @@ UAM_TEST(AgentRunCancellationRetriesWithoutPublishingAPhantomTerminalState)
 	UAM_ASSERT_EQ(saved.front().status, std::string("cancelled"));
 }
 
+UAM_TEST(AgentRunQueuedCancellationRetriesWithoutLaunchingAfterSaveFailure)
+{
+	TempDir temp("uam-agent-cancel-transactional");
+	uam::AppState app;
+	const fs::path data_root = temp.root / "data";
+	app.data_root = data_root;
+
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review the turn.";
+	run.effective_workspace_access = "read";
+	run.status = "queued";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+	app.queued_agent_run_ids.push_back(run.id);
+
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	app.data_root = blocked_root;
+	std::string error;
+	UAM_ASSERT(!uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("queued"));
+	UAM_ASSERT(app.agent_runs.front().finished_at.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+
+	UAM_ASSERT_EQ(app.queued_agent_run_ids.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.contains(run.id));
+	(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("queued"));
+	UAM_ASSERT_EQ(app.queued_agent_run_ids.size(), static_cast<std::size_t>(1));
+	app.data_root = data_root;
+	UAM_ASSERT(uam::AgentRunScheduler::PollAtForTests(app, 1001));
+	UAM_ASSERT(app.queued_agent_run_ids.empty());
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.empty());
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	const auto saved = uam::AgentRunLedger::LoadAll(app.data_root).runs;
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().status, std::string("cancelled"));
+}
+
 UAM_TEST(AgentRunCancellationWaitsForAConfirmedRemoteStopMarkerSave)
 {
 	TempDir temp("uam-agent-cancel-stop-save-retry");
