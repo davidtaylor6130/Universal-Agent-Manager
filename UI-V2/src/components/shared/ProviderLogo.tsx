@@ -1,8 +1,9 @@
 import type { CSSProperties } from 'react'
-import { Terminal } from 'lucide-react'
 import codexLogo from '../../assets/provider-logos/codex.svg'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
 import opencodeLogo from '../../assets/provider-logos/opencode.svg'
+import antigravityLogo from '../../assets/provider-logos/antigravity.svg'
+import geminiLogo from '../../assets/provider-logos/gemini-cli.png'
 import {
   ANTIGRAVITY_CLI_PROVIDER_ID,
   CLAUDE_CLI_PROVIDER_ID,
@@ -16,22 +17,6 @@ interface ProviderLogoProps {
   size?: number
   style?: CSSProperties
   className?: string
-}
-
-function GeminiMark() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="block h-full w-full">
-      <path
-        d="M12 2.5l1.85 5.65 5.65 1.85-5.65 1.85L12 17.5l-1.85-5.65-5.65-1.85 5.65-1.85L12 2.5z"
-        fill="currentColor"
-      />
-      <path
-        d="M17.2 14.7l.95 2.9 2.9.95-2.9.95-.95 2.9-.95-2.9-2.9-.95 2.9-.95.95-2.9z"
-        fill="currentColor"
-        opacity="0.78"
-      />
-    </svg>
-  )
 }
 
 function CopilotMark() {
@@ -50,7 +35,8 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
   const claude = providerId === CLAUDE_CLI_PROVIDER_ID
   const opencode = providerId === OPENCODE_CLI_PROVIDER_ID
   const copilot = providerId === COPILOT_CLI_PROVIDER_ID
-  const logoSrc = codex ? codexLogo : claude ? claudeLogo : opencode ? opencodeLogo : ''
+  const logoSrc = codex ? codexLogo : claude ? claudeLogo : opencode ? opencodeLogo
+    : providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? antigravityLogo : copilot ? '' : geminiLogo
 
   return (
     <span
@@ -71,7 +57,7 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
         />
       ) : (
         <span style={{ color: copilot ? '#22c55e' : '#8ab4ff' }} className="block h-full w-full">
-          {providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? <Terminal size={size} /> : copilot ? <CopilotMark /> : <GeminiMark />}
+          <CopilotMark />
         </span>
       )}
     </span>

@@ -1,0 +1,41 @@
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it } from 'vitest'
+import { ProviderLogo } from './ProviderLogo'
+import opencodeLogo from '../../assets/provider-logos/opencode.svg'
+import antigravityLogo from '../../assets/provider-logos/antigravity.svg'
+import geminiLogo from '../../assets/provider-logos/gemini-cli.png'
+import codexLogo from '../../assets/provider-logos/codex.svg'
+import claudeLogo from '../../assets/provider-logos/claude.svg'
+
+describe('ProviderLogo', () => {
+  it.each([16, 32])('renders bundled official marks decoratively at %i pixels on black', (size) => {
+    const marks = [
+      ['opencode-cli', opencodeLogo], ['antigravity-cli', antigravityLogo],
+      ['gemini-cli', geminiLogo], ['codex-cli', codexLogo], ['claude-cli', claudeLogo],
+    ] as const
+    for (const [providerId, asset] of marks) {
+      const host = document.createElement('div')
+      host.innerHTML = renderToStaticMarkup(<ProviderLogo providerId={providerId} size={size} style={{ background: '#000' }} />)
+      const frame = host.firstElementChild as HTMLElement
+      const image = frame.querySelector('img')!
+      expect(frame.getAttribute('aria-hidden')).toBe('true')
+      expect(frame.style.width).toBe(`${size}px`)
+      expect(frame.style.height).toBe(`${size}px`)
+      expect(frame.style.background).toBe('rgb(0, 0, 0)')
+      expect(image.getAttribute('src')).toBe(asset)
+      expect(image.getAttribute('src')).not.toMatch(/^https?:/)
+      expect(image.getAttribute('alt')).toBe('')
+      expect(image.draggable).toBe(false)
+      expect(image.classList.contains('object-contain')).toBe(true)
+      expect(image.classList.contains('uam-provider-logo--codex')).toBe(providerId === 'codex-cli')
+      expect(frame.querySelectorAll('svg')).toHaveLength(0)
+    }
+  })
+  it('preserves Copilot and the Gemini default for legacy provider entries', () => {
+    const host = document.createElement('div')
+    host.innerHTML = renderToStaticMarkup(<><ProviderLogo providerId="copilot-cli" /><ProviderLogo /></>)
+    expect(host.children[0].querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24')
+    expect(host.children[0].querySelector('img')).toBeNull()
+    expect(host.children[1].querySelector('img')?.getAttribute('src')).toBe(geminiLogo)
+  })
+})
