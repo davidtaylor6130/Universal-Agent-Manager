@@ -60,6 +60,15 @@ export interface ComputerUseState {
 }
 
 export interface Session {
+  routingMode?: 'explicit' | 'automatic'
+  routingSourceFolderId?: string
+  routingSourceDirectory?: string
+  routingReservationPending?: boolean
+  routingAssignedConnectionIdentity?: string
+  routingAssignedProviderConfigurationIdentity?: string
+  routingWaitReason?: string
+  routingUnresolvedReservation?: boolean
+
   id: string
   executionHostId?: string
   remoteRecoveryEnabled?: boolean

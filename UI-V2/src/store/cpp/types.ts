@@ -1,3 +1,4 @@
+import type { ExecutionRoutingSettings } from '../../types/executionRouting'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -64,6 +65,15 @@ export interface ChatAttachmentInput {
 }
 
 export interface CppChat {
+  routingMode?: 'explicit' | 'automatic'
+  routingSourceFolderId?: string
+  routingSourceDirectory?: string
+  routingReservationPending?: boolean
+  routingAssignedConnectionIdentity?: string
+  routingAssignedProviderConfigurationIdentity?: string
+  routingWaitReason?: string
+  routingUnresolvedReservation?: boolean
+
   id: string
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
@@ -299,6 +309,9 @@ export interface AcpAgentInfo {
 }
 
 export interface AcpQueuedPrompt {
+  id?: string
+  revision?: number
+  prepared?: boolean
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -411,6 +424,7 @@ export interface CppAcpSession {
   turnUserMessageIndex?: number
   turnAssistantMessageIndex?: number
   turnSerial?: number
+  queueHeld?: boolean
   queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
@@ -527,6 +541,8 @@ export interface CliVersionOption {
 }
 
 export interface CliVersionProviderState {
+  routingConnectionIdentity?: string
+  routingProviderConfigurationIdentity?: string
   providerId: string
   blockingChatIds?: string[]
   executionHostId?: string
@@ -593,6 +609,7 @@ export interface CppSettings {
   editorFileAssociations?: EditorFileAssociation[]
   centralProviderConfiguration?: CentralProviderConfiguration
   mcpServers?: McpServerConfiguration[]
+  executionRouting?: ExecutionRoutingSettings
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
@@ -811,6 +828,7 @@ export interface AcpBinding {
   turnUserMessageIndex: number
   turnAssistantMessageIndex: number
   turnSerial: number
+  queueHeld?: boolean
   queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
@@ -864,4 +882,24 @@ export interface CentralProviderConfiguration {
 
 export const DEFAULT_CENTRAL_PROVIDER_CONFIGURATION: CentralProviderConfiguration = {
   enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultSkills: [], defaultAgentId: 'build', uamControlEnabled: true,
+}
+
+/** Immutable provider edit evidence, separate from current workspace changes. */
+export interface ChatFileChangeReceipt {
+  chatId: string
+  messageIndex: number
+  messageCreatedAt: string
+  providerId: string
+  toolCallId: string
+  reportedPath: string
+  path: string
+  destinationPath: string
+  kind: string | Record<string, unknown>
+  patch: string
+}
+export interface ChatFileChangeReceiptsResponse {
+  chatId: string
+  scope: 'recorded-provider-edits'
+  receipts: ChatFileChangeReceipt[]
+  omittedCount: number
 }

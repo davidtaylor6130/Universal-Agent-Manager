@@ -1,3 +1,4 @@
+import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
 import { Session, Folder } from '../types/session'
@@ -88,6 +89,8 @@ function deserializeState(
     folders: Folder[]
     resourceCollections: ResourceCollection[]
     messages: Record<string, Message[]>
+    historyStartIndexBySessionId: AppState['historyStartIndexBySessionId']
+    chatSearchNavigation: AppState['chatSearchNavigation']
     providers: Provider[]
     activeSessionId: string | null
     cliTranscriptBySessionId: Record<string, CliTranscript>
@@ -124,6 +127,7 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
+    executionRouting: AppState['executionRouting']
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
@@ -159,6 +163,7 @@ function deserializeState(
     : newSessions
 
   const nextMessages: Record<string, Message[]> = {}
+  const historyStartIndexBySessionId = { ...existing.historyStartIndexBySessionId }
 	for (const chat of cpp.chats) {
 		const existingMessages = existing.messages[chat.id]
 		if (!Array.isArray(chat.messages)) {
@@ -168,6 +173,11 @@ function deserializeState(
       continue
     }
 
+    if (existing.chatSearchNavigation?.chatId === chat.id && existingMessages) {
+      nextMessages[chat.id] = existingMessages
+      continue
+    }
+    historyStartIndexBySessionId[chat.id] = 0
 		nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
@@ -277,6 +287,7 @@ function deserializeState(
     resourceCollections: cpp.resourceCollections ?? existing.resourceCollections,
     sessions: sessionsWithPendingCodexOptions,
     messages,
+    historyStartIndexBySessionId,
     goalsByChatId,
     activeGoalIdByChatId,
     providers,
@@ -317,6 +328,7 @@ function deserializeState(
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
+    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
@@ -370,10 +382,14 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   }
 
   const messages = { ...current.messages }
+  const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
   for (const chatId of removedChatIds) {
     delete messages[chatId]
+    delete historyStartIndexBySessionId[chatId]
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
+    if (current.chatSearchNavigation?.chatId === chatId) continue
+    historyStartIndexBySessionId[chatId] = 0
     messages[chatId] = reconcileCppMessages(chatId, current.messages[chatId], cppMessages, true)
   }
 
@@ -465,6 +481,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     resourceCollections,
     sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
+    historyStartIndexBySessionId,
+    chatSearchNavigation: current.chatSearchNavigation && removedChatIds.has(current.chatSearchNavigation.chatId) ? null : current.chatSearchNavigation,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
     goalModeByChatId: sameRecordEntries(current.goalModeByChatId, goalModeByChatId) ? current.goalModeByChatId : goalModeByChatId,
@@ -506,6 +524,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
+    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
@@ -578,12 +597,18 @@ export const useAppStore = create<AppState>((set, get) => {
 
       for (const [chatId, pending] of entries) {
         if (!liveSessionIds.has(chatId)) continue
+        if (state.chatSearchNavigation?.chatId === chatId) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const token = pending.token
         const currentAssistantIndex = pending.messageIndex ?? state.acpBindingBySessionId[chatId]?.turnAssistantMessageIndex ?? -1
+        const historyStartIndex = state.historyStartIndexBySessionId[chatId] ?? 0
+        const lastAbsoluteIndex = historyStartIndex + existingMessages.length - 1
+        // A bounded historical page cannot absorb tokens from another part of the transcript.
+        if (historyStartIndex > 0 && (currentAssistantIndex < lastAbsoluteIndex || currentAssistantIndex > lastAbsoluteIndex + 1 ||
+            (currentAssistantIndex === lastAbsoluteIndex + 1 && lastAbsoluteIndex + 1 < (state.sessions.find((session) => session.id === chatId)?.messageCount ?? 0)))) continue
         const lastMessageIsCurrentAssistant = lastMessage?.streamMessageIndex === undefined
-          ? currentAssistantIndex === existingMessages.length - 1
+          ? currentAssistantIndex === lastAbsoluteIndex
           : lastMessage.streamMessageIndex === currentAssistantIndex
         const lastMessageIsPlaceholder = lastMessage?.isStreaming && lastMessage.id.startsWith(`stream-${chatId}-`) &&
           (pending.messageIndex === undefined || lastMessage.streamMessageIndex === pending.messageIndex)
@@ -651,6 +676,8 @@ export const useAppStore = create<AppState>((set, get) => {
             folders: current.folders,
             resourceCollections: current.resourceCollections,
             messages: current.messages,
+            historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+            chatSearchNavigation: current.chatSearchNavigation,
             providers: current.providers,
             activeSessionId: current.activeSessionId,
             cliTranscriptBySessionId: current.cliTranscriptBySessionId,
@@ -687,6 +714,7 @@ export const useAppStore = create<AppState>((set, get) => {
             editorFileAssociations: current.editorFileAssociations,
             centralProviderConfiguration: current.centralProviderConfiguration,
             mcpServers: current.mcpServers,
+            executionRouting: current.executionRouting,
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
@@ -947,6 +975,7 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
+    ...createExecutionRoutingSlice(get),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),
@@ -965,6 +994,8 @@ export const useAppStore = create<AppState>((set, get) => {
         folders: current.folders,
         resourceCollections: current.resourceCollections,
         messages: current.messages,
+        historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+        chatSearchNavigation: current.chatSearchNavigation,
         providers: current.providers,
         activeSessionId: current.activeSessionId,
         cliTranscriptBySessionId: current.cliTranscriptBySessionId,
@@ -1001,6 +1032,7 @@ export const useAppStore = create<AppState>((set, get) => {
         editorFileAssociations: current.editorFileAssociations,
         centralProviderConfiguration: current.centralProviderConfiguration,
             mcpServers: current.mcpServers,
+        executionRouting: current.executionRouting,
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,

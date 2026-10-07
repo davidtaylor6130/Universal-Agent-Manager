@@ -146,6 +146,14 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
     (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
+    previous.routingMode === next.routingMode &&
+    previous.routingSourceFolderId === next.routingSourceFolderId &&
+    previous.routingSourceDirectory === next.routingSourceDirectory &&
+    previous.routingAssignedConnectionIdentity === next.routingAssignedConnectionIdentity &&
+    previous.routingAssignedProviderConfigurationIdentity === next.routingAssignedProviderConfigurationIdentity &&
+    previous.routingWaitReason === next.routingWaitReason &&
+    previous.routingReservationPending === next.routingReservationPending &&
+    previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
@@ -251,6 +259,15 @@ export function sessionFromCppChat(
     workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
     workspaceBaseRef: chat.workspaceBaseRef ?? '',
     workspaceBranchName: chat.workspaceBranchName ?? '',
+    routingMode: chat.routingMode,
+    routingSourceFolderId: chat.routingSourceFolderId,
+    routingSourceDirectory: chat.routingSourceDirectory,
+    routingAssignedConnectionIdentity: chat.routingAssignedConnectionIdentity,
+    routingAssignedProviderConfigurationIdentity: chat.routingAssignedProviderConfigurationIdentity,
+    routingWaitReason: chat.routingWaitReason,
+    routingReservationPending: chat.routingReservationPending,
+    routingUnresolvedReservation: chat.routingUnresolvedReservation,
+
     workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
     importedReadOnly: chat.importedReadOnly ?? false,
     messageCount: chat.messageCount ?? 0,
@@ -526,6 +543,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnUserMessageIndex === next.turnUserMessageIndex &&
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
+    (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
@@ -637,6 +655,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
+    queueHeld: acp?.queueHeld ?? false,
     queuedPrompts: acp?.queuedPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
@@ -914,7 +933,8 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   if (previous.length !== incoming.length) return false
   return previous.every((prompt, index) => {
     const other = incoming[index]
-    return prompt.text === other.text &&
+    return prompt.id === other.id && prompt.revision === other.revision && Boolean(prompt.prepared) === Boolean(other.prepared) &&
+      prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&
       Boolean(prompt.computerUseMode) === Boolean(other.computerUseMode) &&

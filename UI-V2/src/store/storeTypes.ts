@@ -1,3 +1,6 @@
+import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
+import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
+import type { OrganizationChange, OrganizationUndo } from '../types/organization'
 import type { CustomIconInput, CustomIconTarget } from '../types/customIcon'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
@@ -9,6 +12,7 @@ import type { CustomTheme, StoredTheme } from '../utils/themeStorage'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../types/resourceCollection'
 import type {
   AcpBinding,
+  ChatFileChangeReceiptsResponse,
   AcpUserInputAnswers,
   ChatAttachmentInput,
   CliBinding,
@@ -47,11 +51,20 @@ export interface AppState {
   // Data
   folders: Folder[]
   resourceCollections: ResourceCollection[]
+  organizationUndo: OrganizationUndo | null
+  organizationMutationSequence: number
+  undoOrganization: () => Promise<boolean>
+  applyOrganizationChange: (change: OrganizationChange) => Promise<boolean>
+  moveResourceToCollection: (collectionId: string | null, type: ResourceReferenceType, target: string, label: string) => Promise<boolean>
   sessions: Session[]
   activeSessionId: string | null
   lastAppliedStateRevision: number
   messages: Record<string, Message[]>
   historyStartIndexBySessionId: Record<string, number>
+  chatSearchNavigation: ChatSearchNavigation | null
+  jumpToChatSearchHit: (hit: ChatSearchHit, queryRequestId: string) => Promise<boolean>
+  consumeChatSearchJump: (chatId: string, generation: number) => boolean
+  clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
@@ -94,6 +107,9 @@ export interface AppState {
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
   mcpServers: McpServerConfiguration[]
+  executionRouting: ExecutionRoutingSettings
+  setExecutionRoutingSettings: (settings: ExecutionRoutingSettings) => Promise<void>
+  releaseExecutionRoutingReservation: (expected: RoutingReservation) => Promise<void>
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
@@ -147,7 +163,7 @@ export interface AppState {
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string) => Promise<boolean>
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic') => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
@@ -208,6 +224,7 @@ export interface AppState {
   portChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>
   previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
+  getChatFileChangeReceipts: (id: string) => Promise<ChatFileChangeReceiptsResponse>
   getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
@@ -269,8 +286,11 @@ export interface AppState {
   // ACP actions
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
   sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
-  removeQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
-  steerQueuedAcpPrompt: (sessionId: string, index: number) => Promise<boolean>
+  removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  steerQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
+  editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string) => Promise<boolean>
+  reorderQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
   discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>

@@ -1,3 +1,4 @@
+import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
@@ -356,6 +357,9 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
   const text = stringOr(value.text).trim()
   if (!text) return null
   return {
+    ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
+    ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
+    ...(value.prepared === true ? { prepared: true } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
@@ -782,6 +786,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnUserMessageIndex: finiteNumberOr(value.turnUserMessageIndex, -1),
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
+    queueHeld: booleanOr(value.queueHeld),
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {
           const sanitized = sanitizeQueuedPrompt(prompt)
@@ -912,6 +917,15 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     workspaceSourceDirectory: isString(value.workspaceSourceDirectory) ? value.workspaceSourceDirectory : undefined,
     workspaceBaseRef: isString(value.workspaceBaseRef) ? value.workspaceBaseRef : undefined,
     workspaceBranchName: isString(value.workspaceBranchName) ? value.workspaceBranchName : undefined,
+    routingMode: value.routingMode === 'automatic' ? 'automatic' : 'explicit',
+    routingSourceFolderId: isString(value.routingSourceFolderId) ? value.routingSourceFolderId : undefined,
+    routingSourceDirectory: isString(value.routingSourceDirectory) ? value.routingSourceDirectory : undefined,
+    routingAssignedConnectionIdentity: isString(value.routingAssignedConnectionIdentity) ? value.routingAssignedConnectionIdentity : undefined,
+    routingAssignedProviderConfigurationIdentity: isString(value.routingAssignedProviderConfigurationIdentity) ? value.routingAssignedProviderConfigurationIdentity : undefined,
+    routingWaitReason: isString(value.routingWaitReason) ? value.routingWaitReason : undefined,
+    routingReservationPending: booleanOr(value.routingReservationPending),
+    routingUnresolvedReservation: booleanOr(value.routingUnresolvedReservation),
+
     workspaceWorktreeDirectory: isString(value.workspaceWorktreeDirectory) ? value.workspaceWorktreeDirectory : undefined,
     importedReadOnly: booleanOr(value.importedReadOnly),
     createdAt: stringOr(value.createdAt),
@@ -1149,6 +1163,8 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
   return {
     providerId,
     ...(stringOr(value.executionHostId).trim() ? { executionHostId: stringOr(value.executionHostId).trim(), executionHostName: stringOr(value.executionHostName).trim() } : {}),
+    routingConnectionIdentity: isString(value.routingConnectionIdentity) ? value.routingConnectionIdentity.slice(0, 128) : undefined,
+    routingProviderConfigurationIdentity: isString(value.routingProviderConfigurationIdentity) ? value.routingProviderConfigurationIdentity.slice(0, 128) : undefined,
     installedVersion: stringOr(value.installedVersion),
     selectedVersion: stringOr(value.selectedVersion),
     availableVersions: Array.isArray(value.availableVersions)
@@ -1581,6 +1597,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
     mcpServers,
+    executionRouting: sanitizeExecutionRouting(value.executionRouting),
     executionHosts,
     favoriteUamAgentIds,
     uamAgentCycleShortcut,

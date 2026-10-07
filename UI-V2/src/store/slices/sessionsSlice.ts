@@ -1,10 +1,13 @@
+import { canRouteAutomatically } from '../../types/executionRouting'
+import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
+import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
-import type { McpServerConfiguration } from '../cpp/types'
+import type { ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -152,11 +155,14 @@ function clearPendingProviderChatDefaults(requestId?: string) {
 
 export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
   let intentionalSelectionRevision = 0
+  let searchJumpGeneration = 0
+  const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
 
   const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false) => {
     if (!isCefContext() || !chatId) return
+    if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
     const messagesAtRequestStart = current.messages[chatId]
     const bindingAtRequestStart = current.acpBindingBySessionId[chatId]
@@ -306,6 +312,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     lastAppliedStateRevision: -1,
     messages: {} as Record<string, Message[]>,
     historyStartIndexBySessionId: {} as Record<string, number>,
+    chatSearchNavigation: null as ChatSearchNavigation | null,
     chatHistoryErrorBySessionId: {} as Record<string, string>,
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
@@ -360,6 +367,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
+      if (get().chatSearchNavigation && get().chatSearchNavigation!.chatId !== id) set({ chatSearchNavigation: null })
       if (get().activeSessionId === id) return
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
@@ -396,10 +404,93 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
     },
 
+    jumpToChatSearchHit: async (input: ChatSearchHit, queryRequestId: string) => {
+      if (!isCefContext() || !queryRequestId) return false
+      const hit = sanitizeChatSearchHits([input], new Set(get().sessions.map((session) => session.id)))[0]
+      if (!hit) return false
+      const generation = ++searchJumpGeneration
+      const hydrationGeneration = (messageHydrationGenerationByChatId.get(hit.chatId) ?? 0) + 1
+      messageHydrationGenerationByChatId.set(hit.chatId, hydrationGeneration)
+      const target: ChatSearchNavigation = { generation, queryRequestId, chatId: hit.chatId,
+        messageIndex: hit.messageIndex, messagesDigest: hit.messagesDigest, phase: 'loading', anchored: false }
+      set({ chatSearchNavigation: target })
+      get().setActiveSession(hit.chatId)
+      const selectionRevision = intentionalSelectionRevision
+      const response = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: chatSearchPageRequest(hit) })
+      const current = get()
+      if (current.chatSearchNavigation?.generation !== generation) return false
+      if (current.activeSessionId !== hit.chatId || intentionalSelectionRevision !== selectionRevision ||
+          messageHydrationGenerationByChatId.get(hit.chatId) !== hydrationGeneration ||
+          !current.sessions.some((session) => session.id === hit.chatId)) {
+        set({ chatSearchNavigation: null })
+        return false
+      }
+      const data = response.data
+      if (!response.ok || !data || data.chatId !== hit.chatId || data.messagesDigest !== hit.messagesDigest ||
+          !Array.isArray(data.messages) || !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined ||
+          data.startIndex < 0 || !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined ||
+          data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
+          hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
+        set((state) => ({ chatSearchNavigation: null, chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
+          [hit.chatId]: response.error || 'Search result changed. Search again to open the message.' } }))
+        return false
+      }
+      const page = data.messages.map((message, index) => buildMessageFromCpp(hit.chatId, message, data.startIndex! + index))
+      loadedMessagesDigestByChatId.set(hit.chatId, data.messagesDigest)
+      set((state) => ({
+        chatSearchNavigation: { ...target, phase: 'ready' },
+        messages: { ...state.messages, [hit.chatId]: page },
+        historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [hit.chatId]: data.startIndex! },
+        sessions: state.sessions.map((session) => session.id === hit.chatId
+          ? { ...session, messageCount: data.totalCount, messagesDigest: data.messagesDigest } : session),
+        chatHistoryErrorBySessionId: Object.fromEntries(Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== hit.chatId)),
+      }))
+      return true
+    },
+
+    consumeChatSearchJump: (chatId: string, generation: number) => {
+      const target = get().chatSearchNavigation
+      if (!target || get().activeSessionId !== chatId || target.chatId !== chatId || target.generation !== generation || target.phase !== 'ready' || target.anchored) return false
+      set({ chatSearchNavigation: { ...target, anchored: true } })
+      return true
+    },
+
+    clearChatSearchNavigation: async (queryRequestId?: string) => {
+      const target = get().chatSearchNavigation
+      if (!target || (queryRequestId && target.queryRequestId !== queryRequestId)) return
+      ++searchJumpGeneration
+      const chatId = target.chatId
+      const reloadGeneration = searchJumpGeneration
+      boundedTailReloads.set(chatId, reloadGeneration)
+      set({ chatSearchNavigation: null })
+      try {
+        if (!isCefContext() || get().activeSessionId !== chatId) return
+        const hydrationGeneration = (messageHydrationGenerationByChatId.get(chatId) ?? 0) + 1
+        messageHydrationGenerationByChatId.set(chatId, hydrationGeneration)
+        const selectionRevision = intentionalSelectionRevision
+        const response = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: { chatId, limit: 50, deferToolCallContent: true } })
+        if (get().chatSearchNavigation || get().activeSessionId !== chatId || intentionalSelectionRevision !== selectionRevision ||
+            messageHydrationGenerationByChatId.get(chatId) !== hydrationGeneration || !get().sessions.some((session) => session.id === chatId)) return
+        const data = response.data
+        if (!response.ok || !data || data.chatId !== chatId || !Array.isArray(data.messages) || data.messages.length > 50 ||
+            !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined || data.startIndex < 0 ||
+            !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined || data.startIndex + data.messages.length !== data.totalCount) {
+          set((state) => ({ chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
+            [chatId]: response.error || 'Could not return to the latest messages. Retry chat history.' } }))
+          return
+        }
+        loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
+        set((state) => ({ messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
+          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: data.startIndex! },
+          sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount, messagesDigest: data.messagesDigest ?? '' } : session),
+        }))
+      } finally { if (boundedTailReloads.get(chatId) === reloadGeneration) boundedTailReloads.delete(chatId) }
+    },
+
     loadSessionMessages: requestChatMessagesFromCef,
 
     loadOlderSessionMessages: async (id: string) => {
-      if (!isCompanionContext()) return false
+      if (!isCefContext()) return false
       const before = get().historyStartIndexBySessionId[id] ?? 0
       if (before <= 0 || !get().messages[id]) return false
       const fail = (error: string) => {
@@ -450,9 +541,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       delete cliTranscriptBySessionId[id]
       delete chatHistoryErrorBySessionId[id]
       set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
+      if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit') => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -474,18 +566,24 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
           : GEMINI_CLI_PROVIDER_ID
+      if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
       const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
 
+      if (routingMode === 'automatic') { defaults.modelId = ''; defaults.reviewerModelId = ''; defaults.reasoningEffort = ''; defaults.serviceTier = '' }
+      const requestDefaults = routingMode === 'automatic'
+        ? Object.fromEntries(Object.entries(defaults).filter(([key]) => !['modelId', 'reviewerModelId', 'reasoningEffort', 'serviceTier'].includes(key)))
+        : defaults
       if (isCefContext()) {
         const resp = await sendToCEF<{ chatId?: string }>({
           action: 'createSession',
           payload: {
             title: name,
+            ...(routingMode === 'automatic' ? { routingMode } : {}),
             folderId: selectedFolderId ?? '',
             providerId: requestedProviderId,
-            defaults,
+            defaults: requestDefaults,
             ...(executionHostId === 'local' ? {} : { executionHostId, workspaceDirectory }),
           },
         })
@@ -517,6 +615,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const now = new Date()
       const session: Session = {
         id,
+        routingMode,
         executionHostId,
         name,
         viewMode,
@@ -822,6 +921,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data ?? null
     },
 
+    getChatFileChangeReceipts: async (id: string): Promise<ChatFileChangeReceiptsResponse> => {
+      const response = await sendToCEF<ChatFileChangeReceiptsResponse>({ action: 'getChatFileChangeReceipts', payload: { chatId: id } })
+      if (!response.ok || !response.data) throw new Error(response.error || 'Could not load chat file changes.')
+      return response.data
+    },
+
     getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
@@ -993,6 +1098,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
+      const organizationSequence = get().organizationMutationSequence + 1
+      set({ organizationMutationSequence: organizationSequence })
       const applyPinned = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
@@ -1013,6 +1120,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
 
         if (response.ok) {
+          if (get().organizationMutationSequence === organizationSequence && isLatestPendingRequest(requestKey, response.requestId) && (get().sessions.find((session) => session.id === id)?.isPinned ?? false) === pinned) {
+            set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
+          }
           clearPendingRequest(requestKey, response.requestId)
           return true
         }
@@ -1030,6 +1140,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 
       applyPinned()
+      set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
       return true
     },
 
@@ -2277,14 +2388,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return false
     },
 
-    removeQueuedAcpPrompt: async (sessionId: string, index: number): Promise<boolean> => {
+    removeQueuedAcpPrompt: async (sessionId: string, index: number, expected?: { id: string; revision: number }): Promise<boolean> => {
+      if (!Number.isSafeInteger(index) || index < 0 || (expected && (!expected.id || !Number.isSafeInteger(expected.revision) || expected.revision < 1))) return false
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'manageQueuedAcpPrompt',
-          payload: { chatId: sessionId, operation: 'remove', index },
+          payload: { chatId: sessionId, operation: 'remove', index, ...(expected ? { expected } : {}) },
         })
         return response.ok
       }
+      const observed = get().acpBindingBySessionId[sessionId]?.queuedPrompts?.[index]
+      if (!observed || observed.prepared || (expected && (observed.id !== expected.id || observed.revision !== expected.revision))) return false
       set((state) => ({
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
@@ -2297,14 +2411,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    steerQueuedAcpPrompt: async (sessionId: string, index: number): Promise<boolean> => {
+    steerQueuedAcpPrompt: async (sessionId: string, index: number, expected?: { id: string; revision: number }): Promise<boolean> => {
+      if (get().acpBindingBySessionId[sessionId]?.queueHeld) return false
+      if (!Number.isSafeInteger(index) || index < 0 || (expected && (!expected.id || !Number.isSafeInteger(expected.revision) || expected.revision < 1))) return false
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'manageQueuedAcpPrompt',
-          payload: { chatId: sessionId, operation: 'steer', index },
+          payload: { chatId: sessionId, operation: 'steer', index, ...(expected ? { expected } : {}) },
         })
         return response.ok
       }
+      const observed = get().acpBindingBySessionId[sessionId]?.queuedPrompts?.[index]
+      if (!observed || observed.prepared || (expected && (observed.id !== expected.id || observed.revision !== expected.revision))) return false
       set((state) => {
         const queuedPrompts = [...(state.acpBindingBySessionId[sessionId]?.queuedPrompts ?? [])]
         const [prompt] = queuedPrompts.splice(index, 1)
@@ -2319,6 +2437,50 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           },
         }
       })
+      return true
+    },
+
+    resumeQueuedAcpPrompts: async (sessionId: string, expected: { id: string; revision: number }[]): Promise<boolean> => {
+      const binding = get().acpBindingBySessionId[sessionId]
+      const queue = binding?.queuedPrompts ?? []
+      if (!binding?.queueHeld || expected.length === 0 || expected.length > 32 || queue.length !== expected.length ||
+          new Set(expected.map((entry) => entry.id)).size !== expected.length ||
+          expected.some((entry, index) => !entry.id || !Number.isSafeInteger(entry.revision) || entry.revision < 1 ||
+            queue[index].id !== entry.id || queue[index].revision !== entry.revision || queue[index].prepared)) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'resumeQueuedAcpPrompts', payload: { chatId: sessionId, expected } })
+        return response.ok
+      }
+      set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queueHeld: false } } }))
+      return true
+    },
+
+    editQueuedAcpPrompt: async (sessionId: string, promptId: string, expectedRevision: number, text: string): Promise<boolean> => {
+      if (!promptId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !text.trim()) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'edit', promptId, expectedRevision, text } })
+        return response.ok
+      }
+      const queue = get().acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
+      const index = queue.findIndex((prompt) => prompt.id === promptId && prompt.revision === expectedRevision)
+      if (index < 0) return false
+      const next = queue.map((prompt, position) => position === index ? { ...prompt, text, revision: expectedRevision + 1 } : prompt)
+      set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queuedPrompts: next } } }))
+      return true
+    },
+
+    reorderQueuedAcpPrompts: async (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]): Promise<boolean> => {
+      if (expected.length !== orderedIds.length || expected.length > 32 || new Set(orderedIds).size !== orderedIds.length ||
+        expected.some((entry) => !entry.id || !Number.isSafeInteger(entry.revision) || entry.revision < 1) ||
+        orderedIds.some((id) => !expected.some((entry) => entry.id === id))) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'reorder', expected, orderedIds } })
+        return response.ok
+      }
+      const queue = get().acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
+      if (queue.length !== expected.length || queue.some((prompt, index) => prompt.id !== expected[index].id || prompt.revision !== expected[index].revision)) return false
+      const next = orderedIds.map((id) => queue.find((prompt) => prompt.id === id)!)
+      set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queuedPrompts: next } } }))
       return true
     },
 
