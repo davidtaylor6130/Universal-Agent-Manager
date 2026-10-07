@@ -409,6 +409,7 @@ describe('SettingsModal memory settings', () => {
 
     const remove = host.querySelector('button[aria-label="Remove Colima"]') as HTMLButtonElement
     await act(async () => { remove.click() })
+    await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
     expect(host.textContent).toContain('Any helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
@@ -1807,8 +1808,8 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(5)
     expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeNull()
     const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!
-    expect(toggle.previousElementSibling?.getAttribute('role')).toBe('img')
-    expect(toggle.previousElementSibling?.textContent).toBe('2')
+    expect(toggle.previousElementSibling?.lastElementChild?.getAttribute("role")).toBe("img")
+    expect(toggle.previousElementSibling?.lastElementChild?.textContent).toBe("2")
     act(() => toggle.click())
     expect(host.querySelector('#codex-cli-cli-version-panel [aria-label="Refresh Codex CLI version"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
@@ -1827,7 +1828,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!.click())
     const confirmation = host.querySelector('[aria-label="Unsaved theme changes"]')!
     expect(confirmation).toBeTruthy()
-    await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!.click())
+    await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save and leave')!.click())
     expect(host.textContent).toContain('Theme could not be saved.')
     expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
     act(() => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
@@ -1877,8 +1878,8 @@ describe('SettingsModal memory settings', () => {
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
     expect(host.textContent).toContain('Permission is not granted. Opened')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Screen Recording') && (button.textContent?.includes('Request') || button.textContent?.includes('Re-request')))?.click())
-    expect(host.textContent).toContain('Screen Recording permission is already granted.')
+    // Granted permissions offer no request button.
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh applications')?.click())
     expect(host.textContent).toContain('TextEdit')
     act(() => Array.from(host.querySelectorAll<HTMLLabelElement>('label')).find((label) => label.textContent?.includes('TextEdit'))?.querySelector<HTMLInputElement>('input')?.click())

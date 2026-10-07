@@ -144,7 +144,7 @@ describe('ShellActionsSettings', () => {
     const save = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent==='Save and leave')!
     await act(async () => {save().click()})
     expect(leave).not.toHaveBeenCalled()
-    expect(host.querySelector('[aria-label="Unsaved shell actions"]')).not.toBeNull()
+    expect(host.querySelector('[aria-label="Save shell actions before leaving?"]')).not.toBeNull()
     expect(host.textContent).toContain('New action')
     await act(async () => {save().click()})
     expect(leave).toHaveBeenCalledOnce()

@@ -16,13 +16,13 @@ it('keeps network status unverified and reports native request failures', async 
   const root = createRoot(host)
   try {
     await act(async () => root.render(<PermissionsSettings />))
-    const network = [...host.querySelectorAll('tr')].find((row) => row.textContent?.includes('Local Network'))!
+    const network = [...host.querySelectorAll('[data-permission-row]')].find((row) => row.textContent?.includes('Local Network'))!
     expect(network.textContent).toContain('Check system settings')
     expect(network.textContent).not.toContain('Allowed')
     await act(async () => network.querySelector('button')!.click())
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'requestAppPermission', payload: { permission: 'localNetwork' } })
     expect(host.querySelector('[role="status"]')?.textContent).toBe('Permission request failed.')
-    const speech = [...host.querySelectorAll('tr')].find((row) => row.textContent?.includes('Speech Recognition'))!
+    const speech = [...host.querySelectorAll('[data-permission-row]')].find((row) => row.textContent?.includes('Speech Recognition'))!
     expect(speech.textContent).toContain('Allowed')
     expect(speech.textContent).not.toContain('Request')
   } finally {

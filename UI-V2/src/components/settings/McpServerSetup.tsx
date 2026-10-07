@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { ChevronRight, Plus, X } from 'lucide-react'
+import { Button, IconButton, MenuSelect, Switch } from '../ui'
 
 type Reference = McpServerConfiguration['environment'][number]
 type JsonEntry = { type: 'builtin' | 'local' | 'remote'; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
@@ -128,7 +129,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     <input className="uam-field w-full" value={value} placeholder={placeholder} disabled={busy} onChange={event => onChange(event.currentTarget.value)} />
     {help && <span className="text-xs" style={{ color: 'var(--text-3)' }}>{help}</span>}
   </label>
-  const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <label className="flex items-center gap-2 text-xs"><input type="checkbox" aria-label={label} checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />{checked ? 'On' : 'Off'}</label>
+  const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <Switch label={label} hideLabel checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />
   const builtinRow = (name: string, detail: string, control: ReactNode) => <div className="uam-settings-row flex items-center gap-3 text-sm">
     <div className="flex-1 min-w-0"><strong>{name}</strong> <span className="text-xs" style={{ color: 'var(--text-3)' }}>Built in · cannot be deleted</span><p className="text-xs" style={{ color: 'var(--text-3)' }}>{detail}</p></div>{control}
   </div>
@@ -159,63 +160,62 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
         const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
         return <div key={server.id} className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
           <div className="flex items-center gap-3 px-3 py-2 text-sm">
-            <button type="button" className="flex-1 min-w-0 text-left" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : server.id)}>
-              <strong>{expanded ? '▾' : '▸'} {server.name || 'New server'}</strong>
-              <span className="ml-2 text-xs break-all" style={{ color: 'var(--text-3)' }}>{server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'}</span>
+            <button type="button" className="flex flex-1 min-w-0 items-center gap-2 text-left" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : server.id)}>
+              <ChevronRight size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)', transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform var(--dur-base) var(--ease-out-soft)' }} />
+              <strong className="shrink-0">{server.name || 'New server'}</strong>
+              <span className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'}</span>
             </button>
             {toggle(`${server.name || 'Server'} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
-            <Button size="sm" variant="danger" disabled={busy} aria-label={`Delete ${server.name || 'server'}`} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }}>Delete</Button>
+            <Button size="sm" variant="ghost" disabled={busy} aria-label={`Delete ${server.name || 'server'}`} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }}>Delete</Button>
           </div>
           {expanded && <div className="grid gap-3 px-3 pb-3">
             {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
-            <label className="grid gap-1 text-sm"><span>Connection type</span>
-              <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
-                <option value="stdio">Local program (runs on the same computer as the agent)</option>
-                <option value="http">Remote URL (HTTP)</option>
-                <option value="sse">Remote URL (SSE, older servers)</option>
-              </select>
-            </label>
+            <div className="grid gap-1 text-sm"><span>Connection type</span>
+              <MenuSelect label="Connection type" value={server.transport} disabled={busy} onChange={transport => update(server.id, { transport: transport as McpServerConfiguration['transport'] })} options={[
+                { value: 'stdio', label: 'Local program', description: 'Runs on the same computer as the agent' },
+                { value: 'http', label: 'Remote URL (HTTP)' },
+                { value: 'sse', label: 'Remote URL (SSE)', description: 'Older servers' },
+              ]} />
+            </div>
             {server.transport === 'stdio' ? <>
               {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', 'Full path to the program. On SSH this is the path on the remote machine.')}
               <div className="grid gap-1 text-sm"><span>Arguments</span>
                 {server.args.map((arg, index) => <div key={index} className="flex gap-2">
                   <input aria-label={`Argument ${index + 1}`} className="uam-field flex-1" value={arg} disabled={busy} onChange={event => { const value = event.currentTarget.value; update(server.id, { args: server.args.map((item, i) => i === index ? value : item) }) }} />
-                  <Button size="sm" disabled={busy} aria-label={`Remove argument ${index + 1}`} onClick={() => update(server.id, { args: server.args.filter((_, i) => i !== index) })}>−</Button>
+                  <IconButton size="sm" icon={<X size={13} />} disabled={busy} label={`Remove argument ${index + 1}`} onClick={() => update(server.id, { args: server.args.filter((_, i) => i !== index) })} />
                 </div>)}
-                <Button size="sm" className="self-start" disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>+ Add argument</Button>
+                <Button size="sm" className="justify-self-start" leadingIcon={<Plus size={13} aria-hidden />} disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>Add argument</Button>
                 <span className="text-xs" style={{ color: 'var(--text-3)' }}>One value per box, no quotes. Example: <code>-y</code> then <code>@playwright/mcp@latest</code>.</span>
               </div>
             </> : text('URL', server.url, url => update(server.id, { url }), 'http://main.homelab.com:9001/mcp', 'Any http:// or https:// address. On SSH, localhost means the remote machine.')}
             <div className="grid gap-1 text-sm"><span>{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
               {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
                 <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
-                <select aria-label={`Value source ${index + 1}`} className="uam-field text-xs" style={{ width: 'auto' }} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={event => { const literal = event.currentTarget.value === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }}>
-                  <option value="value">=</option><option value="variable">from variable</option>
-                </select>
+                <div style={{ width: 150 }}><MenuSelect label={`Value source ${index + 1}`} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={source => { const literal = source === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }} options={[{ value: 'value', label: '= typed value' }, { value: 'variable', label: 'from variable' }]} /></div>
                 {ref.value !== undefined
                   ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://main.homelab.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
                   : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}
-                <Button size="sm" disabled={busy} aria-label={`Remove variable ${index + 1}`} onClick={() => setRefs(refs.filter((_, i) => i !== index))}>−</Button>
+                <IconButton size="sm" icon={<X size={13} />} disabled={busy} label={`Remove variable ${index + 1}`} onClick={() => setRefs(refs.filter((_, i) => i !== index))} />
               </div>)}
-              <Button size="sm" className="self-start" disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>+ Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>
+              <Button size="sm" className="justify-self-start" leadingIcon={<Plus size={13} aria-hidden />} disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>Type a value, or choose "from variable" to read it from that machine's environment. Typed values are saved in UAM settings as plain text.</span>
             </div>
-            <details><summary className="cursor-pointer text-sm">Limit where it runs (optional)</summary>
+            <details className="uam-skill-folder"><summary className="uam-skill-folder__summary text-sm"><ChevronRight size={14} aria-hidden className="uam-skill-folder__chevron" />Limit where it runs (optional)</summary>
               <div className="grid gap-3 pt-2">
                 {text('Only in this workspace', server.workspaceDirectory, workspaceDirectory => update(server.id, { workspaceDirectory }), 'Empty = every workspace')}
-                <label className="grid gap-1 text-sm"><span>Only on this machine</span>
-                  <select className="uam-field w-full" value={server.executionHostId} disabled={busy} onChange={event => update(server.id, { executionHostId: event.currentTarget.value })}>
-                    <option value="">Every machine, including SSH</option>
-                    {hosts.map(host => <option key={host.id} value={host.id}>{host.label}</option>)}
-                    {server.executionHostId && !hosts.some(host => host.id === server.executionHostId) && <option value={server.executionHostId}>{server.executionHostId} (unavailable)</option>}
-                  </select>
-                </label>
+                <div className="grid gap-1 text-sm"><span>Only on this machine</span>
+                  <MenuSelect label="Only on this machine" value={server.executionHostId ?? ''} disabled={busy} onChange={executionHostId => update(server.id, { executionHostId })} options={[
+                    { value: '', label: 'Every machine, including SSH' },
+                    ...hosts.map(host => ({ value: host.id, label: host.label })),
+                    ...(server.executionHostId && !hosts.some(host => host.id === server.executionHostId) ? [{ value: server.executionHostId, label: `${server.executionHostId} (unavailable)` }] : []),
+                  ]} />
+                </div>
               </div>
             </details>
           </div>}
         </div>
       })}
-      <Button size="sm" className="self-start" disabled={busy} onClick={() => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setMessage('') }}>+ Add server</Button>
+      <Button size="sm" className="justify-self-start" leadingIcon={<Plus size={13} aria-hidden />} disabled={busy} onClick={() => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setMessage('') }}>Add server</Button>
     </div>}
 
     <div className="flex items-center gap-2">

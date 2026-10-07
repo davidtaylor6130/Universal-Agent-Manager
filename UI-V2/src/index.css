@@ -1894,6 +1894,9 @@ button.uam-commit-check { cursor: pointer; }
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .uam-field::placeholder { color: var(--text-3); }
+.uam-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.uam-field[type="number"]::-webkit-inner-spin-button,
+.uam-field[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .uam-field:focus,
 .uam-field:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border-bright));
@@ -2114,6 +2117,15 @@ button.uam-commit-check { cursor: pointer; }
   gap: 16px;
 }
 .uam-settings-row + .uam-settings-row { padding-top: 14px; border-top: 1px solid var(--border); }
+
+/* Row actions stay quiet until the row is hovered or focused; touch devices always show them. */
+.uam-disclosure-row__actions { display: inline-flex; align-items: center; gap: 4px; }
+.uam-disclosure-row__actions .uam-iconbtn--danger { transition: opacity var(--dur-fast) var(--ease); }
+@media (hover: hover) {
+  .uam-disclosure-row:not([data-expanded="true"]) .uam-disclosure-row__actions .uam-iconbtn--danger { opacity: 0; }
+  .uam-disclosure-row:hover .uam-disclosure-row__actions .uam-iconbtn--danger,
+  .uam-disclosure-row:focus-within .uam-disclosure-row__actions .uam-iconbtn--danger { opacity: 1; }
+}
 
 /* ── Settings navigation ────────────────────────────────────── */
 .uam-settings-nav-item {
