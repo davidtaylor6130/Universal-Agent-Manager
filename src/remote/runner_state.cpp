@@ -1348,8 +1348,6 @@ namespace uam::remote
 
 		if (type == "process.write")
 		{
-			if (process.exited.load(std::memory_order_acquire))
-				return ProcessError(request, "process_exited", "The remote process has exited.");
 			if (!request.contains("dataBase64") || !request["dataBase64"].is_string())
 				return ProcessError(request, "invalid_request", "dataBase64 is required.");
 			std::string decoded;
@@ -1384,6 +1382,10 @@ namespace uam::remote
 					                                {"deliveryId", delivery_id}, {"duplicate", true}});
 				}
 			}
+			// An accepted delivery can outlive its provider. Acknowledge only its
+			// remembered bytes above; fresh input must never reach an exited process.
+			if (process.exited.load(std::memory_order_acquire))
+				return ProcessError(request, "process_exited", "The remote process has exited.");
 			if (sequenced)
 			{
 				if (!request["inputSequence"].is_number_unsigned())
