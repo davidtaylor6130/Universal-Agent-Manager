@@ -3,11 +3,13 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLIView } from './CLIView'
 import { useAppStore } from '../../store/useAppStore'
+import { focusActiveInput, FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
 
 const xtermState = vi.hoisted(() => ({
   resizeByInstance: [] as Array<(size: { rows: number; cols: number }) => void>,
   resizeObservers: [] as Array<() => void>,
   constructCount: 0,
+  focusedInstances: [] as number[],
   disposeCount: 0,
   inputByInstance: [] as Array<(data: string) => void>,
   writesByInstance: [] as Array<Array<string | Uint8Array>>,
@@ -33,7 +35,7 @@ vi.mock('@xterm/xterm', () => ({
     }
     reset() {}
     resize(cols: number, rows: number) { this.cols = cols; this.rows = rows }
-    focus() {}
+    focus() { xtermState.focusedInstances.push(this.index) }
     input(data: string) { xtermState.inputByInstance[this.index]?.(data) }
     writeln() {}
     dispose() {
@@ -94,6 +96,7 @@ describe('CLIView', () => {
     xtermState.resizeByInstance = []
     xtermState.resizeObservers = []
     xtermState.constructCount = 0
+    xtermState.focusedInstances = []
     xtermState.disposeCount = 0
     xtermState.inputByInstance = []
     xtermState.writesByInstance = []
@@ -538,6 +541,33 @@ describe('CLIView', () => {
       expect(requests).toHaveLength(count)
       expect(requests.every((request) => request.action === 'companionCliTerminal')).toBe(true)
     } finally { vi.useRealTimers(); window.history.replaceState({}, '', '/'); window.localStorage.removeItem('uam-companion-token') }
+  })
+
+  it('focuses an existing active terminal without launching or disturbing the other pane', async () => {
+    const starts: string[] = []
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const payload = JSON.parse(request)
+      if (payload.action === 'startCliTerminal') starts.push(payload.payload.chatId)
+      onSuccess(JSON.stringify({ terminalId: payload.payload?.chatId, running: true }))
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = (id: string) => ({ id, name: id, providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<><div className="uam-chat-pane" data-focused="false"><CLIView session={session('other')} /></div><div className="uam-chat-pane" data-focused="true"><CLIView session={session('active')} /></div></>))
+      const started = starts.length
+      const constructed = xtermState.constructCount
+      expect(focusActiveInput()).toBe(true)
+      expect(xtermState.focusedInstances).toEqual([1])
+      expect(starts).toHaveLength(started)
+      expect(xtermState.constructCount).toBe(constructed)
+      const terminal = host.querySelectorAll('[data-uam-terminal]')[1]
+      act(() => root.unmount())
+      expect(terminal.dispatchEvent(new Event(FOCUS_ACTIVE_INPUT_EVENT, { cancelable: true }))).toBe(true)
+      expect(xtermState.focusedInstances).toEqual([1])
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
 })

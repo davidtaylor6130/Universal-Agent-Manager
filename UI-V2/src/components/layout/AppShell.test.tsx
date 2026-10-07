@@ -991,4 +991,29 @@ describe('AppShell', () => {
     }
   })
 
+  it('focuses the active pane input only for its exact shortcut and respects modal ownership', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<AppShell />))
+      const panes = document.createElement('div')
+      panes.innerHTML = '<div class="uam-chat-pane" data-focused="false"><textarea class="uam-composer-textarea">Other</textarea></div><div class="uam-chat-pane" data-focused="true"><textarea class="uam-composer-textarea">Draft</textarea></div>'
+      host.appendChild(panes)
+      const input = panes.querySelectorAll('textarea')[1]
+      const key = () => new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })
+      const event = key()
+      act(() => host.dispatchEvent(event))
+      expect(document.activeElement).toBe(input)
+      expect(event.defaultPrevented).toBe(true)
+      const modal = document.createElement('input')
+      modal.setAttribute('aria-modal', 'true'); host.appendChild(modal); modal.focus()
+      const blocked = key()
+      act(() => modal.dispatchEvent(blocked))
+      expect(document.activeElement).toBe(modal)
+      expect(blocked.defaultPrevented).toBe(false)
+      expect(input.value).toBe('Draft')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
 })

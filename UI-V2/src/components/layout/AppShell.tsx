@@ -38,6 +38,7 @@ import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
+import { focusActiveInput } from '../../utils/activeInputFocus'
 
 const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
@@ -682,6 +683,10 @@ export function AppShell() {
       // Modals own the keyboard while open.
       if (document.querySelector('[aria-modal="true"]')) return
       const state = shortcutStateRef.current
+      if (shortcut === 'focusActiveInput') {
+        if (!state.isSettingsOpen && focusActiveInput()) event.preventDefault()
+        return
+      }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {

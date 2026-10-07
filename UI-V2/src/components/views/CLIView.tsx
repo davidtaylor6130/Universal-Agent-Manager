@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { AlertTriangle, X } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
+import { FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
 import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
@@ -99,6 +100,18 @@ export function CLIView({ session }: CLIViewProps) {
       ? cliBinding.lastError
       : ''
   const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
+
+  useEffect(() => {
+    const node = terminalRef.current
+    if (!node) return
+    const onFocusInput = (event: Event) => {
+      if (!termInstanceRef.current || document.querySelector('[aria-modal="true"]')) return
+      termInstanceRef.current.focus()
+      event.preventDefault()
+    }
+    node.addEventListener(FOCUS_ACTIVE_INPUT_EVENT, onFocusInput)
+    return () => node.removeEventListener(FOCUS_ACTIVE_INPUT_EVENT, onFocusInput)
+  }, [providerSupported, session.id])
 
   useEffect(() => {
     copilotCompatibilityRetryPendingRef.current = false
@@ -519,7 +532,7 @@ export function CLIView({ session }: CLIViewProps) {
         className={`flex-1 ${companion ? 'overflow-auto' : 'overflow-hidden'}`}
         style={{ background: companion ? '#000' : 'var(--term-bg)', padding: '12px 18px 18px' }}
       >
-        <div ref={terminalRef} className="h-full" />
+        <div ref={terminalRef} data-uam-terminal className="h-full" />
       </div>
 
     </div>

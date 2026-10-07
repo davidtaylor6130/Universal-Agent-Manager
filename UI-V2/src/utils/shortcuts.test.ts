@@ -20,3 +20,10 @@ describe('app shortcuts (non-mac test environment)', () => {
     expect(shortcutLabel('newChat')).toBe('Ctrl+N')
   })
 })
+
+it('reserves only Ctrl+Shift+L for focusing the active input', () => {
+  expect(matchShortcut(key('L', { ctrlKey: true, shiftKey: true }))).toBe('focusActiveInput')
+  expect(matchShortcut(key('l', { ctrlKey: true }))).toBeNull()
+  expect(matchShortcut(key('l', { ctrlKey: true, shiftKey: true, altKey: true }))).toBeNull()
+  expect(matchShortcut(key('l', { ctrlKey: true, metaKey: true, shiftKey: true }))).toBeNull()
+})

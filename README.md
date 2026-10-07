@@ -30,6 +30,8 @@ The current macOS packages are ad hoc signed rather than notarized. Windows pack
 
 The workspace view can hold up to nine chats. Each pane keeps its own selected chat and structured or terminal view, while the sidebar reports active, completed, pinned, local, and remote sessions.
 
+Press Cmd+Shift+L on macOS or Ctrl+Shift+L elsewhere to focus the active pane's message box or existing terminal. The shortcut leaves open dialogs and disabled message boxes alone.
+
 ![Universal Agent Manager 4.8 Remote Hosts settings](docs/images/uam-4.8-remote-hosts.png)
 
 Remote hosts use existing OpenSSH aliases. UAM installs a versioned helper in the remote user's home directory and verifies its checksum, version, and protocol before use.
