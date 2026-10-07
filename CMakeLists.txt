@@ -432,6 +432,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
+  src/app/execution_routing_service.cpp
   src/app/resource_collection_service.cpp
     src/app/provider_worker_command.cpp
   src/app/provider_profile_migration_service.cpp
@@ -1144,6 +1145,7 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/execution_routing_tests.cpp
     tests/model_discovery_startup_tests.cpp
     tests/remote_delivery_exit_tests.cpp
     tests/agent_provider_inheritance_tests.cpp
@@ -1182,6 +1184,7 @@ if(UAM_BUILD_TESTS)
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
+    src/app/execution_routing_service.cpp
     src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
     src/app/provider_profile_migration_service.cpp
