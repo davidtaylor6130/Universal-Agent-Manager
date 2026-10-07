@@ -867,6 +867,8 @@ namespace uam
 		std::vector<UamControlCapability> uam_control_capabilities;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
+		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
