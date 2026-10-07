@@ -304,8 +304,8 @@ namespace uam
 			}
 		}
 
-		const std::string selected_provider = uam::strings::NonEmptyOrFallback(
-		    uam::strings::Trim(provider_id), root_chat->provider_id);
+		const std::string selected_provider = provider_ids::NormalizeCliProviderAliasOrSelf(
+		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(provider_id), root_chat->provider_id));
 		if (!ProviderExists(app, selected_provider))
 		{
 			if (error_out != nullptr) *error_out = "Requested provider is unavailable.";
@@ -324,10 +324,14 @@ namespace uam
 		transcript.title = "Agent: " + requested_agent;
 		transcript.execution_host_id = root_chat->execution_host_id;
 		transcript.workspace_directory = root_chat->workspace_directory;
-		transcript.model_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(model_id), root_chat->model_id);
-		transcript.reasoning_effort = root_chat->reasoning_effort;
-		transcript.service_tier = root_chat->service_tier;
-		transcript.service_tier_explicit = root_chat->service_tier_explicit;
+		const bool same_provider = selected_provider == provider_ids::NormalizeCliProviderAliasOrSelf(root_chat->provider_id);
+		transcript.model_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(model_id), same_provider ? root_chat->model_id : std::string{});
+		if (same_provider)
+		{
+			transcript.reasoning_effort = root_chat->reasoning_effort;
+			transcript.service_tier = root_chat->service_tier;
+			transcript.service_tier_explicit = root_chat->service_tier_explicit;
+		}
 		transcript.command_safety_tier = root_chat->command_safety_tier;
 		transcript.approval_mode = read_only ? approval_modes::kPlanApprovalMode : root_chat->approval_mode;
 		transcript.uam_agent_id = requested_agent;

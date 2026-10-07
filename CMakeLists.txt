@@ -1143,6 +1143,7 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/agent_provider_inheritance_tests.cpp
     tests/workspace_import_policy_tests.cpp
     tests/workspace_migration_alias_tests.cpp
     tests/native_chat_identity_tests.cpp
