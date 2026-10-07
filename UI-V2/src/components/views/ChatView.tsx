@@ -1,3 +1,4 @@
+import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -512,6 +513,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
   const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
+  const searchNavigation = useAppStore((s) => s.chatSearchNavigation?.chatId === session.id ? s.chatSearchNavigation : null)
+  const searchNavigationRef = useRef(searchNavigation)
+  searchNavigationRef.current = searchNavigation
   const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
@@ -541,9 +545,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
+  const composerBranch = repositoryChanges?.workspaceDirectory === workspaceDirectory
+    ? repositoryChanges.branchOrRevision || session.workspaceBranchName : session.workspaceBranchName
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
+  const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
+  const editQueuedAcpPrompt = useAppStore((s) => s.editQueuedAcpPrompt)
+  const reorderQueuedAcpPrompts = useAppStore((s) => s.reorderQueuedAcpPrompts)
   const branchFromMessage = useAppStore((s) => s.branchFromMessage)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const branchRootChatId = session.branchRootChatId || session.parentChatId || session.id
@@ -763,10 +772,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   )
 
   useEffect(() => {
-    if (isNearBottomRef.current) {
+    if (isNearBottomRef.current && !searchNavigation) {
       bottomRef.current?.scrollIntoView?.({ block: 'end' })
     }
   }, [
+    searchNavigation,
     messages.length,
     messages[messages.length - 1]?.content,
     messages[messages.length - 1]?.planSummary,
@@ -794,7 +804,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
       }
       const el = scrollRef.current
-      if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight
+      if (el && isNearBottomRef.current && !searchNavigationRef.current) el.scrollTop = el.scrollHeight
     })
     observer.observe(dock)
     // Content and viewport changes also move the end, even when the dock height is unchanged.
@@ -818,12 +828,34 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	})
   }, [])
 
+  useEffect(() => {
+    if (!searchNavigation || searchNavigation.phase !== 'ready' || searchNavigation.anchored) return
+    const state = useAppStore.getState()
+    if (state.activeSessionId !== session.id || state.chatSearchNavigation?.generation !== searchNavigation.generation ||
+        state.chatSearchNavigation.chatId !== session.id) return
+    const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
+    if (!target) return
+    isNearBottomRef.current = false
+    target.scrollIntoView?.({ block: 'center' })
+    useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
+  }, [searchNavigation, messages, historyStartIndex, session.id])
+
   const scrollToBottom = useCallback(() => {
-    isNearBottomRef.current = true
-    showScrollToBottomRef.current = false
-    setShowScrollToBottom(false)
-    bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
-  }, [])
+    const followLatest = () => {
+      if (currentSessionIdRef.current !== session.id || useAppStore.getState().chatSearchNavigation) return
+      isNearBottomRef.current = true
+      showScrollToBottomRef.current = false
+      setShowScrollToBottom(false)
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
+    }
+    if (searchNavigationRef.current) {
+      void useAppStore.getState().clearChatSearchNavigation().then(() => {
+        const state = useAppStore.getState()
+        const count = state.sessions.find((candidate) => candidate.id === session.id)?.messageCount
+        if (state.activeSessionId === session.id && count === (state.historyStartIndexBySessionId[session.id] ?? 0) + (state.messages[session.id]?.length ?? 0)) followLatest()
+      })
+    } else followLatest()
+  }, [session.id])
 
   useEffect(() => {
     if (selectedToolCallRef && !selectedToolCall) {
@@ -1084,9 +1116,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	    .map(({ status, error, ...attachment }) => attachment)
 	  const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
 
-	  if (goalResult.ok && sent) {
-        setDraft('')
-	    setComposerAttachments([])
+	  if (goalResult.ok && sent && currentSessionIdRef.current === session.id) {
+        setDraft((current) => current === draft ? '' : current)
+	    setComposerAttachments((current) => current.filter((attachment) => !goalAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 	    setAttachmentError('')
         setGoalError('')
       } else {
@@ -1187,9 +1219,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 		  setGoalError(goalResult.ok ? 'Goal was created, but the provider command failed to send.' : (goalResult.error || 'Failed to create goal.'))
 		  return
 		}
+		if (currentSessionIdRef.current !== submittedSessionId) return
 		setGoalError('')
-		setDraft('')
-		setComposerAttachments([])
+		setDraft((current) => current === draft ? '' : current)
+		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 		setAttachmentError('')
 	  } catch {
 		setGoalError('Failed to create goal.')
@@ -1222,10 +1255,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 		  setGoalError('Goal was created, but the first prompt failed to send.')
 		  return
 		}
+		if (currentSessionIdRef.current !== submittedSessionId) return
 		setGoalError('')
 		setGoalArmNextMessage(false)
-		setDraft('')
-		setComposerAttachments([])
+		setDraft((current) => current === draft ? '' : current)
+		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 		setAttachmentError('')
 	  } catch {
 		setGoalError('Failed to create goal.')
@@ -1260,8 +1294,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       if (steerNow) setSteering(false)
     }
     if (ok && currentSessionIdRef.current === submittedSessionId) {
-      setDraft('')
-      setComposerAttachments([])
+      setDraft((current) => current === draft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
       setAttachmentError('')
     }
   }
@@ -2169,6 +2203,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return
     }
 
+    const submittedSessionId = session.id
+    const submittedDraft = draft
     setSubmitting(true)
     const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
     if (!modeOk) {
@@ -2190,9 +2226,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     const ok = readyAttachments.length > 0
       ? await sendAcpPrompt(session.id, prompt, readyAttachments)
       : await sendAcpPrompt(session.id, prompt)
-    if (ok) {
-      setDraft('')
-      setComposerAttachments([])
+    if (ok && currentSessionIdRef.current === submittedSessionId) {
+      setDraft((current) => current === submittedDraft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
       setAttachmentError('')
       setClaudePlanPrompt(null)
     }
@@ -2308,7 +2344,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
                 const section = workSections.get(index)!
                 const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
-                const sectionControl = sectionActive || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
+                const containsSearchTarget = searchNavigation && workSections.get(searchNavigation.messageIndex - historyStartIndex)?.firstIndex === section.firstIndex
+                const sectionControl = sectionActive || containsSearchTarget || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
                 const sectionCollapsed = !sectionActive && !sectionControl.expanded
                 const hideCollapsedMessage = sectionCollapsed && (
                   (message.role === 'user' && message.continuesTurn) ||
@@ -2328,7 +2365,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 /></div> : null
                 return (
                   <WorkSectionContext.Provider key={message.id} value={sectionControl}>
-                  <div className="space-y-1">
+                  <div className="space-y-1" data-message-index={index + historyStartIndex}>
                     {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
                       sectionProviderName,
                       sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : ''),
@@ -2398,6 +2435,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     )}
                     {message.role === 'user' && heading}
                     {renderTimelineAfterUser && index === turnUserMessageIndex && (
+                      <div data-message-index={turnAssistantMessageMatches ? turnAssistantMessageIndex + historyStartIndex : undefined}>
                       <MessageFrame
                         key={`turn-${turnSerial}-after-user`}
                         role="assistant"
@@ -2430,6 +2468,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           workedSeconds={turnWorkedSeconds}
                         />
                       </MessageFrame>
+                      </div>
                     )}
                   </div>
                   </WorkSectionContext.Provider>
@@ -2714,50 +2753,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {attachmentError}
               </Notice>
             )}
-            {(acp?.queuedPrompts?.length ?? 0) > 0 && (
-              <div className="mb-1.5" role="status" aria-label="Queued prompt">
-                {acp!.queuedPrompts!.slice(0, 1).map((prompt, index) => (
-                  <div
-                    key={`${index}-${prompt.text}`}
-                    className="uam-queued-prompt flex items-center gap-2 px-3 py-1.5 text-[11px] animate-fade-in transition-colors duration-150"
-                    style={{
-                      color: 'var(--text-2)',
-                      border: '1px solid color-mix(in srgb, var(--accent) 28%, var(--border))',
-                      borderRadius: 8,
-                      background: 'color-mix(in srgb, var(--accent) 7%, var(--surface))',
-                    }}
-                  >
-                    <span className="shrink-0 font-medium" style={{ color: 'var(--accent)' }}>Queued</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="line-clamp-2 whitespace-pre-wrap break-words">{prompt.text}</span>
-                      {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && (
-                        <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>
-                      )}
-                    </span>
-                    <IconButton
-                      icon={<CornerUpRight size={14} />}
-                      label="Steer with this prompt now"
-                      disabled={steering}
-                      onClick={() => {
-                        const submittedSessionId = session.id
-                        setSteering(true)
-                        void steerQueuedAcpPrompt(submittedSessionId, index)
-                          .catch(() => false)
-                          .finally(() => {
-                            if (currentSessionIdRef.current === submittedSessionId) setSteering(false)
-                          })
-                      }}
-                    />
-                    <IconButton
-                      icon={<X size={14} />}
-                      label="Remove queued prompt"
-                      disabled={steering}
-                      onClick={() => { void removeQueuedAcpPrompt(session.id, index) }}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+            <InlinePromptQueue key={session.id} held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
+              onEdit={(id, revision, text) => editQueuedAcpPrompt(session.id, id, revision, text)}
+              onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
+              onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}
+              onSteer={async (index, expected) => {
+                const submittedSessionId = session.id
+                setSteering(true)
+                try { return await (expected ? steerQueuedAcpPrompt(submittedSessionId, index, expected) : steerQueuedAcpPrompt(submittedSessionId, index)) }
+                finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
+              }}
+            />
             {!isCompanionContext() && (session.temporaryParentChatId || liveSideChatId) && (
               <div className="uam-composer-side-strip" role="group" aria-label="Side chat">
                 <CornerUpRight size={12} aria-hidden style={{ color: 'var(--accent)' }} />
@@ -2849,6 +2855,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
+                  {composerBranch && <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate">{composerBranch}</span></span>}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </div>

@@ -1,3 +1,5 @@
+import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
+import { canRouteAutomatically } from '../../types/executionRouting'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderPlus, Monitor, RefreshCw, SquareTerminal, X } from 'lucide-react'
@@ -13,6 +15,8 @@ import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
+
+const AUTOMATIC_HOST_OPTION = 'uam:auto-routing'
 
 export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
   const overlayState = useOverlayState()
@@ -37,6 +41,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
+  const executionRouting = useAppStore((state) => state.executionRouting)
+  const [routingOpen, setRoutingOpen] = useState(false)
+  const [routingMode, setRoutingMode] = useState<'explicit' | 'automatic'>('explicit')
   const [name, setName] = useState('')
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const initialIsRemote = Boolean(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local')
@@ -115,36 +122,39 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           return
         }
 
+        if (routingOpen) return
         requestClose()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [remoteBrowserOpen, requestClose])
+  }, [remoteBrowserOpen, routingOpen, requestClose])
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
+  const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId)
+  useEffect(() => { if (!automaticAvailable) setRoutingMode('explicit') }, [automaticAvailable])
   const selectedProvider = providers.find((provider) => provider.id === providerId)
   const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId)
   const isRemote = executionHostId !== 'local'
   const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
-    : isRemote && selectedExecutionHost.runnerStatus !== 'ready'
+    : routingMode !== 'automatic' && isRemote && selectedExecutionHost.runnerStatus !== 'ready'
       ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
 
   // Use the same availability rules for the grid and the Create action.
   const providerAvailability = (provider: Provider | undefined) => {
-    const readiness = !isRemote ? cliVersionManager.providers.find((item) => item.providerId === provider?.id) : undefined
+    const readiness = routingMode !== 'automatic' && !isRemote ? cliVersionManager.providers.find((item) => item.providerId === provider?.id) : undefined
     const status = readiness?.status ?? 'unknown'
     const structuredBlocked = !provider || provider.supportsStructured === false ||
-      (!isRemote && ['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status))
+      (routingMode !== 'automatic' && !isRemote && ['checking', 'installing', 'known-incompatible', 'unavailable'].includes(status))
     const terminalBlocked = !provider || provider.supportsCli === false ||
-      (!isRemote && (status === 'unavailable' || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
+      (routingMode !== 'automatic' && !isRemote && (status === 'unavailable' || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
     const issues: string[] = []
     if (!provider) issues.push('No provider is available. Configure a provider in Settings.')
     else {
       if (provider.supportsStructured === false) issues.push(provider.supportsCli !== false ? 'This provider supports terminal chat only.' : 'This provider does not support structured chat. Choose another provider or check Settings.')
       if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
-      if (!isRemote && (provider.supportsStructured !== false || readiness) && !['verified', 'provider-managed'].includes(status)) {
+      if (routingMode !== 'automatic' && !isRemote && (provider.supportsStructured !== false || readiness) && !['verified', 'provider-managed'].includes(status)) {
         const message = readiness?.message || ({
           unknown: 'Provider readiness has not been checked.',
           checking: 'Checking provider compatibility.',
@@ -172,7 +182,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const n = name.trim() || 'New chat'
     const effort = reasoningOptions.length === 0 ? '' : reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
     try {
-      const created = isRemote
+      const created = routingMode === 'automatic'
+        ? await addSession(n, selectedFolder?.id ?? null, providerId, undefined, undefined, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace, 'automatic')
+        : isRemote
         ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
         : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
       if (created) {
@@ -328,18 +340,19 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text)' }}>Runs on</div>
           <SelectionGrid
             label="Runs on"
-            value={executionHostId}
-            options={executionHosts.filter((host) => SSH_ENABLED || host.transport !== 'ssh').map((host) => ({
+            value={routingMode === 'automatic' ? AUTOMATIC_HOST_OPTION : executionHostId}
+            options={[...(SSH_ENABLED ? [{ id: AUTOMATIC_HOST_OPTION, label: 'Automatic', icon: <Monitor size={18} aria-hidden />, disabled: creatingChat || !automaticAvailable, issues: automaticAvailable ? [] : ['Configure routing and map this workspace for the selected provider.'] }] : []), ...executionHosts.filter((host) => SSH_ENABLED || host.transport !== 'ssh').map((host) => ({
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,
               disabled: creatingChat || (host.transport === 'ssh' && host.runnerStatus !== 'ready'),
               issues: host.transport === 'ssh' && host.runnerStatus !== 'ready'
                 ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
-            }))}
-            onChange={chooseHost}
+            }))]}
+            onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) setRoutingMode('automatic'); else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
+          {SSH_ENABLED && <Button variant="ghost" size="sm" disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button>}
           {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{hostIssue}</p>}
 
           {/* Folder */}
@@ -435,8 +448,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
             <div className="flex items-center gap-2"><div className="min-w-0 flex-1"><MenuSelect
               label="Model"
-              value={selectedModelId}
-              options={modelOptions.map((option) => ({
+              disabled={routingMode === 'automatic'}
+              value={routingMode === 'automatic' ? '' : selectedModelId}
+              options={routingMode === 'automatic' ? [{ value: '', label: 'Provider default on assigned computer' }] : modelOptions.map((option) => ({
                 value: option.id,
                 label: option.label,
                 description: option.detail,
@@ -448,7 +462,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             /></div>
             <StatusIndicator issues={cachedAcp?.modelRefreshError ? [cachedAcp.modelRefreshError] : cachedAcp?.modelsLoading ? ['Discovering models.'] : []} okLabel="Model options available" />
             </div>
-			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={!canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
+			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={routingMode === 'automatic' || !canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
 				{cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
 			  </Button>
             {cachedAcp?.modelRefreshError && (
@@ -470,8 +484,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 			  <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
 			  <MenuSelect
 				label="Reasoning effort"
-				value={reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)}
-				options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                disabled={routingMode === 'automatic'}
+				value={routingMode === 'automatic' ? '' : reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)}
+				options={routingMode === 'automatic' ? [{ value: '', label: 'Provider default' }] : reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
 				onChange={setReasoningEffort}
 			  />
 			</div>
@@ -508,6 +523,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             {creatingChat ? 'Creating…' : 'Create'}
           </Button>
         </div>
+      {routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}
       </div>
     </div>
   )

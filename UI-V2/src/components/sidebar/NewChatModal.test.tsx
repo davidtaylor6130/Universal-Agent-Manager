@@ -29,6 +29,7 @@ describe('NewChatModal', () => {
       cliVersionManager: { providers: [] },
       discoverProviderModels: originalDiscoverProviderModels,
       listRemoteDirectories: originalListRemoteDirectories,
+      executionRouting: { enabled: false, hosts: [] },
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
       ],
@@ -964,4 +965,30 @@ describe('NewChatModal', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('offers automatic routing only for a configured source and preserves explicit creation by default', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession, providerChatDefaults: { 'gemini-cli': { modelId: 'local-account-model', reasoningEffort: 'high', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, serviceTier: '' } }, providerModelCatalogs: [{ providerId: 'gemini-cli', executionHostId: 'local', workspaceDirectory: '/tmp/project', currentModelId: 'local-account-model', modelsLoading: false, modelRefreshError: '', availableModels: [{ id: 'local-account-model', name: 'Local account model', description: '' }] }] })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      const automatic = () => host.querySelector<HTMLButtonElement>('button[aria-label="Automatic"]')!
+      expect(automatic().disabled).toBe(true)
+      const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+      await act(async () => create().click())
+      expect(addSession.mock.calls[0]).toHaveLength(6)
+      act(() => root.render(<NewChatModal key="new-automatic-chat" />))
+      act(() => useAppStore.setState({ executionRouting: { enabled: true, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 2, providers: [{ providerId: 'gemini-cli', connectionIdentity: 'host-v1', providerConfigurationIdentity: 'provider-v1' }], workspaceMappings: [{ sourceFolderId: 'project', sourceDirectory: '/tmp/project', destinationFolderId: 'remote-project' }] }] } }))
+      expect(automatic().disabled).toBe(false)
+      act(() => automatic().click())
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Provider default on assigned computer')
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="This computer"]')!.click())
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Local account model')
+      act(() => automatic().click())
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenLastCalledWith('New chat', 'project', 'gemini-cli', undefined, undefined, 'chat', 'local', '/tmp/project', 'automatic')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
 })

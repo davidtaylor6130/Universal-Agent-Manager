@@ -14,7 +14,7 @@ vi.mock('../sidebar/ChatSearchBar', () => ({
 }))
 
 vi.mock('../sidebar/FolderTree', () => ({
-  FolderTree: ({ searchQuery }: { searchQuery: string }) => <div data-testid="folder-tree">{searchQuery}</div>,
+  FolderTree: ({ searchQuery, deepSearchSessionIds }: { searchQuery: string; deepSearchSessionIds?: string[] }) => <div data-testid="folder-tree" data-deep-ids={JSON.stringify(deepSearchSessionIds)}>{searchQuery}</div>,
 }))
 
 import { Sidebar } from './Sidebar'
@@ -29,6 +29,7 @@ describe('Sidebar', () => {
       setNewChatModalOpen: vi.fn(),
       sessions: [],
       providers: [],
+      chatSearchNavigation: null,
     })
   })
 
@@ -92,4 +93,56 @@ describe('Sidebar', () => {
     })
     host.remove()
   })
+  it('opens a bounded contributing message while retaining metadata-only matching chats', async () => {
+    vi.useFakeTimers()
+    const jump = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ jumpToChatSearchHit: jump, sessions: ['chat', 'metadata'].map(id => ({ id, name: id, folderId: null, createdAt: new Date(0), updatedAt: new Date(0) })) })
+    const hit = { chatId: 'chat', messageIndex: 12, messagesDigest: 'snapshot', field: 'thoughts', excerpt: 'A useful needle' }
+    window.cefQuery = ({ request, onSuccess }) => onSuccess(JSON.stringify({ chatIds: ['chat', 'metadata'], hits: [hit], requestId: JSON.parse(request).requestId }))
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<Sidebar />))
+      const input = host.querySelector('input')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'needle'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+      act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Deep')!.click())
+      await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+      const result = host.querySelector<HTMLButtonElement>('[aria-label="Message matches"] button')!
+      expect(result.textContent).toContain('chat · Thoughts 13')
+      expect(result.textContent).toContain('A useful needle')
+      expect(host.querySelector('[data-testid="folder-tree"]')?.getAttribute('data-deep-ids')).toBe('["chat","metadata"]')
+      result.focus(); expect(document.activeElement).toBe(result)
+      await act(async () => result.click())
+      expect(jump).toHaveBeenCalledWith(hit, expect.any(String))
+    } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery; vi.useRealTimers() }
+  })
+
+  it('ignores out-of-order result responses and clears only the previous query navigation', async () => {
+    vi.useFakeTimers()
+    const clear = vi.fn().mockResolvedValue(undefined)
+    const replies: Array<{ requestId: string; reply: (excerpt: string) => void }> = []
+    useAppStore.setState({ clearChatSearchNavigation: clear, sessions: [{ id: 'chat', name: 'Chat', folderId: null, createdAt: new Date(0), updatedAt: new Date(0) }] })
+    window.cefQuery = ({ request, onSuccess }) => {
+      const requestId = JSON.parse(request).requestId
+      replies.push({ requestId, reply: (excerpt) => onSuccess(JSON.stringify({ chatIds: ['chat'], hits: [{ chatId: 'chat', messageIndex: 1, messagesDigest: 'snapshot', field: 'content', excerpt }], requestId })) })
+    }
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    const query = (text: string) => act(() => { const input = host.querySelector('input')!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text); input.dispatchEvent(new Event('input', { bubbles: true })) })
+    try {
+      act(() => root.render(<Sidebar />))
+      act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Deep')!.click())
+      query('old'); await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+      query('new'); await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+      await act(async () => replies[1].reply('new result'))
+      await act(async () => replies[0].reply('old result'))
+      expect(host.textContent).toContain('new result')
+      expect(host.textContent).not.toContain('old result')
+      expect(clear).toHaveBeenCalledWith(replies[0].requestId)
+      query('')
+      expect(host.querySelector('[aria-label="Message matches"]')).toBeNull()
+      expect(clear).toHaveBeenCalledWith(replies[1].requestId)
+    } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery; vi.useRealTimers() }
+  })
+
 })

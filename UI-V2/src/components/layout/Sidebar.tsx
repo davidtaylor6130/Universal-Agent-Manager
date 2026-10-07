@@ -9,16 +9,16 @@ import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearc
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import './SidebarGlide.css'
 import { shortcutLabel } from '../../utils/shortcuts'
-
-interface SearchChatMessagesResponse {
-  chatIds?: string[]
-}
+import type { ChatSearchHit, SearchChatMessagesResponse } from '../../types/chatSearch'
+import { sanitizeChatSearchHits } from '../../utils/chatSearchResults'
 
 export function Sidebar() {
   const [searchQuery, setSearchQuery] = useState('')
   const [deepSearch, setDeepSearch] = useState(false)
   const [deepSearchSessionIds, setDeepSearchSessionIds] = useState<string[] | undefined>(undefined)
   const [deepSearchError, setDeepSearchError] = useState('')
+  const [deepSearchHits, setDeepSearchHits] = useState<ChatSearchHit[]>([])
+  const [hitRequestId, setHitRequestId] = useState('')
   const [deepSearchLoading, setDeepSearchLoading] = useState(false)
   const [deepSearchRetry, setDeepSearchRetry] = useState(0)
   const [filters, setFilters] = useState<ChatSearchFilters>({ providerIds: [], statusIds: [] })
@@ -26,6 +26,9 @@ export function Sidebar() {
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const sessions = useAppStore((s) => s.sessions)
   const providers = useAppStore((s) => s.providers)
+  const jumpToChatSearchHit = useAppStore((s) => s.jumpToChatSearchHit)
+  const clearChatSearchNavigation = useAppStore((s) => s.clearChatSearchNavigation)
+  const searchNavigation = useAppStore((s) => s.chatSearchNavigation)
   const clearSearch = useCallback(() => setSearchQuery(''), [])
   const providerOptions = useMemo(() => {
     const labels = new Map(providers.map((provider) => [provider.id, provider.shortName || provider.name || provider.id]))
@@ -58,6 +61,11 @@ export function Sidebar() {
   const clearFilters = useCallback(() => setFilters({ providerIds: [], statusIds: [] }), [])
 
   useEffect(() => {
+    const previousRequestId = latestDeepSearchRequestRef.current
+    if (previousRequestId) void clearChatSearchNavigation(previousRequestId)
+    latestDeepSearchRequestRef.current = ''
+    setDeepSearchHits([])
+    setHitRequestId('')
     const query = searchQuery.trim()
     if (!deepSearch || !query) {
       setDeepSearchSessionIds(undefined)
@@ -85,6 +93,8 @@ export function Sidebar() {
           return
         }
         setDeepSearchSessionIds(response.data.chatIds)
+        setDeepSearchHits(sanitizeChatSearchHits(response.data.hits, new Set(response.data.chatIds)))
+        setHitRequestId(requestId)
       })
     }, 180)
 
@@ -92,7 +102,7 @@ export function Sidebar() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [deepSearch, deepSearchRetry, searchQuery])
+  }, [clearChatSearchNavigation, deepSearch, deepSearchRetry, searchQuery])
 
   return (
     <div className="uam-sidebar-glide flex flex-col h-full overflow-hidden" style={{ background: 'var(--sidebar-bg)' }}>
@@ -115,6 +125,23 @@ export function Sidebar() {
           <Button size="sm" variant="ghost" onClick={() => setDeepSearchRetry((value) => value + 1)}>Retry</Button>
         </div>
       )}
+      {deepSearchHits.length > 0 && <div aria-label="Message matches" className="max-h-40 overflow-y-auto px-3 pb-2">
+        {deepSearchHits.filter((hit) => sessions.some((session) => session.id === hit.chatId)).map((hit) => {
+          const session = sessions.find((candidate) => candidate.id === hit.chatId)!
+          const source = hit.field === 'thoughts' ? 'Thoughts' : hit.field === 'planSummary' ? 'Plan' : 'Message'
+          return <button key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
+            className="block w-full py-1 text-left text-xs" style={{ color: 'var(--text)' }}
+            disabled={searchNavigation?.phase === 'loading'}
+            onClick={() => {
+              void jumpToChatSearchHit(hit, hitRequestId).then((opened) => {
+                if (!opened && latestDeepSearchRequestRef.current === hitRequestId) setDeepSearchError('Search result changed. Search again to open the message.')
+              })
+            }}>
+            <span className="block truncate">{session.name} · {source} {hit.messageIndex + 1}</span>
+            <span className="block line-clamp-2">{hit.excerpt}</span>
+          </button>
+        })}
+      </div>}
       <div
         data-testid="sidebar-tree-scroll"
         className="flex-1 overflow-y-auto overflow-x-hidden py-1"

@@ -116,6 +116,7 @@ describe('ChatView', () => {
         },
       ],
       activeSessionId: 'chat-1',
+      chatSearchNavigation: null,
       historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
@@ -852,6 +853,89 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('reveals a collapsed historical search target and anchors each owned generation once without changing its draft', () => {
+    const draft = 'Keep my unfinished prompt'
+    writeChatComposerDraft('chat-1', { text: draft, attachments: [] })
+    const messages: Message[] = [
+      { id: 'search-user', sessionId: 'chat-1', role: 'user', content: 'Old question', createdAt: new Date(1) },
+      { id: 'search-middle', sessionId: 'chat-1', role: 'assistant', content: 'Hidden historical match', createdAt: new Date(2) },
+      { id: 'search-final', sessionId: 'chat-1', role: 'assistant', content: 'Final answer', createdAt: new Date(3) },
+    ]
+    useAppStore.setState((state) => ({
+      expandWorkTraces: false, messages: { 'chat-1': messages }, historyStartIndexBySessionId: { 'chat-1': 100 },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [], toolCalls: [], pendingPermission: null } },
+    }))
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    const scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Hidden historical match')
+      scroll.mockClear()
+      const target = { generation: 101, queryRequestId: 'search-1', chatId: 'chat-1', messageIndex: 101, messagesDigest: 'old', phase: 'ready' as const, anchored: false }
+      act(() => useAppStore.setState({ chatSearchNavigation: target }))
+      expect(host.querySelector('[data-message-index="101"]')?.textContent).toContain('Hidden historical match')
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(1)
+      expect(useAppStore.getState().chatSearchNavigation?.anchored).toBe(true)
+      act(() => useAppStore.setState({ messages: { 'chat-1': [...messages] } }))
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(1)
+      act(() => useAppStore.setState({ chatSearchNavigation: { ...target, generation: 102, queryRequestId: 'search-2' } }))
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(2)
+      act(() => useAppStore.setState({ chatSearchNavigation: null }))
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(2)
+      expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(draft)
+      expect(readChatComposerDraft('chat-1')?.text).toBe(draft)
+    } finally {
+      act(() => root.unmount()); host.remove()
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    }
+  })
+
+  it('anchors an assistant search target represented by the live timeline after its user message', () => {
+    useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': {
+      ...state.acpBindingBySessionId['chat-1'], turnEvents: [
+        { type: 'tool_call', toolCallId: 'tool-1' }, { type: 'assistant_text', text: 'Live response after tool' },
+      ],
+    } } }))
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    const scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('Live response after tool')
+      scroll.mockClear()
+      act(() => useAppStore.setState({ chatSearchNavigation: { generation: 104, queryRequestId: 'live-search', chatId: 'chat-1', messageIndex: 1, messagesDigest: 'live', phase: 'ready', anchored: false } }))
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(1)
+      expect(useAppStore.getState().chatSearchNavigation?.anchored).toBe(true)
+    } finally {
+      act(() => root.unmount()); host.remove()
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    }
+  })
+
+  it('does not scroll an inactive pane for a search target it cannot consume', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
+    const scroll = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll })
+    useAppStore.setState({ activeSessionId: 'chat-2' })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      scroll.mockClear()
+      act(() => useAppStore.setState({ chatSearchNavigation: { generation: 103, queryRequestId: 'stale-search', chatId: 'chat-1', messageIndex: 0, messagesDigest: 'old', phase: 'ready', anchored: false } }))
+      expect(scroll.mock.calls.filter(([options]) => options.block === 'center')).toHaveLength(0)
+      expect(useAppStore.getState().chatSearchNavigation?.anchored).toBe(false)
+    } finally {
+      act(() => root.unmount()); host.remove()
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', descriptor)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    }
+  })
+
   it('follows streaming output at the padded end and leaves earlier reading in place', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -1274,6 +1358,44 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each([true, false])('preserves new text and attachments during prompt admission acceptance=%s', async (accepted) => {
+    let finishSend!: (ok: boolean) => void
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve }))
+    const stageChatAttachments = vi.fn((_chatId, items) => Promise.resolve(items.map((item: { id: string; name: string }) => ({ id: item.id, name: item.name, type: 'image', size: 4, path: '/tmp/new.png' }))))
+    useAppStore.setState({ sendAcpPrompt: send, stageChatAttachments })
+    writeChatComposerDraft('chat-1', { text: 'My draft', attachments: [{ id: 'sent-file', name: 'sent.png', type: 'image', size: 4, path: '/tmp/sent.png' }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      expect(textarea.value).toBe('My draft')
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Queue prompt"]')!.click())
+      expect(send).toHaveBeenCalledTimes(1)
+      const submitted = send.mock.calls[0] as unknown as [string, string]
+      expect(submitted[1]).toContain('My draft')
+      expect(textarea.value).toBe('My draft')
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'New unsent draft')
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      const fileInput = host.querySelector('input[type="file"]') as HTMLInputElement
+      const file = new File(['data'], 'new.png', { type: 'image/png' })
+      Object.defineProperty(file, 'path', { value: '/tmp/new.png' })
+      Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+      await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })))
+      expect(host.textContent).toContain('new.png')
+      await act(async () => finishSend(accepted))
+      expect(host.textContent).toContain('new.png')
+      expect(host.textContent?.includes('sent.png')).toBe(!accepted)
+      expect(textarea.value).toBe('New unsent draft')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('submits a prompt only once before the submitting state rerenders', async () => {
     const finishSends: Array<(ok: boolean) => void> = []
     const sendAcpPrompt = vi.fn(() => new Promise<boolean>((resolve) => finishSends.push(resolve)))
@@ -1383,6 +1505,42 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('edits and reorders queued prompts without changing the composer draft', async () => {
+    const removeQueuedAcpPrompt = vi.fn(async () => true)
+    const steerQueuedAcpPrompt = vi.fn(async () => true)
+    const editQueuedAcpPrompt = vi.fn(async () => true)
+    const reorderQueuedAcpPrompts = vi.fn(async () => true)
+    const queued = (id: string) => ({ id, revision: 2, text: `${id} queued`, uamAgentId: '', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' })
+    useAppStore.setState((state) => ({ editQueuedAcpPrompt, reorderQueuedAcpPrompts, removeQueuedAcpPrompt, steerQueuedAcpPrompt,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], queuedPrompts: [queued('one'), queued('two')] } } }))
+    writeChatComposerDraft('chat-1', { text: 'Unsent composer text', attachments: [{ id: 'draft-file', name: 'draft.png', type: 'image', size: 2, path: '/tmp/draft.png' }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const composer = host.querySelector('textarea:not([aria-label="Edit queued prompt text"])') as HTMLTextAreaElement
+      const queue = host.querySelector('[aria-label="Queued prompt"]')!
+      expect(queue.querySelectorAll('button[aria-label="Edit queued prompt"]')).toHaveLength(2)
+      await act(async () => queue.querySelector<HTMLButtonElement>('button[aria-label="Edit queued prompt"]')!.click())
+      const editor = queue.querySelector<HTMLTextAreaElement>('textarea')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, 'Updated queue text')
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => Array.from(queue.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!.click())
+      expect(editQueuedAcpPrompt).toHaveBeenCalledWith('chat-1', 'one', 2, 'Updated queue text')
+      await act(async () => queue.querySelector<HTMLButtonElement>('button[aria-label="Move queued prompt down"]')!.click())
+      expect(reorderQueuedAcpPrompts).toHaveBeenCalledWith('chat-1', [{ id: 'one', revision: 2 }, { id: 'two', revision: 2 }], ['two', 'one'])
+      await act(async () => queue.querySelector<HTMLButtonElement>('button[aria-label="Remove queued prompt"]')!.click())
+      expect(removeQueuedAcpPrompt).toHaveBeenCalledWith('chat-1', 0, { id: 'one', revision: 2 })
+      await act(async () => queue.querySelectorAll<HTMLButtonElement>('button[aria-label="Steer with this prompt now"]')[1].click())
+      expect(steerQueuedAcpPrompt).toHaveBeenCalledWith('chat-1', 1, { id: 'two', revision: 2 })
+      expect(composer.value).toBe('Unsent composer text')
+      expect(host.textContent).toContain('draft.png')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('copies, edits, and reverts messages with icon actions and branch-safe requests', async () => {
@@ -6334,6 +6492,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
+    expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('build/fix-login')
     openWorkspaceActions(host)
     expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
@@ -7241,5 +7400,47 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sendAcpPrompt: originalSend, setActiveSession: originalSelect }) }
   })
 
+  it('resumes a held native queue snapshot without consuming the composer draft on failure', async () => {
+    const stored = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key) })
+    const send = vi.fn().mockResolvedValue(true)
+    const originalSend = useAppStore.getState().sendAcpPrompt
+    const originalEdit = useAppStore.getState().editQueuedAcpPrompt
+    const edit = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const resume = vi.fn().mockResolvedValue(false)
+    const original = useAppStore.getState().resumeQueuedAcpPrompts
+    writeChatComposerDraft('chat-1', { text: 'Unsent composer draft', attachments: [] })
+    useAppStore.setState((state) => ({ resumeQueuedAcpPrompts: resume, sendAcpPrompt: send, editQueuedAcpPrompt: edit, acpBindingBySessionId: { 'chat-1': {
+      ...state.acpBindingBySessionId['chat-1'], queueHeld: true,
+      queuedPrompts: [{ id: 'restored', revision: 3, text: 'Restored prompt', uamAgentId: 'build', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' }],
+    } } }))
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
+      const queue = host.querySelector('[role="group"][aria-label="Queued prompt"]')!
+      const action = (label: string) => Array.from(queue.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)!
+      act(() => queue.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click())
+      const queuedEdit = queue.querySelector<HTMLTextAreaElement>('[aria-label="Edit queued prompt text"]')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(queuedEdit, 'Revised restored prompt'); queuedEdit.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => action('Save').click())
+      expect(queuedEdit.value).toBe('Revised restored prompt')
+      expect(send).not.toHaveBeenCalled()
+      expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
+      await act(async () => action('Save').click())
+      expect(queue.querySelector('[aria-label="Edit queued prompt text"]')).toBeNull()
+      expect(send).not.toHaveBeenCalled()
+      act(() => queue.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click())
+      act(() => action('Cancel').click())
+      expect(send).not.toHaveBeenCalled()
+      expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Resume queue')!.click())
+      expect(resume).toHaveBeenCalledWith('chat-1', [{ id: 'restored', revision: 3 }])
+      expect(send).not.toHaveBeenCalled()
+      expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
+      expect(readChatComposerDraft('chat-1')?.text).toBe('Unsent composer draft')
+      expect(host.textContent).toContain('could not be resumed')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ resumeQueuedAcpPrompts: original, sendAcpPrompt: originalSend, editQueuedAcpPrompt: originalEdit }) }
+  })
 
 })

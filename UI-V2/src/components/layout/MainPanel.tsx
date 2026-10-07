@@ -1,10 +1,11 @@
+import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
-import { isCefContext } from '../../ipc/cefBridge'
+import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
 import type { Session } from '../../types/session'
@@ -287,6 +288,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
 
       </div>
 
+      <ExecutionRoutingWaitNotice session={session} />
       {stopRuntimeError && (
         <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
           {stopRuntimeError}
@@ -374,6 +376,7 @@ export function MainPanel() {
   const previousVisibleAcp = useRef(new Map<string, { processing: boolean; turnSerial: number }>())
   const previousVisibleIds = useRef(new Set(visibleIds.filter(Boolean)))
   const pendingEvictionIds = useRef(new Set<string>())
+  const pendingNativeReleaseIds = useRef(new Set<string>())
 
   useEffect(() => writeChatGridLayout(layout), [layout])
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
@@ -382,6 +385,15 @@ export function MainPanel() {
       if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) continue
       pendingEvictionIds.current.delete(id)
       state.unloadSessionMessages(id)
+    }
+    for (const id of pendingNativeReleaseIds.current) {
+      if (previousVisibleIds.current.has(id)) { pendingNativeReleaseIds.current.delete(id); continue }
+      const acp = state.acpBindingBySessionId[id]
+      const cli = state.cliBindingBySessionId[id]
+      if (acp && (acp.running || acp.processing || !['stopped', 'failed', 'error'].includes(acp.lifecycleState))) continue
+      if (cli && (cli.running || cli.processing || !['stopped', 'failed', 'error'].includes(cli.lifecycleState))) continue
+      pendingNativeReleaseIds.current.delete(id)
+      if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     }
   }), [])
 
@@ -423,24 +435,34 @@ export function MainPanel() {
   }, [activeSessionId, sessions])
 
   useEffect(() => {
+    if (isCefContext() && !isCompanionContext()) {
+      void sendToCEF({ action: 'setVisibleChatIds', payload: { chatIds: visibleIds.filter((id): id is string => Boolean(id)) } })
+    }
+  }, [visibleIds.join('|')])
+
+  useEffect(() => {
     for (const id of visibleIds) {
-      if (id) loadSessionMessages(id)
+      if (id && useAppStore.getState().chatSearchNavigation?.chatId !== id) loadSessionMessages(id)
     }
   }, [loadSessionMessages, visibleIds.join('|')])
 
   useEffect(() => {
     const current = new Set(visibleIds.filter(Boolean))
-    for (const id of previousVisibleIds.current) {
+    const previous = previousVisibleIds.current
+    previousVisibleIds.current = current
+    for (const id of previous) {
       if (current.has(id)) continue
       const state = useAppStore.getState()
+      if (isCefContext() && !isCompanionContext() && (state.acpBindingBySessionId[id]?.running || state.cliBindingBySessionId[id]?.running || state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing)) {
+        pendingNativeReleaseIds.current.add(id)
+      }
       if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) {
         pendingEvictionIds.current.add(id)
       } else {
         unloadSessionMessages(id)
       }
     }
-    for (const id of current) pendingEvictionIds.current.delete(id)
-    previousVisibleIds.current = current
+    for (const id of current) { pendingEvictionIds.current.delete(id); pendingNativeReleaseIds.current.delete(id) }
   }, [unloadSessionMessages, visibleIds.join('|')])
 
   useEffect(() => {
@@ -454,7 +476,7 @@ export function MainPanel() {
         turnSerial: binding?.turnSerial ?? 0,
       }
       const prior = previous.get(id)
-      if (id !== activeSessionId && prior?.processing) {
+      if (id !== activeSessionId && prior?.processing && useAppStore.getState().chatSearchNavigation?.chatId !== id) {
         if (!snapshot.processing) {
           loadSessionMessages(id, true)
         } else if (snapshot.turnSerial > prior.turnSerial) {
