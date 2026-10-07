@@ -19,11 +19,13 @@
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
+#include <cstdio>
 #include <fstream>
 #include <type_traits>
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <io.h>
 #endif
 
 #if defined(__APPLE__)
@@ -31,6 +33,354 @@
 #endif
 
 using namespace uam_test;
+
+namespace
+{
+/// <summary>Captures native requests using a private descriptor, including assertion cleanup.</summary>
+class ManualCompactionWriter
+{
+public:
+	explicit ManualCompactionWriter(uam::AcpSessionState& session) : m_session(session), m_file(std::tmpfile())
+	{
+		UAM_ASSERT(m_file != nullptr);
+#if defined(_WIN32)
+		m_session.stdin_write = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(m_file)));
+		UAM_ASSERT(m_session.stdin_write != INVALID_HANDLE_VALUE && m_session.stdin_write != nullptr);
+#else
+		m_session.stdin_write_fd = fileno(m_file);
+		UAM_ASSERT(m_session.stdin_write_fd >= 0);
+#endif
+		m_session.stdin_writer = std::make_shared<uam::platform::AsyncByteWriter>(
+		    [this](const char* bytes, std::size_t count, std::string&) -> std::ptrdiff_t
+		    { captured.append(bytes, count); return static_cast<std::ptrdiff_t>(count); }, [] {});
+	}
+	~ManualCompactionWriter()
+	{
+		Detach();
+		std::fclose(m_file);
+	}
+	void Detach()
+	{
+		m_session.stdin_writer.reset();
+#if defined(_WIN32)
+		m_session.stdin_write = INVALID_HANDLE_VALUE;
+#else
+		m_session.stdin_write_fd = -1;
+#endif
+	}
+	std::string captured;
+private:
+	uam::AcpSessionState& m_session;
+	std::FILE* m_file;
+};
+}
+
+UAM_TEST(ManualCompactionSendsNativeRequestAndPreservesConversationAndGoal)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-manual-compact");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	Message message;
+	message.content = "Existing conversation";
+	chat.messages.push_back(message);
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Completed answer";
+	assistant.processing_time_ms = 1234;
+	assistant.stop_reason = "completed";
+	chat.messages.push_back(assistant);
+	Goal goal;
+	goal.id = "goal";
+	goal.objective = "Keep working";
+	goal.loop_count = 7;
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread-compact";
+	session.running = true;
+	session.session_ready = true;
+	session.turn_user_message_index = 0;
+	session.turn_first_user_message_index = 0;
+	session.current_assistant_message_index = 1;
+	session.turn_assistant_message_index = 1;
+	session.turn_checkpoint_eligible = true;
+	session.turn_started_time_s = uam::GetAppTimeSeconds() - 5.0;
+	const double previous_start = session.turn_started_time_s;
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT_EQ(session.turn_user_message_index, -1);
+	UAM_ASSERT_EQ(session.turn_first_user_message_index, -1);
+	UAM_ASSERT_EQ(session.current_assistant_message_index, -1);
+	UAM_ASSERT_EQ(session.turn_assistant_message_index, -1);
+	UAM_ASSERT(!session.turn_checkpoint_eligible);
+	UAM_ASSERT(session.turn_started_time_s > previous_start);
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	const nlohmann::json request = nlohmann::json::parse(transport.captured);
+	UAM_ASSERT_EQ(request["method"].get<std::string>(), std::string("thread/compact/start"));
+	UAM_ASSERT_EQ(request["params"]["threadId"].get<std::string>(), session.codex_thread_id);
+	const int request_id = request["id"].get<int>();
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", request_id}, {"result", nlohmann::json::object()}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/started"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "compact-turn"}}}}}}.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "stale-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "compact-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, message.content);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, assistant.content);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().processing_time_ms, assistant.processing_time_ms);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().stop_reason, assistant.stop_reason);
+	UAM_ASSERT(!app.chats.front().messages.back().interrupted);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	// Completion can arrive before the empty RPC acknowledgement.
+	session.manual_compaction_pending = true;
+	session.processing = true;
+	session.codex_turn_id = "second-compact-turn";
+	session.inactivity_timeout_pending = true;
+	session.cancel_requested = true;
+	session.cancel_requested_time_s = uam::GetAppTimeSeconds() - 10.0;
+	session.pending_request_methods[73] = "thread/compact/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "second-compact-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", 73}, {"result", nlohmann::json::object()}}.dump()));
+	UAM_ASSERT(!session.processing && !session.manual_compaction_pending);
+	UAM_ASSERT(!session.inactivity_timeout_pending && !session.cancel_requested);
+	UAM_ASSERT_EQ(session.cancel_requested_time_s, 0.0);
+	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, uam::GetAppTimeSeconds(), 1.0), uam::AcpTurnInactivityRecoveryAction::None);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+
+#endif
+}
+
+UAM_TEST(ManualCompactionRejectsUnavailableBusyRemoteAndUnsupportedSessions)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "compact";
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = "codex-cli";
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	for (int condition = 0; condition < 5; ++condition)
+	{
+		session.processing = condition == 0;
+		session.cancel_requested = condition == 1;
+		session.waiting_for_user_input = condition == 2;
+		session.queued_user_prompts.clear();
+		if (condition == 3) session.queued_user_prompts.emplace_back();
+		session.pending_request_methods.clear();
+		if (condition == 4) session.pending_request_methods[41] = "control";
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(!error.empty());
+	}
+	session.pending_request_methods.clear();
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	app.chats.front().execution_host_id = "remote";
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(error.find("local") != std::string::npos);
+	app.chats.front().execution_host_id = "local";
+#endif
+	session.provider_id = "claude-cli";
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(!session.manual_compaction_pending);
+	UAM_ASSERT(app.chats.front().messages.empty());
+}
+
+UAM_TEST(ManualCompactionTransportAndRpcFailuresDoNotLeaveSessionBusy)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "compact";
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = "codex-cli";
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	std::string error;
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	session.manual_compaction_pending = true;
+	session.processing = true;
+	session.pending_request_methods[42] = "thread/compact/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", 42}, {"error", {{"code", -32601}, {"message", "Unsupported compaction"}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(session.last_error.find("Unsupported compaction") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
+
+UAM_TEST(ManualCompactionCancellationAndFailurePreserveCompletedMessageMetadata)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (int settlement = 0; settlement < 4; ++settlement)
+	{
+		TempDir temp("uam-compact-settlement");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "compact";
+		chat.provider_id = "codex-cli";
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.content = "Already completed";
+		message.processing_time_ms = 4567;
+		message.stop_reason = "completed";
+		chat.messages.push_back(message);
+		Goal goal;
+		goal.id = "active-provider-goal";
+		goal.objective = "Keep the provider goal active";
+		goal.execution_owner = "provider";
+		goal.provider_command = "/autopilot";
+		chat.goals.push_back(goal);
+		chat.active_goal_id = goal.id;
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+		session.codex_thread_id = "thread";
+		session.session_id = "thread";
+		session.running = true;
+		session.session_ready = true;
+		session.current_assistant_message_index = 0;
+		session.turn_assistant_message_index = 0;
+		session.turn_started_time_s = uam::GetAppTimeSeconds() - 30.0;
+		session.last_turn_outcome = "completed";
+		ManualCompactionWriter transport(session);
+		std::string error;
+		UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+		const int request_id = nlohmann::json::parse(transport.captured)["id"].get<int>();
+		if (settlement != 0)
+		{
+			session.codex_turn_id = "maintenance";
+			if (settlement == 1)
+				UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+			else
+			{
+				app.settings.active_turn_inactivity_timeout_seconds = 1;
+				session.turn_started_time_s = 1.0;
+				session.last_runtime_activity_time_s = 1.0;
+				UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, session, app.chats.front(), 600.0));
+				UAM_ASSERT(session.inactivity_timeout_pending);
+				UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+			}
+			if (settlement == 3)
+			{
+				// Forced stop may close session descriptors; the fixture keeps its private FILE ownership.
+				UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+				transport.Detach();
+				session.cancel_requested_time_s = 1.0;
+				UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, session, app.chats.front(), 600.0));
+			}
+			else
+			{
+				UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+				    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "maintenance"}, {"status", "interrupted"}}}}}}.dump()));
+			}
+		}
+		else
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+			    nlohmann::json{{"id", request_id}, {"error", {{"code", -32601}, {"message", "Rejected compact"}}}}.dump()));
+		}
+		UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+		UAM_ASSERT(!session.inactivity_timeout_pending);
+		UAM_ASSERT_EQ(session.cancel_requested_time_s, 0.0);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, message.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().processing_time_ms, message.processing_time_ms);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, message.stop_reason);
+		UAM_ASSERT(!app.chats.front().messages.front().interrupted);
+		UAM_ASSERT_EQ(session.last_turn_outcome, std::string("completed"));
+		UAM_ASSERT(!session.goal_resume_suppressed);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	}
+#endif
+}
+
+UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-compact-followup");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = false;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.session_id = "thread";
+	session.initialized = true;
+	session.running = true;
+	session.session_ready = true;
+	session.current_mode_id = "default";
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	const int request_id = nlohmann::json::parse(transport.captured)["id"].get<int>();
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Follow up after compaction";
+	session.queued_user_prompts.push_back(queued);
+	app.chats.front().acp_queued_prompts.push_back(queued);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", request_id}, {"error", {{"code", -32601}, {"message", "Rejected compact"}}}}.dump()));
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT(!session.manual_compaction_pending);
+	UAM_ASSERT(session.queued_user_prompts.empty());
+	UAM_ASSERT(session.processing && session.prompt_request_id != 0);
+	UAM_ASSERT(transport.captured.find("turn/start") != std::string::npos);
+	UAM_ASSERT(transport.captured.find(queued.text) != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, queued.text);
+#endif
+}
 
 UAM_TEST(CompanionLanRepairPreservesCredentialsAndRejectsCustomOrUnavailableAddresses)
 {
