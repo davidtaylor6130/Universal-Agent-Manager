@@ -21936,3 +21936,54 @@ UAM_TEST(ImportedHistoryActivatesOnlyAfterUamInputAndPreservesInteractionOnRefre
 		UAM_ASSERT_EQ(app.chats.front().interaction_at, interaction);
 	}
 }
+
+UAM_TEST(ProviderHandoffPreservesSmallHistoryAndCompactionOrdering)
+{
+	ChatSession chat;
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Original request";
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Latest answer";
+	MessageBlock summary;
+	summary.type = "context_compaction";
+	summary.text = "Useful summary";
+	assistant.blocks.push_back(summary);
+	chat.messages = {user, assistant};
+	UAM_ASSERT_EQ(uam::BuildProviderHandoffContext(chat), std::string("User: Original request\n\nConversation summary: Useful summary\n\nAssistant: Latest answer\n\n"));
+}
+
+UAM_TEST(ProviderHandoffBoundsHistoryAndPreservesRecentRoles)
+{
+	ChatSession chat;
+	Message old;
+	old.role = MessageRole::User;
+	old.content = std::string(40000, 'x');
+	Message latest;
+	latest.role = MessageRole::Assistant;
+	latest.content = "Recent answer";
+	chat.messages = {old, latest};
+	const std::string context = uam::BuildProviderHandoffContext(chat);
+	UAM_ASSERT(context.size() <= 32768);
+	UAM_ASSERT(context.find("Earlier conversation omitted") != std::string::npos);
+	UAM_ASSERT(context.find("Assistant: Recent answer") != std::string::npos);
+	UAM_ASSERT(context.find(std::string(100, 'x')) == std::string::npos);
+	UAM_ASSERT_EQ(chat.messages.front().content.size(), static_cast<std::size_t>(40000));
+}
+
+UAM_TEST(ProviderHandoffOversizedLatestEntryKeepsUtf8AlignedSuffix)
+{
+	ChatSession chat;
+	Message latest;
+	latest.role = MessageRole::User;
+	for (int index = 0; index < 20000; ++index) latest.content += "é";
+	latest.content += " END";
+	chat.messages.push_back(latest);
+	const std::string context = uam::BuildProviderHandoffContext(chat);
+	UAM_ASSERT(context.size() <= 32768);
+	UAM_ASSERT(context.find("User: [Earlier text in this entry omitted]") != std::string::npos);
+	const std::size_t suffix = context.find("omitted]\n") + std::string("omitted]\n").size();
+	UAM_ASSERT_EQ(static_cast<unsigned char>(context[suffix]), static_cast<unsigned char>(0xc3));
+	UAM_ASSERT(context.ends_with(" END\n\n"));
+}
