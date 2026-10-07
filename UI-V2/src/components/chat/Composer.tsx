@@ -22,6 +22,7 @@ import {
   selectedRuntimeModel,
 } from './modelOptions'
 import { MenuSelect, ViewportMenu } from '../ui'
+import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import './composer.css'
@@ -677,6 +678,7 @@ export function ComposerToolbar({
 
       </fieldset>
       <div className="flex shrink-0 items-center gap-2">
+        <ProviderAllowanceIndicator providerId={providerId} sourceProviderId={acp?.providerId} rateLimits={acp?.providerUsage?.rateLimits} running={Boolean(acp?.running)} />
         <div ref={modelMenuRef} className="relative">
           <button
             ref={modelTriggerRef}

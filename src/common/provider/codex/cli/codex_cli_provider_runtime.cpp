@@ -349,7 +349,8 @@ std::vector<std::string> CodexCliProviderRuntime::BuildStructuredLaunchArgv(cons
 
 nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const
 {
-	(void)session;
+	// Account limits belong to this process's login; retained transcript tokens do not.
+	session.provider_usage.rate_limits = {};
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
 	                                  {
 	                                      {"clientInfo", uam::acp_request_defaults::ClientInfo()},
