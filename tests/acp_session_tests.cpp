@@ -5925,7 +5925,98 @@ UAM_TEST(AcpCancelStopsProviderWhenInterruptWriteFails)
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
 }
 
-UAM_TEST(AcpCancelIgnoresLateGenericPermissionRequest)
+UAM_TEST(OpenCodeLateCancelPermissionsReplyAndNextTurnCanApprove)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-late-cancel-permission");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "opencode-cancel-permission";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.native_session_id = "opencode-native-session";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState* raw_session = session.get();
+	raw_session->chat_id = chat.id;
+	raw_session->provider_id = chat.provider_id;
+	raw_session->protocol_kind = "opencode-acp";
+	raw_session->running = true;
+	raw_session->initialized = true;
+	raw_session->session_ready = true;
+	raw_session->processing = true;
+	raw_session->session_id = "opencode-native-session";
+	raw_session->prompt_request_id = 7;
+	raw_session->pending_request_methods[7] = "session/prompt";
+	raw_session->next_request_id = 8;
+	auto& process = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+	const std::vector<std::string> echo_argv = {"cmd.exe", "/C", "more"};
+#else
+	const std::vector<std::string> echo_argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, echo_argv, &error));
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+	UAM_ASSERT(raw_session->cancel_requested);
+	const auto permission_request = [](const nlohmann::json& id)
+	{
+		return nlohmann::json{
+		    {"jsonrpc", "2.0"}, {"id", id}, {"method", "session/request_permission"},
+		    {"params", {{"toolCall", {{"toolCallId", "read-tool"}, {"title", "Read file"}, {"kind", "read"}, {"status", "pending"}}},
+		                {"options", nlohmann::json::array({{{"optionId", "allow-once"}, {"name", "Allow once"}, {"kind", "allow_once"}}})}}}};
+	};
+	for (const nlohmann::json& id : {nlohmann::json(5), nlohmann::json("late-string")})
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), permission_request(id).dump()));
+		UAM_ASSERT(!raw_session->waiting_for_permission);
+		UAM_ASSERT(raw_session->pending_permission.request_id_json.empty());
+		UAM_ASSERT(raw_session->queued_permissions.empty());
+		UAM_ASSERT(raw_session->cancel_requested);
+	}
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":7,"result":{"stopReason":"cancelled"}})"));
+	UAM_ASSERT(!raw_session->cancel_requested);
+	UAM_ASSERT(raw_session->running);
+	// A new turn reuses the same provider connection after cancellation settles.
+	raw_session->processing = true;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), permission_request("next-turn").dump()));
+	UAM_ASSERT(raw_session->waiting_for_permission);
+	UAM_ASSERT(uam::ResolveAcpPermission(app, chat.id, raw_session->pending_permission.request_id_json, "allow-once", false, &error));
+	process.CloseStdioProcessInput(*raw_session);
+	std::string output;
+	char buffer[4096];
+	for (int attempt = 0; attempt < 200; ++attempt)
+	{
+		const std::ptrdiff_t read = process.ReadStdioProcessStdout(*raw_session, buffer, sizeof(buffer), &error);
+		if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+		if (process.PollStdioProcessExited(*raw_session) && read <= 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	process.StopStdioProcess(*raw_session, true);
+	process.CloseStdioProcessHandles(*raw_session);
+	std::vector<nlohmann::json> responses;
+	std::istringstream lines(output);
+	std::string line;
+	while (std::getline(lines, line))
+	{
+		const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+		UAM_ASSERT(!message.is_discarded());
+		if (message.contains("result")) responses.push_back(message);
+	}
+	UAM_ASSERT_EQ(responses.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(responses[0]["id"], nlohmann::json(5));
+	UAM_ASSERT_EQ(responses[1]["id"], nlohmann::json("late-string"));
+	for (std::size_t index = 0; index < 2; ++index)
+		UAM_ASSERT_EQ(responses[index]["result"], nlohmann::json({{"outcome", {{"outcome", "cancelled"}}}}));
+	UAM_ASSERT_EQ(responses[2]["id"], nlohmann::json("next-turn"));
+	UAM_ASSERT_EQ(responses[2]["result"], nlohmann::json({{"outcome", {{"outcome", "selected"}, {"optionId", "allow-once"}}}}));
+#endif
+}
+
+UAM_TEST(AcpCancelSettlesLateGenericPermissionRequest)
 {
 	TempDir temp("uam-acp-cancel-generic-permission");
 	uam::AppState app;
@@ -5969,7 +6060,7 @@ UAM_TEST(AcpCancelIgnoresLateGenericPermissionRequest)
 	UAM_ASSERT(!raw_session->waiting_for_permission);
 	UAM_ASSERT_EQ(raw_session->pending_permission.request_id_json, std::string(""));
 	UAM_ASSERT(!raw_session->diagnostics.empty());
-	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("ignored_permission_during_cancel"));
+	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("cancelled_permission_during_cancel"));
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);

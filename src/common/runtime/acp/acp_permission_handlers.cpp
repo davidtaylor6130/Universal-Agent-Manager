@@ -631,7 +631,11 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 {
 	if (uam::AcpSessionHasPendingCancel(session))
 	{
-		AppendIgnoredRequestDuringCancelDiagnostic(session, message, "ignored_permission_during_cancel", "Ignoring permission request while a turn cancel is pending.");
+		// ACP providers may serialize permission requests across turns. Always settle
+		// this request so cancelling one turn cannot block permissions in the next.
+		if (WriteAcpMessage(session, uam::acp_json_rpc::SuccessResponse(
+		        JsonRpcIdOrNull(message), BuildGenericPermissionOutcomeResult("", true))))
+			AppendIgnoredRequestDuringCancelDiagnostic(session, message, "cancelled_permission_during_cancel", "Cancelled permission request while a turn cancel is pending.");
 		return;
 	}
 
