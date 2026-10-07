@@ -81,6 +81,7 @@ class ChatHistorySyncService
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	enum class ImportPolicy { ExplicitImport, RegisteredWorkspacesOnly };
 	struct PreparedHistoryChat
 	{
 		ChatSession chat;
@@ -114,7 +115,7 @@ class ChatHistorySyncService
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0) const;
 	/// Revalidate and merge a completed scan on the app thread.
 	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
-	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8) const;
+	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8, ImportPolicy policy = ImportPolicy::ExplicitImport) const;
 	ImportResult ImportProviderChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	ImportResult ImportRemoteOpenCodeChatsForFolder(
 	    uam::AppState& app, const std::string& folder_id,

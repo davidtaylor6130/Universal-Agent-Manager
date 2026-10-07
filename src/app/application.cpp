@@ -410,7 +410,8 @@ bool Application::PollHistoryDiscovery()
 	if (!m_pendingHistoryDiscovery.empty())
 	{
 		auto& [folder, discovery] = m_pendingHistoryDiscovery.back();
-		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, folder, discovery);
+		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, folder, discovery, 8,
+		    ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly);
 		changed = result.imported_count > 0;
 		for (const std::string& error : result.errors) uam::diagnostics::Write("History discovery: " + error);
 		if (!discovery.Pending())

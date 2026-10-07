@@ -595,17 +595,7 @@ namespace
 
 	std::string AllocateUniqueFolderId(const uam::AppState& app)
 	{
-		constexpr int kMaxFolderIdAttempts = 16;
-		for (int attempt = 0; attempt < kMaxFolderIdAttempts; ++attempt)
-		{
-			const std::string folder_id = ChatDomainService().NewFolderId();
-			if (!folder_id.empty() && ChatDomainService().FindFolderById(app, folder_id) == nullptr)
-			{
-				return folder_id;
-			}
-		}
-
-		return "";
+		return ChatFolderStore::AllocateId(app.folders);
 	}
 
 	void ApplyFolderInput(ChatFolder& folder, const FolderInput& input)
@@ -665,13 +655,7 @@ namespace
 
 	std::string AllocateRecoveryFolderId(const std::unordered_set<std::string>& used_ids)
 	{
-		constexpr int kMaxFolderIdAttempts = 16;
-		for (int attempt = 0; attempt < kMaxFolderIdAttempts; ++attempt)
-		{
-			const std::string folder_id = ChatDomainService().NewFolderId();
-			if (!folder_id.empty() && !used_ids.contains(folder_id)) return folder_id;
-		}
-		return "";
+		return ChatFolderStore::AllocateId(used_ids);
 	}
 
 	void SelectAfterDeletingChats(uam::AppState& app, const std::unordered_set<std::string>& deleted_chat_ids, const std::string& selected_before_id, int selected_before_index)
@@ -852,8 +836,14 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app)
 			if (!ChatBelongsToFolder(chat, folder_id)) continue;
 			const std::string host = uam::strings::NonEmptyOrFallback(
 			    uam::strings::Trim(chat.execution_host_id), "local");
-			const std::string directory = uam::strings::NonEmptyOrFallback(
+			std::string directory = uam::strings::NonEmptyOrFallback(
 			    uam::strings::Trim(chat.workspace_directory), folder.directory);
+			// Use the same validated nested/worktree owner as native import, retaining the chat's cwd.
+			if (host == "local")
+			{
+				const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::ExpandTrimmedWorkspacePath(directory));
+				if (owner != nullptr) directory = owner->directory;
+			}
 			const std::string key = WorkspaceOwnershipKey(app, host, directory);
 			chat_indices_by_owner[key].push_back(chat_index);
 			owner_values.try_emplace(key, host, directory);

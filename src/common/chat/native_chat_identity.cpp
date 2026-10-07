@@ -69,7 +69,7 @@ namespace uam::chat_identity
 		const std::string_view host = uam::strings::TrimAsciiView(chat.execution_host_id);
 		if (!host.empty() && host != uam::execution_hosts::kLocalHostId)
 		{
-			std::string workspace = uam::strings::Trim(chat.workspace_directory);
+			std::string workspace = uam::strings::Trim(uam::strings::IsBlank(chat.workspace_worktree_directory) ? chat.workspace_directory : chat.workspace_worktree_directory);
 			if (uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace))
 				std::ranges::replace(workspace, '\\', '/');
 			return "remote:" + std::string(host) + ":" + workspace;

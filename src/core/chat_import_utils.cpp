@@ -182,26 +182,46 @@ namespace uam
 		return workspace;
 	}
 
+	/// <summary>Containment stops before a distinct nested repository or worktree.</summary>
+	static bool MatchesRegisteredParent(const std::filesystem::path& location, const std::filesystem::path& owner)
+	{
+		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		{
+			if (FolderDirectoryMatches(current, owner)) return true;
+			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
+			if (current == current.parent_path()) break;
+		}
+		return false;
+	}
+
 	bool ImportedWorkspaceMatchesFolder(const std::filesystem::path& workspace, const std::filesystem::path& folder)
 	{
-		return !workspace.empty() && !folder.empty() &&
-		    (FolderDirectoryMatches(workspace, folder) ||
-		     FolderDirectoryMatches(ResolveImportedWorkspaceFolderDirectory(workspace), folder));
+		if (workspace.empty() || folder.empty()) return false;
+		const std::filesystem::path owner = uam::paths::NormalizeExistingOrAbsolutePath(folder);
+		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
+		return MatchesRegisteredParent(location, owner) ||
+		    MatchesRegisteredParent(ResolveImportedWorkspaceFolderDirectory(location), owner);
 	}
 
 	const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace)
 	{
 		if (workspace.empty()) return nullptr;
-		for (const ChatFolder& folder : folders)
+		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
+		const std::filesystem::path resolved = ResolveImportedWorkspaceFolderDirectory(location);
+		// Explicit ownership of a worktree (including its child cwd) precedes aliases.
+		for (const std::filesystem::path& candidate : {location, resolved})
 		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
-			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), workspace)) return &folder;
-		}
-		const std::filesystem::path resolved = ResolveImportedWorkspaceFolderDirectory(workspace);
-		for (const ChatFolder& folder : folders)
-		{
-			if (uam::paths::IsControllerLocalWorkspace(folder) && !folder.directory.empty() &&
-			    FolderDirectoryMatches(uam::paths::PathFromUtf8(folder.directory), resolved)) return &folder;
+			const ChatFolder* owner = nullptr;
+			std::size_t owner_depth = 0;
+			for (const ChatFolder& folder : folders)
+			{
+				if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
+				const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
+				if (!MatchesRegisteredParent(candidate, directory)) continue;
+				const std::size_t depth = static_cast<std::size_t>(std::distance(directory.begin(), directory.end()));
+				if (owner == nullptr || depth > owner_depth) { owner = &folder; owner_depth = depth; }
+			}
+			if (owner != nullptr) return owner;
 		}
 		return nullptr;
 	}

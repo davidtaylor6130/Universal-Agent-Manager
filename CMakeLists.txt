@@ -1143,6 +1143,9 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/workspace_import_policy_tests.cpp
+    tests/workspace_migration_alias_tests.cpp
+    tests/native_chat_identity_tests.cpp
     tests/provider_configuration_tests.cpp
     src/common/utils/diagnostic_log.cpp
 	    tests/computer_use_tests.cpp
