@@ -225,6 +225,7 @@ namespace uam
 		auto argv = runtime.BuildWorkerArgv(profile, settings, prompt, model_id);
 		if (argv.empty())
 		{
+			SetError(error_out, "This provider does not support text workers.");
 			return {};
 		}
 

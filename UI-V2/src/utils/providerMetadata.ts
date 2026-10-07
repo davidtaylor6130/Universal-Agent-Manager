@@ -5,8 +5,10 @@ export const CODEX_CLI_PROVIDER_ID = 'codex-cli'
 export const CLAUDE_CLI_PROVIDER_ID = 'claude-cli'
 export const OPENCODE_CLI_PROVIDER_ID = 'opencode-cli'
 export const COPILOT_CLI_PROVIDER_ID = 'copilot-cli'
+export const ANTIGRAVITY_CLI_PROVIDER_ID = 'antigravity-cli'
 
 export interface ProviderCapabilities {
+  supportsTextWorkers: boolean
   hasReasoningEffort: boolean
   hasServiceTier: boolean
   hasAcceptEditsMode: boolean
@@ -125,6 +127,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'Gemini ACP + CLI',
     npmPackage: '@google/gemini-cli',
     capabilities: {
+      supportsTextWorkers: true,
       hasReasoningEffort: false,
       hasServiceTier: false,
       hasAcceptEditsMode: true,
@@ -151,6 +154,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'Codex app-server + CLI',
     npmPackage: '@openai/codex',
     capabilities: {
+      supportsTextWorkers: true,
       hasReasoningEffort: true,
       hasServiceTier: true,
       hasAcceptEditsMode: true,
@@ -177,6 +181,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'Claude stream + CLI',
     npmPackage: '@anthropic-ai/claude-code',
     capabilities: {
+      supportsTextWorkers: true,
       hasReasoningEffort: false,
       hasServiceTier: false,
       hasAcceptEditsMode: false,
@@ -203,6 +208,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'OpenCode ACP + CLI',
     npmPackage: 'opencode-ai',
     capabilities: {
+      supportsTextWorkers: true,
       hasReasoningEffort: false,
       hasServiceTier: false,
       hasAcceptEditsMode: true,
@@ -229,6 +235,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     runtimeDescription: 'Copilot ACP + CLI',
     npmPackage: '@github/copilot',
     capabilities: {
+      supportsTextWorkers: true,
       hasReasoningEffort: true,
       hasServiceTier: false,
       hasAcceptEditsMode: true,
@@ -247,11 +254,48 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
       speedOptions: [],
     },
   },
+  [ANTIGRAVITY_CLI_PROVIDER_ID]: {
+    id: ANTIGRAVITY_CLI_PROVIDER_ID,
+    name: 'Antigravity CLI',
+    shortName: 'Antigravity',
+    structuredProtocol: 'none',
+    runtimeDescription: 'Antigravity terminal CLI',
+    npmPackage: '',
+    capabilities: {
+      supportsTextWorkers: false,
+      hasReasoningEffort: false,
+      hasServiceTier: false,
+      hasAcceptEditsMode: false,
+      structuredPermissionControl: 'provider',
+      terminalPermissionControl: 'provider',
+      usesFriendlyModelLabels: false,
+      showPlanActionButtons: false,
+      autoLabel: 'Auto',
+      acceptEditsLabel: undefined,
+      defaultModelLabels: {},
+      memoryModelIds: [],
+      memoryModelLabels: {},
+      memoryModelDefaultId: '',
+      claudePlanPrompt: false,
+      reasoningOptions: [],
+      speedOptions: [],
+    },
+  },
+}
+
+export const SUPPORTED_CLI_PROVIDER_IDS = Object.keys(PROVIDER_METADATA_BY_ID)
+export const SUPPORTED_TEXT_WORKER_PROVIDER_IDS = SUPPORTED_CLI_PROVIDER_IDS.filter((id) => PROVIDER_METADATA_BY_ID[id].capabilities.supportsTextWorkers)
+
+export function providerSupportsTextWorkers(providerId: string): boolean {
+  return providerMetadataForId(providerId).capabilities.supportsTextWorkers
 }
 
 const GEMINI_METADATA = PROVIDER_METADATA_BY_ID[DEFAULT_PROVIDER_ID]
 
 const PROVIDER_ID_ALIASES: Record<string, string> = {
+  agy: ANTIGRAVITY_CLI_PROVIDER_ID,
+  antigravity: ANTIGRAVITY_CLI_PROVIDER_ID,
+  [ANTIGRAVITY_CLI_PROVIDER_ID]: ANTIGRAVITY_CLI_PROVIDER_ID,
   gemini: DEFAULT_PROVIDER_ID,
   [DEFAULT_PROVIDER_ID]: DEFAULT_PROVIDER_ID,
   codex: CODEX_CLI_PROVIDER_ID,
@@ -306,7 +350,7 @@ export function fallbackProviderForId(providerId: string): Provider {
     description: '',
     outputMode: 'cli',
     supportsCli: true,
-    supportsStructured: true,
+    supportsStructured: metadata.structuredProtocol !== 'none',
     structuredProtocol: metadata.structuredProtocol,
   }
 }
@@ -360,5 +404,6 @@ export function providerNpmPackageName(providerId: string, provider?: Provider):
 }
 
 export function buildProviderCliInstallCommand(providerId: string, version: string, provider?: Provider): string {
-  return `npm install -g ${providerNpmPackageName(providerId, provider)}@${version}`
+  const packageName = providerNpmPackageName(providerId, provider)
+  return packageName ? `npm install -g ${packageName}@${version}` : ''
 }

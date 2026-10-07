@@ -10730,7 +10730,7 @@ UAM_TEST(StateSerializerProviderJsonIncludesNpmPackageAndShortName)
 	{
 		UAM_ASSERT(!provider.value("id", "").empty());
 		UAM_ASSERT(!provider.value("shortName", "").empty());
-		UAM_ASSERT(!provider.value("npmPackageName", "").empty());
+		UAM_ASSERT_EQ(provider.value("npmPackageName", "").empty(), !uam::provider_ids::IsVersionManagedCliProviderId(provider.value("id", "")));
 	}
 
 	const auto gemini_it = std::ranges::find_if(providers, [](const nlohmann::json& p) { return p.value("id", "") == "gemini-cli"; });
@@ -11320,6 +11320,7 @@ UAM_TEST(ProviderRegistryResolvesGeminiCodexClaudeOpenCodeCopilotAndUnknownExact
 
 	const IProviderRuntime& unknown = ProviderRuntimeRegistry::ResolveById("unknown");
 	UAM_ASSERT_EQ(std::string(unknown.RuntimeId()), std::string("unsupported"));
+	UAM_ASSERT(!unknown.SupportsTextWorkers());
 	UAM_ASSERT(!ProviderRuntimeRegistry::IsEnabledRuntimeId("unknown"));
 	UAM_ASSERT(!ProviderRuntime::IsRuntimeEnabled("unknown"));
 
@@ -11425,6 +11426,12 @@ UAM_TEST(BuiltInProviderProfilesFollowEnabledRuntimeFlags)
 	UAM_ASSERT(copilot_profile != nullptr);
 	UAM_ASSERT_EQ(copilot_profile->structured_protocol, std::string(uam::provider_profile_constants::kProtocolCopilotAcp));
 #endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	expected.push_back("antigravity-cli");
+	const ProviderProfile* antigravity_profile = find_profile(uam::provider_ids::kAntigravityCli);
+	UAM_ASSERT(antigravity_profile != nullptr);
+	UAM_ASSERT(!antigravity_profile->supports_structured);
+#endif
 	UAM_ASSERT_EQ(ids, expected);
 }
 
@@ -11490,8 +11497,8 @@ UAM_TEST(EnabledProviderRuntimesSatisfyLaunchContract)
 		UAM_ASSERT(runtime.IsEnabled());
 		UAM_ASSERT_EQ(std::string(runtime.RuntimeId()), profile.id);
 		UAM_ASSERT(!runtime.BuildInteractiveArgv(profile, chat, settings).empty());
-		UAM_ASSERT(!runtime.BuildWorkerArgv(profile, settings, "contract prompt", "").empty());
-		UAM_ASSERT(!runtime.BuildStructuredLaunchArgv(profile, chat).empty());
+		UAM_ASSERT_EQ(runtime.BuildWorkerArgv(profile, settings, "contract prompt", "").empty(), !runtime.SupportsTextWorkers());
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat).empty(), !profile.supports_structured);
 	}
 }
 
@@ -11506,6 +11513,7 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 
 	for (const ProviderProfile& profile : ProviderProfileStore::BuiltInProfiles())
 	{
+		if (!ProviderRuntimeRegistry::Resolve(profile).SupportsTextWorkers()) continue;
 		std::filesystem::path isolation_directory;
 		{
 			std::string error;
@@ -18878,7 +18886,7 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
 	UAM_ASSERT_EQ(preview.groups.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(preview.groups.front().existing_folder_id, folder.id);
-	UAM_ASSERT_EQ(preview.groups.front().chat_ids.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(preview.groups.front().chat_ids.size(), uam::provider_ids::kAllCliProviderIds.size());
 	UAM_ASSERT(uam::RebuildUnsortedWorkspaceFolders(app));
 	for (const ChatSession& chat : app.chats)
 	{
@@ -21738,3 +21746,172 @@ UAM_TEST(ImportedHistoryActivatesOnlyAfterUamInputAndPreservesInteractionOnRefre
 		UAM_ASSERT_EQ(app.chats.front().interaction_at, interaction);
 	}
 }
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
+{
+	const ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	for (const char* alias : {"agy", " Antigravity ", "antigravity-cli"})
+	{
+		UAM_ASSERT_EQ(uam::provider_ids::NormalizeCliProviderAlias(alias), profile.id);
+		UAM_ASSERT_EQ(std::string(ProviderRuntimeRegistry::ResolveById(alias).RuntimeId()), profile.id);
+	}
+	UAM_ASSERT(!profile.supports_structured);
+	UAM_ASSERT_EQ(profile.structured_protocol, std::string("none"));
+	UAM_ASSERT(uam::ProviderSupportsInteractiveTerminal(profile));
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
+	UAM_ASSERT(!runtime.SupportsTextWorkers());
+	UAM_ASSERT(runtime.CliVersionPolicy() == nullptr);
+	UAM_ASSERT(runtime.BuildStructuredLaunchArgv(profile, {}).empty());
+	UAM_ASSERT(!uam::provider_ids::IsVersionManagedCliProviderId(profile.id));
+	const nlohmann::json serialized = uam::StateSerializer::SerializeProvider(profile);
+	UAM_ASSERT(!serialized["supportsStructured"].get<bool>());
+	UAM_ASSERT_EQ(serialized["structuredPermissionControl"].get<std::string>(), std::string("provider"));
+}
+
+UAM_TEST(AntigravityTerminalLaunchAndSavedResumePreserveIdentityAndFlags)
+{
+	TempDir temp("uam-antigravity-resume");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", "antigravity-cli");
+	chat.native_session_id = "055a398f-db14-4c5f-abbb-1bf03f8120a7";
+	chat.workspace_directory = temp.root.string();
+	chat.model_id = "user-selected-model";
+	const ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	UAM_ASSERT(ProviderRuntime::SaveHistory(profile, temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->provider_id, profile.id);
+	UAM_ASSERT_EQ(loaded->native_session_id, chat.native_session_id);
+	app.settings.provider_extra_flags = "--effort high";
+	for (const char* host : {"local", "ssh-fixture"})
+	{
+		ChatSession resumed = *loaded;
+		resumed.execution_host_id = host;
+		const std::vector<std::string> argv = uam::BuildProviderInteractiveArgv(app, resumed);
+		UAM_ASSERT_EQ(argv, (std::vector<std::string>{"agy", "--conversation", chat.native_session_id, "--model", "user-selected-model", "--effort", "high"}));
+	}
+	UAM_ASSERT(!ProviderResolutionService().WorkerProviderSelectionForChat(app, chat).provider);
+}
+
+UAM_TEST(AntigravityTerminalDefaultHandoffSucceedsAndManagedCapabilitiesReject)
+{
+	TempDir temp("uam-antigravity-handoff");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", "antigravity-cli");
+	chat.workspace_directory = temp.root.string();
+	std::vector<std::string> argv{"agy"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	std::string error;
+	ExecutionHost host;
+	UAM_ASSERT(uam::PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(argv, std::vector<std::string>{"agy"});
+	UAM_ASSERT(environment.empty());
+	UAM_ASSERT(channel.empty());
+	chat.uam_control_enabled = true;
+	UAM_ASSERT(!uam::PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("managed MCP") != std::string::npos);
+	chat.uam_control_enabled = false;
+	app.settings.central_provider_configuration.enabled = true;
+	uam::query_handler_internal::ApplyProviderDefaultsToChat(app.settings, chat);
+	UAM_ASSERT(chat.uam_control_enabled);
+	UAM_ASSERT(!uam::PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	app.settings.central_provider_configuration.enabled = false;
+	chat.uam_control_enabled = false;
+	McpServerConfiguration server;
+	server.id = "explicit-antigravity-server";
+	server.name = "Explicit MCP";
+	server.transport = "http";
+	server.url = "http://localhost:4000/mcp";
+	server.workspace_directory = temp.root.string();
+	app.settings.mcp_servers.push_back(server);
+	UAM_ASSERT(!uam::PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("managed MCP") != std::string::npos);
+	UAM_ASSERT_EQ(app.settings.mcp_servers.front().id, server.id);
+	app.settings.mcp_servers.clear();
+	chat.provider_handoff_context = "Prior provider history";
+	UAM_ASSERT(!uam::PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+	UAM_ASSERT_EQ(chat.provider_handoff_context, std::string("Prior provider history"));
+}
+
+UAM_TEST(AntigravityRejectsStructuredAndWorkerRequestsWithoutHistoryMutation)
+{
+	TempDir temp("uam-antigravity-capability-errors");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", "antigravity-cli");
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Do not launch", &error));
+	UAM_ASSERT(error.find("terminal chat only") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT(app.acp_sessions.empty());
+	UAM_ASSERT(!uam::StartEphemeralAcpModelDiscovery(app, chat.provider_id, chat.workspace_directory, "local", &error));
+	const uam::ProviderWorkerInvocation worker = uam::BuildProviderWorkerInvocation(app, ProviderProfileStore::DefaultAntigravityProfile(), app.settings, "No live call", "", uam::ProviderWorkerPathMode::BasePath, &error);
+	UAM_ASSERT(worker.Empty());
+	UAM_ASSERT(error.find("text workers") != std::string::npos);
+	app.provider_profiles.clear();
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Do not fall back", &error));
+	UAM_ASSERT(error.find("terminal chat only") != std::string::npos);
+	UAM_ASSERT(!uam::StartEphemeralAcpModelDiscovery(app, chat.provider_id, chat.workspace_directory, "local", &error));
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT(app.acp_sessions.empty());
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI && defined(__APPLE__)
+UAM_TEST(AntigravityTerminalMissingExecutableReportsLaunchFailure)
+{
+	TempDir temp("uam-antigravity-missing");
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	profile.interactive_command = (temp.root / "missing-agy").string();
+	uam::CliTerminalState terminal;
+	terminal.rows = uam::kCliTerminalDefaultRows;
+	terminal.cols = uam::kCliTerminalDefaultCols;
+	std::string error;
+	const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, {}, {});
+	const IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	const bool started = runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error);
+	if (started)
+	{
+		runtime.StopCliTerminalProcess(terminal, true);
+		runtime.CloseCliTerminalHandles(terminal);
+	}
+	UAM_ASSERT(!started);
+	UAM_ASSERT(!error.empty());
+}
+
+UAM_TEST(AntigravityTerminalFixtureReceivesSavedResumeAndWorkspace)
+{
+	TempDir temp("uam-antigravity-pty");
+	const fs::path executable = temp.root / "agy-fixture";
+	const fs::path capture = temp.root / "capture.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(executable, "#!/bin/sh\npwd > capture.txt\nprintf '%s\\n' \"$@\" >> capture.txt\n"));
+	fs::permissions(executable, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	profile.interactive_command = executable.string();
+	ChatSession chat;
+	chat.native_session_id = "fixture-conversation-id";
+	const std::vector<std::string> argv = ProviderRuntime::BuildInteractiveArgv(profile, chat, {});
+	uam::CliTerminalState terminal;
+	terminal.rows = uam::kCliTerminalDefaultRows;
+	terminal.cols = uam::kCliTerminalDefaultCols;
+	std::string error;
+	const IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	UAM_ASSERT(runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	for (int attempt = 0; attempt < 200 && !runtime.PollCliTerminalProcessExited(terminal); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	runtime.StopCliTerminalProcess(terminal, true);
+	runtime.CloseCliTerminalHandles(terminal);
+	const std::string output = ReadFile(capture);
+	UAM_ASSERT(output.find(fs::canonical(temp.root).string()) != std::string::npos);
+	UAM_ASSERT(output.find("--conversation\nfixture-conversation-id\n") != std::string::npos);
+}
+#endif

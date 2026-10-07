@@ -46,6 +46,7 @@ import {
   DEFAULT_PROVIDER_ID,
   providerCapabilities,
   providerMetadataForId,
+  providerSupportsTextWorkers,
   providerShortName,
 } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
@@ -1483,7 +1484,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   'AI permission reviewer provider',
                   [
                     { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
-                    ...providers.map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
+                    ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
                   ],
                   (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
                   (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
@@ -1522,7 +1523,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
 
               <div className="space-y-3">
-                {providers.map((provider) => {
+                {providers.filter((provider) => provider.supportsStructured !== false).map((provider) => {
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
@@ -2272,7 +2273,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Memory Workers"
           >
             <div ref={memoryMenuRef} className="space-y-3">
-              {providers.map((provider) => {
+              {providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => {
                 const binding = memoryWorkerBindings[provider.id] ?? { workerProviderId: provider.id, workerModelId: '' }
                 const workerProvider = providers.find((candidate) => candidate.id === binding.workerProviderId) ?? provider
                 const workerSession = latestLocalProviderSession(sessions, binding.workerProviderId)
@@ -2329,7 +2330,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               padding: 6,
                             }}
                           >
-                            {providers.map((candidate) => {
+                            {providers.filter((candidate) => providerSupportsTextWorkers(candidate.id)).map((candidate) => {
                               const selected = candidate.id === binding.workerProviderId
                               return (
                                 <button

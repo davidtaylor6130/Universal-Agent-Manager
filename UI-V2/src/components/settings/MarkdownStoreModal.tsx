@@ -6,12 +6,12 @@ import { Button, IconButton, useOverlayState } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
-import { normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
+import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { ChevronRight, Download, ExternalLink, FileInput, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
-const PROVIDER_OPTIONS = ['gemini-cli', 'codex-cli', 'claude-cli', 'opencode-cli', 'copilot-cli'].map((id) => ({
+const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
   id, label: providerMetadataForId(id).name, icon: <ProviderLogo providerId={id} size={24} />,
 }))
 

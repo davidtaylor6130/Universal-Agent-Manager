@@ -149,11 +149,12 @@ ProviderResolutionService::WorkerProviderSelection ProviderResolutionService::Wo
 	{
 		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, worker_provider_id); profile != nullptr)
 		{
-			return {profile, uam::strings::Trim(binding->worker_model_id)};
+			return {ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() ? profile : nullptr, uam::strings::Trim(binding->worker_model_id)};
 		}
 	}
 
-	return {ProviderForChat(app, chat), ""};
+	const ProviderProfile* profile = ProviderForChat(app, chat);
+	return {profile != nullptr && ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() ? profile : nullptr, ""};
 }
 
 const ProviderProfile* ProviderResolutionService::WorkerProviderForChat(const uam::AppState& app, const ChatSession& chat) const

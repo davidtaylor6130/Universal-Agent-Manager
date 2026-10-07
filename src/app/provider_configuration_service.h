@@ -34,6 +34,11 @@ namespace uam
 		const std::vector<McpServerConfiguration> selected_servers = mcp_server_config::SelectForWorkspace(
 		    candidates, uam::paths::Utf8PathString(workspace), host.id);
 		if (!settings.central_provider_configuration.enabled && selected_servers.empty()) return true;
+		if (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kAntigravityCli))
+		{
+			error = "Antigravity terminal uses its own configuration. UAM central configuration and managed MCP are unavailable for this provider.";
+			return false;
+		}
 		const CentralProviderConfiguration& configuration = settings.central_provider_configuration;
 		std::set<std::string> executable_files;
 		if (configuration.enabled)

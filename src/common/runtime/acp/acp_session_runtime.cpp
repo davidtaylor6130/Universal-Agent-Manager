@@ -1592,6 +1592,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			return false;
 		}
+		const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
+		if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
+		    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+		{
+			if (error_out != nullptr) *error_out = "This provider supports terminal chat only. Open its terminal to continue.";
+			return false;
+		}
 		if (!ProviderResolutionService().ChatProviderIsAvailable(app, chat))
 		{
 			if (error_out != nullptr)

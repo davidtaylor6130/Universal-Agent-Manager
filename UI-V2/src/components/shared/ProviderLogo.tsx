@@ -1,8 +1,10 @@
 import type { CSSProperties } from 'react'
+import { Terminal } from 'lucide-react'
 import codexLogo from '../../assets/provider-logos/codex.svg'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
 import opencodeLogo from '../../assets/provider-logos/opencode.svg'
 import {
+  ANTIGRAVITY_CLI_PROVIDER_ID,
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
@@ -69,7 +71,7 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
         />
       ) : (
         <span style={{ color: copilot ? '#22c55e' : '#8ab4ff' }} className="block h-full w-full">
-          {copilot ? <CopilotMark /> : <GeminiMark />}
+          {providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? <Terminal size={size} /> : copilot ? <CopilotMark /> : <GeminiMark />}
         </span>
       )}
     </span>

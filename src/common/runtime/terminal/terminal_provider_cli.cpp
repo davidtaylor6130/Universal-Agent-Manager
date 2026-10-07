@@ -355,10 +355,32 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	return true;
 }
 
+/// <summary>Rejects unsupported managed resources before staging or spawning an Antigravity launch.</summary>
+static bool ValidateAntigravityTerminalConfiguration(const AppState& app, const ChatSession& chat,
+    const ExecutionHost& host, bool has_native_servers, std::string& error)
+{
+	if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kAntigravityCli)) return true;
+	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const bool has_mcp = has_native_servers || !uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, uam::paths::Utf8PathString(workspace), host.id).empty() ||
+	    (!chat.workspace_source_directory.empty() && !uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, chat.workspace_source_directory, host.id).empty());
+	if (app.settings.central_provider_configuration.enabled || chat.uam_control_enabled || has_mcp)
+	{
+		error = "Antigravity terminal uses its own configuration. UAM central configuration and managed MCP are unavailable for this provider.";
+		return false;
+	}
+	if (!chat.provider_handoff_context.empty())
+	{
+		error = "Antigravity terminal cannot import another provider's conversation. Start a new Antigravity chat or resume an existing conversation.";
+		return false;
+	}
+	return true;
+}
+
 bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
     std::string& launch_channel, std::string& error, std::stop_token stop_token, const nlohmann::json& native_servers, std::filesystem::path* installed_directory = nullptr)
 {
+	if (!ValidateAntigravityTerminalConfiguration(app, chat, host, !native_servers.empty(), error)) return false;
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	ProviderConfigurationBundle bundle;
 	AppSettings settings = app.settings;
@@ -408,6 +430,7 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
     std::string& launch_channel, std::string& error)
 {
+	if (!ValidateAntigravityTerminalConfiguration(app, chat, host, false, error)) return false;
 	if (terminal.context_preparation == nullptr && !PrepareUnboundCodexHistory(app, chat, argv, error)) return false;
 	if (terminal.context_preparation == nullptr && !app.settings.central_provider_configuration.enabled &&
 	    uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() &&
