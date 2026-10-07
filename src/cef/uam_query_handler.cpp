@@ -88,6 +88,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatSettled", &UamQueryHandler::HandleSetChatSettled},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
 		{"getChatFileChangeReceipts", &UamQueryHandler::HandleGetChatFileChangeReceipts},
+		{"applyOrganizationAction", &UamQueryHandler::HandleOrganizationAction},
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
 		{"createSideChat", &UamQueryHandler::HandleCreateSideChat},
 		{"dismissSideChat", &UamQueryHandler::HandleDismissSideChat},

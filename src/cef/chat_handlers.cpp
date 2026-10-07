@@ -752,6 +752,12 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
+	if (payload.contains("expectedPinned") && (!payload["expectedPinned"].is_boolean() || chat->pinned != payload["expectedPinned"].get<bool>()))
+	{
+		cb->Failure(409, "Chat pin changed. Refresh before undoing.");
+		return;
+	}
+
 	if (chat->pinned == pinned)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
