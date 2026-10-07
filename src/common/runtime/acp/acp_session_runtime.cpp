@@ -1110,6 +1110,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
 		{
+			if (session.turn_checkpoint_commit_pending)
+			{
+				if (error_out != nullptr) *error_out = "Wait for the previous turn checkpoint to finish.";
+				return false;
+			}
 			if (batch.empty())
 			{
 				return false;
@@ -1600,7 +1605,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return fail("Start this chat's provider session before compacting its context.");
 		if (AcpSessionHasActiveTurn(*session) || AcpSessionHasPendingCancel(*session) ||
 		    AcpSessionIsWaitingForInput(*session) || !session->queued_user_prompts.empty() ||
-		    !session->pending_request_methods.empty() || AcpStopInProgress(app, chat_id))
+		    !session->pending_request_methods.empty() || session->turn_checkpoint_preflight_pending ||
+		    session->turn_checkpoint_commit_pending || AcpStopInProgress(app, chat_id))
 			return fail("Wait for the current turn, queued messages and pending controls before compacting.");
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
 		const int request_id = session->next_request_id;
@@ -1763,7 +1769,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
-		if (session.processing || !session.queued_user_prompts.empty() || restart_remote_cancellation)
+		if (session.processing || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation)
 		{
 			const std::deque<AcpQueuedUserPromptState> previous_queue =
 			    session.queued_user_prompts;
@@ -1806,7 +1812,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					return session.remote_stop_pending || session.restart_marker_save_pending;
 				return DrainNextQueuedAcpUserPrompt(app, session, chat);
 			}
-			if (session.running && session.session_ready && !session.processing &&
+			if (session.running && session.session_ready && !session.processing && !session.turn_checkpoint_commit_pending &&
 			    !AcpSessionIsWaitingForInput(session) && !AcpSessionHasPendingCancel(session) &&
 			    session.prompt_request_id == 0 && session.queued_prompt.empty() &&
 			    !session.remote_stop_pending && !session.remote_stop_unconfirmed)
@@ -2116,6 +2122,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
+		if (session.turn_checkpoint_commit_pending) return false;
 		if (session.queued_user_prompts.empty())
 		{
 			return false;

@@ -185,7 +185,7 @@ namespace uam::acp_detail
 					try
 					{
 						AppState snapshot = BuildTurnCheckpointSnapshot(std::move(snapshot_inputs));
-						const GitTurnCheckpointResult result = GitWorktreeService().CreateTurnCheckpoint(snapshot, snapshot.chats.front(), assistant_message_index, stop_token);
+						const GitTurnCheckpointResult result = GitWorktreeService().CreateTurnCheckpoint(snapshot, snapshot.chats.front(), assistant_message_index, stop_token, false);
 						state->ok = result.ok;
 						state->changed = result.changed;
 						state->checkpoint_sha = result.checkpoint_sha;
@@ -836,14 +836,13 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 		}
 
 		app.worktree_operation_chat_ids.erase(task.chat_id);
-		if (session == nullptr || chat == nullptr)
+		if (chat == nullptr) continue;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, *chat))
 		{
+			app.status_line = "Checkpoint metadata is waiting for chat history to load.";
+			app.worktree_operation_chat_ids.insert(task.chat_id);
+			app.turn_checkpoint_tasks.push_back(std::move(task));
 			continue;
-		}
-		session->turn_checkpoint_commit_pending = false;
-		if (!task.cancelled)
-		{
-			session->goal_resume_suppressed = false;
 		}
 		const bool same_message = task.assistant_message_index >= 0 &&
 		                          task.assistant_message_index < static_cast<int>(chat->messages.size()) &&
@@ -851,17 +850,35 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 		if (task.state->ok && task.state->changed && same_message)
 		{
 			Message& message = chat->messages[task.assistant_message_index];
+			const std::string previous_sha = message.checkpoint_sha;
+			const std::string previous_parent = message.checkpoint_parent_sha;
 			message.checkpoint_sha = task.state->checkpoint_sha;
 			message.checkpoint_parent_sha = task.state->parent_sha;
+			if (!ChatRepository::SaveChat(app.data_root, *chat))
+			{
+				message.checkpoint_sha = previous_sha;
+				message.checkpoint_parent_sha = previous_parent;
+				app.status_line = "Checkpoint metadata could not be saved. Waiting to retry.";
+				app.worktree_operation_chat_ids.insert(task.chat_id);
+				app.turn_checkpoint_tasks.push_back(std::move(task));
+				continue;
+			}
 		}
 		else if (!task.state->ok)
 		{
 			app.status_line = uam::strings::NonEmptyOrFallback(task.state->message, "Automatic turn checkpoint failed.");
 		}
+		// The recorded checkpoint belongs to its message; continuation belongs to its completed turn.
+		if (session == nullptr || session->turn_serial != task.turn_serial || session->processing || session->manual_compaction_pending)
+		{
+			continue;
+		}
+		session->turn_checkpoint_commit_pending = false;
 		if (task.cancelled)
 		{
 			continue;
 		}
+		session->goal_resume_suppressed = false;
 		ContinueCompletedTurn(app,
 		                      *session,
 		                      *chat,

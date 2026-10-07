@@ -55,7 +55,8 @@ namespace uam
 		GitWorktreeOperationResult DiscardChatChanges(AppState& app, ChatSession& chat) const;
 		GitWorktreeOperationResult PortChatChanges(AppState& app, ChatSession& chat) const;
 		bool CanCheckpointTurn(const AppState& app, const ChatSession& chat, std::string* reason_out = nullptr, std::stop_token stop_token = {}) const;
-		GitTurnCheckpointResult CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token = {}) const;
+		/// Async snapshots set persist_chat=false; the UI owner merges and saves checkpoint metadata.
+		GitTurnCheckpointResult CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token = {}, bool persist_chat = true) const;
 		GitTurnCheckpointResult PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const;
 		GitTurnCheckpointResult RollbackTurn(AppState& app, ChatSession& chat, int assistant_message_index) const;
 	};

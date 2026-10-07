@@ -1145,6 +1145,8 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/turn_finalization_ownership_tests.cpp
+    tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp

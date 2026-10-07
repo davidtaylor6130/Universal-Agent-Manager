@@ -1156,7 +1156,7 @@ namespace uam
 		return true;
 	}
 
-	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token) const
+	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token, bool persist_chat) const
 	{
 		GitTurnCheckpointResult result;
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
@@ -1189,6 +1189,17 @@ namespace uam
 			result.message = "Automatic checkpoints require an available UAM isolated Git worktree.";
 			return result;
 		}
+		// Preflight was clean, but a user can stage work while the provider runs.
+		// Skip the automatic commit rather than consume their current index.
+		std::string staged_paths;
+		if (!GitOutput(worktree, "diff --cached --name-only -z --", &staged_paths, &result.message, stop_token)) return result;
+		if (!staged_paths.empty())
+		{
+			result.ok = true;
+			result.message = "Automatic checkpoint skipped because staged changes exist. Your staging was preserved.";
+			return result;
+		}
+
 		bool dirty = false;
 		if (!IsDirty(worktree, &dirty, &result.message, stop_token)) return result;
 		if (!dirty)
@@ -1219,7 +1230,7 @@ namespace uam
 		message.checkpoint_sha = result.checkpoint_sha;
 		message.checkpoint_parent_sha = result.parent_sha;
 		chat.updated_at = uam::time::TimestampNow();
-		if (!SaveChat(app, chat, &result.message))
+		if (persist_chat && !SaveChat(app, chat, &result.message))
 		{
 			message.checkpoint_sha.clear();
 			message.checkpoint_parent_sha.clear();
