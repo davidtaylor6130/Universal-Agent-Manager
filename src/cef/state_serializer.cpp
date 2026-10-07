@@ -1782,7 +1782,7 @@ namespace uam
 		j["supportsCli"] = profile.supports_cli;
 		j["supportsStructured"] = profile.supports_structured;
 		j["structuredProtocol"] = profile.structured_protocol;
-		j["structuredPermissionControl"] = profile.supports_structured ? "uam" : "provider";
+		j["structuredPermissionControl"] = profile.supports_structured && profile.id != uam::provider_ids::kAntigravityCli ? "uam" : "provider";
 		j["terminalPermissionControl"] = "provider";
 		j["nativeGoalCommand"] = profile.native_goal_command;
 		

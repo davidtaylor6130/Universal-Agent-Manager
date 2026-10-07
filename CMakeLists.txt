@@ -1152,6 +1152,8 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/antigravity_tests.cpp
+    tests/antigravity_mcp_tests.cpp
     tests/queued_prompt_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp

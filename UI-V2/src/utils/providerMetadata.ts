@@ -258,8 +258,8 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     id: ANTIGRAVITY_CLI_PROVIDER_ID,
     name: 'Antigravity CLI',
     shortName: 'Antigravity',
-    structuredProtocol: 'none',
-    runtimeDescription: 'Antigravity terminal CLI',
+    structuredProtocol: 'antigravity-stream-json',
+    runtimeDescription: 'Antigravity Stream + CLI',
     npmPackage: '',
     capabilities: {
       supportsTextWorkers: false,
@@ -375,6 +375,7 @@ export function providerRuntimeKindLabel(provider?: Provider, protocolKind = '')
   const protocol = protocolKind || provider?.structuredProtocol || providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol
   if (protocol === providerMetadataForId(CODEX_CLI_PROVIDER_ID).structuredProtocol) return 'App Server'
   if (protocol === providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).structuredProtocol) return 'Claude Stream'
+  if (protocol === providerMetadataForId(ANTIGRAVITY_CLI_PROVIDER_ID).structuredProtocol) return 'Antigravity Stream'
   if (protocol === 'none') return 'CLI'
   return 'ACP'
 }

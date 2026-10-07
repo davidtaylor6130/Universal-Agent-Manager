@@ -1721,8 +1721,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
-		if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
-		    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+		if (selected_provider != nullptr && !selected_provider->supports_structured)
 		{
 			if (error_out != nullptr) *error_out = "This provider supports terminal chat only. Open its terminal to continue.";
 			return false;
@@ -2234,6 +2233,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::string* error_out)
 	{
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+		if (normalized_provider_id == uam::provider_ids::kAntigravityCli)
+		{
+			if (error_out) *error_out = "Antigravity model discovery is unavailable in its native stream protocol. Choose a model manually.";
+			return false;
+		}
 		const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, normalized_provider_id);
 		if (provider == nullptr || !provider->supports_structured)
 		{
