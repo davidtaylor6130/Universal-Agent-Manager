@@ -502,6 +502,7 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	session->provider_id = provider.id;
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	session->managed_agent_run_id = chat.agent_run_id;
+	session->queue_held = chat.acp_queue_held;
 	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
 	{
 		session->next_request_id = chat.remote_next_request_id;

@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -501,19 +502,118 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string operation = payload.value("operation", "");
-	const int index = payload.value("index", -1);
-	if (chat_id.empty() || index < 0 || (operation != "remove" && operation != "steer"))
+	if (chat_id.empty())
 	{
 		cb->Failure(400, "Invalid queued prompt action.");
 		return;
 	}
 	std::string error;
-	const bool ok = operation == "steer"
-	    ? uam::SteerQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error)
-	    : uam::RemoveQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error);
+	bool ok = false;
+	if (operation == "edit")
+	{
+		if (!payload.contains("promptId") || !payload["promptId"].is_string() ||
+		    !payload.contains("expectedRevision") || !payload["expectedRevision"].is_number_integer() ||
+		    payload["expectedRevision"] < 1 || payload["expectedRevision"] > std::numeric_limits<int>::max() ||
+		    !payload.contains("text") || !payload["text"].is_string())
+		{
+			cb->Failure(400, "Invalid queued prompt edit.");
+			return;
+		}
+		ok = uam::EditQueuedAcpPrompt(m_app, chat_id, payload["promptId"].get<std::string>(), payload["expectedRevision"].get<int>(), payload["text"].get<std::string>(), &error);
+	}
+	else if (operation == "reorder")
+	{
+		if (!payload.contains("expected") || !payload["expected"].is_array() ||
+		    !payload.contains("orderedIds") || !payload["orderedIds"].is_array() || payload["expected"].size() > 32 || payload["orderedIds"].size() > 32)
+		{
+			cb->Failure(400, "Invalid queued prompt order.");
+			return;
+		}
+		std::vector<std::pair<std::string, int>> expected;
+		std::vector<std::string> ordered_ids;
+		for (const nlohmann::json& entry : payload["expected"])
+		{
+			if (!entry.is_object() || !entry.contains("id") || !entry["id"].is_string() ||
+			    !entry.contains("revision") || !entry["revision"].is_number_integer() ||
+			    entry["revision"] < 1 || entry["revision"] > std::numeric_limits<int>::max())
+			{
+				cb->Failure(400, "Invalid queued prompt identity.");
+				return;
+			}
+			expected.emplace_back(entry["id"].get<std::string>(), entry["revision"].get<int>());
+		}
+		for (const nlohmann::json& id : payload["orderedIds"])
+		{
+			if (!id.is_string())
+			{
+				cb->Failure(400, "Invalid queued prompt identity.");
+				return;
+			}
+			ordered_ids.push_back(id.get<std::string>());
+		}
+		ok = uam::ReorderQueuedAcpPrompts(m_app, chat_id, expected, ordered_ids, &error);
+	}
+	else
+	{
+		if (!payload.contains("index") || !payload["index"].is_number_integer() ||
+		    payload["index"] < 0 || payload["index"] > std::numeric_limits<int>::max() ||
+		    (operation != "remove" && operation != "steer"))
+		{
+			cb->Failure(400, "Invalid queued prompt action.");
+			return;
+		}
+		const int index = payload["index"].get<int>();
+		std::optional<std::pair<std::string, int>> expected;
+		if (payload.contains("expected"))
+		{
+			const nlohmann::json& identity = payload["expected"];
+			if (!identity.is_object() || !identity.contains("id") || !identity["id"].is_string() || identity["id"].get<std::string>().empty() ||
+			    !identity.contains("revision") || !identity["revision"].is_number_integer() ||
+			    identity["revision"] < 1 || identity["revision"] > std::numeric_limits<int>::max())
+			{
+				cb->Failure(400, "Invalid queued prompt identity.");
+				return;
+			}
+			expected = std::make_pair(identity["id"].get<std::string>(), identity["revision"].get<int>());
+		}
+		ok = operation == "steer"
+		    ? uam::SteerQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error, expected)
+		    : uam::RemoveQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error, expected);
+	}
+
 	if (!ok)
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Failed to update queued prompt."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("chatId") || !payload["chatId"].is_string() || payload["chatId"].get<std::string>().empty() ||
+	    !payload.contains("expected") || !payload["expected"].is_array() || payload["expected"].empty() || payload["expected"].size() > 32)
+	{
+		cb->Failure(400, "Invalid restored queue action.");
+		return;
+	}
+	std::vector<std::pair<std::string, int>> expected;
+	for (const nlohmann::json& entry : payload["expected"])
+	{
+		if (!entry.is_object() || !entry.contains("id") || !entry["id"].is_string() || entry["id"].get<std::string>().empty() ||
+		    !entry.contains("revision") || !entry["revision"].is_number_integer() || entry["revision"] < 1 ||
+		    entry["revision"] > std::numeric_limits<int>::max())
+		{
+			cb->Failure(400, "Invalid queued prompt identity.");
+			return;
+		}
+		expected.emplace_back(entry["id"].get<std::string>(), entry["revision"].get<int>());
+	}
+	std::string error;
+	if (!uam::ResumeQueuedAcpPrompts(m_app, payload["chatId"].get<std::string>(), expected, &error))
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "Failed to resume restored queue."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);

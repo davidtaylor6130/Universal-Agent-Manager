@@ -5,8 +5,10 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace uam
 {
@@ -17,8 +19,14 @@ namespace uam
 bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files = {}, const std::vector<MessageAttachment>& attachments = {}, bool goal_mode = false, std::string* error_out = nullptr, const std::string& goal_id = {}, bool computer_use_mode = false);
 bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out);
 bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files = {}, const std::vector<MessageAttachment>& attachments = {}, bool goal_mode = false, std::string* error_out = nullptr, const std::string& goal_id = {}, bool computer_use_mode = false);
-bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
-bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
+bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
+bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
+/// <summary>Updates only an undispatched prompt's text when its saved revision still matches.</summary>
+bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id, int expected_revision, const std::string& text, std::string* error_out = nullptr);
+/// <summary>Reorders the exact observed queue; stale identities or revisions reject the operation.</summary>
+bool ReorderQueuedAcpPrompts(AppState& app, const std::string& chat_id, const std::vector<std::pair<std::string, int>>& expected, const std::vector<std::string>& ordered_ids, std::string* error_out = nullptr);
+/// <summary>Durably resumes only the exact observed held queue before scheduling delivery.</summary>
+bool ResumeQueuedAcpPrompts(AppState& app, const std::string& chat_id, const std::vector<std::pair<std::string, int>>& expected, std::string* error_out = nullptr);
 bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, bool stop_when_complete = false);
 bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr);
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
@@ -34,7 +42,8 @@ bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    bool preserve_queued_prompts = false);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation = false);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
-bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt);
+/// <summary>Stops a provider; internal recovery may preserve held intent instead of discarding it.</summary>
+bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool preserve_held_queue = false);
 bool SetAcpSessionMode(AppState& app,
                        const std::string& chat_id,
                        const std::string& mode_id,
@@ -63,7 +72,7 @@ bool ResolveAcpUserInput(AppState& app,
 	                                platform::StdioProcessPlatformFields& destination);
 	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool observe_exit = false);
 	bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);
-	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app);
+	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	void FlushPendingChatSaves(AppState& app, bool force = false);
 	void FinalizePendingAcpRemoteStopsForExit(AppState& app);

@@ -224,6 +224,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
 		{"compactAcpSession", &UamQueryHandler::HandleCompactAcpSession},
+		{"resumeQueuedAcpPrompts", &UamQueryHandler::HandleResumeQueuedAcpPrompts},
 		{"manageQueuedAcpPrompt", &UamQueryHandler::HandleManageQueuedAcpPrompt},
 		{"discoverProviderModels", &UamQueryHandler::HandleDiscoverProviderModels},
 		{"setAcpConfigOption", &UamQueryHandler::HandleSetAcpConfigOption},

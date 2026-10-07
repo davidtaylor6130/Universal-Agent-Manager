@@ -388,6 +388,9 @@ namespace uam
 				attachments.push_back(SerializeAttachmentForFrontend(attachment));
 			}
 			return {
+			    {"id", prompt.id},
+			    {"revision", prompt.revision},
+			    {"prepared", prompt.prepared_for_delivery},
 			    {"text", prompt.text},
 			    {"uamAgentId", prompt.uam_agent_id},
 			    {"markdownStoreFiles", prompt.markdown_store_files},
@@ -992,6 +995,7 @@ namespace uam
 			acp_json["turnAssistantMessageIndex"] = -1;
 			acp_json["turnSerial"] = 0;
 			acp_json["queuedPrompts"] = nlohmann::json::array();
+			acp_json["queueHeld"] = chat.acp_queue_held;
 			acp_json["waitIsStale"] = false;
 			acp_json["waitStaleReason"] = "";
 			acp_json["waitSeconds"] = 0;
@@ -1071,6 +1075,7 @@ namespace uam
 				queued_prompts.push_back(SerializeQueuedAcpUserPrompt(prompt));
 			}
 			acp_json["queuedPrompts"] = std::move(queued_prompts);
+			acp_json["queueHeld"] = session->queue_held;
 			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;
 			acp_json["waitStaleReason"] = session->wait_stale_reason;

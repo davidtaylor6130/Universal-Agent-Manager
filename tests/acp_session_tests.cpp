@@ -9438,8 +9438,8 @@ UAM_TEST(AcpRestartRestoresOnlyUndispatchedLocalQueuedPrompts)
 	ChatSession chat;
 	chat.id = "local-queue-restart";
 	chat.execution_host_id = uam::execution_hosts::kLocalHostId;
-	chat.acp_queued_prompts.push_back({.text = "Already dispatched."});
-	chat.acp_queued_prompts.push_back({.text = "Still queued."});
+	chat.acp_queued_prompts.push_back({.text = "Already dispatched.", .id = "already-dispatched"});
+	chat.acp_queued_prompts.push_back({.text = "Still queued.", .id = "still-queued"});
 	chat.acp_dispatched_queued_prompt_count = 1;
 	app.chats.push_back(chat);
 
@@ -9450,9 +9450,20 @@ UAM_TEST(AcpRestartRestoresOnlyUndispatchedLocalQueuedPrompts)
 	              static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().text,
 	              std::string("Still queued."));
-	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT(app.acp_sessions.front()->queue_held && app.chats.front().acp_queue_held);
+	UAM_ASSERT(!app.acp_sessions.front()->reconnect_pending);
 	UAM_ASSERT_EQ(app.chats.front().acp_dispatched_queued_prompt_count,
 	              static_cast<std::size_t>(0));
+	std::string error;
+	UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, chat.id, {{"still-queued", 1}}, &error));
+	UAM_ASSERT(!app.acp_sessions.front()->queue_held && !app.chats.front().acp_queue_held);
+	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().text, std::string("Still queued."));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held);
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().id, std::string("still-queued"));
 }
 
 UAM_TEST(CodexInitializeWriteFailureClearsStartupAndPreservesQueuedWork)

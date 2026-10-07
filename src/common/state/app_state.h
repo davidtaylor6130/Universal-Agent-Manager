@@ -514,6 +514,7 @@ namespace uam
 		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
+		bool queue_held = false;
 		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a

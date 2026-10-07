@@ -112,6 +112,7 @@ namespace
 	constexpr std::string_view kChatRemotePromptDeliveryIdField = "remote_prompt_delivery_id";
 	constexpr std::string_view kChatRemotePromptDeliveryPayloadField = "remote_prompt_delivery_payload";
 	constexpr std::string_view kChatAcpQueuedPromptsField = "acp_queued_prompts";
+	constexpr std::string_view kChatAcpQueueHeldField = "acp_queue_held";
 	constexpr std::string_view kChatAcpDispatchedQueuedPromptCountField = "acp_dispatched_queued_prompt_count";
 	constexpr std::size_t kMaxPersistedAcpQueuedPrompts = 32;
 	constexpr std::size_t kMaxPersistedAcpQueuedPromptBytes = 2U * 1024U * 1024U;
@@ -280,6 +281,8 @@ namespace
 	JsonValue AcpQueuedPromptToJson(const uam::AcpQueuedUserPromptState& prompt)
 	{
 		JsonValue obj = uam::json::Object();
+		uam::json::SetString(obj, "id", prompt.id);
+		uam::json::SetNumber(obj, "revision", prompt.revision);
 		uam::json::SetString(obj, "text", prompt.text);
 		uam::json::SetString(obj, "uam_agent_id", prompt.uam_agent_id);
 		uam::json::SetString(obj, "uam_agent_definition_hash", prompt.uam_agent_definition_hash);
@@ -370,6 +373,9 @@ namespace
 	{
 		if (obj.type != JsonValue::Type::Object) return std::nullopt;
 		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = JsonStringOrEmpty(obj.Find("id"));
+		if (prompt.id.size() > 128) prompt.id.clear();
+		prompt.revision = IntFieldAtLeastOrDefault(obj.Find("revision"), 1, 1);
 		prompt.text = JsonStringOrEmpty(obj.Find("text"));
 		if (prompt.text.size() > kMaxPersistedAcpQueuedPromptBytes -
 		    std::min(total_text_bytes, kMaxPersistedAcpQueuedPromptBytes)) return std::nullopt;
@@ -842,7 +848,8 @@ namespace
 	    const uam::AcpQueuedUserPromptState& lhs,
 	    const uam::AcpQueuedUserPromptState& rhs)
 	{
-		return lhs.text == rhs.text && lhs.uam_agent_id == rhs.uam_agent_id &&
+		return lhs.id == rhs.id && lhs.revision == rhs.revision &&
+		       lhs.text == rhs.text && lhs.uam_agent_id == rhs.uam_agent_id &&
 		       lhs.uam_agent_definition_hash == rhs.uam_agent_definition_hash &&
 		       lhs.uam_agent_definition_snapshot == rhs.uam_agent_definition_snapshot &&
 		       lhs.uam_agent_instructions == rhs.uam_agent_instructions &&
@@ -982,6 +989,7 @@ namespace
 		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
 		       lhs.remote_turn_serial == rhs.remote_turn_serial &&
 		       lhs.remote_turn_user_message_index == rhs.remote_turn_user_message_index &&
+		       lhs.acp_queue_held == rhs.acp_queue_held &&
 		       lhs.acp_dispatched_queued_prompt_count == rhs.acp_dispatched_queued_prompt_count &&
 		       AcpQueuedPromptsEquivalentForRecovery(lhs.acp_queued_prompts, rhs.acp_queued_prompts);
 	}
@@ -1226,6 +1234,16 @@ namespace
 				if (prompt.has_value()) chat.acp_queued_prompts.push_back(std::move(*prompt));
 			}
 		}
+		chat.acp_queue_held = JsonBoolOrDefault(root.Find(kChatAcpQueueHeldField), false);
+		// Legacy identities are deterministic so repeated hydration and recovery agree.
+		std::unordered_set<std::string> queued_ids;
+		for (std::size_t index = 0; index < chat.acp_queued_prompts.size(); ++index)
+		{
+			uam::AcpQueuedUserPromptState& prompt = chat.acp_queued_prompts[index];
+			if (!prompt.id.empty() && queued_ids.insert(prompt.id).second) continue;
+			prompt.id = "legacy-queue-" + chat.id + "-" + std::to_string(index);
+			while (!queued_ids.insert(prompt.id).second) prompt.id += "-legacy";
+		}
 		chat.acp_dispatched_queued_prompt_count = std::min<std::uintmax_t>(
 		    NonNegativeUintmaxFieldOrZero(root.Find(kChatAcpDispatchedQueuedPromptCountField)),
 		    chat.acp_queued_prompts.size());
@@ -1280,6 +1298,7 @@ namespace
 			chat.remote_active_turn_id.clear();
 			chat.remote_turn_serial = 0;
 			chat.remote_turn_user_message_index = -1;
+			if (chat.imported_read_only) chat.acp_queue_held = false;
 			if (chat.imported_read_only) chat.acp_queued_prompts.clear();
 			if (chat.imported_read_only) chat.acp_dispatched_queued_prompt_count = 0;
 		}
@@ -1721,6 +1740,7 @@ try
 		uam::json::PushValue(queued_prompts, AcpQueuedPromptToJson(prompt));
 	}
 	uam::json::SetValue(root, kChatAcpQueuedPromptsField, std::move(queued_prompts));
+	uam::json::SetBool(root, kChatAcpQueueHeldField, chat.acp_queue_held);
 	uam::json::SetNumber(root, kChatAcpDispatchedQueuedPromptCountField,
 	                     static_cast<double>(std::min(
 	                         chat.acp_dispatched_queued_prompt_count,
@@ -2228,6 +2248,7 @@ namespace
 		hydrated.remote_turn_serial = summary.remote_turn_serial;
 		hydrated.remote_turn_user_message_index = summary.remote_turn_user_message_index;
 		hydrated.acp_queued_prompts = summary.acp_queued_prompts;
+		hydrated.acp_queue_held = summary.acp_queue_held;
 		hydrated.acp_dispatched_queued_prompt_count =
 		    summary.acp_dispatched_queued_prompt_count;
 		hydrated.active_goal_id = summary.active_goal_id;

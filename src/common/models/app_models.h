@@ -97,6 +97,8 @@ namespace uam
 		std::string goal_id;
 		bool computer_use_mode = false;
 		bool priority_steer = false;
+		std::string id;
+		int revision = 1;
 	};
 
 	/// <summary>
@@ -321,6 +323,7 @@ struct ChatSession
 	int remote_turn_serial = 0;
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	bool acp_queue_held = false;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string temporary_parent_chat_id;
 	bool side_cleanup_requested = false;
