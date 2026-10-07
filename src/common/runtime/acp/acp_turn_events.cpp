@@ -143,13 +143,16 @@ namespace
 			session.tool_calls.push_back({
 			    .id = tool_call.id,
 			    .title = tool_call.name,
-			    .kind = tool_call.name,
+			    .kind = tool_call.kind.empty() ? tool_call.name : tool_call.kind,
 			    .status = tool_call.status,
 			    .content = tool_call.result_text,
 			    .args_json = tool_call.args_json,
 			    .is_sub_agent = tool_call.is_sub_agent,
 			    .sub_agent_id = tool_call.sub_agent_id,
 			    .sub_agent_title = tool_call.sub_agent_title,
+			    .approval_status = tool_call.approval_status,
+			    .task_id = tool_call.task_id,
+			    .child_activity = tool_call.child_activity,
 			});
 		}
 	}

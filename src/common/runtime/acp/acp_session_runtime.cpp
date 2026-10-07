@@ -3320,6 +3320,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		acp_detail::RecordAcpPermissionDecision(*session, option_id, cancelled);
+		(void)acp_detail::SyncAcpToolCallsToAssistantMessage(*chat, *session, true);
+
 		session->interaction_at = uam::time::InteractionTimestampNow();
 		chat->interaction_at = session->interaction_at;
 		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
