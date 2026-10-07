@@ -1290,6 +1290,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool SendNativeAcpSteer(AppState& app, AcpSessionState& session, ChatSession& chat,
 		    AcpQueuedUserPromptState prompt, std::string* error_out, int queued_index = -1)
 		{
+			if (session.manual_compaction_pending)
+			{
+				if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
+				return false;
+			}
 			if (!session.running || !session.session_ready || !session.processing || AcpSessionHasPendingCancel(session))
 			{
 				if (error_out != nullptr) *error_out = "Wait for the provider to start the turn before steering.";
@@ -1599,6 +1604,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		// Maintenance has no user/assistant turn ownership or checkpoint.
+		session->codex_turn_id.clear();
 		session->current_assistant_message_index = -1;
 		session->turn_assistant_message_index = -1;
 		session->turn_user_message_index = -1;
@@ -1809,6 +1815,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				*error_out = "Chat not found: " + chat_id;
 			}
+			return false;
+		}
+
+		if (const AcpSessionState* active_session = FindAcpSessionForChat(app, chat_id);
+		    active_session != nullptr && active_session->manual_compaction_pending)
+		{
+			if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
 			return false;
 		}
 

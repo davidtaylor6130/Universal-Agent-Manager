@@ -773,6 +773,8 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		if (session.manual_compaction_pending)
 		{
 			const nlohmann::json turn = JsonObjectValue(params, "turn");
+			// Ignore a previous turn's late completion until the maintenance turn starts.
+			if (session.codex_turn_id.empty() || JsonDiagnosticStringValue(turn, "id") != session.codex_turn_id) return;
 			const nlohmann::json error = JsonObjectValue(turn, "error");
 			if (uam::acp_statuses::IsFailedStatus(JsonDiagnosticStringValue(turn, "status")) || !error.empty())
 				session.last_error = CodexTurnErrorMessage(error);
@@ -1031,11 +1033,19 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			session.lifecycle_state = kAcpLifecycleProcessing;
 			return;
 		}
-		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 		AcpFailureDetails failure;
 		failure.method = "turn";
 		failure.message = error_message;
 		failure.has_detail = !detail.empty();
+		if (session.manual_compaction_pending)
+		{
+			// A streamed error precedes turn/completed; keep maintenance ownership until then.
+			session.last_error = FormatAcpFailureMessage(session, failure);
+			session.lifecycle_state = kAcpLifecycleError;
+			MarkAcpChatUnseenIfBackground(app, chat);
+			return;
+		}
+		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 		FailAcpTurnOrSession(session, &chat,
 		                     FormatAcpFailureMessage(session, failure));
 		SaveChatQuietly(app, chat);
