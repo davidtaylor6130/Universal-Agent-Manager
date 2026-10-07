@@ -770,6 +770,30 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	}
 	if (method == uam::acp_methods::kTurnCompleted)
 	{
+		if (session.manual_compaction_pending)
+		{
+			const nlohmann::json turn = JsonObjectValue(params, "turn");
+			const nlohmann::json error = JsonObjectValue(turn, "error");
+			if (uam::acp_statuses::IsFailedStatus(JsonDiagnosticStringValue(turn, "status")) || !error.empty())
+				session.last_error = CodexTurnErrorMessage(error);
+			std::erase_if(session.pending_request_methods, [](const std::pair<const int, std::string>& request)
+			{
+				return request.second == uam::acp_methods::kThreadCompactStart;
+			});
+			session.pending_request_methods.erase(session.cancel_request_id);
+			session.manual_compaction_pending = false;
+			session.processing = false;
+			session.inactivity_timeout_pending = false;
+			session.cancel_requested_time_s = 0.0;
+			session.cancel_requested = false;
+			session.cancel_request_id = 0;
+			session.codex_turn_id.clear();
+			session.lifecycle_state = kAcpLifecycleReady;
+			// A maintenance operation must not complete a goal or checkpoint a user turn.
+			(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
+			return;
+		}
+
 		const bool completed_cancelled_turn = uam::AcpSessionHasPendingCancel(session);
 		if (completed_cancelled_turn && session.inactivity_timeout_pending)
 		{

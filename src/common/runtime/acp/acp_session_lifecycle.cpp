@@ -323,6 +323,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.mcp_http_supported = false;
 	session.mcp_sse_supported = false;
 	session.processing = false;
+	session.manual_compaction_pending = false;
 	session.recovering_remote_turn = false;
 	session.restart_marker_save_pending = false;
 	session.restart_after_remote_stop_cleanup = false;
@@ -1179,6 +1180,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			session.goal_turn_kind.clear();
 			session.goal_review_turn = false;
 			session.processing = false;
+			session.manual_compaction_pending = false;
 			session.lifecycle_state = session.running ? kAcpLifecycleReady : kAcpLifecycleStopped;
 			return true;
 		}
@@ -1577,7 +1579,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
 	session.pending_request_methods.erase(session.prompt_request_id);
-	if (session.processing && session.turn_serial > 0)
+	if (session.processing && !session.manual_compaction_pending && session.turn_serial > 0)
 	{
 		session.last_settled_turn_serial = session.turn_serial;
 		session.last_turn_outcome = lifecycle_state == kAcpLifecycleReady ? "completed" : "failed";
@@ -1585,6 +1587,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	}
 	session.prompt_request_id = 0;
 	session.processing = false;
+	session.manual_compaction_pending = false;
 	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;
