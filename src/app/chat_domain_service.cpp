@@ -642,6 +642,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	chat.interaction_at = uam::time::InteractionTimestampNow();
 	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
+	chat.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
 	return chat;
 }
 
@@ -787,6 +788,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		}
 	}
 	const bool branch_from_git_worktree = uam::paths::IsGitWorktreeIsolated(source);
+	if (!branch_from_git_worktree) branch.workspace_isolation_kind = source.workspace_isolation_kind;
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
 	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
 	if (replacement_content.has_value())

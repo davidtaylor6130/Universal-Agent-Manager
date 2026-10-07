@@ -1,3 +1,4 @@
+#include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 
@@ -740,4 +741,25 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, con
 	(void)payload;
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
 #endif
+}
+
+void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	CentralProviderConfiguration configuration;
+	std::string error;
+	if (!uam::central_configuration::Parse(payload, configuration, error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
+	m_app.settings.central_provider_configuration = std::move(configuration);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings.central_provider_configuration = previous;
+		cb->Failure(500, "Could not save central provider configuration.");
+		return;
+	}
+	cb->Success("{}");
+	uam::PushStateUpdateIfChanged(browser, m_app);
 }

@@ -438,6 +438,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [compacting, setCompacting] = useState(false)
   const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
   const [dictationState, setDictationState] = useState<DictationState>('idle')
@@ -616,6 +617,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const transcriptContentRef = useRef<HTMLDivElement>(null)
   // Composer floats over the transcript; its measured height pads the transcript end.
   const composerDockRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
@@ -635,6 +637,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  const compactRequestIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef(session.id)
   const mountedRef = useRef(true)
   const removedAttachmentIdsRef = useRef(new Set<string>())
@@ -651,6 +654,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setShowScrollToBottom(false)
     submitInFlightRef.current = false
     setSubmitting(false)
+    setCompacting(false)
+    compactRequestIdRef.current = null
     setSelectedRepositoryFile(null)
     setProviderHandoffTargetId('')
     setConfirmYolo(false)
@@ -785,25 +790,29 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     let lastHeight = -1
     const observer = new ResizeObserver(() => {
       const height = dock.offsetHeight
-      if (height === lastHeight) return
-      lastHeight = height
-      dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+      if (height !== lastHeight) {
+        lastHeight = height
+        dock.parentElement?.style.setProperty('--composer-dock-h', `${height}px`)
+      }
       const el = scrollRef.current
       if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight
     })
     observer.observe(dock)
+    // Content and viewport changes also move the end, even when the dock height is unchanged.
+    if (transcriptContentRef.current) observer.observe(transcriptContentRef.current)
+    if (scrollRef.current) observer.observe(scrollRef.current)
     return () => observer.disconnect()
   }, [])
 
   const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Pause following immediately so a resize in this frame cannot override an upward scroll.
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
 	if (scrollFrameRef.current !== null) return
 	scrollFrameRef.current = window.requestAnimationFrame(() => {
 	  scrollFrameRef.current = null
-      const el = scrollRef.current
-      if (!el) return
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
-      isNearBottomRef.current = isNearBottom
-	  const showButton = !isNearBottom
+	  const showButton = !isNearBottomRef.current
 	  if (showScrollToBottomRef.current === showButton) return
 	  showScrollToBottomRef.current = showButton
 	  setShowScrollToBottom(showButton)
@@ -1093,10 +1102,50 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     return true
   }
 
+  const runCompact = async (commandDraft = draft) => {
+    if (session.importedReadOnly || submitInFlightRef.current || goalSubmitting) return
+    if (!isCefContext()) {
+      setSlashMessage('Manual compaction is unavailable without a connected native runtime.')
+      return
+    }
+    const submittedSessionId = session.id
+    const requestId = createRequestId('compactAcpSession')
+    compactRequestIdRef.current = requestId
+    submitInFlightRef.current = true
+    setSubmitting(true)
+    setCompacting(true)
+    setSlashMessage('')
+    try {
+      const response = await sendToCEF<{ accepted?: boolean }>({
+        action: 'compactAcpSession',
+        payload: { chatId: submittedSessionId },
+        requestId,
+      })
+      if (!mountedRef.current || currentSessionIdRef.current !== submittedSessionId || compactRequestIdRef.current !== requestId) return
+      if (!response.ok || response.data?.accepted !== true) {
+        setSlashMessage(response.error || 'Compaction request was not accepted.')
+        return
+      }
+      // Acceptance is not completion; provider events report the actual compaction outcome.
+      setSlashMessage('Compaction requested.')
+      setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
+    } catch {
+      if (mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId) setSlashMessage('Failed to request compaction.')
+    } finally {
+      if (mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId) {
+        compactRequestIdRef.current = null
+        submitInFlightRef.current = false
+        setSubmitting(false)
+        setCompacting(false)
+      }
+    }
+  }
+
   const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
     const prompt = (promptOverride ?? draft).trim()
-    if (!providerSupported || session.importedReadOnly || !prompt || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
+    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -1438,7 +1487,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && !session.importedReadOnly && draft.trim().length > 0 && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    () => providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
     [providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
   )
   const dictationAvailable = isCefContext()
@@ -1872,6 +1921,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           { id: 'side-return', label: '/side-return', hint: 'Back to the main chat; this side chat stays open', icon: <CornerUpLeft size={15} />, run: () => void navigateSide('return') },
           { id: 'side-dismiss', label: '/side-dismiss', hint: 'Close and discard this side chat', icon: <X size={15} />, run: () => void navigateSide('dismiss') },
         ] : []),
+        { id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() },
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
         ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
         ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
@@ -1973,6 +2023,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slashPaletteVisible])
   const runSlashCommand = (command: SlashCommand) => {
+    if (command.id === 'compact') {
+      const commandDraft = activeSlashToken ? replaceSlashAction(draft, activeSlashToken, '/compact') : draft
+      setDraft(commandDraft)
+      void runCompact(commandDraft)
+      return
+    }
     if (command.groupEntries) {
       setSlashGroup(command.id.slice('md-group:'.length))
       setSlashGroupIndex(0)
@@ -2191,7 +2247,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       <div className="relative flex-1 flex flex-col min-w-0">
         <div className="relative flex-1 min-h-0">
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-            <div className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
+            <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
                 <Notice
                   key={`chat-history:${session.id}:${chatHistoryError}`}
@@ -2485,10 +2541,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
-              <div ref={bottomRef} />
               </div>
               </SubAgentDisclosureProvider>
             </div>
+            {/* Follow the padded end so the latest output clears the floating composer. */}
+            <div ref={bottomRef} />
           </div>
           {showScrollToBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-10 flex justify-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 12px)' }}>
@@ -2718,11 +2775,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             )}
             {!isCompanionContext() && (
               <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
-                <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <ComposerIcon name="folder" size={14} />
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
-                </span>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
@@ -2752,6 +2804,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       <div className="truncate px-2 py-1 text-[11px]" style={{ color: 'var(--text-3)' }} title={workspaceDirectory}>
                         {workspaceDirectory}
                       </div>
+                      {isGitWorktree && (
+                        <div className="flex items-center gap-2 px-2 py-1 text-[11px]" title={session.workspaceBranchName}>
+                          <ComposerIcon name="git-tree" size={14} />
+                          <span className="truncate">{session.workspaceBranchName}</span>
+                        </div>
+                      )}
                       {isGitWorktree && (
                         <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
                           Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
@@ -2791,6 +2849,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     </ViewportMenu>
                   )}
                 </div>
+                <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
+                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
+                  {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
+                </span>
               </div>
             )}
             {pendingUserInput && !session.importedReadOnly && (
@@ -2996,7 +3058,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onPaste={onComposerPaste}
               rows={1}
               placeholder={`Message ${currentProviderName} · / for commands`}
-              disabled={submitting || dictationActive || session.importedReadOnly}
+              disabled={(submitting && !compacting) || dictationActive || session.importedReadOnly}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
               aria-expanded={slashOpen}

@@ -1,3 +1,4 @@
+#include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
 #include "common/config/editor_file_associations.h"
@@ -593,6 +594,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
+	WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
 	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
 	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
@@ -811,6 +813,11 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kEditorFileAssociationsKey)
 		{
 			DecodeEditorFileAssociations(decoded_value, settings.editor_file_associations);
+		}
+		else if (key == "central_provider_configuration")
+		{
+			std::string error;
+			(void)uam::central_configuration::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.central_provider_configuration, error);
 		}
 		else if (key == kMcpServersKey)
 		{

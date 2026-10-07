@@ -2,12 +2,27 @@
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_security.h"
+#include "common/utils/diagnostic_log.h"
+#include "include/cef_task.h"
 
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_message_router.h"
 #include "include/cef_parser.h"
 
 #include <utility>
+
+namespace
+{
+	class UiRecoveryTask final : public CefTask
+	{
+	  public:
+		explicit UiRecoveryTask(std::function<void()> callback) : m_callback(std::move(callback)) {}
+		void Execute() override { m_callback(); }
+	  private:
+		std::function<void()> m_callback;
+		IMPLEMENT_REFCOUNTING(UiRecoveryTask);
+	};
+}
 
 UamCefClient::UamCefClient(uam::AppState& app, std::string trusted_ui_index_url, BrowserReadyCallback on_ready)
 	: m_app(app)
@@ -111,6 +126,8 @@ void UamCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 		// The process is exiting, so drop our wrapper without re-entering Release().
 		(void)m_router.release();
 	}
+	++m_recoveryGeneration;
+	m_nativeRecovery = {};
 	m_browser = nullptr;
 	CefQuitMessageLoop();
 }
@@ -131,6 +148,14 @@ void UamCefClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 
+	if (http_status_code >= 200 && http_status_code < 400)
+	{
+		// A replacement renderer needs a fresh accessibility tree, even for the same browser.
+		browser->GetHost()->SetAccessibilityState(STATE_DISABLED);
+		browser->GetHost()->SetAccessibilityState(STATE_ENABLED);
+		if (m_nativeRecovery) m_nativeRecovery(false);
+	}
+
 	// React pulls the initial state with getInitialState during store bootstrap.
 	// Avoid a duplicate full-state serialization/push on the CEF UI thread here.
 }
@@ -146,15 +171,12 @@ void UamCefClient::OnLoadError(CefRefPtr<CefBrowser> /*browser*/,
 		return;
 	}
 
-	// Inject a minimal error page so the window is not blank.
-	std::string html =
-		"<html><body style='background:#0b0b0e;color:#f97316;font-family:monospace;padding:40px'>"
-		"<h2>UAM — Load Error</h2>"
-		"<p>Failed to load: " + failed_url.ToString() + "</p>"
-		"<p>Error " + std::to_string(static_cast<int>(error_code)) + ": " + error_text.ToString() + "</p>"
-		"</body></html>";
+	(void)error_text;
+	(void)failed_url;
+	if (error_code == ERR_ABORTED) return;
+	uam::diagnostics::Write("[UI recovery] Main document load failed: " + std::to_string(static_cast<int>(error_code)));
+	if (m_nativeRecovery) m_nativeRecovery(true);
 
-	frame->LoadURL("data:text/html;charset=utf-8," + CefURIEncode(html, false).ToString());
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +206,8 @@ void UamCefClient::OnBeforeContextMenu(CefRefPtr<CefBrowser>           /*browser
 	}
 
 	model->Clear();
+	model->AddItem(MENU_ID_USER_FIRST, "Reload interface (Ctrl+Shift+R)");
+	model->AddSeparator();
 
 	if (params == nullptr)
 	{
@@ -212,6 +236,7 @@ bool UamCefClient::OnContextMenuCommand(CefRefPtr<CefBrowser>           /*browse
                                          int                             command_id,
                                          EventFlags                      /*event_flags*/)
 {
+	if (command_id == MENU_ID_USER_FIRST) { ReloadInterface(); return true; }
 	if (frame == nullptr)
 	{
 		return false;
@@ -312,7 +337,10 @@ bool UamCefClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 		return true;
 	}
 
-	return ShouldCancelNavigationToUrl(request->GetURL());
+	const bool cancel = ShouldCancelNavigationToUrl(request->GetURL());
+	if (!cancel && frame && frame->IsMain()) ++m_recoveryGeneration;
+	if (!cancel && m_router) m_router->OnBeforeBrowse(browser, frame);
+	return cancel;
 }
 
 bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
@@ -326,4 +354,78 @@ bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
 	(void)frame;
 
 	return ShouldCancelNavigationToUrl(target_url.ToString());
+}
+
+void UamCefClient::ReloadInterface()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (!m_browser || !m_browser->IsValid()) return;
+	m_recoveryBudget.Reset();
+	m_rendererUnresponsive = false;
+	++m_recoveryGeneration;
+	uam::diagnostics::Write("[UI recovery] User requested interface reload.");
+	m_browser->GetMainFrame()->LoadURL(m_trustedUiIndexUrl);
+}
+
+void UamCefClient::RecoverInterface(unsigned int generation)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (generation != m_recoveryGeneration || !m_browser || !m_browser->IsValid()) return;
+	m_browser->GetMainFrame()->LoadURL(m_trustedUiIndexUrl);
+}
+
+void UamCefClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus status, int error_code, const CefString& error_string)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)error_string;
+	if (m_router) m_router->OnRenderProcessTerminated(browser);
+	m_rendererUnresponsive = false;
+	uam::diagnostics::Write("[UI recovery] Renderer terminated: status=" + std::to_string(static_cast<int>(status)) + " code=" + std::to_string(error_code));
+	if (m_nativeRecovery) m_nativeRecovery(true);
+	const unsigned int generation = ++m_recoveryGeneration;
+	if (!m_recoveryBudget.AllowAutomaticRecovery())
+	{
+		uam::diagnostics::Write("[UI recovery] Automatic retry limit reached; native recovery remains available.");
+		return;
+	}
+	const CefRefPtr<UamCefClient> client(this);
+	CefPostDelayedTask(TID_UI, new UiRecoveryTask([client, generation]() { client->RecoverInterface(generation); }), 1000);
+}
+
+bool UamCefClient::OnRenderProcessUnresponsive(CefRefPtr<CefBrowser> browser, CefRefPtr<CefUnresponsiveProcessCallback> callback)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)browser;
+	if (!m_rendererUnresponsive)
+	{
+		m_rendererUnresponsive = true;
+		uam::diagnostics::Write("[UI recovery] Renderer unresponsive; allowing one additional hang-monitor interval.");
+		callback->Wait();
+	}
+	else
+	{
+		uam::diagnostics::Write("[UI recovery] Renderer still unresponsive; terminating it for recovery.");
+		callback->Terminate();
+	}
+	return true;
+}
+
+void UamCefClient::OnRenderProcessResponsive(CefRefPtr<CefBrowser> browser)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)browser;
+	if (!m_rendererUnresponsive) return;
+	m_rendererUnresponsive = false;
+	if (m_nativeRecovery) m_nativeRecovery(false);
+}
+
+bool UamCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message, const CefString& source, int line)
+{
+	(void)browser;
+	(void)source;
+	(void)line;
+	const std::string text = message.ToString();
+	if (level >= LOGSEVERITY_ERROR || text.starts_with("[UI recovery]") || text.starts_with("[UI startup]"))
+		uam::diagnostics::Write("[frontend] " + text);
+	return false;
 }

@@ -587,13 +587,18 @@ namespace uam
 	static bool PollAt(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 	{
 		bool changed = false;
+		const std::vector<std::string> pending_cancellations(app.pending_agent_run_cancellation_ids.begin(), app.pending_agent_run_cancellation_ids.end());
+		for (const std::string& id : pending_cancellations)
+		{
+			if (app.pending_agent_run_cancellation_ids.contains(id) && AgentRunScheduler::CancelTree(app, id)) changed = true;
+		}
 		for (AgentRun& run : app.agent_runs)
 		{
 			if (DeliverRootResult(app, run)) changed = true;
 		}
 		for (AgentRun& run : app.agent_runs)
 		{
-			if (run.status != "running") continue;
+			if (run.status != "running" || app.pending_agent_run_cancellation_ids.contains(run.id)) continue;
 			AcpSessionState* session = FindAcpSessionForChat(app, run.transcript_chat_id);
 			if (session != nullptr && session->managed_cancellation_pending)
 			{
@@ -634,12 +639,19 @@ namespace uam
 		}
 
 		std::size_t running = std::ranges::count(app.agent_runs, std::string("running"), &AgentRun::status);
-		while (running < kMaxRunningAgents && !app.queued_agent_run_ids.empty())
+		std::size_t remaining_queued = app.queued_agent_run_ids.size();
+		while (running < kMaxRunningAgents && remaining_queued > 0 && !app.queued_agent_run_ids.empty())
 		{
+			--remaining_queued;
 			const std::string id = std::move(app.queued_agent_run_ids.front());
 			app.queued_agent_run_ids.pop_front();
 			AgentRun* run = FindRun(app, id);
 			if (run == nullptr || run->status != "queued") continue;
+			if (app.pending_agent_run_cancellation_ids.contains(id))
+			{
+				app.queued_agent_run_ids.push_back(id);
+				continue;
+			}
 			ChatSession* transcript = ChatDomainService().FindChatById(app, run->transcript_chat_id);
 			if (transcript == nullptr)
 			{
@@ -753,6 +765,7 @@ namespace uam
 		}
 		std::vector<AgentRun*> runs;
 		for (AgentRun& run : app.agent_runs) if (tree.contains(run.id) && !IsTerminal(run.status)) runs.push_back(&run);
+		for (const AgentRun* run : runs) app.pending_agent_run_cancellation_ids.insert(run->id);
 		std::ranges::sort(runs, std::greater{}, &AgentRun::depth);
 		bool success = true;
 		std::string first_error;
@@ -791,10 +804,11 @@ namespace uam
 					first_error = "One or more cancellation records could not be persisted.";
 				continue;
 			}
+			app.pending_agent_run_cancellation_ids.erase(run->id);
 			app.agent_run_deadline_steady_ms.erase(run->id);
 			EraseRuntimeChat(app, run->transcript_chat_id);
 		}
-		std::erase_if(app.queued_agent_run_ids, [&](const std::string& id) { return tree.contains(id); });
+		std::erase_if(app.queued_agent_run_ids, [&](const std::string& id) { return tree.contains(id) && !app.pending_agent_run_cancellation_ids.contains(id); });
 		if (!success && error_out != nullptr) *error_out = std::move(first_error);
 		return success;
 	}

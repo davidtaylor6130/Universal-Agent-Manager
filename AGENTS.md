@@ -2,9 +2,9 @@
 
 ## Release Slice
 
-This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, and GitHub Copilot CLI. Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
+This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI (terminal only). Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
-Do not remove any of these five provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
+Do not remove any of these six provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
 
 ## Build Commands
 

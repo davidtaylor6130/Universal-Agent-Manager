@@ -35,6 +35,10 @@ struct ToolCall
 	bool is_sub_agent = false;
 	std::string sub_agent_id;
 	std::string sub_agent_title;
+	std::string kind;
+	std::string approval_status;
+	std::string task_id;
+	std::string child_activity;
 	bool operator==(const ToolCall&) const = default;
 };
 
@@ -336,6 +340,7 @@ struct ChatSession
 	std::string goal_command_revision;
 	std::string goal_pending_continuation_id;
 	/// Persisted recency of user input and runtime state events, excluding stream traffic.
+	/// Empty for imported history until its first UAM interaction.
 	std::string interaction_at;
 	bool pinned = false;
 	std::vector<std::string> linked_files;
@@ -480,11 +485,13 @@ struct McpSecretReference
 {
 	std::string name;
 	std::string environment_variable;
+	std::string value; // Literal value stored in settings; used when environment_variable is empty.
 };
 
 struct McpServerConfiguration
 {
 	std::string id;
+	std::string execution_host_id;
 	std::string name;
 	std::string workspace_directory;
 	std::string transport = "stdio";
@@ -526,6 +533,19 @@ struct ComputerUseApplicationRule
 /// <summary>
 /// Persisted application settings.
 /// </summary>
+/// <summary>Resources UAM installs privately for every configured provider launch.</summary>
+struct CentralProviderConfiguration
+{
+	bool enabled = false;
+	std::string instructions;
+	std::vector<std::string> instruction_files;
+	std::vector<std::string> skill_directories;
+	std::string default_agent_id = "build";
+	bool uam_control_enabled = true;
+	std::vector<std::string> default_skills;
+	std::vector<std::string> default_agents;
+};
+
 struct AppSettings
 {
 	bool computer_use_allowlist_enabled = false;
@@ -566,6 +586,7 @@ struct AppSettings
 	std::string file_explorer_application;
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
+	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
 	std::vector<std::string> favorite_uam_agent_ids;

@@ -1,7 +1,6 @@
 import { MOBILE_COMPANION_ENABLED } from './config/buildFeatures'
 import { lazy, Suspense, useEffect } from 'react'
 import { isCompanionContext } from './ipc/cefBridge'
-import { TooltipProvider } from './components/ui'
 import { useAppStore } from './store/useAppStore'
 import { installCopySelectionFallback } from './utils/copySelection'
 import { trapModalTab } from './utils/modalFocus'
@@ -30,10 +29,8 @@ export default function App() {
   }, [])
 
   return (
-    <TooltipProvider>
       <Suspense fallback={<div role="status" className="p-4 text-sm">Loading Universal Agent Manager…</div>}>
         {isCompanionContext() && CompanionShell ? <CompanionShell /> : <AppShell />}
       </Suspense>
-    </TooltipProvider>
   )
 }

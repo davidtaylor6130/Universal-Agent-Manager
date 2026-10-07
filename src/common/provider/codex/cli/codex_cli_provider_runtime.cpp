@@ -11,6 +11,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/provider/codex/cli/codex_acp_message_handlers.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -405,6 +406,14 @@ void CodexCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& sessio
 	}
 }
 
+nlohmann::json CodexCliProviderRuntime::OnAcpBuildCompact(const uam::AcpSessionState& session,
+    int request_id, std::string& method) const
+{
+	if (session.codex_thread_id.empty()) return nullptr;
+	method = uam::acp_methods::kThreadCompactStart;
+	return {{"jsonrpc", "2.0"}, {"id", request_id}, {"method", method}, {"params", {{"threadId", session.codex_thread_id}}}};
+}
+
 bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
     const uam::acp_detail::AcpResponseFailureDetails& details) const
 {
@@ -412,6 +421,21 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 	const AcpFailureDetails& failure = details.failure;
 	const std::string& detail_text = details.detail_text;
 	const std::string& formatted_error = details.formatted_error;
+	if (failure.method == uam::acp_methods::kThreadCompactStart)
+	{
+		session.manual_compaction_pending = false;
+		session.processing = false;
+		session.lifecycle_state = kAcpLifecycleReady;
+		session.last_error = formatted_error;
+		session.inactivity_timeout_pending = false;
+		session.cancel_requested_time_s = 0.0;
+		session.cancel_requested = false;
+		session.pending_request_methods.erase(session.cancel_request_id);
+		session.cancel_request_id = 0;
+		session.codex_turn_id.clear();
+		(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+		return true;
+	}
 	if (failure.method == "turn/steer")
 	{
 		FinishCodexSteer(app, session, chat, failure.request_id, formatted_error);
@@ -470,6 +494,11 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 {
 	using namespace uam;
 	using namespace uam::acp_detail;
+	if (method == uam::acp_methods::kThreadCompactStart)
+	{
+		// Acceptance is not completion: standard turn notifications settle compaction.
+		return true;
+	}
 	if (method == "turn/steer")
 	{
 		const std::unordered_map<std::string, AcpPendingSteerState>::const_iterator pending = session.pending_steer_requests.find(request_id);

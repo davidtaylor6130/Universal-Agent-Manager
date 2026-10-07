@@ -436,14 +436,6 @@ describe('SettingsModal memory settings', () => {
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
   }
 
-  function openMcpServersSection(host: HTMLElement) {
-    const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('MCP Servers')
-    )
-    expect(sectionButton).toBeTruthy()
-    act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-  }
-
   function openAgentsSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Agents')
@@ -570,88 +562,8 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('rejects malformed MCP JSON locally and saves environment references', async () => {
-    const { host, root } = renderModal()
-    openMcpServersSection(host)
-    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
-    const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
-    const save = host.querySelector('button[aria-label="Save MCP server configuration"]') as HTMLButtonElement
 
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, '{')
-      editor.dispatchEvent(new Event('input', { bubbles: true }))
-      save.click()
-    })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('valid JSON')
-    expect(useAppStore.getState().setMcpServers).not.toHaveBeenCalled()
 
-    const servers = [{
-      id: 'computer-use', name: 'Computer Use', workspaceDirectory: '/tmp/project', transport: 'http',
-      command: '', args: [], url: 'http://127.0.0.1:43123/mcp', environment: [],
-      headers: [{ name: 'Authorization', environmentVariable: 'COMPUTER_USE_AUTH' }], enabled: true,
-    }]
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, JSON.stringify(servers))
-      editor.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => { save.click(); await Promise.resolve() })
-    expect(useAppStore.getState().setMcpServers).toHaveBeenCalledWith(servers)
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('saved')
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('keeps rejected MCP edits and shows the backend validation error', async () => {
-    const setMcpServers = vi.fn(() => Promise.resolve({ ok: false, error: "MCP server 'Computer Use' needs an absolute executable path." }))
-    useAppStore.setState({ setMcpServers })
-    const { host, root } = renderModal()
-    openMcpServersSection(host)
-    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
-    const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
-    const save = host.querySelector('button[aria-label="Save MCP server configuration"]') as HTMLButtonElement
-    const attempted = [{
-      id: 'computer-use', name: 'Computer Use', workspaceDirectory: '/tmp/project', transport: 'stdio',
-      command: 'npx', args: ['@playwright/mcp@latest'], url: '', environment: [], headers: [], enabled: true,
-    }]
-
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, JSON.stringify(attempted))
-      editor.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => { save.click(); await Promise.resolve() })
-    act(() => useAppStore.setState({ mcpServers: [] }))
-
-    expect(editor.value).toBe(JSON.stringify(attempted))
-    expect(host.querySelector('[role="status"]')?.textContent).toBe("MCP server 'Computer Use' needs an absolute executable path.")
-
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('adds isolated Playwright browser control without writing JSON', async () => {
-    const { host, root } = renderModal()
-    openMcpServersSection(host)
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Setup Gemini browser control"]')?.click())
-    const executable = host.querySelector('input[aria-label="npx executable path"]') as HTMLInputElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(executable, '/opt/homebrew/bin/npx')
-      executable.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const add = host.querySelector('button[aria-label="Add Playwright browser control"]') as HTMLButtonElement
-    await act(async () => { add.click(); await Promise.resolve() })
-
-    expect(useAppStore.getState().setMcpServers).toHaveBeenCalledWith([expect.objectContaining({
-      name: 'Playwright browser control',
-      workspaceDirectory: '/tmp/project',
-      command: '/opt/homebrew/bin/npx',
-      args: ['-y', '@playwright/mcp@latest', '--isolated'],
-    })])
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Browser control configured')
-
-    act(() => root.unmount())
-    host.remove()
-  })
 
   it('opens and switches sections without a forced animation or duplicate theme refresh', () => {
     const { host, root } = renderModal()
@@ -734,30 +646,6 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('warns before discarding an unsaved MCP draft and restores focus on close', () => {
-    const opener = document.createElement('button')
-    document.body.appendChild(opener)
-    opener.focus()
-    const { host, root } = renderModal()
-    expect(document.activeElement).toBe(host.querySelector('[role="region"][aria-label="Settings"]'))
-    openMcpServersSection(host)
-    act(() => host.querySelector('details > summary')?.dispatchEvent(new MouseEvent('click', {bubbles:true})))
-    const editor = host.querySelector('textarea[aria-label="MCP server configuration"]') as HTMLTextAreaElement
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editor, '[{"name":"draft"}]')
-      editor.dispatchEvent(new Event('input', { bubbles: true }))
-      ;(host.querySelector('button[aria-label="Back to chats"]') as HTMLButtonElement).click()
-    })
-    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="alertdialog"][aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discard changes')?.click())
-    expect(useAppStore.getState().setSettingsOpen).toHaveBeenCalledWith(false)
-
-    act(() => root.unmount())
-    expect(document.activeElement).toBe(opener)
-    host.remove()
-    opener.remove()
-  })
 
   it('includes units on memory numeric settings', () => {
     const { host, root } = renderModal()
@@ -1908,48 +1796,7 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
-  it('retains newer MCP JSON after an older save succeeds', async () => {
-    let finish!: (value: {ok:boolean}) => void
-    const save = vi.fn(() => new Promise<{ok:boolean}>(resolve => {finish=resolve}))
-    useAppStore.setState({setMcpServers:save})
-    const {host,root} = renderModal()
-    openMcpServersSection(host)
-    const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP server configuration"]')!
-    const edit = (value:string) => act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(editor,value); editor.dispatchEvent(new Event('input',{bubbles:true})) })
-    edit('[]')
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Save MCP server configuration"]')!.click())
-    edit('[{"id":"newer"}]')
-    await act(async () => finish({ok:true}))
-    expect(editor.value).toBe('[{"id":"newer"}]')
-    expect(host.textContent).toContain('newer edits remain unsaved')
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
-    expect(host.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
-    act(() => root.unmount()); host.remove()
-  })
 
-  it('shows only supported browser Setup actions and never treats a pending or rejected save as configured', async () => {
-    const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)
-    let finish!: (value:{ok:boolean;error?:string}) => void
-    useAppStore.setState({providers,setMcpServers:vi.fn(() => new Promise<{ok:boolean;error?:string}>(resolve => {finish=resolve}))})
-    const {host,root} = renderModal()
-    openMcpServersSection(host)
-    expect(host.querySelectorAll('button[aria-label^="Setup "]')).toHaveLength(3)
-    expect(host.querySelector('[aria-label="Setup Codex browser control"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Setup Claude browser control"]')).toBeNull()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Setup Gemini browser control"]')!.click())
-    const executable = host.querySelector<HTMLInputElement>('[aria-label="npx executable path"]')!
-    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(executable,'/usr/local/bin/npx'); executable.dispatchEvent(new Event('input',{bubbles:true})) })
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add Playwright browser control"]')!.click())
-    expect(host.textContent).toContain('Saving configuration…')
-    expect(host.textContent).not.toContain('Configured')
-    expect(host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.disabled).toBe(true)
-    await act(async () => finish({ok:false,error:'Settings disk is read-only.'}))
-    expect(host.textContent).toContain('Settings disk is read-only.')
-    expect(host.textContent).not.toContain('Configured')
-    expect(executable.value).toBe('/usr/local/bin/npx')
-    expect(host.querySelector('button[aria-label="Add Playwright browser control"]')).toBeTruthy()
-    act(() => root.unmount()); host.remove()
-  })
 
   it('keeps all five CLI rows compact and confirms a latest download before calling the real action', () => {
     const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)

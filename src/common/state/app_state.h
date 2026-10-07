@@ -57,6 +57,7 @@ namespace uam
 		std::string chat_id;
 		std::vector<std::string> argv;
 		std::vector<std::pair<std::string, std::string>> environment;
+		std::filesystem::path provider_configuration_directory;
 		std::string channel;
 		std::string error;
 		bool succeeded = false;
@@ -78,8 +79,11 @@ namespace uam
 		int token_expected_bytes = 0;
 	};
 
+	struct AcpSessionState;
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
+		std::shared_ptr<AcpSessionState> uam_control_session;
+		std::unique_ptr<std::jthread> uam_control_relay;
 		std::string terminal_id;
 		std::string frontend_chat_id;
 		bool running = false;
@@ -156,6 +160,9 @@ namespace uam
 		bool is_sub_agent = false;
 		std::string sub_agent_id;
 		std::string sub_agent_title;
+		std::string approval_status;
+		std::string task_id;
+		std::string child_activity;
 	};
 
 	struct AcpPlanEntryState
@@ -216,6 +223,8 @@ namespace uam
 
 	struct AcpReplayUpdateState
 	{
+		int message_index = -1;
+		int block_index = -1;
 		std::string session_update;
 		std::string text;
 		std::string tool_call_id;
@@ -379,6 +388,8 @@ namespace uam
 
 		std::string id;
 		std::filesystem::path directory;
+		std::filesystem::path provider_configuration_directory;
+		bool central_skills_enabled = false;
 		std::string chat_id;
 		std::string session_chat_id;
 		std::string provider_id;
@@ -450,6 +461,7 @@ namespace uam
 		bool mcp_http_supported = false;
 		bool mcp_sse_supported = false;
 		bool processing = false;
+		bool manual_compaction_pending = false;
 		bool recovering_remote_turn = false;
 		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;
@@ -486,6 +498,8 @@ namespace uam
 		std::string active_uam_agent_execution_capability = "uam-prompt-injected";
 		std::filesystem::path active_uam_agent_adapter_directory;
 		std::string managed_agent_run_id;
+		std::unique_ptr<std::jthread> uam_control_relay;
+		std::filesystem::path provider_configuration_directory;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;
@@ -550,6 +564,7 @@ namespace uam
 		std::string last_process_id;
 		std::vector<std::string> assistant_replay_prefixes;
 		std::vector<AcpReplayUpdateState> load_history_replay_updates;
+		int load_history_replay_end_message_index = -1;
 		std::vector<AcpDiagnosticEntryState> diagnostics;
 		std::string pending_assistant_thoughts;
 		std::string agent_name;
@@ -559,6 +574,7 @@ namespace uam
 		std::unordered_map<std::string, AcpPendingSteerState> pending_steer_requests;
 		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
+		std::unordered_set<std::string> claude_seen_child_messages;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
@@ -852,6 +868,8 @@ namespace uam
 		std::vector<UamControlCapability> uam_control_capabilities;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
+		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;

@@ -47,6 +47,8 @@ namespace uam
 	{
 	  public:
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
+		/// Creates the saved default worktree before a new local chat launches a provider.
+		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;
 		GitWorktreeOperationResult CreateForChat(AppState& app, ChatSession& chat) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
 		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;

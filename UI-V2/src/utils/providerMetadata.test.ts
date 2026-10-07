@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildProviderCliInstallCommand, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, normalizeCliProviderIdAlias, OPENCODE_CLI_PROVIDER_ID, providerMetadataForId, providerNpmPackageName, providerRuntimeDescription, providerRuntimeKindLabel, providerShortName, providerUsesProtocol } from './providerMetadata'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, SUPPORTED_TEXT_WORKER_PROVIDER_IDS, buildProviderCliInstallCommand, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, normalizeCliProviderIdAlias, OPENCODE_CLI_PROVIDER_ID, providerMetadataForId, providerNpmPackageName, providerRuntimeDescription, providerRuntimeKindLabel, providerShortName, providerUsesProtocol } from './providerMetadata'
 
 describe('providerMetadata', () => {
   it('returns known provider labels and structured protocols', () => {
@@ -103,5 +103,23 @@ describe('providerMetadata', () => {
       expect(normalizeCliProviderIdAlias(alias)).toBe(canonical)
       expect(providerMetadataForId(alias).id).toBe(canonical)
     }
+  })
+})
+
+
+describe('Antigravity terminal capabilities', () => {
+  it('canonicalizes native executable aliases without Gemini fallback', () => {
+    for (const alias of [' AGY ', 'Antigravity', ANTIGRAVITY_CLI_PROVIDER_ID]) {
+      expect(normalizeCliProviderIdAlias(alias)).toBe(ANTIGRAVITY_CLI_PROVIDER_ID)
+      expect(fallbackProviderForId(alias)).toMatchObject({ id: ANTIGRAVITY_CLI_PROVIDER_ID, supportsCli: true, supportsStructured: false, structuredProtocol: 'none' })
+    }
+  })
+
+  it('keeps the terminal provider out of workers and invented package installations', () => {
+    expect(SUPPORTED_CLI_PROVIDER_IDS).toContain(ANTIGRAVITY_CLI_PROVIDER_ID)
+    expect(SUPPORTED_TEXT_WORKER_PROVIDER_IDS).not.toContain(ANTIGRAVITY_CLI_PROVIDER_ID)
+    expect(SUPPORTED_TEXT_WORKER_PROVIDER_IDS).toHaveLength(5)
+    expect(providerMetadataForId(ANTIGRAVITY_CLI_PROVIDER_ID).capabilities).toMatchObject({ supportsTextWorkers: false, structuredPermissionControl: 'provider', terminalPermissionControl: 'provider' })
+    expect(buildProviderCliInstallCommand(ANTIGRAVITY_CLI_PROVIDER_ID, 'latest')).toBe('')
   })
 })

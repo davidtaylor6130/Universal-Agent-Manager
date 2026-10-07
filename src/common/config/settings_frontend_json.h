@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/config/central_provider_configuration.h"
+
 #include "common/memory/memory_levels.h"
 
 #include "common/config/approval_modes.h"
@@ -122,6 +124,7 @@ namespace uam::settings_frontend_json
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
+		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;

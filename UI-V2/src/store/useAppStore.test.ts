@@ -1232,6 +1232,39 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-1'][0].content).toBe('First second third')
   })
 
+  it.each(['new', 'reattached', 'failed'] as const)('preserves %s skill attachments across pending prompt acknowledgement', async (scenario) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messages = []
+    initial.chats[0].messageCount = 0
+    initial.chats[0].acpSession = { sessionId: 'native', running: true, processing: false, lastError: '' }
+    let finish = () => { throw new Error('Prompt request not started') }
+    const requests: Array<{ payload: { markdownStoreFiles: string[] } }> = []
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action !== 'sendAcpPrompt') { onSuccess(JSON.stringify(initial)); return }
+      requests.push(parsed)
+      finish = () => scenario === 'failed' ? onFailure(500, 'Admission failed') : onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const sent = { id: 'sent', title: 'Sent skill', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/sent.md' }
+    const added = { ...sent, id: 'next', filePath: '/skills/next.md' }
+    cefStore.getState().attachMarkdownStoreEntry('chat-1', sent)
+    const sending = cefStore.getState().sendAcpPrompt('chat-1', 'Use the skill')
+    expect(requests[0].payload.markdownStoreFiles).toEqual([sent.filePath])
+    if (scenario === 'reattached') {
+      cefStore.getState().detachMarkdownStoreEntry('chat-1', sent.filePath)
+      cefStore.getState().attachMarkdownStoreEntry('chat-1', sent)
+    } else cefStore.getState().attachMarkdownStoreEntry('chat-1', added)
+    finish()
+    await expect(sending).resolves.toBe(scenario !== 'failed')
+    expect(cefStore.getState().markdownStoreAttachedBySessionId['chat-1'].map((entry) => entry.filePath)).toEqual(
+      scenario === 'reattached' ? [sent.filePath] : scenario === 'failed' ? [sent.filePath, added.filePath] : [added.filePath]
+    )
+  })
+
   it('ignores an older prompt failure after a newer prompt succeeds', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -1367,6 +1400,26 @@ describe('useAppStore Gemini CLI slice', () => {
       })
     }
     consoleSpy.mockRestore()
+  })
+
+  it('sends an image-only prompt through the bridge and rejects a completely empty send', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(makeCppState(1)))
+      else { requests.push(parsed); onSuccess('{}') }
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const image = { id: 'image-1', name: 'image.png', type: 'image', size: 10, path: '/tmp/image.png' }
+    await expect(cefStore.getState().sendAcpPrompt('chat-1', '', [image])).resolves.toBe(true)
+    expect(requests).toContainEqual(expect.objectContaining({ action: 'sendAcpPrompt', payload: expect.objectContaining({ text: '', attachments: [image] }) }))
+    const count = requests.length
+    await expect(cefStore.getState().sendAcpPrompt('chat-1', '  ')).resolves.toBe(false)
+    expect(requests).toHaveLength(count)
   })
 
   it('matches a late send response to its user position rather than the last message', async () => {
@@ -5261,6 +5314,26 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
   })
 
+  it('hydrates central resources and restores them after a rejected save', async () => {
+    const configuration = {
+      enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],
+      skillDirectories: ['/skills'], defaultAgentId: 'plan', uamControlEnabled: true,
+    }
+    const state = makeCppState(1)
+    state.settings.centralProviderConfiguration = configuration
+    useAppStore.getState().loadFromCef(state)
+    expect(useAppStore.getState().centralProviderConfiguration).toEqual(configuration)
+    const requests: Array<{ action: string; payload: unknown }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(500, 'Storage unavailable')
+    }
+    const result = await useAppStore.getState().setCentralProviderConfiguration({ ...configuration, instructions: 'Updated context' })
+    expect(result).toEqual({ ok: false, error: 'Storage unavailable' })
+    expect(requests[0]).toMatchObject({ action: 'setCentralProviderConfiguration', payload: { instructions: 'Updated context' } })
+    expect(useAppStore.getState().centralProviderConfiguration).toEqual(configuration)
+  })
+
   it('persists MCP environment references and rolls back a rejected update', async () => {
     const cppState = makeCppState(1)
     cppState.settings.mcpServers = []
@@ -5521,6 +5594,26 @@ describe('useAppStore Gemini CLI slice', () => {
     await Promise.all([olderRequest, newerRequest])
 
     assertLatest()
+  })
+
+  it.each(['success', 'failure'] as const)('ignores stale refresh %s after selecting another memory scope', async (result) => {
+    const callbacks: Array<{ succeed: (response: string) => void; fail: (code: number, message: string) => void }> = []
+    window.cefQuery = ({ onSuccess, onFailure }) => { callbacks.push({ succeed: onSuccess, fail: onFailure }) }
+    const globalScope = { scopeType: 'global' as const, folderId: '', label: 'Global', rootPath: '/global' }
+    const folderScope = { scopeType: 'folder' as const, folderId: 'project', label: 'Project', rootPath: '/project/.UAM' }
+    useAppStore.setState({ memoryLibraryScope: globalScope, memoryLibraryEntries: [] })
+    const refreshing = useAppStore.getState().refreshMemoryLibrary()
+    const opening = useAppStore.getState().openFolderMemoryLibrary('project')
+    if (result === 'success') callbacks[0].succeed(JSON.stringify({ scope: globalScope, entries: [{ id: 'stale' }] }))
+    else callbacks[0].fail(500, 'Old scope failed')
+    await expect(refreshing).resolves.toBe(false)
+    expect(useAppStore.getState()).toMatchObject({
+      memoryLibraryScope: { scopeType: 'folder', folderId: 'project' }, memoryLibraryLoading: true,
+      memoryLibraryEntries: [], memoryLibraryError: '',
+    })
+    callbacks[1].succeed(JSON.stringify({ scope: folderScope, entries: [] }))
+    await expect(opening).resolves.toBe(true)
+    expect(useAppStore.getState().memoryLibraryScope).toEqual(folderScope)
   })
 
   it('loads the global memory library through CEF', async () => {

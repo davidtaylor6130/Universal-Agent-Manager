@@ -138,6 +138,11 @@ inline ProviderChatDefaults ProviderDefaultsFromSettingsPayload(const nlohmann::
 
 inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession& chat, const nlohmann::json* payload_defaults = nullptr)
 {
+	if (settings.central_provider_configuration.enabled)
+	{
+		chat.uam_agent_id = settings.central_provider_configuration.default_agent_id;
+		chat.uam_control_enabled = settings.central_provider_configuration.uam_control_enabled;
+	}
 	ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
 	if (payload_defaults != nullptr)
 	{

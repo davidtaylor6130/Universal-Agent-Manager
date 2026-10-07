@@ -390,6 +390,8 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
 
 void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTerminalStopMode stop_mode)
 {
+	terminal.uam_control_relay.reset();
+	terminal.uam_control_session.reset();
 	if (terminal.context_preparation != nullptr)
 	{
 		terminal.context_preparation->cancellation.request_stop();

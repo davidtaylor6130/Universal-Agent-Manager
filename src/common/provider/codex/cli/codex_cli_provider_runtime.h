@@ -25,6 +25,8 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 
+	nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState& session, int request_id, std::string& method) const override;
+
 	const char* AcpProtocolKind() const override { return "codex-app-server"; }
 	std::string AcpTurnIdentity(const uam::AcpSessionState& session) const override;
 	void RestoreAcpTurnIdentity(uam::AcpSessionState& session, const std::string& identity) const override;

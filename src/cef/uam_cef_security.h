@@ -261,8 +261,8 @@ namespace uam::cef
 		return uam::paths::NormalizeExistingOrAbsolutePath("UI-V2/dist");
 	}
 
-	inline std::optional<std::filesystem::path> ResolveTrustedUiResourcePath(
-	    const std::filesystem::path& root, const std::string& raw_url)
+	/// <summary>Validates URL paths independently of the mutable installed bundle.</summary>
+	inline std::optional<std::filesystem::path> TrustedUiResourceRelativePath(const std::string& raw_url)
 	{
 		const std::string url = StripUrlQueryAndFragment(raw_url);
 		if (!uam::strings::StartsWithIgnoreCase(url, kUamUiUrlPrefix)) return std::nullopt;
@@ -280,13 +280,18 @@ namespace uam::cef
 			if (component == "." || component == "..") return std::nullopt;
 		}
 
-		const std::filesystem::path candidate = root / relative;
+		return relative;
+	}
+
+	inline std::optional<std::filesystem::path> ResolveTrustedUiResourcePath(
+	    const std::filesystem::path& root, const std::string& raw_url)
+	{
+		const std::optional<std::filesystem::path> relative = TrustedUiResourceRelativePath(raw_url);
+		if (!relative) return std::nullopt;
+		const std::filesystem::path candidate = root / *relative;
 		if (!uam::paths::IsSameOrInsideRoot(root, candidate) ||
 		    uam::paths::IsLinkOrReparsePointNoThrow(candidate) ||
-		    !uam::paths::IsRegularFileNoThrow(candidate))
-		{
-			return std::nullopt;
-		}
+		    !uam::paths::IsRegularFileNoThrow(candidate)) return std::nullopt;
 		return uam::paths::NormalizeExistingPath(candidate);
 	}
 

@@ -1,10 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <stop_token>
 #include <vector>
 
 #include "remote/runner_protocol.h"
@@ -36,7 +38,8 @@ namespace uam::remote
 	    std::uintmax_t delivered_stdout_cursor = 0,
 	    std::uintmax_t delivered_stderr_cursor = 0,
 	    const std::string& context_provider_id = {},
-	    const std::string& context_directory = {});
+	    const std::string& context_directory = {},
+	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
 	std::filesystem::path PackagedRunnerPath();
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
@@ -51,6 +54,8 @@ namespace uam::remote
 	std::string BuildRemoteInputDeliveryLine(
 	    std::string_view delivery_token, std::string_view delivery_id,
 	    std::string_view payload);
+	nlohmann::json BuildRemoteMcpServer(const std::string& channel, const std::string& platform, const std::string& version, const std::string& directory, int protocol);
+	void RunLocalMcpRelayFromSpec(std::stop_token stop, const std::string& alias, const std::string& platform, const std::string& version, const std::string& runner_directory, int protocol, const std::string& encoded_spec);
 	int RunProcessProxy(const std::string& ssh_alias, const std::string& platform,
 	                    const std::string& version,
 	                    const std::string& runner_directory = {},

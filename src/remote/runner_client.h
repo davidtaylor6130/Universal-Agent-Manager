@@ -4,7 +4,7 @@
 #include "remote/runner_protocol.h"
 #include "common/memory/memory_library_store.h"
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -59,6 +59,7 @@ namespace uam::remote
 
 		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool IsConnected() const { return m_connected; }
+		bool InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }
 		bool PrepareProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveProviderContext(const std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
@@ -69,7 +70,7 @@ namespace uam::remote
 		                  std::string* error_out = nullptr,
 		                  bool attach_if_exists = false,
 		                  std::string control_token = {},
-		                  bool retry_lost_reply = true);
+		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
 		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,
@@ -155,6 +156,7 @@ namespace uam::remote
 		bool m_runnerStartup = false;
 		bool m_leasedChannelTake = false;
 		bool m_providerNativeContext = false;
+		bool m_centralProviderConfiguration = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

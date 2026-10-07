@@ -27,7 +27,9 @@ std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
 		{
 			out << ' ';
 		}
-		out << argv[i];
+		if (argv[i].starts_with("developer_instructions=") || argv[i].find(".env.") != std::string::npos || argv[i].find("http_headers.") != std::string::npos)
+			out << "[private configuration]";
+		else out << argv[i];
 	}
 	return out.str();
 }

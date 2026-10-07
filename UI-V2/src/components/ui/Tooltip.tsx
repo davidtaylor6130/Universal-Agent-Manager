@@ -1,19 +1,6 @@
 import * as RadixTooltip from '@radix-ui/react-tooltip'
 import type { ReactNode } from 'react'
 
-/**
- * App-wide tooltip provider. Mount once near the app root so every Tooltip
- * shares consistent timing. Keep the delay short — tooltips are the primary
- * way icon-only controls stay discoverable.
- */
-export function TooltipProvider({ children }: { children: ReactNode }) {
-  return (
-    <RadixTooltip.Provider delayDuration={350} skipDelayDuration={200}>
-      {children}
-    </RadixTooltip.Provider>
-  )
-}
-
 export interface TooltipProps {
   /** The tooltip text. When empty/undefined the trigger renders without a tooltip. */
   label?: ReactNode
@@ -33,8 +20,7 @@ export function Tooltip({ label, children, side = 'top', align = 'center', short
     return <>{children}</>
   }
   return (
-    // Self-contained provider so a Tooltip works in any context (app, tests,
-    // isolated renders) without depending on an ancestor TooltipProvider.
+    // Each tooltip owns its timing, including standalone renders and tests.
     <RadixTooltip.Provider delayDuration={350} skipDelayDuration={200}>
     <RadixTooltip.Root>
       <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>

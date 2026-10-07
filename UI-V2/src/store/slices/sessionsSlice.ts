@@ -1,3 +1,4 @@
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
@@ -336,6 +337,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     fileExplorerApplication: '',
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
+    centralProviderConfiguration: DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: [] as McpServerConfiguration[],
     executionHosts: [{
       id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
@@ -1844,6 +1846,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    setCentralProviderConfiguration: async (configuration: CentralProviderConfiguration): Promise<{ ok: boolean; error?: string }> => {
+      const previous = get().centralProviderConfiguration
+      const revision = rememberOptimisticFields(['centralProviderConfiguration'])
+      set({ centralProviderConfiguration: configuration })
+      if (!isCefContext()) return { ok: true }
+      const response = await sendToCEF({ action: 'setCentralProviderConfiguration', payload: configuration, requestId: createRequestId('setCentralProviderConfiguration') })
+      if (!response.ok) set(latestOptimisticRollback({ centralProviderConfiguration: previous }, revision))
+      return { ok: response.ok, error: response.error }
+    },
+
     setMcpServers: async (servers: McpServerConfiguration[]): Promise<{ ok: boolean; error?: string }> => {
       const previous = get().mcpServers
       const optimisticRevision = rememberOptimisticFields(['mcpServers'])
@@ -2110,7 +2122,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = [], steerNow = false): Promise<boolean> => {
       const prompt = text.trim()
-      if (!prompt) {
+      if (!prompt && attachments.length === 0) {
         return false
       }
       const actionErrorId = createRequestId('sendAcpPrompt')
@@ -2121,7 +2133,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: { ...binding, promptActionError: undefined },
         } } : state
       })
-      const markdownStoreFiles = (get().markdownStoreAttachedBySessionId[sessionId] ?? []).map((entry) => entry.filePath)
+      const sentMarkdownEntries = new Set(get().markdownStoreAttachedBySessionId[sessionId] ?? [])
+      const markdownStoreFiles = [...sentMarkdownEntries].map((entry) => entry.filePath)
       const state = get()
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
       const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
@@ -2215,7 +2228,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             messages,
             markdownStoreAttachedBySessionId: {
               ...state.markdownStoreAttachedBySessionId,
-              [sessionId]: [],
+              [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => !sentMarkdownEntries.has(entry)),
             },
           }
         })

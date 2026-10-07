@@ -441,6 +441,18 @@ namespace
 	}
 } // namespace
 
+void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string error;
+	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error))
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "Manual compaction could not be requested."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(R"({"accepted":true})");
+}
+
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");

@@ -20,7 +20,7 @@ nlohmann::json IProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& sess
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
 	    {
 	        {"protocolVersion", 1},
-	        {"clientCapabilities", nlohmann::json::object()},
+	        {"clientCapabilities", {{"session", {{"compaction", nlohmann::json::object()}}}}},
 	        {"clientInfo", uam::acp_request_defaults::ClientInfo()},
 	    });
 }

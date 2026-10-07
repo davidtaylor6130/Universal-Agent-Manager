@@ -474,7 +474,7 @@ void UamCompanionServer::OnHttpRequest(CefRefPtr<CefServer> server, int connecti
 	    action != "setChatPinned" && action != "setChatModel" && action != "setChatProvider" && action != "discoverProviderModels" &&
 	    action != "setChatCommandSafetyTier" && action != "setChatUamControlEnabled" && action != "listUamAgents" && action != "setChatUamAgent" && action != "setChatMemoryEnabled" &&
 	    action != "setChatCodexOptions" && action != "setChatApprovalMode" && action != "setAcpConfigOption" &&
-	    action != "manageQueuedAcpPrompt" && action != "sendAcpPrompt" && action != "resolveAcpPermission" && action != "resolveAcpUserInput" && action != "cancelAcpTurn")
+	    action != "compactAcpSession" && action != "manageQueuedAcpPrompt" && action != "sendAcpPrompt" && action != "resolveAcpPermission" && action != "resolveAcpUserInput" && action != "cancelAcpTurn")
 	{
 		reply->Failure(403, "Action unavailable to the companion.");
 		return;

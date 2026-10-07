@@ -591,6 +591,7 @@ export interface CppSettings {
   fileExplorerApplication?: string
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
+  centralProviderConfiguration?: CentralProviderConfiguration
   mcpServers?: McpServerConfiguration[]
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
@@ -627,9 +628,12 @@ export interface ProviderAgentImportPreview {
 export interface McpSecretReference {
   name: string
   environmentVariable: string
+  /** Literal value stored in settings; present means "use this value" instead of a host variable. */
+  value?: string
 }
 
 export interface McpServerConfiguration {
+  executionHostId?: string
   id: string
   name: string
   workspaceDirectory: string
@@ -846,3 +850,18 @@ export type ParsedPushMessage =
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
+
+export interface CentralProviderConfiguration {
+  enabled: boolean
+  instructions: string
+  instructionFiles: string[]
+  skillDirectories: string[]
+  defaultSkills?: string[]
+  defaultAgents?: string[]
+  defaultAgentId: string
+  uamControlEnabled: boolean
+}
+
+export const DEFAULT_CENTRAL_PROVIDER_CONFIGURATION: CentralProviderConfiguration = {
+  enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultSkills: [], defaultAgentId: 'build', uamControlEnabled: true,
+}

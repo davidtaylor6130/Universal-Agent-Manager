@@ -173,6 +173,21 @@ ProviderProfile ProviderProfileStore::DefaultCopilotProfile()
 	});
 }
 
+ProviderProfile ProviderProfileStore::DefaultAntigravityProfile()
+{
+	ProviderProfile profile;
+	profile.id = uam::provider_ids::kAntigravityCli;
+	profile.title = "Antigravity CLI";
+	profile.output_mode = uam::provider_profile_constants::kOutputModeCli;
+	profile.interactive_command = "agy";
+	profile.supports_structured = false;
+	profile.structured_protocol = uam::provider_profile_constants::kProtocolNone;
+	profile.resume_argument = "--conversation";
+	profile.history_adapter = uam::provider_profile_constants::kHistoryAdapterLocalJson;
+	profile.prompt_bootstrap = uam::provider_profile_constants::kPromptBootstrapNone;
+	return profile;
+}
+
 std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 {
 	std::vector<ProviderProfile> profiles;
@@ -191,6 +206,9 @@ std::vector<ProviderProfile> ProviderProfileStore::BuiltInProfiles()
 #endif
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
 	profiles.push_back(DefaultCopilotProfile());
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	profiles.push_back(DefaultAntigravityProfile());
 #endif
 	return profiles;
 }

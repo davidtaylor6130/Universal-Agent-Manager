@@ -86,6 +86,10 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	ToolCall persisted;
 	persisted.id = tool_call.id;
 	persisted.name = uam::strings::NonEmptyOrFallback(tool_call.title, uam::strings::NonEmptyOrFallback(tool_call.kind, tool_call.id));
+	persisted.kind = tool_call.kind;
+	persisted.approval_status = tool_call.approval_status;
+	persisted.task_id = tool_call.task_id;
+	persisted.child_activity = tool_call.child_activity;
 	persisted.status = tool_call.status;
 	persisted.args_json = tool_call.args_json;
 	persisted.result_text = tool_call.content;
@@ -115,7 +119,7 @@ bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCal
 			continue;
 		}
 
-		if (existing.name == persisted.name && existing.args_json == persisted.args_json && existing.result_text == persisted.result_text && existing.status == persisted.status && existing.is_sub_agent == persisted.is_sub_agent && existing.sub_agent_id == persisted.sub_agent_id && existing.sub_agent_title == persisted.sub_agent_title)
+		if (existing == persisted)
 		{
 			return false;
 		}

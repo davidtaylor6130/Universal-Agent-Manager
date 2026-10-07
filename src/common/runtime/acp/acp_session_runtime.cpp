@@ -466,6 +466,7 @@ namespace uam
 
 		bool HandleAcpTurnInactivityTimeoutInternal(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
 		{
+			const bool maintenance_operation = session.manual_compaction_pending;
 			const bool codex_turn_start_pending =
 			    session.protocol_kind == "codex-app-server" &&
 			    session.codex_turn_id.empty() &&
@@ -492,7 +493,7 @@ namespace uam
 			}
 			if (action == AcpTurnInactivityRecoveryAction::Stop)
 			{
-				FinalizeAcpTurnInactivityTimeout(app, session, chat);
+				FinalizeAcpTurnInactivityTimeout(app, session, chat, maintenance_operation);
 				return true;
 			}
 
@@ -507,11 +508,11 @@ namespace uam
 			session.last_error = message;
 			session.lifecycle_state = kAcpLifecycleError;
 			AppendAcpDiagnostic(session, "turn", "inactivity_cancel", "", "", false, 0, message, cancel_error);
-			BlockActiveGoalForInactivityTimeout(app, session, chat, message);
+			if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			if (!session.inactivity_timeout_pending)
 			{
-				FinalizeAcpTurnInactivityTimeout(app, session, chat);
+				FinalizeAcpTurnInactivityTimeout(app, session, chat, maintenance_operation);
 			}
 			return true;
 		}
@@ -837,6 +838,8 @@ namespace uam
 				    AgentDefinitionService::ExecutionCapabilityForProvider(run->provider_id));
 				if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
 					queued.uam_agent_execution_capability = "uam-prompt-injected";
+				if (app.settings.central_provider_configuration.enabled)
+					queued.uam_agent_execution_capability = "uam-central-native-setup";
 				return true;
 			}
 			const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
@@ -860,6 +863,8 @@ namespace uam
 			    chat.execution_host_id == uam::execution_hosts::kLocalHostId
 			        ? AgentDefinitionService::ExecutionCapabilityForProvider(chat.provider_id)
 			        : "uam-prompt-injected";
+			if (app.settings.central_provider_configuration.enabled)
+				queued.uam_agent_execution_capability = "uam-central-native-setup";
 			return true;
 		}
 
@@ -1114,9 +1119,44 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			const AcpQueuedUserPromptState& first = batch.front();
+			if (chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind &&
+			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty())
+			{
+				// Model discovery may have opened an idle provider in the source directory.
+				// Restart it so the first prompt runs in the new worktree.
+				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
+				if (session.running && !StopAcpSession(app, chat.id))
+				{
+					session.queued_user_prompts = std::move(pending);
+					if (error_out != nullptr) *error_out = "Could not stop the idle provider before creating this chat's worktree.";
+					return false;
+				}
+				session.queued_user_prompts = std::move(pending);
+				if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, error_out)) return false;
+			}
+			const Goal* goal = first.goal_id.empty()
+			                       ? GoalService::FindActiveGoal(app, chat.id)
+			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
+			const std::string turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
+			    ? GoalService::ReviewerModelId(chat, *goal)
+			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
+			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
+			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
+			    chat.command_safety_tier);
+			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
+			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
+			const bool settings_require_restart = session.running && session.session_ready &&
+			    ((!turn_model_id.empty() && session.current_model_id != turn_model_id &&
+			      runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession) ||
+			     (first.uam_agent_execution_capability != "opencode-native-agent-config" &&
+			      (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			      session.current_mode_id != desired_mode &&
+			      runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
-				return capability == "opencode-native-agent-config" ||
+				return capability == "uam-central-native-setup" ||
+				       capability == "opencode-native-agent-config" ||
 				       capability == "copilot-native-agent-plugin";
 			};
 			const bool native_adapter_changed = session.running &&
@@ -1125,13 +1165,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (session.active_uam_agent_id != first.uam_agent_id ||
 			     session.active_uam_agent_definition_hash != first.uam_agent_definition_hash ||
 			     session.active_uam_agent_execution_capability != first.uam_agent_execution_capability);
-			if (native_adapter_changed)
+			if (native_adapter_changed || settings_require_restart)
 			{
 				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
 				if (!StopAcpSession(app, chat.id))
 				{
 					session.queued_user_prompts = std::move(pending);
-					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected native UAM agent.";
+					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected agent or session settings.";
 					return false;
 				}
 				session.queued_user_prompts = std::move(pending);
@@ -1151,14 +1191,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				return false;
 			}
-			const Goal* goal = first.goal_id.empty()
-			                       ? GoalService::FindActiveGoal(app, chat.id)
-			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
-			session.goal_turn_model_id = goal != nullptr && chat.small_model_mode && goal->loop_count == 0
-			                                 ? GoalService::ReviewerModelId(chat, *goal)
-			                                 : goal != nullptr
-			                                     ? GoalService::WorkerModelId(chat, *goal)
-			                                     : chat.model_id;
+			session.goal_turn_model_id = turn_model_id;
 			const std::string selected_model_id = uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, session.current_model_id);
 			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
 			if (selected_model != session.available_models.end() && !chat.reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
@@ -1172,10 +1205,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.service_tier.clear();
 				chat.service_tier_explicit = true;
 			}
-			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
-			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
-			    chat.command_safety_tier);
-			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			if (session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
 			    session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
 			    session.current_mode_id != desired_mode &&
@@ -1276,6 +1305,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool SendNativeAcpSteer(AppState& app, AcpSessionState& session, ChatSession& chat,
 		    AcpQueuedUserPromptState prompt, std::string* error_out, int queued_index = -1)
 		{
+			if (session.manual_compaction_pending)
+			{
+				if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
+				return false;
+			}
 			if (!session.running || !session.session_ready || !session.processing || AcpSessionHasPendingCancel(session))
 			{
 				if (error_out != nullptr) *error_out = "Wait for the provider to start the turn before steering.";
@@ -1406,7 +1440,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			queued.text = uam::strings::Trim(text);
-			if (queued.text.empty())
+			if (queued.text.empty() && attachments.empty())
 			{
 				if (error_out != nullptr)
 				{
@@ -1553,6 +1587,56 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 	} // namespace
 
+	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		const auto fail = [&](const std::string& error)
+		{
+			if (error_out != nullptr) *error_out = error;
+			return false;
+		};
+		if (chat == nullptr || session == nullptr || !session->running || !session->session_ready)
+			return fail("Start this chat's provider session before compacting its context.");
+		if (AcpSessionHasActiveTurn(*session) || AcpSessionHasPendingCancel(*session) ||
+		    AcpSessionIsWaitingForInput(*session) || !session->queued_user_prompts.empty() ||
+		    !session->pending_request_methods.empty() || AcpStopInProgress(app, chat_id))
+			return fail("Wait for the current turn, queued messages and pending controls before compacting.");
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+		const int request_id = session->next_request_id;
+		std::string method;
+		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
+		if (request.is_null() || method.empty())
+			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
+		if ((!chat->execution_host_id.empty() && chat->execution_host_id != "local") ||
+		    (!session->process_execution_host_id.empty() && session->process_execution_host_id != "local"))
+			return fail("Manual compaction currently requires a local provider session.");
+		++session->next_request_id;
+		session->pending_request_methods[request_id] = method;
+		if (!acp_detail::WriteAcpMessage(*session, request, error_out))
+		{
+			session->pending_request_methods.erase(request_id);
+			return false;
+		}
+		// Maintenance has no user/assistant turn ownership or checkpoint.
+		session->codex_turn_id.clear();
+		session->current_assistant_message_index = -1;
+		session->turn_assistant_message_index = -1;
+		session->turn_user_message_index = -1;
+		session->turn_first_user_message_index = -1;
+		session->turn_checkpoint_eligible = false;
+		session->inactivity_timeout_pending = false;
+		session->cancel_requested_time_s = 0.0;
+		session->turn_started_time_s = GetAppTimeSeconds();
+		acp_detail::ResetAcpTurnStreamState(*session);
+		session->manual_compaction_pending = true;
+		session->processing = true;
+		session->last_runtime_activity_time_s = GetAppTimeSeconds();
+		session->lifecycle_state = acp_detail::kAcpLifecycleProcessing;
+		session->last_error.clear();
+		return true;
+	}
+
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode)
 	{
 		ChatSession* chat_ptr = ChatDomainService().FindChatById(app, chat_id);
@@ -1577,6 +1661,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				*error_out = "Imported transcripts are read-only. Create a new chat in a workspace to continue.";
 			}
+			return false;
+		}
+		const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
+		if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
+		    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+		{
+			if (error_out != nullptr) *error_out = "This provider supports terminal chat only. Open its terminal to continue.";
 			return false;
 		}
 		if (!ProviderResolutionService().ChatProviderIsAvailable(app, chat))
@@ -1746,6 +1837,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				*error_out = "Chat not found: " + chat_id;
 			}
+			return false;
+		}
+
+		if (const AcpSessionState* active_session = FindAcpSessionForChat(app, chat_id);
+		    active_session != nullptr && active_session->manual_compaction_pending)
+		{
+			if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
 			return false;
 		}
 
@@ -2201,7 +2299,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			queued.goal_id = active_goal->id;
 		}
 		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
-		if ((queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
+		if ((queued.uam_agent_execution_capability == "uam-central-native-setup" ||
+		     session->active_uam_agent_execution_capability == "uam-central-native-setup" ||
+		     queued.uam_agent_execution_capability == "opencode-native-agent-config" ||
 		     queued.uam_agent_execution_capability == "copilot-native-agent-plugin" ||
 		     session->active_uam_agent_execution_capability == "opencode-native-agent-config" ||
 		     session->active_uam_agent_execution_capability == "copilot-native-agent-plugin") &&
@@ -2368,7 +2468,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			acp_detail::SaveChatQuietly(app, *chat);
 		}
-		if (update_goal_state && chat != nullptr)
+		if (update_goal_state && chat != nullptr && !session->manual_compaction_pending)
 		{
 			const std::string goal_owner_chat_id = uam::strings::NonEmptyOrFallback(chat->goal_owner_chat_id, chat_id);
 			if (!chat->goal_owner_chat_id.empty())
@@ -2404,7 +2504,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->turn_checkpoint_eligible = false;
 		session->cancel_requested = true;
 		session->cancel_requested_time_s = GetAppTimeSeconds();
-		session->goal_resume_suppressed = true;
+		if (!session->manual_compaction_pending) session->goal_resume_suppressed = true;
 		ResetAcpPendingInteractionState(*session);
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
@@ -2467,8 +2567,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
-	void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat)
+	void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation)
 	{
+		maintenance_operation = maintenance_operation || session.manual_compaction_pending;
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " turn stopped after provider inactivity.");
 		std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
 		(void)StopAcpSession(app, session.chat_id);
@@ -2476,7 +2577,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.inactivity_timeout_pending = false;
 		session.last_error = message;
 		session.lifecycle_state = kAcpLifecycleError;
-		BlockActiveGoalForInactivityTimeout(app, session, chat, message);
+		if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 		chat.remote_turn_reconnect_pending = false;
 		acp_detail::SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
@@ -2712,7 +2813,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (active_response || session.stop_purpose != AcpStopPurpose::Interrupt)
 			{
 				chat->last_stop_reason = reason;
-				if (session.last_turn_outcome != "error") session.last_turn_outcome = reason;
+				if (!session.manual_compaction_pending && session.last_turn_outcome != "error") session.last_turn_outcome = reason;
 			}
 			const int assistant = session.current_assistant_message_index >= 0 ? session.current_assistant_message_index : session.turn_assistant_message_index;
 			if (active_response && assistant >= 0 && assistant < static_cast<int>(chat->messages.size()) && chat->messages[static_cast<std::size_t>(assistant)].role == MessageRole::Assistant)
@@ -2732,6 +2833,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.session_ready = false;
 		session.model_discovery_only = false;
 		session.processing = false;
+		session.manual_compaction_pending = false;
 		session.recovering_remote_turn = false;
 		session.recovering_remote_process = false;
 		session.turn_checkpoint_eligible = false;
@@ -3218,6 +3320,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		acp_detail::RecordAcpPermissionDecision(*session, option_id, cancelled);
+		(void)acp_detail::SyncAcpToolCallsToAssistantMessage(*chat, *session, true);
+
 		session->interaction_at = uam::time::InteractionTimestampNow();
 		chat->interaction_at = session->interaction_at;
 		if (!acp_detail::SaveChatQuietly(app, *chat)) acp_detail::ScheduleChatSave(app, *chat, 0.0);
@@ -3616,6 +3721,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				{
 					// The runner rejected a fresh proxy because its helper-owned process
 					// survived the bridge. Reattach before any further fresh launch.
+					if (!recovering_remote_process)
+					{
+						// This initialize went to the rejected proxy, not the surviving provider.
+						session.pending_request_methods.erase(session.initialize_request_id);
+						session.initialize_request_id = 0;
+					}
 					chat.remote_process_exists = true;
 					session.processing = remote_turn_recovery;
 					session.recovering_remote_turn = remote_turn_recovery;

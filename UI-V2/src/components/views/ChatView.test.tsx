@@ -852,6 +852,106 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('follows streaming output at the padded end and leaves earlier reading in place', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
+    const content = transcript.querySelector('.uam-chat-content') as HTMLDivElement
+    const bottom = transcript.lastElementChild as HTMLDivElement
+    // The scroll target must include the composer clearance, rather than end inside it.
+    expect(bottom.previousElementSibling).toBe(content)
+    expect(content.style.paddingBottom).toBe('calc(var(--composer-dock-h, 0px) + 16px)')
+    const scrollIntoView = vi.fn()
+    bottom.scrollIntoView = scrollIntoView
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 800 },
+    })
+    const appendOutput = () => useAppStore.setState((state) => ({
+      messages: { ...state.messages, 'chat-1': state.messages['chat-1'].map((message) =>
+        message.role === 'assistant' ? { ...message, content: message.content + ' more output' } : message
+      ) },
+    }))
+    act(appendOutput)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' })
+    scrollIntoView.mockClear()
+
+    transcript.scrollTop = 100
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
+    act(appendOutput)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(transcript.scrollTop).toBe(100)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('preserves bottom following across dock, content and viewport resizing without pulling readers down', async () => {
+    let notifyResize = () => {}
+    const observe = vi.fn()
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { notifyResize = callback }
+      observe = observe
+      disconnect = disconnect
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const dock = host.querySelector('.uam-composer-dock') as HTMLDivElement
+    const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
+    const content = transcript.querySelector('.uam-chat-content') as HTMLDivElement
+    let dockHeight = 150
+    let scrollHeight = 1000
+    Object.defineProperty(dock, 'offsetHeight', { configurable: true, get: () => dockHeight })
+    Object.defineProperties(transcript, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 800 },
+    })
+    expect(observe).toHaveBeenCalledWith(dock)
+    expect(observe).toHaveBeenCalledWith(content)
+    expect(observe).toHaveBeenCalledWith(transcript)
+    act(notifyResize)
+    expect(dock.parentElement?.style.getPropertyValue('--composer-dock-h')).toBe('150px')
+    expect(transcript.scrollTop).toBe(1000)
+
+    scrollHeight = 1200
+    act(notifyResize)
+    expect(transcript.scrollTop).toBe(1200)
+
+    transcript.scrollTop = 100
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      dockHeight = 250
+      notifyResize()
+      expect(transcript.scrollTop).toBe(100)
+      await new Promise(window.requestAnimationFrame)
+    })
+    expect(dock.parentElement?.style.getPropertyValue('--composer-dock-h')).toBe('250px')
+    expect(transcript.scrollTop).toBe(100)
+
+    transcript.scrollTop = 1000
+    await act(async () => {
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise(window.requestAnimationFrame)
+    })
+    dockHeight = 100
+    act(notifyResize)
+    expect(transcript.scrollTop).toBe(1200)
+    act(() => root.unmount())
+    expect(disconnect).toHaveBeenCalled()
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
   it('offers a jump to the latest message only while scrolled away from the bottom', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -862,7 +962,7 @@ describe('ChatView', () => {
     })
 
     const transcript = host.querySelector('.uam-chat-transcript') as HTMLDivElement
-    const bottom = transcript.querySelector('.uam-message-list')?.lastElementChild as HTMLDivElement
+    const bottom = transcript.lastElementChild as HTMLDivElement
     const scrollIntoView = vi.fn()
     bottom.scrollIntoView = scrollIntoView
     Object.defineProperties(transcript, {
@@ -2566,6 +2666,98 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each(['enter', 'send', 'palette', 'failure', 'not-accepted', 'new-draft'] as const)('routes compact via native control and preserves attachments (%s)', async (operation) => {
+    const previousSendAcpPrompt = useAppStore.getState().sendAcpPrompt
+    const previousSkills = useAppStore.getState().markdownStoreAttachedBySessionId
+    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
+    const skill = { id: 'keep', title: 'Keep', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/keep.md' }
+    useAppStore.setState((state) => ({
+      sendAcpPrompt, markdownStoreAttachedBySessionId: { 'chat-1': [skill] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null } },
+    }))
+    writeChatComposerDraft('chat-1', { text: '/compact', attachments: [{ id: 'keep-file', name: 'keep.txt', type: 'file', size: 4, path: '/tmp/keep.txt', status: 'ready' }] })
+    const requests: Array<{ action: string; payload: unknown }> = []
+    let finish = () => { throw new Error('Compact not requested') }
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'compactAcpSession') finish = () => operation === 'failure'
+        ? onFailure(400, 'This provider does not support manual compaction.')
+        : onSuccess(JSON.stringify({ accepted: operation !== 'not-accepted' }))
+      else onSuccess('{}')
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await act(async () => {
+      if (operation === 'send' || operation === 'failure' || operation === 'not-accepted' || operation === 'new-draft') {
+        (host.querySelector('button[aria-label="Send prompt"]') as HTMLButtonElement).click()
+      } else {
+        setDraft('/compact')
+        if (operation === 'palette') {
+          const row = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/compact')) as HTMLElement
+          expect(row).toBeTruthy()
+          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+        } else textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      }
+    })
+    expect(requests.filter((request) => request.action === 'compactAcpSession')).toEqual([{ action: 'compactAcpSession', payload: { chatId: 'chat-1' }, requestId: expect.any(String) }])
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    if (operation === 'new-draft') act(() => setDraft('My next prompt'))
+    await act(async () => finish())
+    expect(textarea.value).toBe(operation === 'failure' || operation === 'not-accepted' ? '/compact' : operation === 'new-draft' ? 'My next prompt' : '')
+    expect(readChatComposerDraft('chat-1').attachments).toHaveLength(1)
+    expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
+    expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+    if (operation === 'failure') expect(host.textContent).toContain('This provider does not support manual compaction.')
+    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction request was not accepted.')
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+    useAppStore.setState({ sendAcpPrompt: previousSendAcpPrompt, markdownStoreAttachedBySessionId: previousSkills })
+  })
+
+  it.each([false, true])('keeps compact acknowledgements scoped to their original chat visit and blocks duplicates (return=%s)', async (returnToFirst) => {
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({
+      sessions: [first, second],
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' } },
+    }))
+    writeChatComposerDraft('chat-1', { text: '/compact', attachments: [] })
+    writeChatComposerDraft('chat-2', { text: 'Second chat draft', attachments: [] })
+    let finish = () => { throw new Error('Compact not requested') }
+    let count = 0
+    window.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'compactAcpSession') { count++; finish = () => onSuccess(JSON.stringify({ accepted: true })) }
+      else onSuccess('{}')
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView key={first.id} session={first} />))
+    await act(async () => {
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(count).toBe(1)
+    act(() => root.render(<ChatView key={second.id} session={second} />))
+    if (returnToFirst) act(() => root.render(<ChatView key={first.id} session={first} />))
+    await act(async () => finish())
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(returnToFirst ? '/compact' : 'Second chat draft')
+    expect(readChatComposerDraft('chat-1').text).toBe('/compact')
+    expect(host.textContent).not.toContain('Compaction requested.')
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
   })
 
   it('offers Copilot ACP advertised commands without shadowing local slash actions', async () => {
@@ -6029,6 +6221,12 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
+    const workspaceTab = host.querySelector('.uam-composer-workspace-tab') as HTMLElement
+    const workspaceButton = workspaceTab.querySelector('button[aria-label="Workspace actions"]')
+    expect(workspaceTab.firstElementChild?.contains(workspaceButton)).toBe(true)
+    expect(workspaceTab.querySelectorAll('button')).toHaveLength(1)
+    expect(workspaceTab.lastElementChild?.querySelector('svg')).toBeNull()
+
     openWorkspaceActions(host)
     const openButton = document.body.querySelector('button[role="menuitem"]') as HTMLButtonElement | null
     expect(openButton).toBeTruthy()
@@ -6115,6 +6313,7 @@ describe('ChatView', () => {
         workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
         workspaceSourceDirectory: '/tmp/project',
         workspaceIsolationKind: 'gitWorktree',
+        workspaceBranchName: 'build/fix-login',
       })),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -6136,6 +6335,7 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     openWorkspaceActions(host)
+    expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
       .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
     expect(discard.disabled).toBe(false)
@@ -6386,7 +6586,7 @@ describe('ChatView', () => {
     useAppStore.setState({ discardChatWorktreeChanges: originalDiscardChatWorktreeChanges })
   })
 
-  it('stages selected files and sends them with the prompt', async () => {
+  it.each(['Use this image', ''])('stages selected files and sends them with prompt %j', async (prompt) => {
     let stagedAttachment = {
       id: 'file-1',
       name: 'diagram.png',
@@ -6440,7 +6640,7 @@ describe('ChatView', () => {
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-      valueSetter?.call(textarea, 'Use this image')
+      valueSetter?.call(textarea, prompt)
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
 
@@ -6449,7 +6649,7 @@ describe('ChatView', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use this image', [stagedAttachment])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', prompt, [stagedAttachment])
 
     act(() => {
       root.unmount()

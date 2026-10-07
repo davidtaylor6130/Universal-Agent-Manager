@@ -27,10 +27,12 @@ bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* 
 bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int message_index, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
+/// <summary>Requests native compaction in a ready idle session without deleting saved history.</summary>
+bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    std::string* error_out = nullptr, bool update_goal_state = true,
                    bool preserve_queued_prompts = false);
-void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat);
+void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation = false);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt);
 bool SetAcpSessionMode(AppState& app,

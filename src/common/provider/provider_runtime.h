@@ -118,6 +118,8 @@ class IProviderRuntime
 	virtual nlohmann::json ReadLocalModelCatalog() const { return nlohmann::json::array(); }
 	/// <summary>Returns CLI update and compatibility policy, or null for unsupported runtimes.</summary>
 	virtual const ProviderCliPolicy* CliVersionPolicy() const { return nullptr; }
+	/// <summary>Whether isolated text workers can run without native tools.</summary>
+	virtual bool SupportsTextWorkers() const { return true; }
 	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
 	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
@@ -329,6 +331,9 @@ class IProviderRuntime
 	/// <summary>Build the prompt request and return the method name via out_method.</summary>
 	virtual nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const;
+
+	/// <summary>Builds native manual compaction; null means the provider has no direct request.</summary>
+	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const { return false; }

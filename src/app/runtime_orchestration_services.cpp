@@ -22,6 +22,7 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/codex/cli/codex_tool_item.h"
+#include "common/provider/claude/cli/claude_tool_projection.h"
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 #include "common/provider/gemini/base/gemini_history_loader.h"
@@ -30,6 +31,7 @@
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/json_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal_common.h"
@@ -501,6 +503,10 @@ namespace
 				const ToolCall& local_tool = *found->second;
 				tool.is_sub_agent = tool.is_sub_agent || local_tool.is_sub_agent;
 				if (tool.sub_agent_id.empty()) tool.sub_agent_id = local_tool.sub_agent_id;
+				if (tool.kind.empty()) tool.kind = local_tool.kind;
+				if (tool.approval_status.empty()) tool.approval_status = local_tool.approval_status;
+				if (tool.task_id.empty()) tool.task_id = local_tool.task_id;
+				if (tool.child_activity.empty()) tool.child_activity = local_tool.child_activity;
 				if (tool.sub_agent_title.empty() && tool.sub_agent_id == local_tool.sub_agent_id) tool.sub_agent_title = local_tool.sub_agent_title;
 			}
 		}
@@ -1880,6 +1886,27 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			for (const nlohmann::json& record : chain)
 				if (record.value("isCompactSummary", false) && record.contains("parentUuid") && record["parentUuid"].is_string()) summarized_boundaries.insert(record["parentUuid"].get<std::string>());
 			std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> tools;
+			const auto apply_notification = [&](const nlohmann::json& notification)
+			{
+				const std::string tool_id = notification.value("tool_use_id", "");
+				const auto found = tools.find(tool_id);
+				const std::string status = notification.value("status", "");
+				const std::string summary = notification.value("summary", "");
+				if (found != tools.end() && found->second.first < chat.messages.size())
+				{
+					ToolCall& tool = chat.messages[found->second.first].tool_calls[found->second.second];
+					tool.task_id = notification.value("task_id", "");
+					tool.status = status == "completed" ? "completed" : status == "failed" ? "failed" : "cancelled";
+					if (!summary.empty()) AppendTranscriptText(tool.result_text, summary);
+				}
+				else if (!summary.empty())
+				{
+					Message notice;
+					notice.role = MessageRole::System;
+					notice.content = summary;
+					chat.messages.push_back(std::move(notice));
+				}
+			};
 			for (auto record = chain.rbegin(); record != chain.rend(); ++record)
 			{
 				if (!record->contains("message"))
@@ -1900,18 +1927,42 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				message.created_at = (*record).value("timestamp", "");
 				if (!value.contains("content")) continue;
 				const nlohmann::json& content = value["content"];
-				if (content.is_string()) message.content = content.get<std::string>();
+				const nlohmann::json notification = uam::claude::TaskNotification(uam::acp_detail::ContentTextFromJson(content));
+				if (message.role == MessageRole::User && notification.is_object() && !(*record).value("isCompactSummary", false))
+				{
+					apply_notification(notification);
+					continue;
+				}
+				if (content.is_string())
+				{
+					message.content = content.get<std::string>();
+					message.blocks.push_back({"assistant_text", message.content});
+				}
 				else if (content.is_array()) for (const nlohmann::json& block : content)
 				{
 					if (!block.is_object()) continue;
 					const std::string type = block.value("type", "");
-					if (type == "text") AppendTranscriptText(message.content, block.value("text", ""));
-					else if (type == "thinking") AppendTranscriptText(message.thoughts, block.value("thinking", ""));
+					if (type == "text")
+					{
+						const std::string text = block.value("text", "");
+						AppendTranscriptText(message.content, text);
+						if (!text.empty()) message.blocks.push_back({"assistant_text", text});
+					}
+					else if (type == "thinking")
+					{
+						const std::string text = block.value("thinking", "");
+						AppendTranscriptText(message.thoughts, text);
+						if (!text.empty()) message.blocks.push_back({"thought", text});
+					}
 					else if (type == "tool_use")
 					{
 						ToolCall tool;
 						tool.id = block.value("id", "");
-						tool.name = block.value("name", "");
+						const std::string native_name = block.value("name", "");
+						const nlohmann::json input = block.value("input", nlohmann::json::object());
+						tool.name = uam::claude::ToolTitle(native_name, input);
+						tool.kind = uam::claude::ToolKind(native_name);
+						tool.is_sub_agent = tool.kind == "sub-agent";
 						tool.args_json = block.contains("input") ? block["input"].dump() : "{}";
 						tool.status = "interrupted";
 						tools[tool.id] = {chat.messages.size(), message.tool_calls.size()};
@@ -1929,6 +1980,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				}
 				if ((*record).value("isCompactSummary", false))
 				{
+					message.blocks.clear();
 					message.blocks.emplace_back("context_compaction", message.content, "", (*record).value("uuid", ""));
 					message.content.clear();
 					message.thoughts.clear();

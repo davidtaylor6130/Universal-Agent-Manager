@@ -108,6 +108,7 @@ option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable Claude Code CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_OPENCODE_CLI "Enable OpenCode CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_COPILOT_CLI "Enable GitHub Copilot CLI runtime backend." ON)
+option(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI "Enable Antigravity CLI terminal runtime backend." ON)
 
 foreach(_removed_runtime_flag IN ITEMS
   UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
@@ -118,12 +119,12 @@ foreach(_removed_runtime_flag IN ITEMS
   if(DEFINED ${_removed_runtime_flag})
     message(FATAL_ERROR
       "${_removed_runtime_flag} is no longer supported in this release slice. "
-      "Only UAM_ENABLE_RUNTIME_GEMINI_CLI, UAM_ENABLE_RUNTIME_CODEX_CLI, UAM_ENABLE_RUNTIME_CLAUDE_CLI, UAM_ENABLE_RUNTIME_OPENCODE_CLI, and UAM_ENABLE_RUNTIME_COPILOT_CLI are supported."
+      "Only UAM_ENABLE_RUNTIME_GEMINI_CLI, UAM_ENABLE_RUNTIME_CODEX_CLI, UAM_ENABLE_RUNTIME_CLAUDE_CLI, UAM_ENABLE_RUNTIME_OPENCODE_CLI, UAM_ENABLE_RUNTIME_COPILOT_CLI, and UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI are supported."
     )
   endif()
 endforeach()
 
-if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI AND NOT UAM_ENABLE_RUNTIME_CLAUDE_CLI AND NOT UAM_ENABLE_RUNTIME_OPENCODE_CLI AND NOT UAM_ENABLE_RUNTIME_COPILOT_CLI)
+if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI AND NOT UAM_ENABLE_RUNTIME_CLAUDE_CLI AND NOT UAM_ENABLE_RUNTIME_OPENCODE_CLI AND NOT UAM_ENABLE_RUNTIME_COPILOT_CLI AND NOT UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   message(FATAL_ERROR "At least one provider runtime must be enabled.")
 endif()
 
@@ -258,6 +259,10 @@ if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
   )
 endif()
 
+if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
+  list(APPEND UAM_PROVIDER_SOURCES src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp)
+endif()
+
 # ---------------------------------------------------------------------------
 # Platform sources
 # ---------------------------------------------------------------------------
@@ -371,6 +376,7 @@ target_compile_definitions(uam_runner PRIVATE
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
   UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
   UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+  UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
 )
 set(UAM_RUNNER_SHA256_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.sha256")
 set(UAM_RUNNER_VERSION_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.version")
@@ -594,6 +600,7 @@ target_compile_definitions(universal_agent_manager PRIVATE
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
   UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
   UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+  UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
@@ -1115,6 +1122,10 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)
+  target_include_directories(uam_ui_asset_snapshot_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_ui_asset_snapshot_tests PRIVATE nlohmann_json::nlohmann_json)
+  add_test(NAME uam_ui_asset_snapshot COMMAND uam_ui_asset_snapshot_tests)
   add_executable(uam_crash_supervisor_tests
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)
@@ -1132,11 +1143,13 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/provider_configuration_tests.cpp
     src/common/utils/diagnostic_log.cpp
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
     tests/acp_session_tests.cpp
+    tests/claude_projection_tests.cpp
     tests/terminal_tests.cpp
     tests/goal_tests.cpp
     tests/theme_tests.cpp
@@ -1291,6 +1304,7 @@ if(UAM_BUILD_TESTS)
     UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
     UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
     UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
   )
   if(MSVC)
     target_compile_options(uam_core_tests PRIVATE /bigobj)

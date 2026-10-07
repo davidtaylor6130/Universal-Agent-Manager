@@ -109,7 +109,8 @@ export interface Session {
   messagesDigest?: string
   createdAt: Date
   updatedAt: Date
-  interactionAt?: Date
+  /** Null means imported without UAM interaction; undefined supports older state. */
+  interactionAt?: Date | null
   lastOpenedAt?: Date
   attentionRevision?: string
   /** ISO time the user marked this chat done in Active chats. */
