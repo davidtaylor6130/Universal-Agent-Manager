@@ -4,6 +4,7 @@
 #include "remote/runner_client.h"
 
 #include "app/chat_domain_service.h"
+#include "app/chat_search_service.h"
 #include "app/chat_lifecycle_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
@@ -94,6 +95,24 @@ namespace
 		    uam::nlohmann_json::FindArrayField(serialized, "messages");
 		result["messages"] = messages == nullptr ? nlohmann::json::array() : *messages;
 		return result;
+	}
+
+	uam::query_handler_async::AsyncCefResult SerializeGuardedChatMessagesResult(
+	    const ChatSession& chat, std::string_view known_digest,
+	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
+	    bool defer_tool_call_content,
+	    const std::optional<std::pair<std::string, std::size_t>>& search_target)
+	{
+		if (search_target && !uam::ChatSearchTargetMatches(chat, search_target->first, search_target->second))
+			return uam::query_handler_async::AsyncFailure(409, "Chat history changed. Search again to select this message.");
+		if (search_target && page)
+		{
+			const std::size_t end = std::min(page->second.value_or(chat.messages.size()), chat.messages.size());
+			const std::size_t begin = end > page->first ? end - page->first : 0;
+			if (search_target->second < begin || search_target->second >= end)
+				return uam::query_handler_async::AsyncFailure(400, "The requested page does not contain the selected search message.");
+		}
+		return uam::query_handler_async::AsyncSuccess(SerializeChatMessagesResult(chat, known_digest, page, defer_tool_call_content));
 	}
 
 	bool ReadMessageIndex(const nlohmann::json& value, std::size_t& result)
@@ -263,6 +282,19 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		}
 		page = std::make_pair(limit, before);
 	}
+	std::optional<std::pair<std::string, std::size_t>> search_target;
+	if (payload.contains("expectedMessagesDigest") || payload.contains("targetMessageIndex"))
+	{
+		std::size_t target_index = 0;
+		if (!page || refresh_native || !payload.contains("expectedMessagesDigest") || !payload["expectedMessagesDigest"].is_string() ||
+		    payload["expectedMessagesDigest"].get_ref<const std::string&>().empty() || payload["expectedMessagesDigest"].get_ref<const std::string&>().size() > 256 ||
+		    !payload.contains("targetMessageIndex") || !ReadMessageIndex(payload["targetMessageIndex"], target_index))
+		{
+			cb->Failure(400, "Search navigation requires a bounded page, transcript digest and message index.");
+			return;
+		}
+		search_target = std::make_pair(payload["expectedMessagesDigest"].get<std::string>(), target_index);
+	}
 	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
@@ -276,17 +308,16 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		auto loaded = std::make_shared<std::optional<ChatSession>>();
 		uam::query_handler_async::RunAsyncCefQuery(
 		    m_asyncLifetime, cb,
-		    [data_root, chat_id, known_digest, page, defer_tool_call_content, loaded]()
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded]()
 		    {
 			    std::string warning;
 			    *loaded = ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!loaded->has_value())
 				    return uam::query_handler_async::AsyncFailure(500,
 				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
-			    return uam::query_handler_async::AsyncSuccess(
-			        SerializeChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content));
+			    return SerializeGuardedChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content, search_target);
 		    },
-		    [this, chat_id, known_digest, page, defer_tool_call_content, expected_count,
+		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
 		     expected_digest, loaded](uam::query_handler_async::AsyncCefResult& response)
 		    {
 			    if (!response.ok) return;
@@ -298,8 +329,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    if (current->messages_loaded)
 			    {
-				    response = uam::query_handler_async::AsyncSuccess(
-				        SerializeChatMessagesResult(*current, known_digest, page, defer_tool_call_content));
+				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
 				    return;
 			    }
 			    if (!ChatRepository::AdoptHydratedMessagesIfUnchanged(
@@ -330,7 +360,9 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	     provider_id == uam::provider_ids::kCodexCli);
 	if (!hydrate_native_chat)
 	{
-		cb->Success(SerializeChatMessagesResult(*chat, known_digest, page, defer_tool_call_content).dump());
+		const uam::query_handler_async::AsyncCefResult result = SerializeGuardedChatMessagesResult(*chat, known_digest, page, defer_tool_call_content, search_target);
+		if (result.ok) cb->Success(result.body);
+		else cb->Failure(result.status, result.error);
 		return;
 	}
 
@@ -398,7 +430,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		                       transcript->error, "Native chat history is not available yet."));
 	    },
 		    [this, browser, chat_snapshot, host_snapshot, known_digest, original_digest, request, transcript, page,
-		     defer_tool_call_content](
+		     defer_tool_call_content, search_target](
 	        uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    const auto pending = m_nativeHistoryRequests.find(chat_snapshot.id);
@@ -456,8 +488,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 		    }
-		    response = uam::query_handler_async::AsyncSuccess(
-			    SerializeChatMessagesResult(*current, known_digest, page, defer_tool_call_content));
+		    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
 	    })))
 	{
 		m_nativeHistoryRequests.erase(chat_id);

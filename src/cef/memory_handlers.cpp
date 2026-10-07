@@ -3,6 +3,7 @@
 #include "cef/uam_query_handler_async.h"
 
 #include "app/memory_library_service.h"
+#include "app/chat_search_service.h"
 #include "app/memory_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
@@ -46,6 +47,7 @@ void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/
 	const std::string request_id = payload.value("requestId", "");
 	nlohmann::json result;
 	result["chatIds"] = nlohmann::json::array();
+	result["hits"] = nlohmann::json::array();
 	if (!request_id.empty())
 	{
 		result["requestId"] = request_id;
@@ -59,31 +61,10 @@ void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/
 	RunAsyncCefQuery(m_asyncLifetime, cb,
 	                 [data_root, tokens, request_id]()
 	                 {
-		                 nlohmann::json async_result;
-		                 async_result["chatIds"] = nlohmann::json::array();
-		                 if (!request_id.empty())
-		                 {
-			                 async_result["requestId"] = request_id;
-		                 }
-
 		                 std::string warning;
 		                 const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(data_root, &warning);
-		                 for (const ChatSession& chat : chats)
-		                 {
-			                 std::string haystack = uam::strings::ToLowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
-			                 for (const Message& message : chat.messages)
-			                 {
-				                 haystack += " " + uam::strings::ToLowerAscii(message.content);
-				                 haystack += " " + uam::strings::ToLowerAscii(message.thoughts);
-				                 haystack += " " + uam::strings::ToLowerAscii(message.plan_summary);
-			                 }
-
-			                 const bool matches = std::ranges::all_of(tokens, [&](const std::string& token) { return uam::strings::Contains(haystack, token); });
-			                 if (matches)
-			                 {
-				                 async_result["chatIds"].push_back(chat.id);
-			                 }
-		                 }
+		                 nlohmann::json async_result = uam::SearchChatMessages(chats, tokens);
+		                 if (!request_id.empty()) async_result["requestId"] = request_id;
 
 		                 if (!warning.empty())
 		                 {
