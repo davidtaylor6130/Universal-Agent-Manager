@@ -681,7 +681,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const renderActivitySessionItem = (id: string) => {
     const activitySession = sessionsById.get(id)
     const folder = folders.find((candidate) => candidate.id === activitySession?.folderId)
-    const hostId = folder?.executionHostId || 'local'
+    const hostId = activitySession?.executionHostId?.trim() || folder?.executionHostId || 'local'
     const host = executionHosts.find((candidate) => candidate.id === hostId)
     return (
       <SessionItem

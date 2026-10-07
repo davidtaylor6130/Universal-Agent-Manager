@@ -73,6 +73,28 @@ describe('FolderTree', () => {
     })
   })
 
+  it.each([
+    { caseName: 'remote Unsorted', folderId: null, sessionHost: 'ssh-a', expected: 'Remote A' },
+    { caseName: 'remote chat with a conflicting folder host', folderId: 'project', sessionHost: 'ssh-a', expected: 'Remote A' },
+    { caseName: 'explicit local chat in a remote folder', folderId: 'project', sessionHost: 'local', expected: 'This computer' },
+    { caseName: 'legacy chat inheriting its assigned folder host', folderId: 'project', sessionHost: undefined, expected: 'Remote B' },
+  ])('uses chat ownership for the Active host label: $caseName', ({ folderId, sessionHost, expected }) => {
+    useAppStore.setState((state) => ({
+      executionHosts: [...state.executionHosts, ...['a', 'b'].map((suffix) => ({ ...state.executionHosts[0], id: `ssh-${suffix}`, label: `Remote ${suffix.toUpperCase()}`, transport: 'ssh' as const }))],
+      folders: [{ ...makeFolder(), executionHostId: 'ssh-b' }],
+      sessions: [{ ...makeSession(1), folderId, executionHostId: sessionHost }],
+      acpBindingBySessionId: { 'chat-1': { processing: true } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const active = host.querySelector('[data-testid="active-chats"]')!
+      expect(active.querySelector('[role="img"][aria-label^="Runs on"]')?.getAttribute('aria-label')).toBe(`Runs on ${expected}`)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('glides workspace chats on expand and keeps collapsed chats inert', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
